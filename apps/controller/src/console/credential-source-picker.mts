@@ -214,6 +214,7 @@ export function createCredentialSourcePicker<Criteria>(
     }
   }
   select.addEventListener("change", () => {
+    const previousSelection = selected ?? selectionBeforeCreate;
     creating = addNewLabel !== undefined && select.value === addNewValue;
     if (creating) {
       selectionBeforeCreate = selected;
@@ -221,7 +222,10 @@ export function createCredentialSourcePicker<Criteria>(
     selected = creating
       ? null
       : (availableSources().find((source) => source.id === select.value)?.ref ??
-        (selected?.id === select.value ? selected : null));
+        (previousSelection?.id === select.value ? previousSelection : null));
+    if (!creating) {
+      selectionBeforeCreate = null;
+    }
     select.required = active && required && !creating;
     options.onChange(selected);
   });

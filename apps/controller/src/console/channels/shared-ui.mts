@@ -58,6 +58,7 @@ export interface ChannelDrawerContext extends SlackDirectoryContext {
   secretBindings?: SecretBindings | undefined;
   draftSecretBindings?: SecretBindings | undefined;
   draftChangedSecrets?: Record<string, SecretMetadata> | undefined;
+  onEnrollmentPending?(pending: boolean): void;
   // The Namespace permission answer's secrets.create, for the token fields' inline Create Secret.
   secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
   // Readable Secrets the caller may not operate, which the token fields refuse (finding 2453).
@@ -762,6 +763,10 @@ function openDrawer(
   const config = support.config;
   const drawerContext: ChannelDrawerContext = {
     ...state.drawerContext,
+    onEnrollmentPending(pending) {
+      state.pending = pending;
+      state.onStateChange({ pending, outcomeUnknown: state.outcomeUnknown });
+    },
     isConfigured: providerConfig(state.values, provider.id) !== undefined,
     secretBindings:
       state.drawerContext.secretBindings === undefined

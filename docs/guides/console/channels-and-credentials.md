@@ -48,7 +48,9 @@ with `${NAME}` are refused, and the message names the form. The Slack editor ope
 `${SLACK_BOT_TOKEN}` and keeps that form.
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
-For **Add new credential…**, enter a Source name and the masked token, then choose **Create credential**. Source creation requires `credential_source:create` in the Namespace; saving the resulting Source binding also requires exact `operate`. If creation cannot be confirmed, check **Credentials** before trying again. You can still create Sources there and refresh the list. Former Secret-backed settings require newly created Sources. Selection stays staged until the channel changes are saved.
+For **Add new credential…**, enter a Source name and the masked token, then choose **Create credential**. Source creation requires `credential_source:create` in the Namespace; saving the binding also requires exact Source `operate`. The Source is saved independently of the Agent. Canceling the Channel editor or Agent setup does not delete it.
+
+If creation cannot be confirmed, check **Credentials** before trying again. You can also create Sources there and refresh the list. Former Secret-backed settings require newly created Sources. Selection stays staged until the channel changes are saved.
 
 For native Slack settings, Create Agent and the Configuration JSON editor show Source selectors for references in unsaved settings. Select the Source before saving the reference. The Agent **Credentials** tab can replace a Source for each saved app token, bot token, signing secret, user token, or relay authentication token, including named accounts. Directory search and approver lookup use the selected bot Source and require exact Source `operate` plus permission to edit the target. The Console never retrieves stored credential values. Deploy the saved draft before expecting the running Agent to use it.
 
@@ -121,4 +123,6 @@ Choose an existing Source for each missing or changed credential, then select **
 
 Saving requires Configuration `update` and exact `credential_source:operate` on each Source the saved Configuration binds. If you cannot operate a currently bound Source, choose a replacement you can operate before saving. The simple Slack drawer permits replacement of its standard app and bot bindings; use the Credentials panel for other referenced names. **Disable Slack** keeps existing bindings and is unavailable when that write would keep a binding you cannot operate.
 
-Deploy the saved draft to apply the change. OCC admission checks the caller's exact Source authority and delegates the corresponding use grant to the Agent's service principal. The Console does not issue a separate Source grant. A refusal names the missing permission or unsupported Source owner when the API can report it. **Outcome unknown** requires refreshing saved state before retrying. Credential values are never fetched or displayed.
+Deploy the saved draft to apply the change. Deployment requires exact Source `operate` for both the caller and the Agent service principal. With OCC-managed transactional Native IAM, admission can create a missing exact Agent grant. Otherwise, the selected IAM Driver must already authorize the Agent. The Console does not issue Source grants. See [Source-grant requirements](../../reference/credential-sources.md#bind-a-source-to-an-agent).
+
+A refusal names the missing permission or unsupported Source owner when the API can report it. **Outcome unknown** requires refreshing saved state before retrying. The Console does not retrieve stored credential values.

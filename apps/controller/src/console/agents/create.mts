@@ -140,6 +140,7 @@ export interface CreateAgentContext extends AgentNavigation {
   onResume?(resume: () => void): void;
   setTitle(title: string): void;
   setDiscardOnExit(discard: boolean): void;
+  holdWhileWriting(hold: { writing(): boolean; held(): void }): void;
   setDraftCapture(
     capture: (() => CreateAgentDraft) | null,
     unsaved?: (draft?: CreateAgentDraft) => boolean,
@@ -2266,6 +2267,12 @@ function renderAgentForm(
         )
       : null;
   let pending = false;
+  let channelEnrollmentPending = false;
+  context.holdWhileWriting({
+    writing: () => channelEnrollmentPending,
+    // The open Channel editor already reports that credential creation is in progress.
+    held: () => undefined,
+  });
   // Create's own request. `pending` also covers the recovery controls' requests, which must not
   // mark Create busy (finding 1961).
   let createPending = false;
@@ -2829,6 +2836,9 @@ function renderAgentForm(
             ? ""
             : " Retrying Agent creation will reuse these channel settings."),
         readOnlyCardMessage: "This saved initial Configuration cannot be edited from this form.",
+      },
+      onStateChange: ({ pending }) => {
+        channelEnrollmentPending = pending;
       },
       onSave: async (updatedValues, options = {}) => {
         if (!context.isCurrent() || pending || outcomeUnknown || savedConfiguration) {

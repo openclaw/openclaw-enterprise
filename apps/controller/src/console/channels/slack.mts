@@ -80,7 +80,6 @@ const originalTargets = new WeakMap<
     dmUsers: Set<string>;
   }
 >();
-const unresolvedSourceCreates = new WeakMap<object, Set<string>>();
 
 function channelUsers(channel: SlackChannel | undefined) {
   const users = uniqueList(channel?.users ?? []);
@@ -290,10 +289,9 @@ function credentialReferenceField(
 ) {
   const initial = bindingSource(activeSecretBinding(binding, context), context.namespaceId);
   const currentId = initial?.id;
-  const enrollmentKey = `${context.namespaceId}:${binding.key}`;
-  const enrollmentOwner = context.drafts ?? context;
-  const unresolved = unresolvedSourceCreates.get(enrollmentOwner) ?? new Set<string>();
-  unresolvedSourceCreates.set(enrollmentOwner, unresolved);
+  const enrollmentKey = `slack-source-create-${binding.key}`;
+  const retained = context.drafts?.get(enrollmentKey);
+  let unresolvedName = typeof retained === "string" ? retained : undefined;
   const id = `slack-source-${binding.key.toLowerCase().replaceAll("_", "-")}`;
   const picker = createCredentialSourcePicker(context, {
     ...staticCredentialSourceSelection,
@@ -332,33 +330,37 @@ function credentialReferenceField(
   });
   const feedback = element("p", { className: "hint", role: "status" });
   const create = button("Create credential", () => void enroll(), { tone: "secondary" });
-  const cancel = button("Cancel", () => {
-    token.value = "";
-    sourceName.value = "";
-    picker.cancelCreating();
-  });
+  const cancel = button("Cancel", () => picker.cancelCreating());
   const enrollment = element(
     "div",
     { className: "credential-enrollment", hidden: true },
+    element(
+      "p",
+      { className: "hint" },
+      "This creates a reusable Source with the Installation’s selected TokenService. It remains in Credentials if you cancel. Slack delivery currently requires OCC TokenService and Kubernetes Compute.",
+    ),
     field(`${binding.label} Source name`, sourceName),
     field(`${binding.label} value`, token),
     element("div", { className: "dialog-actions" }, cancel, create),
   );
   picker.field.append(enrollment, feedback);
   function renderEnrollment() {
-    const blocked = unresolved.has(enrollmentKey);
+    const blocked = unresolvedName !== undefined;
     enrollment.hidden = !picker.creating;
+    if (!picker.creating) {
+      sourceName.value = "";
+      token.value = "";
+    }
     sourceName.required = picker.creating;
     token.required = picker.creating;
     create.disabled = blocked;
     picker.setAddNewDisabled(blocked);
     if (blocked) {
-      feedback.textContent =
-        "The credential save could not be confirmed. Check Credential Sources and the credential owner, then reload this page before creating another Source.";
+      feedback.textContent = `The credential save for "${unresolvedName}" could not be confirmed. Check Credential Sources and the credential owner, then reload this page before creating another Source.`;
     }
   }
   async function enroll() {
-    if (unresolved.has(enrollmentKey) || !sourceName.reportValidity() || !token.reportValidity()) {
+    if (unresolvedName !== undefined || !sourceName.reportValidity() || !token.reportValidity()) {
       return;
     }
     const requestedName = sourceName.value.trim();
@@ -422,11 +424,16 @@ function credentialReferenceField(
         feedback.textContent = "The request was rate limited. Try again later.";
       } else if (status === 501) {
         feedback.textContent = "The selected credential owner does not support this operation.";
-      } else if (status === 409) {
-        feedback.textContent =
-          "Credential Source creation conflicted. Check Credential Sources and the owner before retrying with a different name.";
       } else {
-        unresolved.add(enrollmentKey);
+        // A 409 can occur after the owner has stored the value. As in Credentials, do not
+        // submit another create until the inventory and owner have been checked.
+        unresolvedName = requestedName;
+        if (context.drafts) {
+          const capture = () => requestedName;
+          context.drafts.track(enrollmentKey, capture);
+          context.drafts.unsavedWhen(enrollmentKey, () => false);
+          context.drafts.record(enrollmentKey, capture);
+        }
       }
     } finally {
       dialog?.removeEventListener("cancel", preventCancel, true);
@@ -548,6 +555,7 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
         }
       },
       (pending) => {
+        context.onEnrollmentPending?.(pending);
         for (const picker of tokenPickers) {
           picker.setDisabled(pending);
         }

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-11-26
-last_updated_session: authoring-run/b01217a9-df42-4b2b-9110-e266330732d6
+last_updated_session: authoring-run/3897c8a4-2327-47c6-a552-30b5e7ed61c2
 ---
 
 # Agent provisioning flow
@@ -59,9 +59,9 @@ OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
 policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
-The Slack editor selects a ready static Credential Source or creates one through `POST /namespaces/:namespaceId/credential-sources`. Creation requires Source `create` in the Namespace. Apply stages the confirmed Source reference in `Configuration.secretBindings`; saving requires exact Source `operate`.
+The Slack editor selects a ready static Source or calls `POST /namespaces/:namespaceId/credential-sources` with Namespace Source `create`. Pending enrollment holds navigation. Unconfirmed results, including `409`, block another create; check inventory and owner before reloading. Apply stages the reference in `Configuration.secretBindings`; saving requires exact Source `operate`.
 
-For supported model presets, Console enrolls a TokenService Source and binds the Agent draft. Codex PAT enrollment can precede hosted Apps discovery. Retries reuse confirmed Sources; an unknown outcome requires checking Credentials before retrying. Direct model authentication runs preflight before writing a Namespace Secret and provisioning.
+For supported models, Console enrolls a TokenService Source. Codex PAT enrollment can precede Apps discovery. Retries reuse confirmed Sources; check Credentials after uncertain enrollment. Direct authentication runs preflight before writing a Namespace Secret.
 
 Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. Retry reuses the ID and inputs after uncertain admission.
 
@@ -229,6 +229,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-26 23:36: Trace Slack enrollment failures. (authoring-run/3897c8a4-2327-47c6-a552-30b5e7ed61c2 - 0978257f991a04b699ce411820326119c09be20a)
 - 2026-11-26 15:03: Trace inline Slack Source enrollment. (authoring-run/b01217a9-df42-4b2b-9110-e266330732d6 - 95d045c383baa1eb4bac2677ff4f5067e361ee45)
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)

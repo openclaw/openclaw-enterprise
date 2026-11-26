@@ -587,6 +587,15 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     const value = botField.getByLabel("Slack bot token value");
     assert.equal(await value.getAttribute("type"), "password");
     await value.fill(inlineBotValue);
+    await bot.selectOption(first.source.id);
+    await bot.selectOption("new");
+    assert.equal(
+      await value.inputValue(),
+      "",
+      "switching to a saved Source discards the typed token",
+    );
+    await botField.getByLabel("Slack bot token Source name").fill("Second bot credential");
+    await value.fill(inlineBotValue);
     const restoreCreate = revokeAdministratorGrant(fixture, ["create", "credential_source"]);
     try {
       const refused = sourceResponse();
@@ -601,16 +610,6 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     assert.equal(await bot.inputValue(), first.source.id);
     assert.equal(await botField.locator("p[role=status]").last().textContent(), "");
     await bot.selectOption("new");
-    await botField.getByLabel("Slack bot token Source name").fill("App credential");
-    await botField.getByLabel("Slack bot token value").fill(inlineBotValue);
-    const duplicate = sourceResponse();
-    await botField.getByRole("button", { name: "Create credential", exact: true }).click();
-    assert.equal((await duplicate).status(), 409);
-    await botField.getByText(/creation conflicted/i).waitFor();
-    assert.equal(
-      await botField.getByRole("button", { name: "Create credential" }).isDisabled(),
-      false,
-    );
     await botField.getByLabel("Slack bot token Source name").fill("Second bot credential");
     await botField.getByLabel("Slack bot token value").fill(inlineBotValue);
     await drawer.getByRole("button", { name: "Apply channel settings", exact: true }).click();
@@ -655,6 +654,23 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     assert.equal(lookup.status(), 200);
     assert.equal(lookup.request().postDataJSON().sourceId, source.id);
     assert.equal(JSON.stringify(lookup.request().postDataJSON()).includes(inlineBotValue), false);
+    // A 409 can arrive after custody has changed. Treat it as unconfirmed, as the Credentials
+    // page does, and keep the existing app Source usable without offering another create.
+    const appPicker = drawer.getByLabel("Slack app token", { exact: true });
+    const appField = appPicker.locator("..");
+    await appPicker.selectOption("new");
+    await appField.getByLabel("Slack app token Source name").fill("App credential");
+    await appField.getByLabel("Slack app token value").fill(`xapp-${randomUUID()}`);
+    const duplicate = sourceResponse();
+    await appField.getByRole("button", { name: "Create credential", exact: true }).click();
+    assert.equal((await duplicate).status(), 409);
+    await appField.getByText(/could not be confirmed/).waitFor();
+    assert.equal(
+      await appField.getByRole("button", { name: "Create credential" }).isDisabled(),
+      true,
+    );
+    await appField.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await appPicker.inputValue(), app.source.id);
     await drawer.getByRole("button", { name: "Apply channel settings", exact: true }).click();
     directorySource = page.getByLabel("Slack bot Credential Source for people search", {
       exact: true,

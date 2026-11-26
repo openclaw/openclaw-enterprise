@@ -2,7 +2,9 @@
 
 These stories use production Console controls with simulated Credential Sources and directory results. They do not read a real token or contact Slack.
 
-Open **Pages / Create Agent / Create a Slack credential before the Agent exists**. Choose **Create credential** to enroll the simulated bot Source, or **Cancel** to return to selection. **Slack credential creation refused** shows a simulated Source-create denial. **Flows / Create with Slack Credential Sources** applies an existing app Source and a newly created bot Source.
+Open **Pages / Create Agent / Create a Slack credential before the Agent exists**. The form explains that the selected TokenService owns the reusable Source, that it remains in Credentials if you cancel, and that Slack delivery requires OCC TokenService and Kubernetes Compute. Switch from **Add new credential…** to an existing Source and back: the masked token is cleared. Choose **Create credential** to enroll the simulated bot Source, or **Cancel** to return to selection.
+
+**Slack credential creation refused** shows a simulated definite denial. **Slack credential creation unconfirmed** simulates a 409: the token is cleared, a persistent notice directs the operator to check Credential Sources and the credential owner, and another create is blocked until page reload. **Flows / Create with Slack Credential Sources** applies an existing app Source and a newly created bot Source.
 
 1. Open **Components / Channels / Slack directory needs a bot Source**. Credentials and setup instructions appear before channel and DM access. Select **Slack bot token (simulated)** in the **Slack bot token** menu, then confirm saved IDs resolve to names and channel search works. Both tokens are needed before deployment; the bot token enables name lookup.
 2. Open **Components / Channels / Saved Slack IDs show current names** and **Qualified Slack targets keep names and IDs**. Saved targets appear as removable name chips; hover a chip for the exact saved ID.

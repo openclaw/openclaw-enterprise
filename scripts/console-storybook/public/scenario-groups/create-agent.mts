@@ -1260,7 +1260,7 @@ export const createAgentProvisioningScenarios = {
       ...addSlackBotSource,
     ],
     description:
-      "Choose Add new credential to enter a Source name and masked Slack token. Create credential enrolls a static Source in this Namespace; Cancel returns to the Source picker.",
+      "Choose Add new credential to see the selected-owner and Slack delivery requirements, then enter a Source name and masked token. Switching modes clears the token. Create credential enrolls a reusable static Source; Cancel returns to selection.",
     gap: "Source enrollment and permissions are simulated; no real token or Slack request is used.",
   },
   createSlackSourceRefused: {
@@ -1271,6 +1271,24 @@ export const createAgentProvisioningScenarios = {
     actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
     description:
       "The simulated API refuses Source creation. The Slack editor reports the refusal without selecting an unconfirmed Source.",
+  },
+  createSlackSourceUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "Slack credential creation unconfirmed",
+    path: create,
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The TokenService cannot complete this source operation.",
+      },
+    ],
+    actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
+    description:
+      "A simulated 409 leaves the Source creation outcome unconfirmed. The editor clears the token and blocks another create until the operator checks Credential Sources and the credential owner, then reloads the page.",
+    gap: "The error response is simulated. This does not establish whether a credential owner stored a value.",
   },
   createSecretRequiredFields: {
     group: "Pages/Create Agent",

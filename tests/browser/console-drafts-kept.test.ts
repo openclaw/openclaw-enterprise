@@ -1111,6 +1111,84 @@ test("Reload draft retains an inline Slack Source without discovery access", asy
   }
 });
 
+test("Slack Source creation holds Back and keeps recovery after cancel", async (t) => {
+  const { fixture, namespace } = await createSlackSourceConsoleFixture(t, "Pending Slack Source", {
+    defaultPresets: [defaultCodexPreset],
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await startDefaultPreset(page);
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Configure Slack", exact: true });
+  const bot = drawer.getByLabel("Slack bot token", { exact: true });
+  await bot.selectOption("new");
+  const field = bot.locator("..");
+  await field.getByLabel("Slack bot token Source name").fill("Pending bot token");
+  await field.getByLabel("Slack bot token value").fill("xoxb-pending-fixture-token");
+  const path = `/namespaces/${namespace.id}/credential-sources`;
+  const held = await holdRequests(t, page, fixture.origin + path, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  await field.getByRole("button", { name: "Create credential", exact: true }).click();
+
+  // The Source is already durable, but only this page can receive and select its exact ID.
+  // Back must leave the page mounted rather than abandon the reply and invite a duplicate.
+  const serverResponse = await held.requested;
+  assert.ok(serverResponse);
+  assert.equal(serverResponse.status(), 201);
+  const sourceId = text(record(record(await serverResponse.json()).data).id);
+  const createUrl = page.url();
+  assert.equal(await asksBeforeUnload(page), true);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.addEventListener("popstate", resolve, { once: true });
+        globalThis.history.back();
+      }),
+  );
+  await page.waitForURL(createUrl);
+  assert.equal(await drawer.isVisible(), true);
+  assert.equal(pathRequests(requests, "POST", path).length, 1);
+  held.release();
+  await waitForInputValue(bot, sourceId);
+
+  // A conflict is not proof that the owner did not store a credential. Keep the nonsecret
+  // recovery marker when the reader leaves this view and returns within the document.
+  await bot.selectOption("new");
+  await field.getByLabel("Slack bot token Source name").fill("Pending bot token");
+  await field.getByLabel("Slack bot token value").fill("xoxb-retry-fixture-token");
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + path && response.request().method() === "POST",
+  );
+  await field.getByRole("button", { name: "Create credential", exact: true }).click();
+  assert.equal((await conflict).status(), 409);
+  await field.getByRole("button", { name: "Cancel", exact: true }).click();
+  await drawer.getByRole("button", { name: "Cancel", exact: true }).click();
+  const retainedSource = await fixture.request("GET", `${path}/${sourceId}`);
+  assert.equal(retainedSource.status, 200);
+  assert.equal(
+    record(retainedSource.data).state,
+    "ready",
+    "canceling setup does not delete the Source",
+  );
+  await page.goBack();
+  await heading(page, "Agents").waitFor();
+  await page.goForward();
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  const returned = page.getByRole("dialog", { name: "Configure Slack", exact: true });
+  const returnedBot = returned.getByLabel("Slack bot token", { exact: true });
+  assert.equal(await returnedBot.locator('option[value="new"]').isDisabled(), true);
+  await returned
+    .getByText(/credential save for "Pending bot token" could not be confirmed/i)
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", path).length, 2);
+});
+
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
 // uncertain outcome, an admitted provisioning job, a job that created its Agent and a repository
 // policy refusal keep none (finding 1965).

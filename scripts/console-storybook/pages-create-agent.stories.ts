@@ -85,6 +85,10 @@ export const CreateSlackSourceRefused = {
   ...story("createSlackSourceRefused"),
   name: "Slack credential creation refused",
 };
+export const CreateSlackSourceUnconfirmed = {
+  ...story("createSlackSourceUnconfirmed"),
+  name: "Slack credential creation unconfirmed",
+};
 export const CreateSecretRequiredFields = {
   ...story("createSecretRequiredFields"),
   name: "Create Secret required fields",
