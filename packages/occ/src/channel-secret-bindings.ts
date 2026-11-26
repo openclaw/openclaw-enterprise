@@ -67,7 +67,7 @@ export function enabledChannelEntries(
 export function requireChannelSecretBindings(
   configuration: Readonly<OpenClawConfigurationDocument>,
   providers: readonly string[],
-  bound: (name: string, credentialInput: boolean, provider: string) => boolean,
+  bound: (name: string) => boolean,
   createError: SettingError,
 ): void {
   const channels = asRecord(configuration.channels) ?? {};
@@ -77,7 +77,7 @@ export function requireChannelSecretBindings(
       keyedSettingPath("channels", provider),
       [],
       Object.hasOwn(CHANNEL_SECRET_INPUTS, provider) ? CHANNEL_SECRET_INPUTS[provider] : undefined,
-      (name, credentialInput) => bound(name, credentialInput, provider),
+      bound,
     );
     if (refusal !== undefined) {
       throw createError(refusal.path, refusal.requirement);
@@ -186,14 +186,14 @@ const unboundRequirement = (name: string): string => {
   // message keeps its cap.
   const written =
     name.length <= 32 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : quotedSettingKey(name, 32);
-  return `references ${written} without a Configuration Secret binding: bind ${written} in secretBindings to an environment-backed Secret, or remove the reference`;
+  return `references ${written} without a Configuration credential binding: bind ${written} to a stored credential in secretBindings, or remove the reference`;
 };
 
 // The text the runtime keeps as written may be the credential itself, so the refusal shows it only
 // when it is a lowercase `${name}`, the realistic mistake (finding 2485: a mixed-case token such
 // as `${Zr9k…}` is never shown), or only the name of `${NAME-text}`; otherwise it names the form.
 function unsubstitutedRequirement(literal: string): string {
-  const bind = "bound to a Secret in secretBindings";
+  const bind = "bound to a stored credential in secretBindings";
   if (/^\$\{[a-z_][a-z0-9_]{0,28}\}$/.test(literal)) {
     return `contains ${literal}, which the runtime does not substitute: use an uppercase \${NAME} ${bind}, or escape literal text as $\${NAME}`;
   }
@@ -227,8 +227,7 @@ function channelReferenceRefusal(
   path: string,
   keys: readonly (string | number)[],
   fields: SecretInputFields | undefined,
-  bound: (name: string, credentialInput: boolean) => boolean,
-  enabled = true,
+  bound: (name: string) => boolean,
 ): { readonly path: string; readonly requirement: string } | undefined {
   if (typeof value === "string") {
     const secretInput = isSecretInput(keys, fields);
@@ -242,7 +241,7 @@ function channelReferenceRefusal(
     const name = [
       ...environmentReferenceNames(value, { fallbacks: secretInput }),
       ...(shorthand === undefined ? [] : [shorthand]),
-    ].find((reference) => !bound(reference, secretInput && enabled));
+    ].find((reference) => !bound(reference));
     return name === undefined ? undefined : { path, requirement: unboundRequirement(name) };
   }
   if (Array.isArray(value)) {
@@ -253,7 +252,6 @@ function channelReferenceRefusal(
         [...keys, index],
         fields,
         bound,
-        enabled,
       );
       if (refusal !== undefined) {
         return refusal;
@@ -269,7 +267,7 @@ function channelReferenceRefusal(
     record.source === "env" &&
     typeof record.id === "string" &&
     record.id.length > 0 &&
-    !bound(record.id, isSecretInput(keys, fields) && enabled)
+    !bound(record.id)
   ) {
     return { path, requirement: unboundRequirement(record.id) };
   }
@@ -280,8 +278,6 @@ function channelReferenceRefusal(
       [...keys, key],
       fields,
       bound,
-      enabled &&
-        !(keys.length === 1 && keys[0] === "accounts" && asRecord(item)?.enabled === false),
     );
     if (refusal !== undefined) {
       return refusal;

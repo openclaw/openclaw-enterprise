@@ -73,6 +73,7 @@ interface InjectedFixtureOptions extends Partial<
   >
 > {
   readonly recordOperations?: ControllerOptions["recordOperations"];
+  readonly gatewayStartupSourceDelivery?: ControllerOptions["gatewayStartupSourceDelivery"];
   readonly backends?: FixtureBackends | undefined;
   readonly backendSummaries?: ControllerAppOptions["backendSummaries"];
   readonly provisionAuthAccount?: (
@@ -214,6 +215,9 @@ export async function createInjectedControllerFixture(
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,
+                ...(options.gatewayStartupSourceDelivery === undefined
+                  ? {}
+                  : { gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery }),
                 ...(options.backends === undefined ? {} : { backends: options.backends }),
               });
               if (options.channelDriver) {

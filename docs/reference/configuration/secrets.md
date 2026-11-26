@@ -4,7 +4,7 @@ Configure Gateway credential references and native channels for [Namespace Confi
 
 ## Secret bindings
 
-Use `Configuration.secretBindings` to map a Namespace Secret or supported static CredentialSource to a Gateway environment variable. Each reference must belong to the same Namespace as the Configuration and Agent. The native
+Use `Configuration.secretBindings` to map a stored credential to a Gateway environment variable. For a dedicated Kubernetes Gateway with OCC TokenService, select a ready static Credential Source in the same Namespace as the Configuration and Agent. The native
 OpenClaw document in `values` then consumes that environment variable with its
 normal `env` SecretRef:
 
@@ -13,9 +13,9 @@ normal `env` SecretRef:
   "secretBindings": {
     "SLACK_BOT_TOKEN": {
       "source": {
-        "kind": "secret",
+        "kind": "credential_source",
         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000"
+        "id": "cs_123e4567-e89b-42d3-a456-426614174000"
       }
     }
   }
@@ -34,23 +34,7 @@ use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 `KUBERNETES_`, `OPENAI_`, `PATH`, `HOME`, or proxy variables. Model
 authentication destinations are reserved for `harnessAuth`.
 
-For a dedicated Gateway on Kubernetes with OCC TokenService, select a ready static Source:
-
-```json
-{
-  "secretBindings": {
-    "GW_HOOK_TOKEN": {
-      "source": {
-        "kind": "credential_source",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-        "id": "cs_123e4567-e89b-42d3-a456-426614174001"
-      }
-    }
-  }
-}
-```
-
-The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. Slack credential inputs still require Namespace Secrets.
+The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. All five Slack credential fields accept these bindings: `appToken`, `botToken`, `signingSecret`, `userToken`, and `relay.authToken`, including named accounts. The Slack Channel Driver validates only app and bot tokens; the Gateway consumes the other fields directly.
 
 Kubernetes Compute stages Source values in a Secret for each Agent revision. A replacement Pod for that running revision reuses the staged value; a managed redeploy reads the current Source. Revocation prevents a later managed start but does not erase the running Gateway's environment. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md) for cleanup and access.
 

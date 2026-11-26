@@ -5181,7 +5181,7 @@ test("native channel settings require readable Secret bindings", async () => {
         assert.match(error.message, /^Configuration setting channels\.slack\.accounts/);
         assert.ok(
           error.message.endsWith(
-            ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
+            ` references ${shown} without a Configuration credential binding: bind ${shown} to a stored credential in secretBindings, or remove the reference.`,
           ),
           error.message,
         );

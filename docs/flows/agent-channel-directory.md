@@ -1,26 +1,26 @@
 ---
 created: 2026-09-27
-updated: 2026-11-20
-last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
+updated: 2026-11-26
+last_updated_session: authoring-run/97afbc63-ab09-45c6-bf75-044b4068cfef
 ---
 
 # Agent Channel Directory Lookup Flow
 
 ## Overview
 
-An operator searches Slack users or channels while creating or editing an
-Agent. The Console uses the selected bot Secret to show names and workspace
-identity, then saves only the selected IDs in channel Configuration. OpenClaw
-Control Plane (OCC) authorizes and reads the Secret; the selected ChannelDriver
-owns provider calls. This flow ends when the Console displays candidates or an
-actionable error.
+An authorized caller searches Slack users or channels with a ready static
+Credential Source. OpenClaw Control Plane (OCC) checks the caller's exact access,
+resolves the Source through its TokenService owner, and gives the token in memory
+to the ChannelDriver. The Driver returns names, stable IDs, and workspace identity.
+The Agent or Configuration stores only the selected IDs.
 
 ## Entry Points
 
-- Trigger: the Console Slack editor searches or resolves saved IDs, or an
-  authorized caller posts to the Namespace channel directory route.
+- Trigger: an authorized caller posts a search or saved-ID lookup to the
+  Namespace channel directory route with `sourceId`.
 - Assumptions: the caller can create an Agent or update the exact Agent or
-  Configuration, and can operate the selected same-Namespace Secret.
+  Configuration, and can operate the selected same-Namespace Source. Its owner
+  and Compute must be the qualified OCC TokenService and Kubernetes Compute pair.
 - Source: `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`,
   `packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`,
   and `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.lookupDirectory`.
@@ -29,32 +29,31 @@ actionable error.
 
 ```mermaid
 graph TD
-  A["Operator selects bot Secret and searches"] --> B["OCC checks edit target and exact Secret operate"]
-  B -->|denied or missing| X["Return safe lookup error"]
-  B -->|authorized| P{"ChannelDriver selected?"}
-  P -->|no| U["Return 501; Console offers exact-ID entry"]
-  P -->|yes| C["SecretDriver reads current value"]
-  C --> D["OCC rechecks target, Secret grant, and backend identity"]
-  D -->|changed| X
-  D -->|current| M{"Managed OCC listener configured?"}
-  M -->|no| X
-  M -->|yes| H["Tunnel through the reserved Envoy listener"]
-  H --> E["Slack Driver reads workspace and directory pages"]
-  E -->|provider error| X
-  E --> F["Console shows names and exact IDs"]
-  F --> G["Configuration saves selected IDs"]
+  %%{init: {"themeVariables":{"fontSize":"14px"},"flowchart":{"htmlLabels":true,"nodeSpacing":24,"rankSpacing":28}}}%%
+  UI["<b>Console cutover</b><br/>Pending sourceId caller"] -.-> A["<b>Directory API</b><br/>sourceId and edit target"]
+  A --> B["<b>OCC authorization</b><br/>Exact target and Source operate"]
+  B --> C["<b>Qualification</b><br/>Ready static Source<br/>OCC + Kubernetes"]
+  C --> D["<b>TokenService</b><br/>Resolve current token"]
+  D --> E["<b>OCC recheck</b><br/>Authority, owner, readiness"]
+  E --> F["<b>ChannelDriver</b><br/>Slack via OCC listener"]
+  F --> G["<b>Safe result</b><br/>Workspace, names, IDs"]
+  classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px,stroke-dasharray:4 4
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  class UI pending
+  class B,C,D,E,F operation
 ```
 
 ## Execution Trace
 
-### 1. Authorize the selected Secret
+### 1. Authorize and qualify the selected Source
 
-`packages/occ/src/setup-discovery.ts:SetupDiscovery.channelDirectorySecret`
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.channelDirectorySource`
 
-The request names a same-Namespace Secret and optionally an Agent or
-Configuration being edited. OCC checks the matching create or exact update
-permission and Secret `operate`, then reads the resource and Secret from
-platform state. A missing or foreign target is rejected before provider I/O.
+The request names `sourceId` and optionally the Agent or Configuration being
+edited. OCC checks Agent create or exact target update and `operate` on that
+same-Namespace Credential Source. It requires a ready static TokenService Source
+and the qualified OCC TokenService/Kubernetes Compute pair. A missing, foreign,
+or unsupported Source is rejected before credential resolution or provider I/O.
 
 ### 2. Read and use the current value
 
@@ -68,10 +67,12 @@ managed route is absent. Helm admits only the authorized API Pods to this
 listener. Agent and Harness grants remain separate. See
 [channel egress](channel-egress.md) for policy enforcement and address checks.
 
-The selected SecretDriver invokes `withValue` and verifies backend ownership.
-OCC rechecks grants and Secret backend identity after the read. It passes the
-token only in process to the ChannelDriver. The bundled Slack implementation
-requires a bot identity from `auth.test` and pages through `users.list` or
+OCC repeats exact authorization before the Source owner resolves the token.
+After resolution, OCC rechecks target and Source authorization, Source readiness,
+owner identity, and Compute qualification before giving the token in process to
+the ChannelDriver. An OpenShell-owned Source is not qualified for this path.
+The bundled Slack implementation rejects a value without the `xoxb-` bot-token
+prefix before any provider request. It requires a bot identity from `auth.test` and pages through `users.list` or
 `conversations.list`. Exact-ID searches and saved IDs use `users.info` or `conversations.info`.
 The response contains at most 100 candidates and pagination state, never the token.
 An incomplete page cannot establish that a name is absent or unique.
@@ -84,7 +85,7 @@ serves credential validation; no automatic retry is added. Successful responses
 have an 8,000,000-byte streaming cap before decoded JSON is checked against the
 existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read and returns `invalid_response`.
 
-### 3. Display names and save IDs
+### 3. Save selected IDs in the Console
 
 `apps/controller/src/console/channels/slack.mts:appendFields`,
 `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`
@@ -92,7 +93,7 @@ existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read an
 The Console presents bot-token selection before channel access and explains that
 name lookup needs that token. It debounces typing and shows each candidate's name,
 exact ID, and workspace. The directory result panel overlays the form, following
-the Secret picker pattern in `apps/controller/src/console/console.css`. Closing
+the credential picker pattern in `apps/controller/src/console/console.css`. Closing
 results on focus loss cancels pending searches without moving the clicked control;
 name-status hints retain their layout space while results are open. It buffers the provider's complete returned batch and divides it into
 [display pages](../reference/drivers/slack-channel.md). Previous and Next reuse
@@ -127,12 +128,12 @@ inert; moving focus to another Console control closes the list. Read-only
 directory lookups do not invalidate tab retention, so a completed search can
 keep its picker when switching Agent tabs and returning.
 Those results are from the last authorized lookup. A new search rechecks the
-exact edit target and Secret `operate` grant, and denied Agent access removes the
+exact edit target and selected credential's `operate` grant, and denied Agent access removes the
 view.
 
 ## Debugging and Verification
 
-- A denied lookup requires checking the exact edit permission and Secret
+- A denied Source lookup requires checking the exact edit permission and Source
   `operate` grant. A token, scope, rate limit, or provider error returns a
   safe code without the token or upstream payload.
 - An unavailable lookup requires the managed OCC listener. Check the
@@ -151,7 +152,7 @@ view.
 
 - [ChannelDriver contract](../reference/drivers/channel.md)
 - [Bundled Slack Channel Driver](../reference/drivers/slack-channel.md)
-- [SecretDriver contract](../reference/drivers/secret.md)
+- [Credential Sources](../reference/credential-sources.md)
 - [Agent plugin deployment flow](agent-plugins.md)
 
 ## Manual Notes
@@ -159,6 +160,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 09:34: Describe the accompanying local Source-backed directory candidate and pending Console cutover. (authoring-run/97afbc63-ab09-45c6-bf75-044b4068cfef - efc73b7aad6a82bdcdd5a54975a0852488a6edde)
 
 - 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
 

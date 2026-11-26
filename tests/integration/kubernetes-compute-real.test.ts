@@ -754,7 +754,7 @@ test(
         assert.equal(missingConfiguration.error.code, "INVALID_REQUEST");
         assert.match(
           missingConfiguration.error.message,
-          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
+          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration credential binding: /,
         );
         // This k3d fixture has no runtime.channelEgress proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret

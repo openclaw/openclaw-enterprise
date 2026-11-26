@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-22
-last_updated_session: authoring-run/826943be-2c00-410c-8d78-b6eff00ea692
+updated: 2026-11-26
+last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
 ---
 
 # Agent provisioning flow
@@ -24,7 +24,7 @@ graph TD
   Console["<b>Console</b><br/>Save entered Secrets"] --> Secrets["<b>Existing Secrets API</b><br/>Return ordinary references"]
   Secrets --> API["<b>Provision API</b><br/>Inline config and references"]
   API -->|Supported request| Queue["<b>Existing work queue</b><br/>Return job handle"]
-  API -->|Managed credential Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
+  API -->|Managed model Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
   Claim --> Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
   Config -->|Repository selections still valid| Agent["<b>Create Agent</b><br/>Grant exact credential access"]
@@ -82,7 +82,9 @@ For supported model presets with selected TokenService and native delivery, OCC 
 
 After a Secret Driver change, authorized request, status, and retry return `503` for Secrets owned by the previous Driver and ask for replacement Secrets and a new request. The worker fails with `PROVISIONING_REJECTED`; an unavailable Driver still retries.
 
-OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
+OCC applies Configuration rules before Channel credential validation. A Slack app or bot token binds a ready static OCC-owned Source for a qualified dedicated Kubernetes Gateway. OCC requires exact caller `operate`; after TokenService resolution, it rechecks provisioning authority, Source ownership and the qualified Compute/TokenService pair before handing the value to Slack. Slack checks token roles and authenticates bot tokens. This does not pin credential versions or revalidate Slack credentials in queued work.
+
+OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
 OCC stores the request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. The same actor, Namespace, and request ID return existing work; changed input conflicts. Configuration and Agent creation follow.
 
@@ -228,6 +230,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)

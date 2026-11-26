@@ -982,14 +982,14 @@ export const UpdateAgentBody = Type.Object(
 );
 
 const ChannelDirectoryLookupFields = {
-  secretId: SecretId,
+  sourceId: CredentialSourceId,
   kind: Type.Union([Type.Literal("users"), Type.Literal("channels")]),
   query: Type.Optional(Type.String({ maxLength: 200, pattern: "^[^\\u0000]*$" })),
   cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 2048, pattern: "^[^\\u0000]*$" })),
 };
 
 const ChannelDirectoryHydrationFields = {
-  secretId: SecretId,
+  sourceId: CredentialSourceId,
   kind: Type.Union([Type.Literal("users"), Type.Literal("channels")]),
   ids: Type.Array(
     Type.String({ minLength: 1, maxLength: 200, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }),

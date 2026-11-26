@@ -20,6 +20,8 @@ const PAGE_SIZE = 100;
 const SEARCH_PAGES = 3;
 const REQUEST_TIMEOUT_MS = 8_000;
 const INFO_BATCH_SIZE = 5;
+const SLACK_APP_TOKEN = /^xapp-/;
+const SLACK_BOT_TOKEN = /^xoxb-/;
 const PROXY_ENDPOINT =
   /^https?:\/\/((?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}):([1-9][0-9]{0,4})$/;
 const MANAGED_SERVICE_PROXY_ENDPOINT =
@@ -207,7 +209,7 @@ export class SlackChannelDriver implements ChannelDriver {
           throw new ChannelCredentialError("binding_required", field);
         }
         await withSecret(ref.id, field, async (value) => {
-          if (!(role === "appToken" ? /^xapp-/ : /^xoxb-/).test(value)) {
+          if (!(role === "appToken" ? SLACK_APP_TOKEN : SLACK_BOT_TOKEN).test(value)) {
             throw new ChannelCredentialError("role_mismatch", field);
           }
           // There is no app-token auth.test equivalent. Do not open a Socket Mode consumer.
@@ -343,6 +345,9 @@ export class SlackChannelDriver implements ChannelDriver {
     },
     signal?: AbortSignal,
   ): Promise<ChannelDirectoryResult> {
+    if (!SLACK_BOT_TOKEN.test(input.token)) {
+      throw new ChannelDirectoryError("credentials_rejected");
+    }
     const auth = await this.call("auth.test", input.token, new URLSearchParams(), signal);
     if (!/^B[A-Z0-9]+$/.test(boundedString(auth.bot_id, 32) ?? "")) {
       throw new ChannelDirectoryError("credentials_rejected");

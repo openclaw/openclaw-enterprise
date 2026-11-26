@@ -2,20 +2,29 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { driverOperation } from "./driver-operation.ts";
+import { PROTECTED_SOURCE_TIMEOUT_MS } from "./credential-source-drivers.ts";
 import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type {
   ChannelDriver,
+  ComputeDriver,
   Configuration,
   ConfigurationDriver,
+  CredentialSourceReference,
   OpenClawConfigurationDocument,
   Secret,
   SecretBindings,
   SecretDriver,
   SecretReference,
+  StoredCredentialSource,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
-import { exactConfiguration, storedSecretBindings } from "./configuration-operations.ts";
+import {
+  exactConfiguration,
+  requireDedicatedGatewaySources,
+  storedSecretBindings,
+} from "./configuration-operations.ts";
 import { secretOperation, sameSecretBackend } from "./secret-operations.ts";
 import {
   AuthorizationDeniedError,
@@ -69,6 +78,10 @@ interface DeploymentChannelDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedChannel: () => ChannelDriver;
+  readonly selectedCompute: () => ComputeDriver | undefined;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly gatewayStartupSourceDelivery:
+    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly requireBundledChannelBindings: (
     values: OpenClawConfigurationDocument,
@@ -101,14 +114,44 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     );
   }
 
-  async function startDeploymentValidation(
+  async function assertCurrentDeploymentSource(
+    state: PlatformReadView,
+    deployment: DeploymentChannelUse,
+    binding: string,
+    source: CredentialSourceReference,
+  ): Promise<void> {
+    const agent = await state.agents.findAgent(deployment.target.namespaceId, deployment.target.id);
+    if (agent === undefined) {
+      throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+    }
+    requireDedicatedGatewaySources(
+      deployment.prepared.configuration.secretBindings,
+      agent.executionMode,
+    );
+    const configuration = await state.configurations.findConfiguration(
+      deployment.target.namespaceId,
+      agent.configurationId,
+    );
+    const current = configuration?.secretBindings?.[binding]?.source;
+    if (
+      agent.configurationId !== deployment.prepared.configuration.id ||
+      configuration?.generation !== deployment.prepared.configuration.generation ||
+      current?.kind !== "credential_source" ||
+      current.namespaceId !== source.namespaceId ||
+      current.id !== source.id
+    ) {
+      throw new ResourceStateConflictError(
+        "The Agent or Configuration changed after Channel validation was prepared.",
+      );
+    }
+  }
+
+  async function startDeploymentValidation<T>(
     principalId: string,
     deployment: DeploymentChannelUse,
-    source: SecretReference,
-    handoff: (
-      current: Readonly<Secret> | undefined,
-      assertPolicy?: () => void,
-    ) => ChannelValidation,
+    source: SecretReference | CredentialSourceReference,
+    find: (state: PlatformUnitOfWork) => Promise<Readonly<T> | undefined>,
+    handoff: (current: Readonly<T> | undefined, assertPolicy?: () => void) => ChannelValidation,
   ): Promise<ChannelValidation> {
     const rollback = new Error("Channel policy preview completed");
     let validation: ChannelValidation | undefined;
@@ -117,8 +160,8 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
         await dependencies.authority.holdAuthority(state);
         await lockNamespace(state, deployment.target.namespaceId);
         await dependencies.authority.authorize(principalId, "operate", source);
-        const current = await state.secrets.findSecret(source.namespaceId, source.id);
         const policy = await authorizeDeploymentChannelUse(state, principalId, deployment);
+        const current = await find(state);
         let assertPolicy: (() => void) | undefined;
         if (current && policy?.repositoryNetworkPolicy !== undefined) {
           try {
@@ -162,6 +205,164 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     }
   }
 
+  async function validateSourceCredential(
+    source: CredentialSourceReference,
+    binding: string,
+    path: string,
+    captureProvider: (value: string) => (assertPolicy?: () => void) => ChannelValidation,
+    authorizeUse: () => Promise<unknown>,
+    principalId: string,
+    use: DeploymentChannelUse | (() => Promise<void>),
+  ): Promise<void> {
+    const authorizeOperate = () => dependencies.authority.authorize(principalId, "operate", source);
+    const find = (state: PlatformReadView) =>
+      state.credentialSources.findCredentialSource(source.namespaceId, source.id);
+    const readySource = (current: Readonly<StoredCredentialSource> | undefined) => {
+      if (
+        current?.ownerCapability !== "token_service" ||
+        current.type !== "static" ||
+        current.state !== "ready"
+      ) {
+        throw new ResourceStateConflictError(
+          "Channel credentials require a ready static TokenService Credential Source.",
+        );
+      }
+      return current;
+    };
+    const qualify = (instanceId: string) => {
+      const owner = dependencies.ownedTokenServiceDriver(instanceId);
+      const compute = dependencies.selectedCompute();
+      if (
+        compute === undefined ||
+        dependencies.gatewayStartupSourceDelivery?.(compute, owner) !== true
+      ) {
+        throw new ResourceStateConflictError(
+          "The selected Compute and TokenService do not support Gateway Source delivery.",
+        );
+      }
+      return { compute, owner };
+    };
+
+    await authorizeUse();
+    await authorizeOperate();
+    const selected = readySource(
+      await dependencies.transactions.read(async (state) => {
+        await exactNamespace(state, source.namespaceId);
+        return find(state);
+      }),
+    );
+    const { owner, compute } = qualify(selected.tokenServiceInstanceId);
+    const currentSource = (current: Readonly<StoredCredentialSource> | undefined) => {
+      const active = readySource(current);
+      const qualified = qualify(active.tokenServiceInstanceId);
+      if (
+        active.tokenServiceInstanceId !== selected.tokenServiceInstanceId ||
+        qualified.owner !== owner ||
+        qualified.compute !== compute
+      ) {
+        throw new ChannelCredentialError("unavailable", path);
+      }
+    };
+    const resolve = AsyncLocalStorage.bind(async () => {
+      try {
+        return {
+          resolved: await driverOperation(
+            () =>
+              owner.resolveCredential(
+                { sourceRef: source, tokenServiceInstanceId: selected.tokenServiceInstanceId },
+                AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS),
+              ),
+            "TokenService",
+          ),
+        };
+      } catch {
+        return { error: new ChannelCredentialError("unavailable", path) };
+      }
+    });
+    let completed: ReturnType<typeof resolve> | undefined;
+    if (typeof use === "function") {
+      await authorizeUse();
+      await authorizeOperate();
+      completed = resolve();
+    } else {
+      try {
+        await dependencies.transactions.transact(
+          async (state) => {
+            await dependencies.authority.holdAuthority(state);
+            await lockNamespace(state, source.namespaceId);
+            await authorizeOperate();
+            await authorizeDeploymentChannelUse(state, principalId, use);
+            await assertCurrentDeploymentSource(state, use, binding, source);
+            currentSource(await find(state));
+            completed = resolve();
+          },
+          { readCommitted: true },
+        );
+      } catch (error) {
+        await completed;
+        throw error;
+      }
+    }
+    if (completed === undefined) {
+      throw new ChannelCredentialError("unavailable", path);
+    }
+    const resolution = await completed;
+    if (resolution.error !== undefined) {
+      throw resolution.error;
+    }
+    const resolved = resolution.resolved;
+    if (
+      typeof resolved.credential !== "string" ||
+      resolved.credential.length === 0 ||
+      typeof resolved.version !== "string" ||
+      resolved.version.trim().length === 0
+    ) {
+      throw new ChannelCredentialError("unavailable", path);
+    }
+    const startProvider = captureProvider(resolved.credential);
+    const handoff = (
+      current: Readonly<StoredCredentialSource> | undefined,
+      assertPolicy?: () => void,
+    ): ChannelValidation => {
+      currentSource(current);
+      return startProvider(assertPolicy);
+    };
+    let validation: ChannelValidation | undefined;
+    if (typeof use === "function") {
+      try {
+        validation = await dependencies.transactions.transact(
+          async (state) => {
+            await dependencies.authority.holdAuthority(state);
+            await lockNamespace(state, source.namespaceId);
+            await authorizeUse();
+            await authorizeOperate();
+            validation = handoff(await find(state));
+            return validation;
+          },
+          { readCommitted: true },
+        );
+      } catch (error) {
+        await validation?.completed;
+        throw error;
+      }
+    } else {
+      validation = await startDeploymentValidation<StoredCredentialSource>(
+        principalId,
+        use,
+        source,
+        async (state) => {
+          await assertCurrentDeploymentSource(state, use, binding, source);
+          return find(state);
+        },
+        handoff,
+      );
+    }
+    const outcome = await validation.completed;
+    if (outcome?.error !== undefined) {
+      throw outcome.error;
+    }
+  }
+
   async function validateChannelCredentials(
     principalId: string,
     namespaceId: string,
@@ -195,11 +396,52 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
       configuration.values,
       async (binding, path, validate) => {
         const source = bindings[binding]?.source;
-        if (source === undefined || source.kind !== "secret") {
+        if (source === undefined) {
           throw new ChannelCredentialError("binding_required", path);
         }
         if (source.namespaceId !== namespaceId) {
-          throw new ScopeViolationError("Secret references cannot cross Namespaces.");
+          throw new ScopeViolationError("Credential references cannot cross Namespaces.");
+        }
+        // Capture the provider's original async context before entering the controller unit.
+        // It starts under authorization locks, but its response is awaited after they release.
+        const captureProvider = (value: string) => {
+          const send = AsyncLocalStorage.bind(async (): Promise<ChannelOutcome> => {
+            try {
+              await validate(value);
+              return undefined;
+            } catch (error) {
+              return {
+                error:
+                  error instanceof ChannelCredentialError
+                    ? error
+                    : new ChannelCredentialError("unavailable", path),
+              };
+            }
+          });
+          return (assertPolicy?: () => void): ChannelValidation => {
+            if (typeof use !== "function") {
+              assertPreparedDeploymentDrivers(use.prepared);
+            }
+            try {
+              assertPolicy?.();
+            } catch {
+              throw new ChannelPolicyRefused();
+            }
+            return { completed: send() };
+          };
+        };
+
+        if (source.kind === "credential_source") {
+          await validateSourceCredential(
+            source,
+            binding,
+            path,
+            captureProvider,
+            authorizeUse,
+            principalId,
+            use,
+          );
+          return;
         }
 
         const authorizeOperate = () =>
@@ -232,22 +474,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
         });
         const outcome = await secretOperation(() =>
           storage.withValue!(secret, async (value) => {
-            // The Driver runs with its original context, outside the controller unit.
-            // Call it synchronously under the lock and await its result after release.
-            const send = AsyncLocalStorage.bind(async (): Promise<ChannelOutcome> => {
-              try {
-                await validate(value);
-                return undefined;
-              } catch (error) {
-                // Only the Channel contract's credential outcome can leave this callback.
-                return {
-                  error:
-                    error instanceof ChannelCredentialError
-                      ? error
-                      : new ChannelCredentialError("unavailable", path),
-                };
-              }
-            });
+            const startProvider = captureProvider(value);
             const handoff = (current: Readonly<Secret> | undefined, assertPolicy?: () => void) => {
               if (
                 current === undefined ||
@@ -256,22 +483,20 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
               ) {
                 throw new ChannelCredentialError("unavailable", path);
               }
-              if (typeof use !== "function") {
-                assertPreparedDeploymentDrivers(use.prepared);
-              }
-              try {
-                assertPolicy?.();
-              } catch {
-                throw new ChannelPolicyRefused();
-              }
-              return { completed: send() };
+              return startProvider(assertPolicy);
             };
             try {
               if (typeof use === "function") {
                 await authorizeUse();
                 return await handoff(await readSecret()).completed;
               }
-              const result = await startDeploymentValidation(principalId, use, source, handoff);
+              const result = await startDeploymentValidation(
+                principalId,
+                use,
+                source,
+                (state) => state.secrets.findSecret(source.namespaceId, source.id),
+                handoff,
+              );
               return await result.completed;
             } catch (error) {
               return refusal(error);

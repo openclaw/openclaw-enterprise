@@ -19,7 +19,12 @@ import {
   type ControllerApp,
   type ControllerAppOptions,
 } from "../../apps/controller/src/index.ts";
-import { ErrorResponse, Meta, RequestId } from "../../packages/contracts/src/api/common.ts";
+import {
+  ErrorResponse,
+  JsonValue,
+  Meta,
+  RequestId,
+} from "../../packages/contracts/src/api/common.ts";
 import {
   AgentReadResponse,
   AgentResponse,
@@ -1217,7 +1222,7 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
   }
 });
 
-test("Gateway Source bindings use exact grants, preserve reusable static Sources, and refuse unsupported delivery", async () => {
+test("Gateway Source bindings use exact grants, preserve reusable static Sources, and refuse unsupported delivery", async (t) => {
   async function setup(qualified: boolean) {
     const kubernetes = createTestKubernetesComputeDriver("gateway-source-rules");
     const fixture = await createFixture({
@@ -1457,23 +1462,41 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
     assert.equal(record?.state, "pending");
   }
 
-  const slack = await request(fixture.app, "POST", active.configurations, {
-    body: {
-      kind: "agent",
-      values: {
-        channels: {
-          slack: {
-            enabled: true,
-            botToken: { source: "env", provider: "default", id: "CUSTOM_BOT" },
-          },
+  const slackBody = {
+    kind: "agent",
+    values: {
+      channels: {
+        slack: {
+          enabled: true,
+          botToken: { source: "env", provider: "default", id: "CUSTOM_BOT" },
         },
       },
-      secretBindings: { CUSTOM_BOT: { source: source.ref } },
     },
+    secretBindings: { CUSTOM_BOT: { source: source.ref } },
+  };
+  // Slack uses the same exact Source grant as any other explicit Gateway binding.
+  fixture.state.bindings.splice(fixture.state.bindings.indexOf(sourceGrant), 1);
+  assertApiError(
+    await request(member.app, "POST", active.configurations, { body: slackBody }),
+    403,
+    "FORBIDDEN",
+  );
+  assert.deepEqual(
+    fixture.auditSink.events.findLast((event) => event.kind === "authorization_denial")
+      ?.authorization?.resource,
+    source.ref,
+  );
+  fixture.state.bindings.push(sourceGrant);
+  const slack = await request(member.app, "POST", active.configurations, {
+    body: slackBody,
   });
-  assert.equal(slack.status, 400, JSON.stringify(slack.body));
-  assert.match(responseError(slack).message, /channels\.slack\.botToken/);
-  // The restriction belongs to enabled Slack credential inputs, not an environment-name blacklist.
+  assert.equal(slack.status, 201, JSON.stringify(slack.body));
+  assert.ok(Check({ SafeJsonValue: JsonValue }, ConfigurationResponse, slack.body));
+  assert.deepEqual(
+    asRecord(asRecord(asRecord(slack.data)?.secretBindings)?.CUSTOM_BOT)?.source,
+    source.ref,
+  );
+  // Disabled account inputs are still ordinary explicit Gateway bindings.
   const disabledSlack = await request(fixture.app, "POST", active.configurations, {
     body: {
       kind: "agent",
@@ -1496,7 +1519,21 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
   assert.equal(disabledSlack.status, 201, JSON.stringify(disabledSlack.body));
 
   const unsupported = await setup(false);
-  const unsupportedConfiguration = await unsupported.createConfiguration();
+  const unsupportedConfiguration = await request(
+    unsupported.fixture.app,
+    "POST",
+    unsupported.configurations,
+    {
+      body: {
+        ...slackBody,
+        values: { ...unsupported.values, ...slackBody.values },
+        secretBindings: {
+          ...unsupported.bindings,
+          CUSTOM_BOT: { source: unsupported.source.ref },
+        },
+      },
+    },
+  );
   assert.equal(unsupportedConfiguration.status, 201, JSON.stringify(unsupportedConfiguration.body));
   const unsupportedAgent = await unsupported.createAgent(
     asRecord(unsupportedConfiguration.data)?.id as string,
@@ -1517,6 +1554,7 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
     permissions: { secret: ["operate"] },
     resource: { kind: "secret", id: unsupported.modelKey.id },
   });
+  const ownerReads = t.mock.method(unsupported.fixture.secretDriver.privateSecrets, "withValue");
   const unsupportedDeploy = await request(
     unsupported.fixture.app,
     "POST",
@@ -1524,6 +1562,7 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
   );
   assert.equal(unsupportedDeploy.status, 409, JSON.stringify(unsupportedDeploy.body));
   assert.match(responseError(unsupportedDeploy).message, /do not support Gateway Source delivery/);
+  assert.equal(ownerReads.mock.callCount(), 0, "unqualified delivery must not read Source custody");
 });
 
 test("credential source writes commit one value-free audit row each", async (t) => {

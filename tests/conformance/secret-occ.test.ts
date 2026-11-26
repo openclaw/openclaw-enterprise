@@ -695,7 +695,7 @@ function directoryLookup() {
   const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
   return (input: Partial<Parameters<OpenClawController["lookupChannelDirectory"]>[2]>) =>
     controller.lookupChannelDirectory(administrator, "ns_directory", {
-      secretId: "secret_directory",
+      sourceId: "source_directory",
       kind: "users",
       ...input,
     });

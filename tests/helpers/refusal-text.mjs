@@ -413,7 +413,7 @@ export const referenceFormRefusal = (setting, form) =>
 // its name, and other text (which may be the token) not at all
 // (packages/occ/src/channel-secret-bindings.ts).
 export const unboundReferenceRefusal = (setting, name) =>
-  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference.`;
+  `Configuration setting ${setting} references ${name} without a Configuration credential binding: bind ${name} to a stored credential in secretBindings, or remove the reference.`;
 // Kubernetes Compute admission of an Agent's plugin secret input whose unset variable stops its
 // Gateway at startup (findings 3040, 3041, 3042): an APP_SERVER_ variable on an embedded or
 // Dedicated OpenClaw Agent at Agent save and deployment, any other unbound name a binding could
@@ -431,13 +431,13 @@ export const dedicatedCodexVariableRefusal = (
 export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin}${enabledBy === null ? "" : ` or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false`}.`;
 const USE_UPPERCASE =
-  "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
+  "use an uppercase ${NAME} bound to a stored credential in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
   shown === undefined
     ? `Configuration setting ${setting} contains a \${ the runtime does not substitute: ${USE_UPPERCASE}.`
     : `Configuration setting ${setting} contains ${shown}, which the runtime does not substitute: ${USE_UPPERCASE}.`;
 export const unsubstitutedFallbackRefusal = (setting, name) =>
-  `Configuration setting ${setting} contains \${${name}-…}, which the runtime does not substitute: write a fallback as \${${name}:-text}, with ${name} bound to a Secret in secretBindings.`;
+  `Configuration setting ${setting} contains \${${name}-…}, which the runtime does not substitute: write a fallback as \${${name}:-text}, with ${name} bound to a stored credential in secretBindings.`;
 // The Slack token rule's refusal of an object the Slack Channel Driver cannot read: a SecretRef it
 // does not read, or another object (findings 2514, 2518, 2527).
 const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };

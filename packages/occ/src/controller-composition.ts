@@ -350,11 +350,7 @@ function createComputeConfigurationPolicy(
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name, credentialInput, provider) =>
-          Object.hasOwn(secretBindings, name) &&
-          (provider !== "slack" ||
-            !credentialInput ||
-            secretBindings[name]?.source.kind === "secret"),
+        (name) => Object.hasOwn(secretBindings, name),
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );
@@ -1019,7 +1015,8 @@ export function createControllerComposition(
       publicController.getAgentSandboxPolicy(principalId, namespaceId, agentId, facet),
     selectCompute: selectedCompute,
     selectChannel: () => publicController.selectedDriver("channel"),
-    secretDriver: secretOperations.secretDriver,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const runtimeCredentials: AgentRuntimeCredentials = new AgentRuntimeCredentials({
     transactions,
@@ -1095,6 +1092,9 @@ export function createControllerComposition(
     configurationDriver: configurationOperations.selectedDriver,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
+    selectedCompute,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const provisioningRequests = createProvisioningRequests({
     installationId: admittedInstallation.id,

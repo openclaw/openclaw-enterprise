@@ -4476,7 +4476,7 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/stop`](#post-namespacesnamespaceidagentsagentidstop) | Stop one Agent and keep its saved Agent revision and persistent state |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#get-namespacesnamespaceidagentsagentidworkspacefilesname) | Read an allowed workspace file from one active Agent |
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#put-namespacesnamespaceidagentsagentidworkspacefilesname) | Create or replace an allowed workspace file for one active Agent |
-| [`POST /namespaces/{namespaceId}/channel-directory/lookup`](#post-namespacesnamespaceidchanneldirectorylookup) | Search a channel directory using an authorized Namespace Secret |
+| [`POST /namespaces/{namespaceId}/channel-directory/lookup`](#post-namespacesnamespaceidchanneldirectorylookup) | Search a channel directory using an authorized Credential Source |
 | [`GET /native-admin/return/{agentKey}`](#get-nativeadminreturnagentkey) | Resolve an authorized Agent from a copied native chat link |
 
 #### `POST /agents/{agentId}/chat`
@@ -9825,15 +9825,15 @@ Example response
 
 <span id="post-namespacesnamespaceidchanneldirectorylookup"></span>
 
-Search a channel directory using an authorized Namespace Secret
+Search a channel directory using an authorized Credential Source
 
 **Operation ID:** `lookupChannelDirectory`
 
-**Permissions:** Requires operate permission on the exact Secret named by secretId. Without an edit target, requires Agent create permission in the Namespace. With agentId, requires update permission on that exact Agent. With configurationId, requires update permission on that exact Configuration.
+**Permissions:** Requires operate permission on the exact CredentialSource named by sourceId. Without an edit target, requires Agent create permission in the Namespace. With agentId, requires update permission on that exact Agent. With configurationId, requires update permission on that exact Configuration.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `operate` | `secret` | `request_body` |
+| `operate` | `credential_source` | `request_body` |
 | `create` | `agent` | `namespace` |
 | `update` | `agent` | `request_body` |
 | `update` | `configuration` | `request_body` |
@@ -9857,7 +9857,7 @@ Example request
 {
   "kind": "channels",
   "query": "engineering",
-  "secretId": "sec_123e4567-e89b-42d3-a456-426614174000"
+  "sourceId": "cs_123e4567-e89b-42d3-a456-426614174000"
 }
 ```
 
