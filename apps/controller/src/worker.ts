@@ -1,6 +1,9 @@
 import { oauthIssuerOperations } from "./connections/oauth-issuer.ts";
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
-import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
+import {
+  admitOpenShellRepositoryCredentials,
+  matchesFrozenOpenShellRepositoryPolicy,
+} from "./composition/openshell-credential-admission.ts";
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
@@ -13,7 +16,6 @@ import {
 import type {
   CredentialDeploymentContext,
   CredentialProxyDriver,
-  DeploymentRequestMatch,
   LegacyEgressProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -6500,7 +6502,7 @@ export class ControllerWorker {
         throw new DependencyUnavailableError("The staged Repository authority is unavailable.");
       }
       await owner.assertCurrentGitHubAppSourceScope(source);
-      const matches = admitOpenShellRepositoryCredentials(
+      const requests = admitOpenShellRepositoryCredentials(
         this.tokenServiceDrivers?.repositoryRegistry,
         {
           namespaceId: revision.namespaceId,
@@ -6509,24 +6511,7 @@ export class ControllerWorker {
           grants,
         },
       )?.credentialRequests;
-      const injections = policy.injectionPolicies.filter(
-        ({ bindingRef }) => bindingRef === repositoryBinding.bindingRef,
-      );
-      const frozen = injections[0]?.allowedRequests ?? [];
-      const isGit = ({ host, ports }: DeploymentRequestMatch) =>
-        host.toLowerCase() === "github.com" &&
-        ports.some(({ from, to }) => from <= 443 && 443 <= to);
-      // Newly eligible publication must not change the policy of an existing revision.
-      const isRepositoryRequest = (request: DeploymentRequestMatch) =>
-        isGit(request) || frozen.some((saved) => isDeepStrictEqual(saved, request));
-      const approved = matches?.filter(isRepositoryRequest);
-      const network = policy.networkAccessPolicy.allowed.filter(isRepositoryRequest);
-      if (
-        injections.length !== 1 ||
-        !matches?.some(isGit) ||
-        !isDeepStrictEqual(frozen, approved) ||
-        !isDeepStrictEqual(network, frozen)
-      ) {
+      if (!matchesFrozenOpenShellRepositoryPolicy(policy, repositoryBinding.bindingRef, requests)) {
         throw new DependencyUnavailableError("The staged Repository policy is no longer approved.");
       }
     }

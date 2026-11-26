@@ -1,5 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type {
   AdmittedRepositoryBinding,
+  AgentRevision,
+  DeploymentRequestMatch,
   GitHubAppInstallationCredentialSource,
   RepositoryNetworkGrant,
   RepositoryNetworkPolicyCeiling,
@@ -219,4 +223,26 @@ export function admitOpenShellRepositoryCredentials(
   } catch {
     return undefined;
   }
+}
+
+export function matchesFrozenOpenShellRepositoryPolicy(
+  policy: NonNullable<AgentRevision["credentialDeployment"]>,
+  bindingRef: string,
+  credentialRequests: readonly DeploymentRequestMatch[] | undefined,
+): boolean {
+  const injections = policy.injectionPolicies.filter((entry) => entry.bindingRef === bindingRef);
+  const frozen = injections[0]?.allowedRequests ?? [];
+  const targetsGitHubPort443 = ({ host, ports }: DeploymentRequestMatch) =>
+    host.toLowerCase() === "github.com" && ports.some(({ from, to }) => from <= 443 && 443 <= to);
+  // Newly eligible publication must not change the policy of an existing revision.
+  const isGitOrFrozenRequest = (request: DeploymentRequestMatch) =>
+    targetsGitHubPort443(request) || frozen.some((saved) => isDeepStrictEqual(saved, request));
+  const approved = credentialRequests?.filter(isGitOrFrozenRequest);
+  const network = policy.networkAccessPolicy.allowed.filter(isGitOrFrozenRequest);
+  return (
+    injections.length === 1 &&
+    credentialRequests?.some(targetsGitHubPort443) === true &&
+    isDeepStrictEqual(frozen, approved) &&
+    isDeepStrictEqual(network, frozen)
+  );
 }
