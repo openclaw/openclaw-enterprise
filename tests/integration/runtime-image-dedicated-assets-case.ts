@@ -127,7 +127,9 @@ export async function verifyDedicatedGatewayAssets(
     const generic = after.find((skill) => skill.name === "github");
     assert.equal(generic?.disabled, true);
     assert.equal(generic.modelVisible, false);
-    const publication = after.find((skill) => skill.name === "github-repository-rest");
+    const publicationSkills = after.filter((skill) => skill.name === "github-repository-rest");
+    assert.equal(publicationSkills.length, 1, "The Gateway should offer one publication skill.");
+    const [publication] = publicationSkills;
     assert.equal(publication?.source, "openclaw-extra");
     assert.equal(publication.modelVisible, true);
     const gitOnly = await listRepositorySkills(
