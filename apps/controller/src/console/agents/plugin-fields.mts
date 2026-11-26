@@ -1177,9 +1177,9 @@ export function createPluginFields({
     if (catalogLoading || (reloadRequired && catalog?.status === "loading")) {
       statusText = tabs[0].query.trim() ? "Searching plugins…" : "Loading available plugins…";
     } else if (catalog?.status === "ready") {
-      statusText = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
+      const entryCount = catalog.entries.length;
+      statusText = `Page ${catalog.pageNumber ?? 1} · ${entryCount} plugin${entryCount === 1 ? "" : "s"}`;
     }
-    loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
     loadPlugins.hidden = (configuredOnly && !reloadRequired) || !onLoadPlugins;
     accessActions.hidden = !catalog?.access || !catalog.canRecheck || !onRecheckAccess;
     recheckAccess.textContent =

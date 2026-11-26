@@ -4314,6 +4314,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
 }
 .plugin-browser-status button {
+  align-self: flex-start;
   flex-shrink: 0;
 }
 .plugin-tabs,
