@@ -1719,7 +1719,8 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
   const firstReceipt = f.state.statusReads.find(({ receipt_id }) => receipt_id)?.receipt_id;
   assert.ok(firstReceipt);
   const observedUpdates = f.state.statusReads.length;
-  await f.notify("source-v2");
+  // An Agent's explicit delivery retry does not name a saved version and can repair every copy.
+  await f.notify();
   assert.equal(f.resolutions(), 3, "each Source push resolves once regardless of copy count");
   for (const updates of [f.state.updates.slice(0, 2), f.state.updates.slice(2)]) {
     assert.deepEqual(
@@ -2041,20 +2042,34 @@ test("OpenShell Source notification rejects stale readiness and can retry the pe
       assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "12");
 
       if (readiness === "stale-ready") {
-        const providerId = f.state.provider!.metadata.id;
+        const provider = structuredClone(f.state.provider!);
         const failedReceiptId = record(f.state.providerStatus!.receipt).receipt_id;
-        f.state.updateReadiness = "converge";
 
-        // Source custody is already at v2. A manual delivery retry reuses the Provider and
-        // succeeds only after a new UPDATE receipt confirms that its serving target caught up.
+        // Matching Source and Provider versions do not prove the current environment is serving.
+        await assert.rejects(f.notify("source-v2"), DependencyUnavailableError);
+        assert.equal(f.state.updates.length, 1);
+
+        // The supervisor can catch up to the existing generation while the Proxy polls its receipt.
+        f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_PENDING";
+        f.state.updateReadiness = "converge";
+        const statusReadsBeforeRetry = f.state.statusReads.length;
         await f.notify("source-v2");
 
-        assert.equal(f.state.updates.length, 2);
+        assert.equal(f.state.updates.length, 1);
         assert.equal(f.state.creates.length, 1);
-        assert.equal(f.state.provider!.metadata.id, providerId);
-        assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
-        assert.notEqual(record(f.state.providerStatus!.receipt).receipt_id, failedReceiptId);
-        assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "14");
+        assert.deepEqual(f.state.provider, provider);
+        const observation = record(f.state.providerStatus!.receipt);
+        assert.equal(observation.kind, "PROVIDER_MUTATION_KIND_OBSERVE");
+        assert.notEqual(observation.receipt_id, failedReceiptId);
+        assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "13");
+        const [initialRead, ...receiptPolls] = f.state.statusReads.slice(statusReadsBeforeRetry);
+        assert.ok(initialRead);
+        assert.equal(initialRead.receipt_id, undefined);
+        assert.ok(receiptPolls.length > 0);
+        assert.deepEqual(
+          [...new Set(receiptPolls.map(({ receipt_id }) => receipt_id))],
+          [observation.receipt_id],
+        );
       }
     });
   }
@@ -3343,9 +3358,10 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   assert.equal(refreshResolutions, 1);
   assert.equal(f.state.updates.length, updates);
   f.state.sandboxInventoryMode = "normal";
-  // A Provider receipt alone cannot prove injection when the effective endpoint lacks its native marker.
+  // Same-version observation still checks the effective endpoint's native injection marker.
   Reflect.deleteProperty(effectiveDiscovery, "provider_credentialed");
-  await assert.rejects(refresh("github-uncredentialed"), DependencyUnavailableError);
+  await assert.rejects(refresh("github-v2"), DependencyUnavailableError);
+  assert.equal(f.state.updates.length, updates);
   effectiveDiscovery.provider_credentialed = true;
   assert.deepEqual(resolvedRevisions, Array(5).fill(context.revision.id));
   assert.deepEqual(f.sandbox.spec.policy, baseline);

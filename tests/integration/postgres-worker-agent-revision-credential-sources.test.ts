@@ -26,6 +26,7 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -36,6 +37,7 @@ import type {
   OpenShellSandboxProviderStatus,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
@@ -72,7 +74,7 @@ function recordingActiveGateway(
   const networkInstanceId = randomUUID();
   const policyHash = "a".repeat(64);
   const updates: OpenShellProviderCreateRequest[] = [];
-  const receiptReads: string[] = [];
+  const receiptReads: (string | undefined)[] = [];
   let profile: OpenShellStoredProviderProfile | undefined;
   let provider: OpenShellProviderResponse | undefined;
   let status: OpenShellSandboxProviderStatus | undefined;
@@ -227,6 +229,10 @@ function recordingActiveGateway(
       assert.equal(request.name, sandboxName);
       return sandbox;
     },
+    async listSandboxes(requestWorkspace) {
+      assert.equal(requestWorkspace, workspace);
+      return [sandbox];
+    },
     async getSandboxProviderStatus(
       requestWorkspace,
       requestedSandbox,
@@ -237,9 +243,22 @@ function recordingActiveGateway(
       assert.equal(requestWorkspace, workspace);
       assert.equal(requestedSandbox, sandboxName);
       assert.equal(requestedProvider, providerName);
-      assert.ok(receiptId && status);
+      assert.ok(status?.receipt);
       receiptReads.push(receiptId);
-      assert.equal(receiptId, status.receipt?.receiptId);
+      if (receiptId === undefined) {
+        const observationId = randomUUID();
+        status = {
+          ...status,
+          completedOperationId: observationId,
+          receipt: {
+            ...status.receipt,
+            receiptId: observationId,
+            kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+          },
+        };
+      } else {
+        assert.equal(receiptId, status.receipt.receiptId);
+      }
       return status;
     },
   } satisfies Partial<OpenShellGatewayClient>;
@@ -252,6 +271,16 @@ function recordingActiveGateway(
     status: () => status,
     setStale: (value: boolean) => {
       stale = value;
+    },
+    observeCurrentEnvironment: () => {
+      assert.ok(status?.observed);
+      status = {
+        ...status,
+        observed: {
+          ...status.observed,
+          providerEnvRevision: sandbox.configurationAdmission.provider_env_revision,
+        },
+      };
     },
   };
 }
@@ -825,26 +854,31 @@ cases.revisionTest(
   "manual Agent push fully preflights deployed Source authority and recovers a stale serving copy",
   async (fixture, context) => {
     const sandboxId = randomUUID();
-    const scenario = await stagedCredentialScenario(fixture, context, (compute) => ({
-      ...compute,
-      async prepareRevision(revision, revisionContext) {
-        assert.ok(revisionContext?.configureCredentialDeployment);
-        await revisionContext.configureCredentialDeployment(
-          {
-            targetRef: {
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-              sandboxId,
+    const scenario = await stagedCredentialScenario(
+      fixture,
+      context,
+      (compute) => ({
+        ...compute,
+        async prepareRevision(revision, revisionContext) {
+          assert.ok(revisionContext?.configureCredentialDeployment);
+          await revisionContext.configureCredentialDeployment(
+            {
+              targetRef: {
+                namespaceId: revision.namespaceId,
+                agentId: revision.agentId,
+                revisionId: revision.id,
+                sandboxId,
+              },
+              configurationId: revision.configurationId,
             },
-            configurationId: revision.configurationId,
-          },
-          context.signal,
-        );
-        return compute.prepareRevision(revision, revisionContext);
-      },
-      async activateRevision() {},
-    }));
+            context.signal,
+          );
+          return compute.prepareRevision(revision, revisionContext);
+        },
+        async activateRevision() {},
+      }),
+      "builtin_codex",
+    );
     const { controller, owner, source, namespaceId, actorId } = scenario;
     const revision = await controller.deployAgent(
       actorId,
@@ -859,6 +893,7 @@ cases.revisionTest(
     await fixture.stop();
     const { nativeProxy, tokenService, sourceInstance, gateway, preparedProvider } =
       await attachActiveSource(scenario, revision, sandboxId, context.signal);
+    assert.ok(tokenService instanceof OCCTokenServiceDriver);
     const initial = await tokenService.resolveCredential(sourceInstance, context.signal);
     const unbound = await controller.createManagedCredentialSource(
       actorId,
@@ -975,27 +1010,54 @@ cases.revisionTest(
       resolutionFailure = undefined;
       assert.equal(gateway.updates.length, 0);
 
-      // The native Proxy has persisted the replacement Provider version, but a controlled
-      // serving observation is stale. PATCH cannot roll custody back after this refusal.
-      const replacement = randomUUID();
+      // The API maintenance pass commits the replacement grant before Proxy delivery.
+      // The controlled issuer and supervisor let it persist without a live readiness receipt.
+      const expiry = { exp: Math.floor(Date.now() / 1_000) + 3_600 };
+      const replacement = `e30.${Buffer.from(JSON.stringify(expiry)).toString("base64url")}.${randomUUID()}`;
+      const issuer = context.mock.method(
+        globalThis,
+        "fetch",
+        async (...[url, request]: Parameters<typeof fetch>) => {
+          assert.equal(String(url), BUILTIN_CODEX_OAUTH_PRESET.tokenUrl);
+          assert.equal(request?.method, "POST");
+          return Response.json({ access_token: replacement, refresh_token: randomUUID() });
+        },
+      );
+      const schedule = () =>
+        fixture.state.read((view) =>
+          view.oauthCredentials.findTokenCustody(namespaceId, source.id),
+        );
+      await fixture.state.transact((unit) =>
+        unit.oauthCredentials.recordTokenSchedule(namespaceId, source.id, "due"),
+      );
       gateway.setStale(true);
-      const patched = await app.inject({
-        method: "PATCH",
-        url: `/namespaces/${namespaceId}/credential-sources/${source.id}`,
-        headers,
-        payload: { secret: replacement },
-      });
-      assert.equal(patched.statusCode, 503, patched.body);
+      const failedRenewal = await tokenService.maintainOAuthSources(4);
+      assert.equal(failedRenewal.deliveryFailed, true);
       const committed = await resolve(sourceInstance, context.signal);
       assert.equal(committed.credential, replacement);
       assert.notEqual(committed.version, initial.version);
       assert.equal(gateway.provider()?.id, preparedProvider.id);
       assert.equal(gateway.provider()?.config.oce_source_version, committed.version);
+      const providerVersion = gateway.provider()?.resourceVersion;
       assert.notEqual(
         gateway.status()?.observed?.providerEnvRevision,
         gateway.status()?.receipt?.desired?.providerEnvRevision,
       );
       assert.equal(gateway.updates.length, 1);
+
+      // The next pass must keep stale delivery due without rewriting the already-current Provider.
+      assert.deepEqual(await tokenService.maintainOAuthSources(4), failedRenewal);
+      assert.equal((await schedule())?.due, true);
+      assert.equal(gateway.updates.length, 1);
+      gateway.observeCurrentEnvironment();
+      assert.equal((await tokenService.maintainOAuthSources(4)).deliveryFailed, false);
+      const observedSchedule = await schedule();
+      assert.equal(observedSchedule?.due, false);
+      assert.equal(observedSchedule?.scheduledVersion, committed.version);
+      assert.equal(issuer.mock.callCount(), 1);
+      assert.equal(gateway.updates.length, 1);
+      assert.equal(gateway.provider()?.resourceVersion, providerVersion);
+      assert.equal(gateway.status()?.receipt?.kind, "PROVIDER_MUTATION_KIND_OBSERVE");
 
       const failedDelivery = await push([source.id]);
       expectResult(failedDelivery, "delivery_failed");
