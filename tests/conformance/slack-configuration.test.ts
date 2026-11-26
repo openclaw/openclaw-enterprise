@@ -50,15 +50,19 @@ function env(id: string) {
   return { source: "env", provider: "default", id };
 }
 
-function bound(...keys: string[]) {
+function sourceBound(...keys: string[]) {
   return {
     secretBindings: Object.fromEntries(
       keys.map((key): [string, SecretBinding] => [
         key,
-        { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } },
+        { source: { kind: "credential_source", namespaceId: "ns_1", id: `cs_${key}` } },
       ]),
     ),
   };
+}
+
+function secretBound(key: string): SecretBinding {
+  return { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } };
 }
 
 test("new Slack configuration defaults to threaded replies without changing existing reply policy", () => {
@@ -159,19 +163,27 @@ test("the deploy gate requires a named Slack account's own keys, not the default
     },
   };
   assert.deepEqual(
-    missingChannelCredentialGroups(named, bound("SLACK_WORK_APP_TOKEN", "SLACK_WORK_BOT_TOKEN")),
+    missingChannelCredentialGroups(
+      named,
+      sourceBound("SLACK_WORK_APP_TOKEN", "SLACK_WORK_BOT_TOKEN"),
+    ),
     [],
   );
-  assert.deepEqual(missingChannelCredentialGroups(named, bound("SLACK_WORK_APP_TOKEN")), [
-    "Slack Secret bindings (SLACK_WORK_BOT_TOKEN)",
+  assert.deepEqual(missingChannelCredentialGroups(named, sourceBound("SLACK_WORK_APP_TOKEN")), [
+    "Slack credential bindings (SLACK_WORK_BOT_TOKEN)",
+  ]);
+  const legacy = sourceBound("SLACK_WORK_APP_TOKEN", "SLACK_WORK_BOT_TOKEN");
+  legacy.secretBindings.SLACK_WORK_BOT_TOKEN = secretBound("former_bot");
+  assert.deepEqual(missingChannelCredentialGroups(named, legacy), [
+    "Slack credential bindings (SLACK_WORK_BOT_TOKEN)",
   ]);
   // The default account keeps its fixed keys.
   const standard = { channels: { slack: { enabled: true } } };
-  assert.deepEqual(missingChannelCredentialGroups(standard, bound("SLACK_WORK_APP_TOKEN")), [
-    "Slack Secret bindings",
+  assert.deepEqual(missingChannelCredentialGroups(standard, sourceBound("SLACK_WORK_APP_TOKEN")), [
+    "Slack credential bindings",
   ]);
   assert.deepEqual(
-    missingChannelCredentialGroups(standard, bound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN")),
+    missingChannelCredentialGroups(standard, sourceBound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN")),
     [],
   );
 });
@@ -186,23 +198,23 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
   });
   const acme = slackWith({ appToken: "${ACME_SLACK_APP}", botToken: "${ACME_SLACK_BOT}" });
   assert.deepEqual(
-    missingChannelCredentialGroups(acme, bound("ACME_SLACK_APP", "ACME_SLACK_BOT")),
+    missingChannelCredentialGroups(acme, sourceBound("ACME_SLACK_APP", "ACME_SLACK_BOT")),
     [],
   );
   // The standard names do not stand in for the keys the tokens name.
   assert.deepEqual(
     missingChannelCredentialGroups(
       acme,
-      bound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "ACME_SLACK_APP"),
+      sourceBound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "ACME_SLACK_APP"),
     ),
-    ["Slack Secret bindings (ACME_SLACK_BOT)"],
+    ["Slack credential bindings (ACME_SLACK_BOT)"],
   );
   // An env SecretRef names its key too; a token with no key keeps the standard name.
   const mixed = slackWith({
     botToken: env("ACME_SLACK_BOT"),
   });
-  assert.deepEqual(missingChannelCredentialGroups(mixed, bound("ACME_SLACK_BOT")), [
-    "Slack Secret bindings (SLACK_APP_TOKEN)",
+  assert.deepEqual(missingChannelCredentialGroups(mixed, sourceBound("ACME_SLACK_BOT")), [
+    "Slack credential bindings (SLACK_APP_TOKEN)",
   ]);
   // HTTP mode reads no app token.
   const http = slackWith({
@@ -211,11 +223,16 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
     signingSecret: "${SLACK_SIGNING_SECRET}",
   });
   assert.deepEqual(
-    missingChannelCredentialGroups(http, bound("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET")),
+    missingChannelCredentialGroups(http, sourceBound("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET")),
     [],
   );
-  assert.deepEqual(missingChannelCredentialGroups(http, bound("SLACK_SIGNING_SECRET")), [
-    "Slack Secret bindings (SLACK_BOT_TOKEN)",
+  const formerSigningSecret = sourceBound("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET");
+  formerSigningSecret.secretBindings.SLACK_SIGNING_SECRET = secretBound("former_signing");
+  assert.deepEqual(missingChannelCredentialGroups(http, formerSigningSecret), [
+    "Slack credential bindings (SLACK_SIGNING_SECRET)",
+  ]);
+  assert.deepEqual(missingChannelCredentialGroups(http, sourceBound("SLACK_SIGNING_SECRET")), [
+    "Slack credential bindings (SLACK_BOT_TOKEN)",
   ]);
   // Save still requires a binding for each name an app token HTTP mode keeps references, written
   // whole or not, so the gate lists it (finding 2541).
@@ -227,9 +244,12 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
     ["$SLACK_APP_TOKEN", "SLACK_APP_TOKEN"],
   ] as const) {
     const httpWithApp = slackWith({ mode: "http", appToken, botToken: "${SLACK_BOT_TOKEN}" });
-    assert.notDeepEqual(missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN")), []);
+    assert.notDeepEqual(
+      missingChannelCredentialGroups(httpWithApp, sourceBound("SLACK_BOT_TOKEN")),
+      [],
+    );
     assert.deepEqual(
-      missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN", key)),
+      missingChannelCredentialGroups(httpWithApp, sourceBound("SLACK_BOT_TOKEN", key)),
       [],
     );
   }
@@ -240,8 +260,8 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
     botToken: "${SLACK_BOT_TOKEN}",
   });
   assert.deepEqual(
-    missingChannelCredentialGroups(twoNames, bound("SLACK_BOT_TOKEN", "ACME_SLACK_A")),
-    ["Slack Secret bindings (ACME_SLACK_B)"],
+    missingChannelCredentialGroups(twoNames, sourceBound("SLACK_BOT_TOKEN", "ACME_SLACK_A")),
+    ["Slack credential bindings (ACME_SLACK_B)"],
   );
 });
 
@@ -332,11 +352,18 @@ test("the deploy gate holds every Slack binding Configuration save requires", ()
     );
     assert.deepEqual(visited, new Set(keys), JSON.stringify(shape));
     const available = ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", ...keys];
-    assert.deepEqual(missingChannelCredentialGroups(values, bound(...available)), []);
+    assert.deepEqual(missingChannelCredentialGroups(values, sourceBound(...available)), []);
     for (const name of keys) {
       assert.deepEqual(
-        missingChannelCredentialGroups(values, bound(...available.filter((key) => key !== name))),
-        [formKeys.includes(name) ? "Slack Secret bindings" : `Slack Secret bindings (${name})`],
+        missingChannelCredentialGroups(
+          values,
+          sourceBound(...available.filter((key) => key !== name)),
+        ),
+        [
+          formKeys.includes(name)
+            ? "Slack credential bindings"
+            : `Slack credential bindings (${name})`,
+        ],
         `${name} unbound: ${JSON.stringify(shape)}`,
       );
     }

@@ -1587,7 +1587,7 @@ test("a channel Secret save refused for a missing binding says where to bind it"
     store(slackChannel) {
       slackChannel.signingSecret = "${SLACK_SIGNING_SECRET}";
     },
-    refusal: `Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference. ${CHANNEL_BINDING_CREDENTIALS_REMEDY}`,
+    refusal: `Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration credential binding: bind SLACK_SIGNING_SECRET to a stored credential in secretBindings, or remove the reference. ${CHANNEL_BINDING_CREDENTIALS_REMEDY}`,
   });
   await expectNoText(page, /Fix that setting in the Configuration JSON/);
 });

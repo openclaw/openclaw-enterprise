@@ -1,5 +1,5 @@
 import type { CredentialSourceReference } from "@openclaw-enterprise/contracts";
-import { requestFailure } from "./api-client.mjs";
+import { namedDenial, requestFailure } from "./api-client.mjs";
 import {
   readCredentialSourceMetadata,
   type CredentialSourceSummary,
@@ -7,11 +7,50 @@ import {
 import { button, element, replaceChildrenIfChanged } from "./dom.mjs";
 import type { NamespacePageContext } from "./namespaces.mjs";
 
+type PickerContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
+  namespaceId: string;
+};
+
+// A panel can render one picker for every referenced Slack credential. Share only the pending
+// list read; a later explicit refresh must still make a fresh authorized request.
+const pendingSourceLists = new WeakMap<
+  PickerContext,
+  { namespaceId: string; read: Promise<unknown> }
+>();
+function readSourceList(context: PickerContext) {
+  const pending = pendingSourceLists.get(context);
+  if (pending?.namespaceId === context.namespaceId) {
+    return pending.read;
+  }
+  const namespaceId = context.namespaceId;
+  const read = context
+    .request(`/namespaces/${encodeURIComponent(namespaceId)}/credential-sources`)
+    .finally(() => {
+      if (pendingSourceLists.get(context)?.read === read) {
+        pendingSourceLists.delete(context);
+      }
+    });
+  pendingSourceLists.set(context, { namespaceId, read });
+  return read;
+}
+
+/** Readable static Sources are candidates; the consuming operation checks exact authority and owner support. */
+export const staticCredentialSourceSelection = {
+  eligible: (source: CredentialSourceSummary) =>
+    source.type === "static" && source.state === "ready",
+  listStatus: (hasEligible: boolean) =>
+    hasEligible
+      ? "Listing confirms read access. Using this Source requires exact Credential Source operate permission."
+      : "No ready static Credential Sources are readable in this Namespace. Create a Credential Source in Credentials first.",
+  listFailure: (cause: unknown) =>
+    namedDenial(cause) ??
+    requestFailure(cause).serverMessage ??
+    "Could not load Credential Sources. Retry the Source list.",
+};
+
 /** Discover readable Sources and let the caller define which ones it can bind. */
 export function createCredentialSourcePicker<Criteria>(
-  context: Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
-    namespaceId: string;
-  },
+  context: PickerContext,
   options: {
     id: string;
     label?: string;
@@ -37,6 +76,7 @@ export function createCredentialSourcePicker<Criteria>(
   let attempted = false;
   let active = false;
   let disabled = false;
+  let required = true;
   const select = element("select", { id: options.id });
   const hint = element("p", { className: "hint", role: "status" });
   const retry = button("Retry Source list", () => void load(true), { tone: "ghost", size: "sm" });
@@ -89,7 +129,7 @@ export function createCredentialSourcePicker<Criteria>(
     replaceChildrenIfChanged(select, choices);
     select.value = creating ? addNewValue : (selected?.id ?? "");
     select.disabled = disabled || (!loaded && !selected && addNewLabel === undefined);
-    select.required = active && !creating;
+    select.required = active && required && !creating;
   }
   async function load(force = false) {
     if (loading || (!force && (loaded || attempted))) {
@@ -105,9 +145,7 @@ export function createCredentialSourcePicker<Criteria>(
     hint.textContent = "Loading readable Credential Sources…";
     renderOptions();
     try {
-      const result = await context.request(
-        `/namespaces/${encodeURIComponent(context.namespaceId)}/credential-sources`,
-      );
+      const result = await readSourceList(context);
       if (!context.isCurrent()) {
         return;
       }
@@ -163,7 +201,7 @@ export function createCredentialSourcePicker<Criteria>(
       ? null
       : (sources.find((source) => source.id === select.value && eligibleSource(source))?.ref ??
         (selected?.id === select.value ? selected : null));
-    select.required = active && !creating;
+    select.required = active && required && !creating;
     options.onChange(selected);
   });
   renderOptions();
@@ -194,6 +232,10 @@ export function createCredentialSourcePicker<Criteria>(
     setDisabled(value: boolean) {
       disabled = value;
       retry.disabled = value;
+      renderOptions();
+    },
+    setRequired(value: boolean) {
+      required = value;
       renderOptions();
     },
     reset() {

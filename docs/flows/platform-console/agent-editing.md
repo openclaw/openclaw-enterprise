@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-25
-last_updated_session: authoring-run/d934978e-9431-406a-9237-dbffc2d7d88b
+updated: 2026-11-26
+last_updated_session: authoring-run/a8ef2827-b4dd-41f7-8bc3-34d620545a0d
 ---
 
 # Console Agent editing and runtime requests
@@ -188,6 +188,8 @@ only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
 
+The Slack drawer and Agent Credentials panel use `credential-source-picker.mts` to discover same-Namespace ready static Sources. The drawer selects app and bot tokens. The panel also selects Sources for signing, user, relay, and named-account credential references. The persisted Configuration binding is `{source:{kind:"credential_source",namespaceId,id},delivery:{type:"env"}}`. Ordinary edits preserve admitted Source references; a previous Namespace Secret binding requires a newly created Source. `agents/slack-directory.mts` sends `sourceId` to Channel directory lookup for channel, user, and approver search and name hydration. The API authorizes the target and exact Source `operate`, and rejects an unsupported owner before resolving custody. Console never exports a Source value.
+
 With the drawer closed, `console.mts` rechecks draft
 **Channels** access on tab return. Header **Refresh** uses `confirmForAgent` to require a valid
 permission result. **Retry** keeps that requirement if the Agent read fails.
@@ -221,59 +223,13 @@ and native `dm.enabled` remain unchanged. Configuration save persists the
 selection; redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
-`apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
-bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
-`GET /namespaces/:namespaceId/secrets` requires Namespace read.
-`packages/occ/src/secret-operations.ts:listSecrets` filters exact Secret read without the Secret Driver.
-`agents/secret-picker.mjs:createSecretReferenceField` filters names and IDs. Arrows
-navigate, Enter stages a reference, Escape restores, and Cancel discards.
-Typing stages nothing.
-**Refresh Secret list** rereads metadata without saving and preserves query, focus, staged fields,
-and highlighted IDs across reordering. Select again if a highlight disappears.
-Pending reads disable refresh. Refused permission lists clear metadata and prevent
-pending selections from staging. Refresh clears its loading hint and keeps newer feedback.
-False Namespace `secrets.create` disables creation with reasons and existing-only drawer/Preset hints.
-**Save configuration** requires changed fields/bindings.
-`GET .../agents/:agentId/permissions/secrets` lists readable but inoperable Secrets, disabled with
-reasons, never staged. Refused binding saves reread it; inline creation rereads before staging.
-Any listed denial means per-Secret operate: new Secrets have none, disabling picker/Preset
-creation with reasons and existing-only hints. Failed rereads keep prior answers.
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies the Namespace and saved bindings to the Slack drawer. `credential-source-picker.mts` lists readable ready static Sources from `GET /namespaces/:namespaceId/credential-sources`. Selection is staged until save. The Agent Credentials panel derives every required Slack binding name from the saved settings, including named accounts, and renders the same picker for each name.
 
-`apps/controller/src/console/agents/secret-picker.mts:openCreateSecretDialog` shows
-an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
-and optional fixed Slack key. Both meet the API's rules before POST, which stores the Secret
-and stages returned metadata; cancellation never deletes it. Conflicts retain inputs.
-Readiness errors differ from name/backend conflicts. Success, cancellation, and uncertain outcomes clear values;
-uncertain outcomes block retries until refresh. The
-[Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
-recovery. Metadata and Credentials links open new tabs, preserving edits.
-Values are never retrieved.
+Channel saves reread the Agent and Configuration. A changed Configuration, service principal, or generation requires **Reload draft** before writing. The Configuration JSON editor derives Source fields from the unsaved Slack references, so adding a reference and binding can be one atomic PATCH. PATCH sends `{values, expectedGeneration}` and the canonical binding map when bindings change. The API authorizes Configuration update and exact Source operate on every submitted Source. For a known denied binding, Console compares the submitted and saved Source identities; an unchanged denied binding blocks the save or Disable locally, while an operable replacement may proceed. A permission reread updates the dependent draft controls.
 
-Channel saves reread the Agent and Configuration. A changed Configuration, service principal,
-or generation requires **Reload draft** before a write or Secret grant. A provisioning
-reservation explains the refusal. PATCH sends
-`{ values, expectedGeneration }`, plus every binding after a Secret change; a save keeping a Secret
-the caller cannot `operate` is refused before the PATCH, so **Disable** is offered disabled.
-A save that rebinds such a Secret rereads the permission answer; Plugins, Repositories and the
-authentication source follow it without a reload.
+Source-bound Slack credentials require no Console IAM mutation. `agent-deployment-admission.ts` passes the saved Configuration bindings to `agent-credential-access.ts:grantDeployedAgentSources`, which checks the deploying caller's exact Source operate and delegates missing exact use grants to the Agent principal in the deploy unit. Admission then checks the Agent's authority. The Source owner and Compute must support Gateway startup delivery; selection metadata alone does not prove that capability.
 
-After PATCH, `apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
-grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
-grant leaves Configuration saved; a 403 names the Installation administrator, who selects
-**Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
-says access was not verified until **Reload draft**. An administrator's console checks every
-bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for those reads and
-rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
-Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
-whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
-A Retry's warning names only the grant, and a later save's names the Configuration save (3023,
-3029); after **Reload draft** the section waits for its grant read instead of restating that outcome.
-If it finds nothing outstanding, the section says access is confirmed and focuses that line (3030).
-`agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
-Driver does; pickers appear only for standard keys. A 400 that
-`agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
-blocks another channel write until Refresh. Disabling a draft channel changes Configuration
-but does not stop a running Agent.
+Still-supported Namespace Secret consumers use `agents/secret-picker.mts` and their existing exact Secret permissions and access recovery. These paths are separate from Slack Source selection. `agents/credentials.mts:missingChannelCredentialGroups` blocks deploy until each enabled Slack reference has a Source binding. A channel validation 400 names the affected setting. An uncertain PATCH blocks another write until Refresh. Disabling a draft channel changes Configuration but does not stop a running Agent.
 
 <span id="5-provision-initial-runtime-credentials"></span>
 
@@ -313,7 +269,7 @@ generic deploy `403` rereads the answer and names them in its alert. A caller wi
 requiring readable version history and an unchanged draft. API authorization and
 Driver compatibility remain authoritative.
 
-**Open draft** shows bound Slack Secrets without proving live health.
+**Open draft** shows bound Slack Credential Sources without proving live health.
 
 `OpenClawController.deployAgent` checks transport credentials before admission.
 Before the first version, Agent `read`/`operate` plus `deploy` authorize Compute

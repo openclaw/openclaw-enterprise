@@ -1,4 +1,4 @@
-import type { Configuration, SecretMetadata } from "@openclaw-enterprise/contracts";
+import type { Configuration } from "@openclaw-enterprise/contracts";
 import type { ErrorCode, ErrorDetail } from "../../../../packages/contracts/src/api/common.ts";
 import type { agentSaveGap } from "../../../../apps/controller/src/console/agents/list.mts";
 import type { slack } from "../../../../apps/controller/src/console/channels/slack.mts";
@@ -39,7 +39,6 @@ type ChannelScenario = {
   // Existing Channels snapshots omit readLogs; the fixture sends them unchanged.
   agentPermissionSummary?: Omit<NonNullable<Parameters<typeof agentSaveGap>[0]>, "readLogs">;
   auth?: "runtime" | null;
-  extraSecrets?: readonly Pick<SecretMetadata, "id" | "name">[];
   agentName?: string;
   pluginDeny?: readonly string[];
   deployed?: boolean;
@@ -51,7 +50,6 @@ type ChannelDependencies = {
   click(text: string): StoryAction;
   draft: string;
   revision: string;
-  presetSecretsPath: string;
   reservedConfigurationWrite: ChannelRule;
 };
 
@@ -59,7 +57,6 @@ export function channelsScenarios({
   click,
   draft,
   revision,
-  presetSecretsPath,
   reservedConfigurationWrite,
 }: ChannelDependencies) {
   return {
@@ -70,37 +67,12 @@ export function channelsScenarios({
       slack: true,
       description: "Enabled Socket Mode with standard unresolved credential references.",
     },
-    slackDisableReplaceDenied: {
-      group: "Components/Channels",
-      name: "Slack Disable, editor must replace the bot token Secret",
-      path: `${draft}&tab=channels`,
-      slack: true,
-      agentPermissionSummary: {
-        update: true,
-        deploy: true,
-        operate: true,
-        delete: true,
-        administer: true,
-        configurationUpdate: true,
-        configurationRead: true,
-        configurationSecretsOperate: false,
-        configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
-        agentSourcesOperate: false,
-        sandboxPolicyRead: true,
-      },
-      description:
-        "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. Disable saves no bindings, so it would keep that Secret bound: Disable Slack is shown disabled with a note to choose another Secret in Edit Slack first. Edit Slack stays available.",
-      steps: [
-        "Tab to Disable Slack. It takes focus and looks unavailable, described by the note; Enter, Space or a click saves nothing.",
-      ],
-      gap: "The permission answer is simulated, so a rebind here does not enable Disable; the browser test covers that step.",
-    },
     slackThreadedDefault: {
       group: "Components/Channels",
       name: "Slack threaded default",
       path: `${draft}&tab=channels`,
       description:
-        "New Slack setup threads channel replies without changing DM reply behavior. Missing credentials remain visible until Secrets are bound.",
+        "New Slack setup threads channel replies without changing DM reply behavior. Missing credentials remain visible until Sources are bound.",
       steps: [
         "Configure Slack, enter CDEMO123, allow everyone in the channel, and choose Disabled for direct messages.",
         "Save configuration and open Configuration → View native Configuration: replyToModeByChatType.channel is all, with no global replyToMode.",
@@ -155,12 +127,12 @@ export function channelsScenarios({
         { selector: "#slack-channel-ids-search", value: "CNAVIGATION", key: "Enter" },
       ],
       description:
-        "An open Slack drawer restores ordinary edits and staged Secret references after browser history navigation.",
+        "An open Slack drawer restores ordinary edits and staged Source references after browser history navigation.",
       steps: [
         "Use Back to return to Configuration, then Forward to reopen the drawer.",
         "Confirm CNAVIGATION remains. Cancel, reopen Slack, and check saved channel IDs.",
       ],
-      gap: "Simulated UI proof, not Slack delivery or Secret propagation.",
+      gap: "Simulated UI proof, not Slack delivery or credential propagation.",
     },
     slackDrawer: {
       group: "Components/Channels",
@@ -169,7 +141,7 @@ export function channelsScenarios({
       slack: true,
       actions: [click("Edit Slack")],
       description:
-        "Select or create Slack token Secrets at the top, then configure channel and direct-message access. The bot token enables name lookup; both tokens are required before deployment.",
+        "Choose saved Credential Sources for the Slack tokens, then configure channel and direct-message access. The bot token enables name lookup; both tokens are required before deployment.",
       steps: [
         "Change the channel IDs, then click inside the panel and drag from its heading onto the gray backdrop. The editor stays open.",
         "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
@@ -235,7 +207,7 @@ export function channelsScenarios({
         "Use Next page twice to fetch product and announcements. Type platform and wait for results. Press Escape: the input keeps its text and focus. Press Down: the list reopens and its first current result becomes active. Press Escape, then click the same input: results reopen without an active option. The chips stay unchanged until an explicit choice. Choose platform with a click or Down then Enter.",
         "Type another query, then click Save configuration once while results are open. The dropdown closes without moving Save, and only selected channel chips are saved.",
       ],
-      gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+      gap: "Directory data and Credential Source access are simulated; no Slack API call occurs.",
     },
     slackDirectorySavedNames: {
       group: "Components/Channels",
@@ -244,8 +216,8 @@ export function channelsScenarios({
       slack: true,
       actions: [click("Edit Slack")],
       description:
-        "Saved channel and user IDs are resolved with the selected bot Secret when the editor opens. Names appear as removable chips. Exact IDs are available on hover and are the only values saved.",
-      gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+        "Saved channel and user IDs are resolved with the selected bot Credential Source when the editor opens. Names appear as removable chips. Exact IDs are available on hover and are the only values saved.",
+      gap: "Directory data and Credential Source access are simulated; no Slack API call occurs.",
     },
     slackDirectoryQualifiedNames: {
       group: "Components/Channels",
@@ -262,7 +234,7 @@ export function channelsScenarios({
       actions: [click("Edit Slack")],
       description:
         "Existing workspace-qualified channel and user targets remain editable. Matching names label removable chips, with exact saved targets on hover; the directory picker still inserts bare IDs.",
-      gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+      gap: "Directory data and Credential Source access are simulated; no Slack API call occurs.",
     },
     slackDirectoryUsers: {
       group: "Components/Channels",
@@ -272,7 +244,7 @@ export function channelsScenarios({
       actions: [click("Edit Slack"), { selector: "#slack-dm-user-ids-search", focus: true }],
       description:
         "People appear five per page. Two share the same display name; their handle and exact Slack user IDs identify which one will be saved. Next page preserves the remaining matches from the directory response.",
-      gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+      gap: "Directory data and Credential Source access are simulated; no Slack API call occurs.",
     },
     slackDirectoryDenied: {
       group: "Components/Channels",
@@ -284,7 +256,7 @@ export function channelsScenarios({
       ],
       actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
       description:
-        "A denied lookup keeps manual exact-ID entry available and explains Secret permissions.",
+        "A denied lookup keeps manual exact-ID entry available and names the missing Credential Source permission.",
     },
     slackDirectoryLoading: {
       group: "Components/Channels",
@@ -316,9 +288,9 @@ export function channelsScenarios({
       description:
         "An older directory request is delayed. Search for platform before it returns; typing cancels the browser request and searches after 300 ms. Escape dismisses results and cancels a queued search. Enter searches immediately.",
     },
-    slackDirectoryMissingSecret: {
+    slackDirectoryMissingSource: {
       group: "Components/Channels",
-      name: "Slack directory needs a bot Secret",
+      name: "Slack directory needs a bot Source",
       path: `${draft}&tab=channels`,
       slack: true,
       slackBindings: "app",
@@ -329,7 +301,7 @@ export function channelsScenarios({
         "At the top of the editor, open Slack bot token and choose Slack bot token (simulated). Existing IDs resolve to names.",
         "Continue to Channels, search for platform, and select the result. Review channel and direct-message access before saving.",
       ],
-      gap: "Secret choices and directory responses are simulated; this does not verify a real Slack token.",
+      gap: "Source choices and directory responses are simulated; this does not verify a real Slack token.",
     },
     slackEveryone: {
       group: "Components/Channels",
@@ -365,7 +337,7 @@ export function channelsScenarios({
     },
     slackTokensMissing: {
       group: "Components/Channels",
-      name: "Slack token Secrets missing",
+      name: "Slack Credential Sources missing",
       path: `${draft}&tab=channels`,
       actions: [
         click("Configure Slack"),
@@ -375,79 +347,77 @@ export function channelsScenarios({
         click("Save configuration"),
       ],
       description:
-        "An enabled Slack channel saves only with both token Secrets: each missing one is named under its picker, and nothing is sent.",
+        "An enabled Slack channel requires both token Sources. Each missing Source is named under its picker, and nothing is sent.",
     },
-    slackSecretMenu: {
+    slackSourceMenu: {
       group: "Components/Channels",
-      name: "Slack Secret menu",
+      name: "Slack Credential Source menu",
       path: `${draft}&tab=channels`,
       slack: true,
       actions: [click("Edit Slack")],
       description:
-        "Search Slack token Secrets by name or ID; options and selections show names only. Use arrow keys and Enter to select, and Escape to retain the current binding. Metadata is simulated within this Namespace.",
+        "Choose an existing ready static Credential Source for each Slack token. The selected Source reference is staged until the Configuration is saved. Source metadata is simulated in this Namespace.",
     },
-    slackSecretNameCollision: {
+    slackSourceListLoading: {
       group: "Components/Channels",
-      name: "Slack Secret action name collision",
+      name: "Slack Credential Sources loading",
       path: `${draft}&tab=channels`,
       slack: true,
-      extraSecrets: [
-        { id: "sec_story_create_name", name: "Create new Secret..." },
-        { id: "sec_story_none_name", name: "No Secret bound" },
-        { id: "sec_story_bound_name", name: "Bound Secret" },
-      ],
+      rules: [{ suffix: "/credential-sources", method: "GET", hold: true }],
       actions: [click("Edit Slack")],
       description:
-        "Open the bot token selector to compare Secret names with matching picker actions. Real Secret names remain unchanged and conflicting actions have a qualifier.",
+        "The drawer keeps the current saved references while the simulated readable Source inventory loads.",
     },
-    slackCreateSecretModal: {
+    slackSourceListUnavailable: {
       group: "Components/Channels",
-      name: "Slack create Secret modal",
+      name: "Slack Credential Sources unavailable",
       path: `${draft}&tab=channels`,
       slack: true,
-      agentName: "Research " + "engineering ".repeat(15) + "review team",
-      actions: [
-        click("Edit Slack"),
-        { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
-      ],
+      rules: [{ suffix: "/credential-sources", method: "GET", status: 503 }],
+      actions: [click("Edit Slack")],
       description:
-        "A long Agent name produces a shortened, editable Secret Name that retains the Slack bot token purpose. Creation uses only the simulated service.",
-      steps: [
-        "Inspect Name before editing: it contains an ellipsis, ends with Slack bot token, and fits the 200-character limit.",
-        "Replace Name with Walkthrough Slack bot token and enter synthetic-demo-token as Value. Select Create Secret.",
-        "Confirm Create Secret closes and Walkthrough Slack bot token is selected in the Slack editor. The binding is staged until you save the editor.",
-      ],
+        "A simulated inventory failure keeps the existing Source references and offers a retry.",
     },
-    slackDuplicateSecret: {
+    slackSourceOperateDenied: {
       group: "Components/Channels",
-      name: "Slack duplicate Secret name",
+      name: "Slack Credential Source operate denied",
       path: `${draft}&tab=channels`,
       slack: true,
-      actions: [
-        click("Edit Slack"),
-        { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
+      rules: [
         {
-          selector: "#create-slack-secret-slack-bot-token-name",
-          value: "Slack bot token (simulated)",
+          suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+          method: "PATCH",
+          status: 403,
+          code: "FORBIDDEN",
+          message:
+            "Not authorized: this needs CredentialSource operate on cs_00000000-0000-4000-8000-000000000043.",
         },
-        { selector: "#create-slack-secret-slack-bot-token-value", value: "synthetic-demo-token" },
-        click("Create Secret"),
+      ],
+      actions: [
+        click("Edit Slack"),
+        {
+          selector: "#slack-source-slack-app-token",
+          value: "cs_00000000-0000-4000-8000-000000000043",
+        },
+        click("Save configuration"),
       ],
       description:
-        "A simulated duplicate-name rejection preserves Name and the masked value. Change the Name and create again; the existing Secret remains unchanged.",
-      gap: "Simulated UI proof only; the browser integration suite verifies real controller conflict handling.",
+        "A readable Source is not authority to bind it. The simulated Configuration save names exact Source operate and keeps the unsaved selection visible.",
     },
-    slackSecretStaged: {
+    slackSourceStaged: {
       group: "Components/Channels",
-      name: "Slack staged Secret binding",
+      name: "Slack staged Source binding",
       path: `${draft}&tab=channels`,
       slack: true,
       actions: [
         click("Edit Slack"),
-        { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+        {
+          selector: "#slack-source-slack-app-token",
+          value: "cs_00000000-0000-4000-8000-000000000043",
+        },
       ],
       description:
-        "Selecting a different existing Secret stages the binding and updates the metadata link. Cancel discards the staged choice; Save persists it.",
+        "Selecting a different ready static Source stages its canonical reference. Cancel discards the choice; Save persists it.",
     },
     slackOpen: {
       group: "Components/Channels",
@@ -522,43 +492,7 @@ export function channelsScenarios({
       deployed: true,
       slack: true,
       description:
-        "Inspect the app and bot token Secret names and IDs, then switch to Configuration to inspect the Harness Secret. This read-only snapshot retains its own bindings.",
-    },
-    revisionSecretsDenied: {
-      group: "Components/Channels",
-      name: "Revision Secret metadata denied",
-      path: `${revision}&tab=channels`,
-      deployed: true,
-      slack: true,
-      rules: [{ prefix: `${presetSecretsPath}/`, status: 403 }],
-      description:
-        "Bound IDs remain visible when exact Secret metadata reads are denied. Switch to Configuration to inspect the same state for Harness authentication.",
-    },
-    revisionSecretsMissing: {
-      group: "Components/Channels",
-      name: "Revision Secret metadata missing",
-      path: `${revision}&tab=channels`,
-      deployed: true,
-      slack: true,
-      rules: [{ prefix: `${presetSecretsPath}/`, status: 404 }],
-      description:
-        "Unavailable metadata does not erase the revision's bindings or claim credentials are unconfigured.",
-    },
-    revisionSecretsLoading: {
-      group: "Components/Channels",
-      name: "Revision Secret metadata loading",
-      path: `${revision}&tab=channels`,
-      deployed: true,
-      slack: true,
-      rules: [{ prefix: `${presetSecretsPath}/`, hold: true }],
-      description: "The bound IDs stay visible while metadata loads. Other tabs remain usable.",
-    },
-    revisionSecretsAbsent: {
-      group: "Components/Channels",
-      name: "Revision without Slack bindings",
-      path: `${revision}&tab=channels`,
-      deployed: true,
-      description: "A revision without Slack bindings shows No Secret bound for both token slots.",
+        "Inspect the app and bot token Credential Source IDs. This read-only snapshot retains its own bindings; Harness authentication remains separate.",
     },
     channelConflict: {
       group: "Components/Channels",
@@ -718,44 +652,6 @@ export function channelsScenarios({
       actions: [click("Disable Slack")],
       description:
         "A pending channel save disables deployment and revision navigation. The real client times out after 15 seconds; reset the story to replay it.",
-    },
-    channelSecretGrantRefused: {
-      group: "Components/Channels",
-      name: "Slack token saved, grant refused",
-      path: `${draft}&tab=channels`,
-      slack: true,
-      actions: [
-        click("Edit Slack"),
-        { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
-        click("Save configuration"),
-      ],
-      rules: [{ suffix: "/iam/roles", status: 403 }],
-      description:
-        "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
-      steps: [
-        "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
-        "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
-      ],
-      gap: "The member browser test uses a member account and the real Native IAM refusal.",
-    },
-    channelSecretGrantMemberUnverified: {
-      group: "Components/Channels",
-      name: "Member Slack token saved, access not verified",
-      path: `${draft}&tab=channels`,
-      slack: true,
-      observabilityDenied: true,
-      actions: [
-        click("Edit Slack"),
-        { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
-        click("Save configuration"),
-      ],
-      description:
-        "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
-      steps: [
-        "The editor closes. The warning above Channels says access was not verified; Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows no /iam/ request.",
-        "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
-      ],
-      gap: "The member browser test uses a member account and the real Installation permission check.",
     },
     channelSaveUnknown: {
       group: "Components/Channels",

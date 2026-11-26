@@ -43,6 +43,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
     oauthCatalog?: string;
+    group?: string;
     initialCredentialSources?: readonly CredentialSourceResponse["data"][];
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
@@ -52,7 +53,6 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     sessionUser?: unknown;
     extraSecrets?: readonly { id: string; name: string }[];
     slackBindings?: boolean | "app" | readonly string[];
-    slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
     namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
@@ -182,6 +182,12 @@ const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const lookupSiblingNamespaceId = "ns_00000000-0000-4000-8000-000000000003";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const secretRef = (id: string): SecretReference => ({ kind: "secret", namespaceId, id });
+const slackSources: Record<string, { id: string; name: string }> = {
+  SLACK_APP_TOKEN: { id: "cs_00000000-0000-4000-8000-000000000041", name: "Slack app token" },
+  SLACK_BOT_TOKEN: { id: "cs_00000000-0000-4000-8000-000000000042", name: "Slack bot token" },
+  SLACK_BACKUP_TOKEN: { id: "cs_00000000-0000-4000-8000-000000000043", name: "Slack backup token" },
+};
+const sourceRef = (id: string) => ({ kind: "credential_source" as const, namespaceId, id });
 const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_demo_model") };
 
 // This is a presentation fixture, not a controller implementation or backend test double.
@@ -216,6 +222,25 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const credentialSources = new Map<string, StoredCredentialSource>(
     (scenario.initialCredentialSources ?? []).map((source) => [source.id, source]),
   );
+  // Slack and Create Agent previews use simulated public Credential Source metadata.
+  const sourceBackedSlack =
+    scenario.group === "Pages/Create Agent" ||
+    scenario.group === "Flows" ||
+    Boolean(scenario.slack);
+  if (sourceBackedSlack) {
+    for (const { id, name } of Object.values(slackSources)) {
+      credentialSources.set(id, {
+        id,
+        namespaceId,
+        name: `${name} (simulated)`,
+        type: "static",
+        config: {},
+        state: "ready",
+        ref: sourceRef(id),
+        createdAt,
+      });
+    }
+  }
   const deviceLogins = new Map<string, DeviceLogin>();
   const cancelledDeviceLogins = new Set<string>();
   let deniedDeviceSourceCreate = false;
@@ -275,9 +300,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   for (const secret of [
     secretMetadata("sec_demo_model", "Demo model API key (simulated)"),
     secretMetadata("sec_demo_service_account", "Demo Service Accounts token (simulated)"),
-    secretMetadata("sec_demo_slack_app_token", "Slack app token (simulated)"),
-    secretMetadata("sec_demo_slack_bot_token", "Slack bot token (simulated)"),
-    secretMetadata("sec_demo_slack_backup_token", "Slack backup token (simulated)"),
+    secretMetadata("sec_demo_model_backup", "Backup model key (simulated)"),
     ...(scenario.extraSecrets ?? []).map((secret) => secretMetadata(secret.id, secret.name)),
   ]) {
     secrets.set(secret.id, secret);
@@ -319,33 +342,11 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           ? ["SLACK_APP_TOKEN"]
           : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
     for (const key of keys) {
-      config.secretBindings[key] = {
-        source: { ...secretRef(`sec_demo_${key.toLowerCase()}`) },
-        delivery: { type: "env" },
-      };
-    }
-    // The demo Agent was granted the Slack Secrets it binds, unless the scenario left one out:
-    // an administrator's console reads these grants (finding 1920).
-    roles.push(
-      storedIdentity({
-        id: "role_demo_secret_operate",
-        namespaceId,
-        name: "Agent Secret operate",
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      }),
-    );
-    for (const key of keys.filter((name) => name !== scenario.slackGrantMissing)) {
-      bindings.push(
-        storedIdentity({
-          id: `binding_demo_${key.toLowerCase()}`,
-          namespaceId,
-          subjectKind: "identity",
-          subjectId: "identity_demo_agent",
-          roleId: "role_demo_secret_operate",
-          resourceKind: "secret",
-          resourceId: `sec_demo_${key.toLowerCase()}`,
-        }),
-      );
+      const source = slackSources[key];
+      if (!source) {
+        throw new Error(`Unsupported simulated Slack binding ${key}`);
+      }
+      config.secretBindings[key] = { source: sourceRef(source.id), delivery: { type: "env" } };
     }
   }
   configs.set(config.id, config);
@@ -761,7 +762,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
       }
       if (resource === "channel-directory/lookup" && method === "POST") {
-        return serveChannelDirectory(body, secrets, evidence);
+        return serveChannelDirectory(body, credentialSources, evidence);
       }
       if (resource === "credential-sources") {
         if (method === "GET") {

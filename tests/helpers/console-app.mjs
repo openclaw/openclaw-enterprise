@@ -553,6 +553,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialSourceDelivery === undefined
           ? {}
           : { credentialSourceDelivery: options.credentialSourceDelivery }),
+        ...(options.gatewayStartupSourceDelivery === undefined
+          ? {}
+          : { gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery }),
       };
       controller =
         options.repositoryAdmission === undefined

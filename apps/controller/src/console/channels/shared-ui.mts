@@ -1,8 +1,4 @@
-import type {
-  SecretBindings,
-  SecretMetadata,
-  SecretReference,
-} from "@openclaw-enterprise/contracts";
+import type { SecretBindings, SecretMetadata } from "@openclaw-enterprise/contracts";
 import { responseFields } from "../api-client.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import type { SecretsOperateDenied } from "../agents/credential-access.mjs";
@@ -68,7 +64,10 @@ export interface ChannelDrawerContext extends SlackDirectoryContext {
   secretsOperateDenied?: SecretsOperateDenied | undefined;
 }
 
-type BindingUpdate = { secretBindings?: SecretBindings; changedSecrets?: SecretMetadata[] };
+export type BindingUpdate = {
+  secretBindings?: SecretBindings;
+  changedSecrets?: SecretMetadata[];
+};
 type SaveState = { pending: boolean; outcomeUnknown: boolean; reloadRequired?: boolean };
 type SectionCopy = Partial<
   Record<
@@ -121,12 +120,51 @@ export interface ChannelProvider<Config extends ChannelValues = ChannelValues> {
   plugin: string;
   listFields: readonly string[];
   secretBindings: readonly { key: string; label: string }[];
+  acceptsBinding?(
+    source: SecretBindings[string]["source"] | undefined,
+    namespaceId: string,
+  ): boolean;
   support(values: ChannelValues): ChannelSupport<Config>;
   summary(config: Config, status: ReturnType<typeof statusOf>): string;
   validate(body: HTMLFormElement): string | null;
   updatedValues(values: ChannelValues, body: HTMLFormElement): ChannelValues;
   updatedSecretBindings(context: ChannelDrawerContext): BindingUpdate | undefined;
   appendFields(body: HTMLFormElement, config: Config, context: ChannelDrawerContext): void;
+}
+
+function acceptsBinding(
+  provider: ChannelProvider,
+  source: SecretBindings[string]["source"] | undefined,
+  namespaceId: string,
+) {
+  return provider.acceptsBinding
+    ? provider.acceptsBinding(source, namespaceId)
+    : channelSecretSource(source) !== undefined;
+}
+
+function renderBindingReference(
+  provider: ChannelProvider,
+  context: ChannelDrawerContext,
+  source: SecretBindings[string]["source"] | undefined,
+) {
+  if (
+    source?.kind === "credential_source" &&
+    provider.acceptsBinding?.(source, context.namespaceId)
+  ) {
+    return element("code", { className: "resource-id" }, source.id);
+  }
+  if (
+    source?.kind === "secret" &&
+    provider.acceptsBinding &&
+    !provider.acceptsBinding(source, context.namespaceId)
+  ) {
+    return element(
+      "span",
+      {},
+      "Create and select a Credential Source for this former Secret-backed setting.",
+    );
+  }
+  return renderSecretReference(context, channelSecretSource(source));
 }
 
 export const isRecord = (value: unknown): value is ChannelValues =>
@@ -302,7 +340,11 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
     (provider.secretBindings.length === 0 ||
       provider.secretBindings.some(
         (binding) =>
-          !channelSecretSource(state.drawerContext.secretBindings?.[binding.key]?.source),
+          !acceptsBinding(
+            provider,
+            state.drawerContext.secretBindings?.[binding.key]?.source,
+            state.drawerContext.namespaceId,
+          ),
       ));
   // A disabled action is described by the reason shown on the card (findings 2495, D749), and
   // stays in the Tab order while it shows (class of finding 2899).
@@ -378,9 +420,10 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       element(
         "dd",
         {},
-        renderSecretReference(
+        renderBindingReference(
+          provider,
           state.drawerContext,
-          channelSecretSource(state.drawerContext.secretBindings?.[binding.key]?.source),
+          state.drawerContext.secretBindings?.[binding.key]?.source,
         ),
       ),
     );
@@ -419,7 +462,7 @@ async function disableProvider(state: ChannelState, provider: ChannelProvider) {
 // (finding 1509).
 function draftChanges(draft: ChannelDraft | undefined) {
   if (!draft) {
-    return { fields: {}, secrets: [] };
+    return { fields: {}, secrets: [], sources: [] };
   }
   const fields = Object.keys(draft?.initial ?? {}).filter((id) => {
     const field = draft.fields?.[id];
@@ -440,14 +483,36 @@ function draftChanges(draft: ChannelDraft | undefined) {
         draft.initialSecretBindings?.[key]?.source ?? {},
       ),
   );
-  return { fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]!])), secrets };
+  const currentBindings = draft.secretBindings ?? draft.initialSecretBindings;
+  const sources = [
+    ...new Set([
+      ...Object.keys(draft.initialSecretBindings ?? {}),
+      ...Object.keys(currentBindings ?? {}),
+    ]),
+  ].filter((key) => {
+    const current = currentBindings?.[key]?.source;
+    const initial = draft.initialSecretBindings?.[key]?.source;
+    return (
+      (current?.kind === "credential_source" || initial?.kind === "credential_source") &&
+      !sameSource(current, initial)
+    );
+  });
+  return {
+    fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]!])),
+    secrets,
+    sources,
+  };
 }
 
 // Whether the editor holds a change a reload or tab close would lose (finding 1902).
 function unsavedChannelDraft(draft: unknown) {
   // This draft key is written only by captureDraft and carryDraft below.
   const changes = draftChanges(draft as ChannelDraft | undefined);
-  return Object.keys(changes.fields).length > 0 || changes.secrets.length > 0;
+  return (
+    Object.keys(changes.fields).length > 0 ||
+    changes.secrets.length > 0 ||
+    changes.sources.length > 0
+  );
 }
 
 // A save conflict keeps the editor's changes: Reload draft reopens them over the reread
@@ -462,7 +527,7 @@ function carryDraft(
   state.carriedDraft = null;
   if (
     draft?.provider !== provider.id ||
-    (!Object.keys(changes.fields).length && !changes.secrets.length)
+    (!Object.keys(changes.fields).length && !changes.secrets.length && !changes.sources.length)
   ) {
     state.drawerContext.drafts?.forget("channels");
     return;
@@ -483,7 +548,10 @@ function carriedNotice(draft: ChannelDraft | null | undefined, provider: Channel
   const secrets = names.length
     ? `, including the ${names.length === 1 ? "Secret" : "Secrets"} ${names.map((name) => `“${name}”`).join(" and ")}`
     : "";
-  return ` Reload draft reopens your ${provider.name} edits over the saved settings${secrets}.`;
+  const sources = draftChanges(draft).sources.length
+    ? ", including Credential Source bindings"
+    : "";
+  return ` Reload draft reopens your ${provider.name} edits over the saved settings${secrets}${sources}.`;
 }
 
 async function save(
@@ -593,8 +661,10 @@ export function input(id: string, value: string, attrs: Record<string, string | 
 }
 
 const listValues = (value: string) => uniqueList(value.split(","));
-const sameSource = (left: SecretReference | undefined, right: SecretReference | undefined) =>
-  left === undefined ? right === undefined : refsEqual(left, right ?? {});
+const sameSource = (
+  left: SecretBindings[string]["source"] | undefined,
+  right: SecretBindings[string]["source"] | undefined,
+) => (left === undefined ? right === undefined : refsEqual(left, right ?? {}));
 
 function fieldValue(control: Control): FieldValue {
   return "checked" in control
@@ -712,13 +782,19 @@ function openDrawer(
   const stale = retained && !carried && baseline.fingerprint !== state.drawerContext.baseline;
   const unresolved = retained?.unresolved;
   if (carried && retained) {
-    if (carried.secrets.length) {
-      drawerContext.draftSecretBindings = {
+    if (carried.secrets.length || carried.sources.length) {
+      const carriedBindings = {
         ...structuredClone(state.drawerContext.secretBindings),
-        ...Object.fromEntries(
-          carried.secrets.map((key) => [key, structuredClone(retained.secretBindings![key]!)]),
-        ),
       };
+      for (const key of [...carried.secrets, ...carried.sources]) {
+        const binding = retained.secretBindings?.[key];
+        if (binding) {
+          carriedBindings[key] = structuredClone(binding);
+        } else {
+          delete carriedBindings[key];
+        }
+      }
+      drawerContext.draftSecretBindings = carriedBindings;
       drawerContext.draftChangedSecrets = Object.fromEntries(
         carried.secrets.map((key) => [key, structuredClone(retained.changedSecrets![key]!)]),
       );
@@ -782,7 +858,9 @@ function openDrawer(
   provider.appendFields(body, config, drawerContext);
   // Only ordinary channel controls belong to this draft. New Secret dialogs own token bytes.
   const fields = [
-    ...body.querySelectorAll<Control>("input[id]:not([type=password]), select[id], textarea[id]"),
+    ...body.querySelectorAll<Control>(
+      "input[id]:not([type=password]), select[id]:not([data-channel-binding]), textarea[id]",
+    ),
   ];
   const fieldValues = (list: Control[]): Record<string, FieldValue> =>
     Object.fromEntries(list.map((field) => [field.id, fieldValue(field)]));
@@ -842,14 +920,12 @@ function openDrawer(
     const skipped = applied.filter((entry) => entry.skipped).map(fieldName);
     const names = [
       ...applied.filter((entry) => !entry.skipped).map(fieldName),
-      ...carried.secrets.map((key) => {
+      ...[...carried.secrets, ...carried.sources].map((key) => {
         const label = provider.secretBindings?.find((binding) => binding.key === key)?.label ?? key;
-        const saved = channelSecretSource(state.drawerContext.secretBindings?.[key]?.source);
+        const saved = state.drawerContext.secretBindings?.[key]?.source;
         // Another browser bound a different Secret here too; the reader's choice is shown.
-        return !sameSource(
-          saved,
-          channelSecretSource(retained.initialSecretBindings?.[key]?.source),
-        ) && !sameSource(saved, channelSecretSource(retained.secretBindings?.[key]?.source))
+        return !sameSource(saved, retained.initialSecretBindings?.[key]?.source) &&
+          !sameSource(saved, retained.secretBindings?.[key]?.source)
           ? `${label} (also changed in another browser)`
           : label;
       }),

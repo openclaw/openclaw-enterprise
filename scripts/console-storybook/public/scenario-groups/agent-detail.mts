@@ -1417,11 +1417,10 @@ export function createAgentDetailScenarios({
       },
       draftSourcesOperateDenied: {
         group: "Pages/Agent detail",
-        name: "Version draft, editor cannot operate a bound Secret",
+        name: "Version draft, editor cannot operate a bound Credential Source",
         path: `${draft}&tab=configuration`,
         deployed: true,
         slack: true,
-        secretOperateDenied: ["sec_demo_slack_app_token", "sec_demo_slack_bot_token"],
         agentPermissionSummary: {
           update: true,
           deploy: false,
@@ -1431,12 +1430,12 @@ export function createAgentDetailScenarios({
           configurationUpdate: true,
           configurationRead: true,
           configurationSecretsOperate: false,
-          configurationSecretsOperateDeniedBindings: [],
+          configurationSecretsOperateDeniedBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
           agentSourcesOperate: false,
           sandboxPolicyRead: false,
         },
         description:
-          "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
+          "The permission answer allows Agent and Configuration update but not operate on Credential Sources the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
         steps: [
           "Read the notice: Version draft · read-only with your access.",
           "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
@@ -1722,12 +1721,12 @@ export function createAgentDetailScenarios({
           { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
         ],
         description:
-          "The selected bot Secret resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one shows their name and handle and saves a team-qualified selector.",
+          "The selected bot Credential Source resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one shows their name and handle and saves a team-qualified selector.",
         steps: [
           "Switch to another browser tab and return. The open query and results remain while Agent access is checked.",
           "Move focus to another Console control to close the list, then focus the search field to reopen it.",
         ],
-        gap: "The fixture simulates directory data; it does not contact Slack or read a real Secret.",
+        gap: "The fixture simulates directory data; it does not contact Slack or read a real credential.",
       },
       pluginApproversDirectoryUnavailable501: {
         group: "Pages/Agent detail",
@@ -1773,6 +1772,41 @@ export function createAgentDetailScenarios({
         steps: [
           "Select Plugins. At 390 px, focus the tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
         ],
+      },
+      nativeSlackSigningBinding: {
+        group: "Pages/Agent detail",
+        name: "Add a Slack signing credential Source with Configuration",
+        path: `${draft}&tab=configuration`,
+        slack: true,
+        actions: [
+          click("Edit Configuration"),
+          { selector: ".launch-advanced summary", click: true },
+          {
+            selector: "#configuration-json",
+            value: JSON.stringify(
+              {
+                agents: { defaults: { model: "codex/gpt-5" } },
+                channels: {
+                  slack: {
+                    enabled: true,
+                    mode: "http",
+                    botToken: "${SLACK_BOT_TOKEN}",
+                    signingSecret: "${SLACK_SIGNING_SECRET}",
+                  },
+                },
+              },
+              null,
+              2,
+            ),
+          },
+          {
+            selector: "#slack-binding-slack-signing-secret",
+            value: "cs_00000000-0000-4000-8000-000000000043",
+          },
+        ],
+        description:
+          "The draft JSON introduces SLACK_SIGNING_SECRET. Select a ready static Credential Source before saving the Configuration and its binding together.",
+        gap: "This preview simulates Source metadata and editor state. It does not prove persistence or Slack delivery.",
       },
       invalidConfiguration: {
         group: "Pages/Agent detail",

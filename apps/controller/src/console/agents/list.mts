@@ -536,18 +536,18 @@ export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) 
 // not one whole reference or a SecretRef it accepts, an inline credential included (findings 2319,
 // 2477, 2493, 2517); otherwise undefined. The message names the setting, so a form shows it under
 // the field that holds the Configuration.
-const CHANNEL_REFERENCE_REFUSAL =
-  / (?:without a Configuration Secret binding|the runtime does not substitute): | holds /;
-// Where the console binds a Secret that a channel refusal asks for: Slack's standard names on the
-// Credentials tab or in the Channels tab's Slack editor, other names only through the API. The
-// Agent page's Configuration JSON editor and the Credentials tab both say it (findings 2494, 2542).
+export const channelMissingBindingRefusal = (message: string) =>
+  message.includes(" without a Configuration credential binding: ");
+const CHANNEL_REFERENCE_REFUSAL = / the runtime does not substitute: | holds /;
+// The Credentials tab can bind every referenced Slack credential name. The simple drawer edits
+// only the standard app and bot token names.
 export const CHANNEL_BINDING_PLACES =
-  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+  "select Credential Sources for the referenced Slack credentials in the Configuration editor or Credentials tab. You can also bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN in the Slack editor on the Channels tab.";
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&
     serverMessage?.startsWith("Configuration setting channels.") &&
-    CHANNEL_REFERENCE_REFUSAL.test(serverMessage)
+    (channelMissingBindingRefusal(serverMessage) || CHANNEL_REFERENCE_REFUSAL.test(serverMessage))
     ? serverMessage
     : undefined;
 }

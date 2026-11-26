@@ -279,9 +279,9 @@ export function renderAgentPlugins(
   const apiKeyNotice = statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null });
   sourceNotice.hidden = true;
   apiKeyNotice.hidden = !apiKeyAuth();
-  const getSlackBotSecretId = () => {
+  const getSlackBotSourceId = () => {
     const source = snapshot.secretBindings?.SLACK_BOT_TOKEN?.source;
-    return source?.kind === "secret" && source.namespaceId === context.namespaceId
+    return source?.kind === "credential_source" && source.namespaceId === context.namespaceId
       ? source.id
       : null;
   };
@@ -470,7 +470,7 @@ export function renderAgentPlugins(
       createSlackApproverField({
         context,
         agentId: agent.id,
-        getSecretId: getSlackBotSecretId,
+        getSourceId: getSlackBotSourceId,
         ...options,
       }),
   });
@@ -481,7 +481,7 @@ export function renderAgentPlugins(
     context,
     label: "Default plugin approvers",
     agentId: agent.id,
-    getSecretId: getSlackBotSecretId,
+    getSourceId: getSlackBotSourceId,
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;

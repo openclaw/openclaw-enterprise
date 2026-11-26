@@ -443,12 +443,11 @@ export const unsubstitutedFallbackRefusal = (setting, name) =>
 const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };
 export const unreadableSlackTokenRefusal = (setting, held) =>
   `Configuration setting ${setting} holds ${SLACK_TOKEN_OBJECTS[held]} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings.`;
-// Where the console says to add a Secret binding that a channel refusal asks for: the Agent
-// page's Configuration JSON editor saves none (finding 2494), the Credentials tab binds only Slack's
-// standard names (finding 2542), and Create Agent binds only those too (finding 2506).
+// Console Slack binding remedies match the controls available before creation and during editing.
 const CHANNEL_BINDING_PLACES =
-  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
-export const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
+  "select Credential Sources for the referenced Slack credentials in the Configuration editor or Credentials tab. You can also bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN in the Slack editor on the Channels tab.";
+export const CHANNEL_BINDING_CONSOLE_REMEDY =
+  "Select a Credential Source for each missing Slack binding below, then save Configuration.";
 export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_PLACES}`;
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
@@ -463,7 +462,7 @@ export const unsupportedChannelRefusal = (setting) =>
 export const SLACK_SETUP_HINT =
   "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
 export const CHANNEL_BINDING_FORM_REMEDY =
-  "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
+  "Select a Credential Source for each referenced Slack credential in the Slack editor or Slack credential bindings before creating the Agent.";
 // A Codex network proxy setting that blocks the repository credential broker for an Agent with
 // repository bindings (finding 2350): Agent save, provisioning and deployment refuse it, and
 // Compute preparation refuses it too, with a deny of the broker host it learns from the prepared
