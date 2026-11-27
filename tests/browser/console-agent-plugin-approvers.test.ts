@@ -2535,17 +2535,32 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   assert.deepEqual(await liveWrites(), []);
 
   // Alpha can still be browsed, but neither view knows whether it is selected.
-  await card.getByRole("heading", { name: "Alpha" }).waitFor();
+  const alphaHeading = card.getByRole("heading", { name: "Alpha" });
+  await alphaHeading.waitFor();
   await alphaRow.waitFor();
   assert.equal(await alphaRow.locator(".badge").count(), 0);
   assert.equal(await card.locator(".plugin-detail-header .badge").count(), 0);
   assert.equal(await add.count(), 0);
+
+  // At phone width the detail covers the list, so keyboard navigation must return to it.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await alphaRow.waitFor({ state: "hidden" });
+  await alphaHeading.focus();
+  const back = dialog.getByRole("button", { name: "Back to plugins", exact: true });
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await back.evaluate((node) => document.activeElement === node), true);
+  await page.keyboard.press("Enter");
+  const search = dialog.getByRole("searchbox", { name: "Search plugins", exact: true });
+  assert.equal(await search.evaluate((node) => document.activeElement === node), true);
+
   // Catalog availability, unlike selection state, does not depend on the draft.
   const beta = pluginRow(dialog, "beta");
+  await beta.waitFor();
   assert.equal(await beta.locator(".badge").textContent(), "Unavailable");
   await beta.click();
   const betaCard = pluginCard(dialog, "beta");
   assert.equal(await betaCard.locator(".plugin-detail-header .badge").textContent(), "Unavailable");
+  assert.equal(await page.locator("#plugin-live-selections").inputValue(), "[");
 });
 
 test("Create Agent searches approvers with a search-only Slack Source", async (t) => {
