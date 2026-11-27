@@ -2296,9 +2296,7 @@ export class ControllerWorker {
         this.emit({
           event: "worker.compute-prepare-failed",
           ...workLogFields(claim),
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
+          ...revisionOwner(revision),
           computeDriverId: this.compute.id,
           code: diagnostic.code,
           step: diagnostic.stage,
@@ -3423,7 +3421,7 @@ export class ControllerWorker {
       ...workLogFields(claim),
       namespaceId: claim.namespaceId,
       result: resolved.outcome,
-      outcome: resolved.outcome,
+      outcome,
       code: resolved.code,
       ...(reason === undefined ? {} : { reason }),
       ...(resolved.hintCode === undefined ? {} : { hintCode: resolved.hintCode }),
@@ -4950,11 +4948,7 @@ export class ControllerWorker {
         revision.repositoryCredentials !== undefined &&
         agent.activeRevisionId === revision.id &&
         agent.desiredRuntimeState === "running"
-          ? await this.queue.repositoryExpiryState({
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-            })
+          ? await this.queue.repositoryExpiryState(revisionOwner(revision))
           : undefined;
       if (maintenance) {
         const original = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
@@ -7117,15 +7111,7 @@ export class ControllerWorker {
           claim.revisionId!,
         );
         if (revision?.repositoryCredentials !== undefined) {
-          await queue.enqueueRepositoryCleanup(
-            claim,
-            {
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-            },
-            "terminal-runtime",
-          );
+          await queue.enqueueRepositoryCleanup(claim, revisionOwner(revision), "terminal-runtime");
         }
         await this.appendRevisionSuperseded(unit, claim, resolved.supersededBy);
       } else if (resolved.revision !== undefined && resolved.outcome === "success") {
@@ -7525,11 +7511,7 @@ export class ControllerWorker {
       ) {
         return undefined;
       }
-      const disposition = await queue.repositoryExpiryState({
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-      });
+      const disposition = await queue.repositoryExpiryState(revisionOwner(revision));
       if (disposition !== "removal" && disposition !== "retiring") {
         return undefined;
       }
@@ -7625,11 +7607,7 @@ export class ControllerWorker {
       }
       // Activation has completed under this claim. A later stop waits for its
       // acknowledgement instead of making this work repeat the stop itself.
-      const repositoryWithdrawal = await queue.repositoryExpiryState({
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-      });
+      const repositoryWithdrawal = await queue.repositoryExpiryState(revisionOwner(revision));
       if (
         repositoryWithdrawal === "retiring" ||
         (!isCandidateDeployment(claim) && repositoryWithdrawal === "removal")
@@ -8110,9 +8088,7 @@ export class ControllerWorker {
     await queue.enqueue(
       {
         idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
+        ...revisionOwner(revision),
         actorId: claim.actorId,
       },
       undefined,

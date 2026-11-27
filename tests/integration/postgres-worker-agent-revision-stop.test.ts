@@ -2298,6 +2298,22 @@ revisionTest(
   },
 );
 
+function captureWorkerLogs() {
+  const output: unknown[] = [];
+  const events: WorkerEvent[] = [];
+  const logger = createWorkerLogEmitter(
+    createOccLogger({
+      component: "occ-worker",
+      destination: jsonLineDestination(output),
+    }),
+  );
+  const log: NonNullable<ControllerWorkerOptions["emit"]> = (event) => {
+    events.push(checkedWorkerEvent(event));
+    logger(event);
+  };
+  return { events, output, log };
+}
+
 test(
   "a failed Namespace logs the Compute refusal reason while status and audit keep only the failure",
   requiresPostgres,
@@ -2321,18 +2337,7 @@ test(
     ];
     let attempts = 0;
     let deletes = 0;
-    const output: unknown[] = [];
-    const events: WorkerEvent[] = [];
-    const logger = createWorkerLogEmitter(
-      createOccLogger({
-        component: "occ-worker",
-        destination: jsonLineDestination(output),
-      }),
-    );
-    const log: NonNullable<ControllerWorkerOptions["emit"]> = (event) => {
-      events.push(checkedWorkerEvent(event));
-      logger(event);
-    };
+    const { events, output, log } = captureWorkerLogs();
     await fixture.start(
       {
         ...fixture.compute,
@@ -2422,6 +2427,75 @@ test(
       deleted.map((event) => Object.hasOwn(event, "reason")),
       [false, false],
     );
+  },
+);
+
+test(
+  "Namespace provisioning logs a permanent outcome when retryable observations exhaust attempts",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const namespace = await fixture.controller.createNamespace(fixture.actor.id, {
+      name: `exhausted-${randomUUID()}`,
+    });
+    assert.equal(namespace.status, "provisioning");
+    const work = { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:ready` };
+    const reason = "Compute could not yet provision the Namespace.";
+    const { events, output, log } = captureWorkerLogs();
+    let observations = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async ensureNamespace(target, ...options) {
+          if (target.id !== namespace.id) {
+            return fixture.compute.ensureNamespace(target, ...options);
+          }
+          observations += 1;
+          return { namespaceId: target.id, namespaceReady: false, failure: "retryable", reason };
+        },
+      },
+      { emit: log },
+    );
+
+    const terminal = await fixture.work(work, "failed_permanent");
+    assert.equal(terminal.attempt_count, 2);
+    assert.equal(terminal.claim_token, null);
+    // The queue commit becomes visible before completion is logged. Join the in-flight pass.
+    await fixture.stop();
+    assert.equal(observations, 2);
+
+    const passes = (lines: readonly unknown[]) =>
+      lines
+        .filter(
+          (line): line is Readonly<Record<string, unknown>> =>
+            isRecord(line) &&
+            line.event === "worker.completed" &&
+            line.workId === work.idempotencyKey &&
+            line.namespaceId === namespace.id &&
+            line.operation === "namespace.ensure",
+        )
+        .map((line) => [line.attempt, line.result, line.outcome, line.code, line.reason]);
+    const expected = [
+      [1, "retry", "retry", "NAMESPACE_INCOMPLETE", reason],
+      [2, "retry", "permanent", "NAMESPACE_INCOMPLETE", reason],
+    ];
+    assert.deepEqual(passes(events), expected, "raw Worker completions");
+    assert.deepEqual(passes(output), expected, "serialized Worker completions");
+    assert.deepEqual((await fixture.workResult(work)).rows, [
+      { reason_code: "NAMESPACE_INCOMPLETE", result_data: null },
+    ]);
+    const failed = required(
+      await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id)),
+    );
+    assert.equal(failed.status, "failed");
+    assert.equal(JSON.stringify(failed).includes(reason), false);
+    const { rows } = await fixture.observerPool.query(
+      `SELECT details FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.lifecycle.ensure'`,
+      [namespace.id],
+    );
+    assert.equal(rows.length, 2);
+    assert.equal(JSON.stringify(rows).includes(reason), false);
   },
 );
 

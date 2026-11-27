@@ -349,9 +349,11 @@ when a scoped successor could have changed execution. A matching terminal
 already begun. Without that proof, the worker does not infer that a failed
 successor is harmless. Outages do not retire the serving version.
 
-`worker.completed` reports the target, outcome, and code. On `namespace.ensure`
-and `namespace.delete`, it can report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass, outside the Driver observation.
+`worker.completed` reports target, outcome and code. Exhausted `namespace.ensure`
+retries report `result=retry` and `outcome=permanent`.
+`namespace.ensure` and `namespace.delete` can include the current pass's
+[Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+outside the Driver observation.
 A result links to its claim attempt; repeated pending state can use
 `controller_work.deferred` instead of another `reconcile` event. Scoped IAM
 refusals append a claim-protected `authorization_denial` event for Agent deploy;
