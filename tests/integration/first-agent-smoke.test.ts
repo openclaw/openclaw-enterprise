@@ -22,7 +22,7 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
-import { readyGateway } from "../../scripts/ci/first-agent-smoke/agents.ts";
+import { readyGateway, waitForDeployment } from "../../scripts/ci/first-agent-smoke/agents.ts";
 import {
   channelProxyDeploymentStep,
   waitForChannelProxyReadiness,
@@ -402,6 +402,62 @@ test("smoke timing preserves a rejected proxy wait and omits unreached waits", a
       },
     );
   }
+});
+
+test("channel proxy waits for both signals in one poll and reports each first observation once", async (t) => {
+  const base = "/namespaces/fixture/agents/agent";
+  const deployment = `${base}/deployments/${revision}`;
+  const context = "channel-proxy-move-deploy-a";
+  const samples = [
+    // The deployment and Agent reads may straddle a change of revision.
+    { status: "succeeded", active: "other" },
+    { status: "running", active: revision, code: "REVISION_INCOMPLETE" },
+    { status: "running", active: revision, code: "REVISION_INCOMPLETE" },
+    { status: "running", active: revision, code: "PRIVATE_UNRECOGNIZED_CODE" },
+    { status: "succeeded", active: revision },
+  ];
+  const reads: string[] = [];
+  // Let Node write its binary test results through the same stream.
+  const output = t.mock.method(process.stdout, "write");
+  let poll = 0;
+  await waitForDeployment(
+    {
+      namespaceId: "fixture",
+      api: async (method, path) => {
+        reads.push(`${method} ${path}`);
+        const sample = samples[poll];
+        assert.ok(sample, "unexpected extra poll");
+        if (path === deployment) {
+          return {
+            status: sample.status,
+            progress: sample.code
+              ? { lastAttempt: { code: sample.code, message: "private diagnostic" } }
+              : null,
+          };
+        }
+        assert.equal(path, base);
+        poll++;
+        return { activeRevisionId: sample.active };
+      },
+    },
+    "agent",
+    revision,
+    "private label",
+    { ...virtualClock(), context },
+  );
+  output.mock.restore();
+  const lines = output.mock.calls
+    .map((call) => call.arguments[0])
+    .filter((chunk) => typeof chunk === "string");
+  assert.deepEqual(
+    reads,
+    samples.flatMap(() => [`GET ${deployment}`, `GET ${base}`]),
+  );
+  assert.deepEqual(lines, [
+    `[first-agent-smoke] ${context} wait observed deployment-succeeded elapsedMs=0\n`,
+    `[first-agent-smoke] ${context} wait observed active-revision elapsedMs=2000\n`,
+    `[first-agent-smoke] ${context} wait observed REVISION_INCOMPLETE elapsedMs=2000\n`,
+  ]);
 });
 
 test("channel proxy gateway timings report bounded intervals from the exact Ready Pod", async (t) => {

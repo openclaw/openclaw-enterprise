@@ -67,14 +67,59 @@ async function cliJson(stack: SmokeStack, args: string[]): Promise<unknown> {
   return result;
 }
 
+// Record the first paired poll that sees each signal. A previous attempt's
+// code does not describe how the Worker spent the elapsed time.
+function deploymentWaitObserver(
+  context: ChannelProxyDeployment | undefined,
+  now = () => performance.now(),
+) {
+  if (!isChannelProxyDeployment(context)) {
+    return;
+  }
+  const started = now();
+  const seen = new Set<string>();
+  const first = (signal: string, elapsed: number) => {
+    if (seen.has(signal)) {
+      return;
+    }
+    seen.add(signal);
+    log(`${context} wait observed ${signal} elapsedMs=${elapsed}`);
+  };
+  return (deployment: unknown, active: boolean, succeeded: boolean) => {
+    try {
+      const elapsed = Math.round(now() - started);
+      if (active) {
+        first("active-revision", elapsed);
+      }
+      if (succeeded) {
+        first("deployment-succeeded", elapsed);
+      }
+      const progress = wireField(deployment, "progress");
+      const attempt = progress == null ? undefined : wireField(progress, "lastAttempt");
+      const code = attempt == null ? undefined : wireField(attempt, "code");
+      switch (code) {
+        case "PREDECESSOR_STOP_YIELDED":
+        case "REVISION_INCOMPLETE":
+        case "WORKSPACE_NODE_PENDING":
+        case "WORKSPACE_NODE_BINDING_PENDING":
+          first(code, elapsed);
+      }
+    } catch {
+      // A diagnostic failure must not change the outcome of the poll.
+    }
+  };
+}
+
 // A deployment must settle at succeeded with its revision active; a failed
 // status fails the smoke at once. Serving is proven separately by a model turn.
-async function waitForDeployment(
-  stack: SmokeStack,
+export async function waitForDeployment(
+  stack: Pick<SmokeStack, "namespaceId" | "api">,
   agentId: string,
   revisionId: string | undefined,
   label: string,
+  options: Parameters<typeof waitFor>[3] & { context?: ChannelProxyDeployment } = {},
 ) {
+  const observe = deploymentWaitObserver(options.context, options.now);
   const base = `/namespaces/${stack.namespaceId}/agents/${agentId}`;
   await waitFor(
     `${label} revision ${revisionId}`,
@@ -89,12 +134,16 @@ async function waitForDeployment(
           `${label}: deployment failed ${JSON.stringify(wireField(deployment, "error"))}`,
         );
       }
+      const active = wireField(agent, "activeRevisionId");
+      const succeeded = status === "succeeded";
+      observe?.(deployment, revisionId !== undefined && active === revisionId, succeeded);
       return {
-        done: status === "succeeded" && wireField(agent, "activeRevisionId") === revisionId,
-        state: { deployment: status, active: wireField(agent, "activeRevisionId") },
+        done: succeeded && active === revisionId,
+        state: { deployment: status, active },
       };
     },
     10 * minute,
+    options,
   );
 }
 
@@ -446,7 +495,8 @@ export async function deployAgent(
     assert.match(id ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
     return id!;
   });
-  await measure("wait", () => waitForDeployment(stack, agent.id, revisionId, agent.label));
+  const options = timing && { context: timing.context };
+  await measure("wait", () => waitForDeployment(stack, agent.id, revisionId, agent.label, options));
   await measure("verify", async () => {
     const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
     assert.equal(
