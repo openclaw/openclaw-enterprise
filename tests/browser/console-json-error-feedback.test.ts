@@ -324,8 +324,9 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const resizedHeight = await json.evaluate((node) => node.getBoundingClientRect().height);
   assert.ok(resizedHeight > beforeResize.height, "the native resize grip enlarges the editor");
 
-  const shortViewport = { width: 1024, height: 360 };
-  await page.setViewportSize(shortViewport);
+  // Just above the compact navigation breakpoint, the sidebar makes the error wrap.
+  const splitViewport = { width: 761, height: 513 };
+  await page.setViewportSize(splitViewport);
   await json.fill(overflow);
   // A number-range error has no caret location. Keep the user's selection on the first line.
   await page.keyboard.press("Control+Home");
@@ -358,7 +359,7 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.deepEqual(
     { selection, editorTopVisible: editor !== null && editor.y >= 0, diagnosticVisible },
     { selection: firstLineSelection, editorTopVisible: true, diagnosticVisible: true },
-    `Create Agent keeps the selection and shows the editor and number error above its actions at ${shortViewport.width}×${shortViewport.height}`,
+    `Create Agent keeps the selection and shows the editor and number error above its actions at ${splitViewport.width}×${splitViewport.height}`,
   );
   await page.setViewportSize(originalViewport);
   assert.equal(
@@ -406,7 +407,7 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.notEqual(misplacedComma, template);
   const commaOffset = misplacedComma.indexOf(",");
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  for (const viewport of [originalViewport, shortViewport]) {
+  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
     await page.setViewportSize(viewport);
     await json.fill(misplacedComma);
     await json.press("Control+End");

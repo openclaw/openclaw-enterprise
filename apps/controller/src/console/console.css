@@ -4781,16 +4781,10 @@ html:has(#create-agent-form) {
     height: max(5lh, calc(100dvh - var(--create-actions-space) - 3lh));
   }
 }
-/* Reserve space for the error before editing, including when the actions wrap. */
+/* Reserve two lines and the gap above the error, even when the sidebar narrows the form. */
 .launch-advanced #configuration-json {
   --create-editor-actions-height: var(--create-action-row-space);
-  --create-editor-error-space: 2lh;
-  max-height: calc(100dvh - var(--create-editor-actions-height) - var(--create-editor-error-space));
-}
-@media (max-width: 520px) {
-  .launch-advanced #configuration-json {
-    --create-editor-error-space: 3lh;
-  }
+  max-height: calc(100dvh - var(--create-editor-actions-height) - 2lh - var(--space-3));
 }
 .repository-customize .repository-option {
   margin-top: var(--space-4);
