@@ -747,6 +747,32 @@ async function finishProvisioningAttempt({
   });
 }
 
+// The warning can wrap onto more lines than the default scroll padding allows.
+// Measure the mounted bar so native focus scrolling clears it, including after Back.
+const createActionsSelector = "#create-agent-form ~ .form-actions";
+let actionSize: ResizeObserver | undefined;
+function observeCreateActions(actions = document.querySelector(createActionsSelector)) {
+  if (!actions) {
+    return;
+  }
+  actionSize ??= new ResizeObserver((entries, observer) => {
+    for (const { target } of entries) {
+      if (!target.isConnected) {
+        observer.unobserve(target);
+        if (!document.querySelector(createActionsSelector)) {
+          document.documentElement.style.removeProperty("--create-actions-height");
+        }
+        continue;
+      }
+      document.documentElement.style.setProperty(
+        "--create-actions-height",
+        `${Math.ceil(target.getBoundingClientRect().height)}px`,
+      );
+    }
+  });
+  actionSize.observe(actions, { box: "border-box" });
+}
+
 export function renderCreateAgent(
   context: CreateAgentContext,
   restored?: unknown,
@@ -4745,6 +4771,8 @@ function renderAgentForm(
     recovery,
     actions,
   );
+  observeCreateActions(actions);
+  context.onResume?.(observeCreateActions);
   context.setDraftCapture(captureDraft, unsavedDraft);
   context.drafts.forget("preset");
   context.setDiscardOnExit(false);

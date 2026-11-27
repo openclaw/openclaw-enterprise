@@ -120,6 +120,15 @@ Before scrolling, check that the selection and the whole error are visible above
 the buttons. Type `2` to replace just the selected number. Repeat with the
 application repository unchecked. The deployment warning should stay visible too.
 
+## Keep Runtime details visible while tabbing
+
+Open **Pages → Create Agent → GitHub repository access with a registered App**
+at 1024 × 360. Choose **Service Accounts**, leave the credential field empty,
+and uncheck the application repository to show the deployment warning. Focus
+**Model ID**, scroll down one wheel step beside the form, then press Tab. Check
+that **Runtime details · Dedicated** and its full focus outline are visible above
+the sticky actions. Repeat with the repository selected and no warning.
+
 ## Correct a Create Agent Configuration syntax error
 
 Open **Pages → Create Agent → Invalid Configuration JSON**
