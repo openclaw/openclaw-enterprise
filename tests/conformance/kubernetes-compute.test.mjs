@@ -114,6 +114,7 @@ import {
 import {
   checkEmbeddedGatewayRetirement,
   checkGatewayRetirement,
+  retirementArtifactFixture,
 } from "./kubernetes-gateway-retirement-case.ts";
 import {
   checkStartupPluginInitialization,
@@ -6902,17 +6903,13 @@ for (const stopped of [false, true]) {
     const target = { name: namespace, plane: "execution" };
     const gatewayName = `gateway-${digest(revision.agentId)}`;
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    const key = (kind, name) => `${kind}:${name}`;
-    const objects = new Map();
-    const save = (object) => {
-      assert.equal(object.metadata.namespace ?? namespace, namespace);
-      object.metadata.uid ??= `${object.metadata.name}-uid`;
-      objects.set(key(object.kind, object.metadata.name), structuredClone(object));
-    };
-    save({
+    const { clients, resources, key, save, read, removeArtifact, deletions } =
+      retirementArtifactFixture(namespace);
+    const activeNamespace = {
       ...driver.manifest("v1", "Namespace", namespace, { namespaceId: revision.namespaceId }),
       status: { phase: "Active" },
-    });
+    };
+    save(activeNamespace);
     // Stop already removed the Gateway Deployment; Agent deletion then retires the revision.
     if (!stopped) {
       const gateway = driver.manifest("apps/v1", "Deployment", gatewayName, ownership, target);
@@ -6934,6 +6931,7 @@ for (const stopped of [false, true]) {
     ];
     const policyNames = policies.map(({ metadata }) => metadata.name);
     assert.ok(policyNames.includes(`allow-gateway-workspace-node-${digest(revision.agentId)}`));
+    assert.ok(policyNames.includes(`allow-workspace-node-gateway-${digest(revision.agentId)}`));
     for (const policy of policies) {
       save(policy);
     }
@@ -6948,102 +6946,53 @@ for (const stopped of [false, true]) {
     save(sibling);
 
     const trustName = `harness-trust-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-    const trust = {
-      ...driver.manifest(
-        "v1",
-        "ConfigMap",
-        trustName,
-        { ...ownership, servicePrincipalId: revision.servicePrincipalId, revisionId: revision.id },
-        target,
-      ),
+    const publicTrust = (name, owner) => ({
+      ...driver.manifest("v1", "ConfigMap", name, { ...owner, revisionId: revision.id }, target),
       immutable: true,
       data: { "ca-bundle.pem": tls.caBundle },
-    };
-    save(trust);
-    const siblingTrust = {
-      ...driver.manifest(
-        "v1",
-        "ConfigMap",
-        `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
-        { ...ownership, agentId: "agent-sibling", revisionId: revision.id },
-        target,
-      ),
-      immutable: true,
-      data: { "ca-bundle.pem": tls.caBundle },
-    };
+    });
+    save(publicTrust(trustName, { ...ownership, servicePrincipalId: revision.servicePrincipalId }));
+    const siblingTrust = publicTrust(
+      `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
+      { ...ownership, agentId: "agent-sibling" },
+    );
     save(siblingTrust);
 
-    const deleted = [];
-    const missing = (kind, name) =>
-      Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
-    const read = (kind) => async (request) => {
-      const name = request.name ?? request.metadata?.name;
-      const value = objects.get(key(kind, name));
-      if (value === undefined) {
-        throw missing(kind, name);
-      }
-      return structuredClone(value);
-    };
-    const remove = (kind) => async (request) => {
-      const current = await read(kind)(request);
-      assert.equal(request.namespace, namespace);
-      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
-      deleted.push(`${kind}/${request.name}`);
-      objects.delete(key(kind, request.name));
-      return {};
-    };
-    const core = {
-      async listNamespace() {
-        return { apiVersion: "v1", kind: "NamespaceList", items: [] };
-      },
-      readNamespace: read("Namespace"),
-      async listNamespacedPod() {
-        return { apiVersion: "v1", kind: "PodList", items: [] };
-      },
-    };
-    for (const kind of [
-      "ConfigMap",
-      "Secret",
-      "Service",
-      "ServiceAccount",
-      "PersistentVolumeClaim",
-    ]) {
-      core[`readNamespaced${kind}`] = read(kind);
-      core[`deleteNamespaced${kind}`] = remove(kind);
-    }
     driver.apiClients = Promise.resolve({
-      core,
-      apps: {
-        readNamespacedDeployment: read("Deployment"),
-        deleteNamespacedDeployment: remove("Deployment"),
-      },
-      networking: {
-        readNamespacedNetworkPolicy: read("NetworkPolicy"),
-        deleteNamespacedNetworkPolicy: remove("NetworkPolicy"),
+      ...clients,
+      core: {
+        ...clients.core,
+        deleteNamespacedSecret: removeArtifact("Secret"),
+        async listNamespacedPod() {
+          return { apiVersion: "v1", kind: "PodList", items: [] };
+        },
       },
       objects: {
-        read: async (object) => read(object.kind)(object),
+        read: async ({ kind, name, metadata }) => read(kind, namespace, name ?? metadata?.name),
       },
     });
 
+    const expectedDeletions = [
+      ...(stopped ? [] : [key("Deployment", gatewayName)]),
+      key("ConfigMap", trustName),
+      ...policyNames.map((name) => key("NetworkPolicy", name)),
+    ].sort();
+    const survivors = new Map([
+      [key("Namespace", namespace), activeNamespace],
+      [key("NetworkPolicy", sibling.metadata.name), sibling],
+      [key("ConfigMap", siblingTrust.metadata.name), siblingTrust],
+    ]);
+
     await driver.retireRevision(revision);
     assert.deepEqual(cleanupCalls, [revision.id]);
-    assert.equal(
-      objects.has(key("ConfigMap", trustName)),
-      false,
-      "retirement removes exact public trust",
-    );
-    assert.deepEqual(objects.get(key("ConfigMap", siblingTrust.metadata.name)), siblingTrust);
-    assert.equal(objects.has(key("Deployment", gatewayName)), false);
-    for (const name of policyNames) {
-      assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);
-    }
-    assert.deepEqual(objects.get(key("NetworkPolicy", sibling.metadata.name)), sibling);
+    assert.deepEqual(deletions.map(({ kind, name }) => key(kind, name)).sort(), expectedDeletions);
+    assert.deepEqual(resources, survivors);
 
     // A retried retirement finds nothing left to delete.
-    const deletedOnce = deleted.length;
     await driver.retireRevision(revision);
-    assert.equal(deleted.length, deletedOnce);
+    assert.equal(deletions.length, expectedDeletions.length);
+    assert.deepEqual(resources, survivors);
+    assert.deepEqual(cleanupCalls, [revision.id, revision.id]);
   });
 }
 
