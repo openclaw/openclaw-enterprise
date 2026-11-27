@@ -12,6 +12,12 @@ An operator selects credentials and approved access for an Agent. The OpenClaw C
 
 This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md) and [RFC-0027](../0027-agent-oauth-connections/index.md). See [implementation status](../../../docs/reference/credential-sources.md#implementation-status) for available paths.
 
+## Amendment: name the custody owner CredentialService
+
+Rename TokenService to CredentialService because the selected Driver owns static credentials, OAuth grants, and GitHub App issuance as well as tokens. Rename the Driver contract to `CredentialServiceDriver`, its serialized capability and Installation selection key from `token_service` to `credential_service`, and associated API and configuration identifiers consistently. Driver operations and their required behavior remain unchanged.
+
+One database migration converts the current schema and persisted identifiers while preserving Source and Client IDs, credential contents, Secret references, and existing installations. Older migration files and receipts remain immutable. External configuration and generated API clients must use the new names; no compatibility alias is proposed. Custody, authorization, issuance, renewal, and Credential Proxy delivery keep their existing owners and behavior.
+
 ## Credential resources and ownership
 
 | Resource            | Purpose and owner                                                                                                                                                 |
