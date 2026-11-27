@@ -15,7 +15,10 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import type { SandboxDriver } from "../../packages/contracts/src/index.ts";
-import { SandboxGatewayUnavailableError } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  SandboxGatewayUnavailableError,
+} from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   apiKeyAuth,
@@ -779,7 +782,10 @@ export async function checkContainmentStopOrder() {
 }
 
 // A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
-function stopOrderFixture(id: string) {
+function stopOrderFixture(
+  id: string,
+  gatewayListMetadata?: { continue: string; _continue: string; remainingItemCount: number },
+) {
   const driver = new KubernetesComputeDriver(options());
   const revision = routedRevision(driver, { id });
   const { namespace, namespaceReads, deploymentName, deployment } = workloadFixture(
@@ -805,8 +811,10 @@ function stopOrderFixture(id: string) {
   agentPod.metadata.name = "refused-stop-order-agent-pod";
   agentPod.metadata.labels["openclaw.dev/workload-role"] = "agent";
   const events: string[] = [];
+  const podLists: ListPods[] = [];
   const fixture = {
     events,
+    podLists,
     deploymentPresent: true,
     gatewayPodsLeft: 0,
     agentPodsLeft: 0,
@@ -823,6 +831,7 @@ function stopOrderFixture(id: string) {
             "openclaw.dev/workload-role"
           ];
           fixture.events.push(`list ${role} Pods`);
+          podLists.push(request);
           if (role === "gateway" && fixture.gatewayPodsLeft > 0) {
             fixture.gatewayPodsLeft -= 1;
             return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
@@ -835,7 +844,14 @@ function stopOrderFixture(id: string) {
             }
             return { apiVersion: "v1", kind: "PodList", items: [pod] };
           }
-          return { apiVersion: "v1", kind: "PodList", items: [] };
+          return {
+            apiVersion: "v1",
+            kind: "PodList",
+            items: [],
+            ...(role === "gateway" && gatewayListMetadata !== undefined
+              ? { metadata: gatewayListMetadata }
+              : {}),
+          };
         },
       },
       apps: {
@@ -876,6 +892,61 @@ export async function checkForeignWorkloadPodRefusal() {
     "delete Agent Deployment",
     "list agent Pods",
   ]);
+}
+
+function gatewayPodListControls(caller: "stop" | "images") {
+  const id = "revision-incomplete-gateway-pod-list";
+  const metadata = { continue: "", _continue: "", remainingItemCount: 0 };
+  const complete = stopOrderFixture(id, metadata);
+  const incomplete = stopOrderFixture(id, { ...metadata, _continue: "gateway-next-page" });
+  const { namespaceId, agentId } = complete.revision;
+  const prefix = caller === "stop" ? `openclaw.dev/namespace=${namespaceId},` : "";
+  const selector = `${prefix}openclaw.dev/agent=${agentId},openclaw.dev/revision=${id}`;
+  const request = (role: "gateway" | "agent") => ({
+    namespace: kubernetesNamespaceName(namespaceId),
+    labelSelector: `${selector},openclaw.dev/workload-role=${role}`,
+    timeoutSeconds: 10,
+  });
+  return { incomplete, complete, gateway: request("gateway"), agent: request("agent") };
+}
+
+function dependencyUnavailable(message: string) {
+  return (error: unknown) =>
+    error instanceof DependencyUnavailableError && error.message === message;
+}
+
+export async function checkIncompleteGatewayPodListOnStop() {
+  const { incomplete, complete, gateway, agent } = gatewayPodListControls("stop");
+  await assert.rejects(
+    incomplete.driver.stopRevision(incomplete.revision),
+    dependencyUnavailable("The Kubernetes client returned an invalid workload Pod list."),
+  );
+  assert.deepEqual(incomplete.events, ["list gateway Pods"]);
+  assert.deepEqual(incomplete.podLists, [gateway]);
+  assert.equal(incomplete.deploymentPresent, true);
+
+  await complete.driver.stopRevision(complete.revision);
+  assert.deepEqual(complete.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+  assert.deepEqual(complete.podLists, [gateway, agent]);
+  assert.equal(complete.deploymentPresent, false);
+}
+
+export async function checkIncompleteGatewayPodListOnImageRead() {
+  const { incomplete, complete, gateway, agent } = gatewayPodListControls("images");
+  await assert.rejects(
+    incomplete.driver.getRuntimeImages(incomplete.revision),
+    dependencyUnavailable("The Kubernetes client returned an invalid Pod list."),
+  );
+  assert.deepEqual(incomplete.events, ["list gateway Pods"]);
+  assert.deepEqual(incomplete.podLists, [gateway]);
+
+  assert.deepEqual(await complete.driver.getRuntimeImages(complete.revision), []);
+  assert.deepEqual(complete.events, ["list gateway Pods", "list agent Pods"]);
+  assert.deepEqual(complete.podLists, [gateway, agent]);
 }
 
 export async function checkRefusedCandidateStopOrder() {

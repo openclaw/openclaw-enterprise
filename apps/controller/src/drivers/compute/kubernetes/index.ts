@@ -2407,6 +2407,21 @@ function runtimeImageCommit(value: unknown): string | null {
   return typeof value === "string" && /^[a-f0-9]{40}$/.test(value) ? value : null;
 }
 
+function isCompletePodList(
+  list: KubernetesRecord | undefined,
+): list is KubernetesRecord & { readonly items: readonly unknown[] } {
+  const metadata = asRecord(list?.metadata);
+  return (
+    Array.isArray(list?.items) &&
+    (list.apiVersion === undefined || list.apiVersion === "v1") &&
+    (list.kind === undefined || list.kind === "PodList") &&
+    (list.metadata === undefined || metadata !== undefined) &&
+    (metadata?.continue === undefined || metadata.continue === "") &&
+    (metadata?._continue === undefined || metadata._continue === "") &&
+    (metadata?.remainingItemCount === undefined || metadata.remainingItemCount === 0)
+  );
+}
+
 function observedPodMatchingSelector(
   item: unknown,
   namespace: string,
@@ -9731,16 +9746,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
       );
       signal.throwIfAborted();
-      const metadata = asRecord(observed?.metadata);
-      if (
-        !Array.isArray(observed?.items) ||
-        (observed.apiVersion !== undefined && observed.apiVersion !== "v1") ||
-        (observed.kind !== undefined && observed.kind !== "PodList") ||
-        (observed.metadata !== undefined && metadata === undefined) ||
-        (metadata?.continue !== undefined && metadata.continue !== "") ||
-        (metadata?._continue !== undefined && metadata._continue !== "") ||
-        (metadata?.remainingItemCount !== undefined && metadata.remainingItemCount !== 0)
-      ) {
+      if (!isCompletePodList(observed)) {
         throw new DependencyUnavailableError(
           "The Kubernetes client returned an invalid workload Pod list.",
         );
@@ -11578,16 +11584,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       new Error(
         "The Kubernetes client returned an invalid or incomplete provider Harness Pod list.",
       );
-    const listMetadata = asRecord(pods?.metadata);
-    if (
-      !Array.isArray(pods?.items) ||
-      (pods.apiVersion !== undefined && pods.apiVersion !== "v1") ||
-      (pods.kind !== undefined && pods.kind !== "PodList") ||
-      (pods.metadata !== undefined && listMetadata === undefined) ||
-      (listMetadata?.continue !== undefined && listMetadata.continue !== "") ||
-      (listMetadata?._continue !== undefined && listMetadata._continue !== "") ||
-      (listMetadata?.remainingItemCount !== undefined && listMetadata.remainingItemCount !== 0)
-    ) {
+    if (!isCompletePodList(pods)) {
       throw invalidObservation();
     }
     let candidates = 0;
@@ -11672,16 +11669,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }),
       ),
     );
-    const metadata = asRecord(pods?.metadata);
-    if (
-      !Array.isArray(pods?.items) ||
-      (pods.apiVersion !== undefined && pods.apiVersion !== "v1") ||
-      (pods.kind !== undefined && pods.kind !== "PodList") ||
-      (pods.metadata !== undefined && metadata === undefined) ||
-      (metadata?.continue !== undefined && metadata.continue !== "") ||
-      (metadata?._continue !== undefined && metadata._continue !== "") ||
-      (metadata?.remainingItemCount !== undefined && metadata.remainingItemCount !== 0)
-    ) {
+    if (!isCompletePodList(pods)) {
       throw new DependencyUnavailableError("The Kubernetes client returned an invalid Pod list.");
     }
     return Object.freeze(

@@ -296,6 +296,8 @@ import {
   checkFailedHarnessStopEndsWait,
   checkForeignWorkloadPodRefusal,
   checkGatewayDrainYield,
+  checkIncompleteGatewayPodListOnImageRead,
+  checkIncompleteGatewayPodListOnStop,
   checkNativeHarnessStopsAtOnce,
   checkOtherHarnessStopsDoNotWait,
   checkProviderStopTermination,
@@ -6796,6 +6798,16 @@ test(
 test(
   "a workload termination wait refuses a Pod of another revision",
   checkForeignWorkloadPodRefusal,
+);
+
+test(
+  "an ordinary stop leaves the Agent Deployment intact on an incomplete empty Gateway Pod list",
+  checkIncompleteGatewayPodListOnStop,
+);
+
+test(
+  "a runtime image read refuses an incomplete empty Gateway Pod list before listing Agent Pods",
+  checkIncompleteGatewayPodListOnImageRead,
 );
 
 test(
