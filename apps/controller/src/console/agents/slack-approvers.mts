@@ -9,7 +9,7 @@ export function createSlackApproverField({
   agentId,
   getValue,
   onChange,
-  inheritedLabel = "Inherit Agent default",
+  inheritedLabel,
   allowInherit = true,
   lazyNames = false,
   directorySetup = null,
@@ -27,12 +27,24 @@ export function createSlackApproverField({
   directorySetup?: HTMLElement | null;
   onDirectoryVisibilityChange?(visible: boolean): void;
 }) {
+  const inheritedCopy =
+    inheritedLabel === undefined
+      ? {
+          label: "Use OpenClaw routing",
+          hint: "No default approver list is set.",
+          chosenHint: "No Slack users selected. OpenClaw routing will apply.",
+        }
+      : {
+          label: inheritedLabel,
+          hint: `${inheritedLabel}. No approver list is set at this level.`,
+          chosenHint: "Select people to replace the inherited approvers.",
+        };
   const id = `slack-approvers-${crypto.randomUUID()}`;
   const helper = element("p", { className: "hint", id: `${id}-hint` });
   const select = element(
     "select",
     { "aria-label": `${label} mode`, "aria-describedby": helper.id },
-    ...(allowInherit ? [element("option", { value: "inherit" }, inheritedLabel)] : []),
+    ...(allowInherit ? [element("option", { value: "inherit" }, inheritedCopy.label)] : []),
     element("option", { value: "none" }, "No Slack approvers"),
     element("option", { value: "chosen" }, "Selected Slack users"),
   );
@@ -77,8 +89,8 @@ export function createSlackApproverField({
     helper.textContent =
       current === undefined
         ? select.value === "chosen"
-          ? "Select people to replace the inherited approvers."
-          : `${inheritedLabel}. No approver list is set at this level.`
+          ? inheritedCopy.chosenHint
+          : inheritedCopy.hint
         : select.value === "none"
           ? `No Slack user can approve.${otherCount ? ` ${otherCount} other channel entries are preserved.` : ""}`
           : current.length === 0

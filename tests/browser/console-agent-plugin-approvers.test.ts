@@ -2836,7 +2836,12 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   const pluginsUrl = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, pluginsUrl);
-  await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+  const defaultMode = page.getByLabel("Default plugin approvers mode", { exact: true });
+  await defaultMode.selectOption("chosen");
+  assert.equal(
+    await accessibleDescription(defaultMode),
+    "No Slack users selected. OpenClaw routing will apply.",
+  );
   const people = page.getByRole("combobox", {
     name: "Default plugin approvers people",
     exact: true,
@@ -3054,10 +3059,10 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   });
 
   await page.goto(pluginsUrl.href);
-  await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
+  await defaultMode.selectOption("inherit");
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "inherit");
+  assert.equal(await defaultMode.inputValue(), "inherit");
   const clearedDefault = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}`) &&
@@ -3077,9 +3082,17 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
   await savedNotice.waitFor();
-  await page.getByLabel("Default plugin approvers mode").selectOption("none");
+  assert.equal(await defaultMode.locator("option:checked").textContent(), "Use OpenClaw routing");
+  assert.equal(await accessibleDescription(defaultMode), "No default approver list is set.");
+
+  await defaultMode.selectOption("none");
   assert.equal(await savedNotice.isVisible(), false, "The new approver draft is unsaved");
   assert.equal(await page.getByText("Unsaved plugin changes.", { exact: true }).isVisible(), true);
+  await defaultMode.selectOption("chosen");
+  assert.equal(
+    await accessibleDescription(defaultMode),
+    "No Slack user can approve until people are selected.",
+  );
 });
 
 test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {

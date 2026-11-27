@@ -490,7 +490,6 @@ export function renderAgentPlugins(
       pluginApprovers = value;
       onEdit();
     },
-    inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     allowInherit: true,
     lazyNames: true,
   });
