@@ -106,6 +106,14 @@ more. Focus should stay where you put it.
 Repeat this resize check in **Pages → Agent detail → Plugin selections JSON error**.
 Enter a typo in **Plugin selections JSON** and press **Save plugin selections**.
 
+In **Pages → Agent detail → Plugins Draft**, set **Plugin selections JSON** to
+`{}`. Check that the summary and **Configured** tab both report zero. Replace
+the draft with `[`. The summary should explain how to fix the draft, and
+**Configured** should show no count or invitation to add a plugin. In
+**Available**, check that no plugin is labelled **Not selected**. Close the
+dialog and enter `{"sample":{"enabled":false}}`. Check that the summary and
+**Configured** both count the disabled plugin once.
+
 ## Correct an out-of-range Configuration number
 
 Open **Pages → Agent detail → Invalid Configuration JSON**

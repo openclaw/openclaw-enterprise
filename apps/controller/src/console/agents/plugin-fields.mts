@@ -188,6 +188,18 @@ function pluginIdentity(entry: CatalogEntry, heading = false) {
   );
 }
 
+function pluginBadge(entry: CatalogEntry, values: Selections | null) {
+  if (entry.available === false) {
+    return element("span", { className: "badge" }, "Unavailable");
+  }
+  if (values === null) {
+    return null;
+  }
+  const selected = values[entry.id];
+  const label = selected ? (selected.enabled ? "Enabled" : "Disabled") : "Not selected";
+  return element("span", { className: "badge" }, label);
+}
+
 function catalogLink(label: string, url: string) {
   return element("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label);
 }
@@ -814,6 +826,10 @@ export function createPluginFields({
     catalogLoading: boolean,
   ) {
     list.setAttribute("aria-busy", String(catalogLoading));
+    if (configuredOnly && values === null) {
+      list.replaceChildren();
+      return;
+    }
     const query = configuredOnly || !onLoadPlugins ? search.value.trim().toLowerCase() : "";
     const candidates = configuredOnly
       ? Object.keys(values ?? {})
@@ -832,25 +848,15 @@ export function createPluginFields({
           a.name.localeCompare(b.name),
       );
     const rows = visible.map((entry, index) => {
-      const selected = values?.[entry.id];
       const item = button(pluginIdentity(entry), () => showPlugin(entry), {
         className: "plugin-list-item",
         "aria-label": entry.name,
         "aria-current": String(tabState().activeId === entry.id),
       });
-      item.append(
-        element(
-          "span",
-          { className: "badge" },
-          entry.available === false
-            ? "Unavailable"
-            : selected
-              ? selected.enabled
-                ? "Enabled"
-                : "Disabled"
-              : "Not selected",
-        ),
-      );
+      const badge = pluginBadge(entry, values);
+      if (badge) {
+        item.append(badge);
+      }
       const reasonId = `${input.id}-plugin-unavailable-${index}`;
       if (entry.available === false) {
         item.setAttribute("aria-describedby", reasonId);
@@ -1187,7 +1193,7 @@ export function createPluginFields({
     pagination.hidden = configuredOnly || !onLoadPlugins;
     available.setAttribute("aria-pressed", String(!configuredOnly));
     configured.setAttribute("aria-pressed", String(configuredOnly));
-    const count = Object.keys(values ?? {}).length;
+    const count = values === null ? null : Object.keys(values).length;
     accessHelp.hidden = !catalog?.setup;
     setupReminder.hidden = !catalog?.setup || count === 0;
     setupInstructions.replaceChildren(...(catalog?.setup ? setupContent(catalog.setup) : []));
@@ -1195,11 +1201,17 @@ export function createPluginFields({
       element("summary", {}, "Check plugin access and credentials before deployment"),
       ...(catalog?.setup ? setupContent(catalog.setup) : []),
     );
-    summary.textContent = `${count} plugin${count === 1 ? "" : "s"} configured. Select plugins and set their tool policies.`;
+    summary.textContent =
+      count === null
+        ? "Fix Plugin selections JSON to see which plugins are configured."
+        : `${count} plugin${count === 1 ? "" : "s"} configured. Select plugins and set their tool policies.`;
     searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Search plugins";
     search.placeholder = searchLabel.textContent;
     if (configuredOnly && !reloadRequired) {
-      statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
+      statusText =
+        count === null
+          ? (catalog?.message ?? "")
+          : `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     setText(status, statusText);
     describeCatalogControls();
@@ -1226,17 +1238,7 @@ export function createPluginFields({
           "div",
           { className: "plugin-detail-header" },
           pluginIdentity(entry, true),
-          element(
-            "span",
-            { className: "badge" },
-            entry.available === false
-              ? "Unavailable"
-              : selected
-                ? selected.enabled
-                  ? "Enabled"
-                  : "Disabled"
-                : "Not selected",
-          ),
+          pluginBadge(entry, values),
         ),
         element("p", { className: "hint plugin-id" }, entry.id),
         entry.description ? element("p", { className: "hint" }, entry.description) : null,
@@ -1572,7 +1574,7 @@ export function createPluginFields({
             ),
           );
         }
-      } else if (!selected) {
+      } else if (values !== null) {
         const add = button(`Add ${entry.name}`, () =>
           update((all) => {
             all[entry.id] = { enabled: true };
@@ -1715,6 +1717,8 @@ export function createPluginFields({
       }
       filterTools();
       detail.replaceChildren(details);
+    } else if (configuredOnly && values === null) {
+      detail.replaceChildren();
     } else {
       detail.replaceChildren(
         element(
