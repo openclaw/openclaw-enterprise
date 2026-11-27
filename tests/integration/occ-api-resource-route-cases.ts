@@ -13,7 +13,6 @@ import {
   NamespaceListResponse,
   NamespaceResponse,
   ErrorResponse,
-  type InstallationWire,
   type NamespaceWire,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
@@ -24,12 +23,13 @@ import { AGENT_NAME_CONFLICT, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   type createInjectedControllerFixture,
+  type FixtureRequest,
   bindHarnessKey,
   bootstrapInstallation,
   createConfiguration,
   checkedInjectedBody,
-  createAgent as createFixtureAgent,
-  createNamespace as createFixtureNamespace,
+  createAgent,
+  createNamespace,
   createServiceAccount,
   defaultNamespace,
   identifier,
@@ -40,18 +40,11 @@ type Fixture = Awaited<ReturnType<typeof createInjectedControllerFixture>>;
 
 interface Controller {
   fixture: Fixture;
-  request(
-    method: string,
-    pathname: string,
-    options?: Parameters<typeof injectedRequest>[3],
-  ): ReturnType<typeof injectedRequest>;
+  request: FixtureRequest;
 }
 
 interface ControllerSetup {
   configuredController(): Promise<Controller>;
-  bootstrap(controller: Controller, name?: string): Promise<InstallationWire>;
-  createNamespace(controller: Controller, name: string): Promise<NamespaceWire>;
-  createAgent(controller: Controller, namespaceId: string, name: string): Promise<AgentWire>;
   missingRevisionId: string;
 }
 
@@ -62,9 +55,6 @@ function resourceId(data: unknown): string {
 
 export async function runResourceRoutes({
   configuredController,
-  bootstrap,
-  createNamespace,
-  createAgent,
   missingRevisionId,
   missingAgentId,
 }: ControllerSetup & { missingAgentId: string }) {
@@ -78,7 +68,8 @@ export async function runResourceRoutes({
     const early = await controller.request(method, path, { body: { name: "early", template: {} } });
     assertApiError(early, 404, "NOT_FOUND", method);
   }
-  const installation = await bootstrap(controller);
+  const installation = await bootstrapInstallation(controller);
+  assert.equal(Object.hasOwn(installation, "capabilities"), false);
 
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
@@ -264,7 +255,7 @@ export async function checkResourceCreationSchemas(controller: Controller) {
     assert.equal(result.status, 400);
   }
 
-  const namespace = await createFixtureNamespace(controller, "validated");
+  const namespace = await createNamespace(controller, "validated");
   const duplicateNamespace = await controller.request("POST", "/namespaces", {
     body: { name: "validated" },
   });
@@ -275,7 +266,7 @@ export async function checkResourceCreationSchemas(controller: Controller) {
   });
   assert.equal(invalidAgent.status, 400);
 
-  const agent = await createFixtureAgent(controller, namespace.id, "valid-agent");
+  const agent = await createAgent(controller, namespace.id, "valid-agent");
   const duplicateAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "valid-agent", configurationId: agent.configurationId },
   });
@@ -392,14 +383,11 @@ export async function withValidationBeforeIam(
 
 export async function runBodylessRoutes({
   configuredController,
-  bootstrap,
-  createNamespace,
-  createAgent,
   missingRevisionId,
 }: ControllerSetup) {
   const controller = await configuredController();
   const { fixture } = controller;
-  await bootstrap(controller, "Bodyless-route installation");
+  await bootstrapInstallation(controller, "Bodyless-route installation");
   const { id: namespaceId } = await createNamespace(controller, "bodyless-route-namespace");
   const { id: agentId } = await createAgent(controller, namespaceId, "bodyless-route-agent");
 
@@ -462,13 +450,10 @@ function assertReadError(
 
 export async function runNamespaceIsolation({
   configuredController,
-  bootstrap,
-  createNamespace,
-  createAgent,
   missingRevisionId,
 }: ControllerSetup) {
   const controller = await configuredController();
-  await bootstrap(controller);
+  await bootstrapInstallation(controller);
 
   const namespaceA = await createNamespace(controller, "namespace-a");
   const namespaceB = await createNamespace(controller, "namespace-b");
@@ -511,7 +496,7 @@ export async function runNamespaceIsolation({
 
   const scopedController = await configuredController();
   const { fixture } = scopedController;
-  await bootstrap(scopedController, "IAM-scoped installation");
+  await bootstrapInstallation(scopedController, "IAM-scoped installation");
   const initialNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
   assert.equal(initialNamespaces.status, 200);
   assert(Array.isArray(initialNamespaces.data));
@@ -740,8 +725,8 @@ export async function runAgentDeletionMutationBoundary({
   const controller = await configuredController({ recordOperations: true });
   const { fixture, request } = controller;
   await bootstrapInstallation(controller);
-  const namespace = await createFixtureNamespace(controller, "deletion-race");
-  const agent = await createFixtureAgent(controller, namespace.id, "deletion-race-agent");
+  const namespace = await createNamespace(controller, "deletion-race");
+  const agent = await createAgent(controller, namespace.id, "deletion-race-agent");
   const occ = fixture.controller;
   assert(occ, "bootstrap must create the controller");
   const principalId = fixture.principal.id;
@@ -810,8 +795,8 @@ export async function prepareNamespaceLifecycle(
   const controller = await configuredController();
   const { fixture, request } = controller;
   await bootstrapInstallation(controller, "Lifecycle installation");
-  const namespaceA = await createFixtureNamespace(controller, "lifecycle-a");
-  const namespaceB = await createFixtureNamespace(controller, "lifecycle-b");
+  const namespaceA = await createNamespace(controller, "lifecycle-a");
+  const namespaceB = await createNamespace(controller, "lifecycle-b");
   const originalConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "original",
   });

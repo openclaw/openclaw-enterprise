@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import type { Static, TSchema } from "typebox";
-import { Check } from "typebox/value";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
-  ConfigurationResponse,
   ErrorResponse,
-  InstallationResponse,
-  NamespaceResponse,
   ServiceAccountForceDeletionResponse,
   ServiceAccountListResponse,
   ServiceAccountResponse,
@@ -19,30 +14,22 @@ import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { callerDenied, SERVICE_ACCOUNT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import {
+  bootstrapInstallation,
+  checkedInjectedBody,
+  createConfiguration,
   createInjectedControllerFixture,
+  createNamespace,
   createServiceAccount,
-  identifier,
   injectedRequest,
   requestForFixture,
   withoutBackendSummaries,
-  type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof createInjectedControllerFixture>>;
 type Reply = Awaited<ReturnType<typeof injectedRequest>>;
 
-function checkedBody<Schema extends TSchema>(
-  reply: Reply,
-  status: number,
-  schema: Schema,
-): Static<Schema> {
-  assert.equal(reply.status, status, JSON.stringify(reply.body));
-  assert(Check(schema, reply.body), JSON.stringify(reply.body));
-  return reply.body;
-}
-
 function checkRefusal(reply: Reply, status: number, code: ErrorCode) {
-  const { error } = checkedBody(reply, status, ErrorResponse);
+  const { error } = checkedInjectedBody(reply, status, ErrorResponse);
   assert.equal(error.code, code, JSON.stringify(error));
   return error;
 }
@@ -54,47 +41,8 @@ async function setupServiceAccounts({ recordOperations = false } = {}) {
     withoutBackendSummaries,
   );
   const request = requestForFixture(fixture);
-  const name = "Enterprise development";
-  const { data } = checkedBody(
-    await request("POST", "/installation/bootstrap", {
-      body: { name },
-    }),
-    201,
-    InstallationResponse,
-  );
-  assert.equal(data.name, name);
-  assert.match(data.id, identifier("ins"));
-  assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
+  await bootstrapInstallation({ request });
   return { fixture, request, auditSink };
-}
-
-async function createNamespace(request: FixtureRequest, name: string) {
-  const { data } = checkedBody(
-    await request("POST", "/namespaces", {
-      body: { name },
-    }),
-    201,
-    NamespaceResponse,
-  );
-  assert.equal(data.name, name);
-  assert.match(data.id, identifier("ns"));
-  assert.equal(data.status, "provisioning");
-  assert.equal(Object.hasOwn(data, "installationId"), false);
-  return data;
-}
-
-async function createConfiguration(request: FixtureRequest, namespaceId: string) {
-  const { data } = checkedBody(
-    await request("POST", `/namespaces/${namespaceId}/configurations`, {
-      body: { kind: "agent", values: {} },
-    }),
-    201,
-    ConfigurationResponse,
-  );
-  assert.match(data.id, identifier("cfg"));
-  assert.equal(data.namespaceId, namespaceId);
-  assert.deepEqual(data.values, {});
-  return data;
 }
 
 async function assertBodylessDelete(fixture: Fixture, path: string) {
@@ -110,7 +58,7 @@ async function assertBodylessDelete(fixture: Fixture, path: string) {
 
 test("a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts();
-  const namespace = await createNamespace(request, "service-account-force-delete");
+  const namespace = await createNamespace({ request }, "service-account-force-delete");
   const account = await createServiceAccount(request, namespace.id, "orphaned-token");
   const accountsPath = `/namespaces/${namespace.id}/service-accounts`;
   const accountPath = `${accountsPath}/${account.id}`;
@@ -172,7 +120,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
 
   const forced = await request("DELETE", `${accountPath}?force=true`);
-  const { data: deleted } = checkedBody(forced, 200, ServiceAccountForceDeletionResponse);
+  const { data: deleted } = checkedInjectedBody(forced, 200, ServiceAccountForceDeletionResponse);
   // The in-memory state keeps no Backend binding, so no binding identity is reported.
   assert.deepEqual(deleted, {
     id: account.id,
@@ -211,7 +159,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
 
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts({ recordOperations: true });
-  const namespace = await createNamespace(request, "service-account-lifecycle");
+  const namespace = await createNamespace({ request }, "service-account-lifecycle");
   const namespacePath = `/namespaces/${namespace.id}`;
   const accountsPath = `${namespacePath}/service-accounts`;
   const agentsPath = `${namespacePath}/agents`;
@@ -220,9 +168,9 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const credentialPath = `${accountPath}/credential`;
 
   const detail = await request("GET", accountPath);
-  assert.deepEqual(checkedBody(detail, 200, ServiceAccountResponse).data, account);
+  assert.deepEqual(checkedInjectedBody(detail, 200, ServiceAccountResponse).data, account);
 
-  const configuration = await createConfiguration(request, namespace.id);
+  const configuration = await createConfiguration({ request }, namespace.id);
   const agentResult = await request("POST", agentsPath, {
     body: {
       name: "service-account-agent",
@@ -269,7 +217,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const assigned = await request("PATCH", credentialPath, {
     body: initialCredential,
   });
-  assert.deepEqual(checkedBody(assigned, 200, ServiceAccountResponse).data.credential, {
+  assert.deepEqual(checkedInjectedBody(assigned, 200, ServiceAccountResponse).data.credential, {
     kind: initialCredential.kind,
   });
   assert.deepEqual(
@@ -293,7 +241,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const replaced = await request("PATCH", credentialPath, {
     body: replacementCredential,
   });
-  assert.deepEqual(checkedBody(replaced, 200, ServiceAccountResponse).data.credential, {
+  assert.deepEqual(checkedInjectedBody(replaced, 200, ServiceAccountResponse).data.credential, {
     kind: replacementCredential.kind,
   });
   assert.deepEqual(
@@ -344,8 +292,8 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
 test("native ServiceAccounts reject invalid references and enforce exact Namespace-scoped access", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts();
-  const namespaceA = await createNamespace(request, "service-account-namespace-a");
-  const namespaceB = await createNamespace(request, "service-account-namespace-b");
+  const namespaceA = await createNamespace({ request }, "service-account-namespace-a");
+  const namespaceB = await createNamespace({ request }, "service-account-namespace-b");
   const accountA = await createServiceAccount(request, namespaceA.id, "account-a");
   const accountB = await createServiceAccount(request, namespaceA.id, "account-b");
   const namespaceAPath = `/namespaces/${namespaceA.id}`;
@@ -391,7 +339,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const assigned = await request("PATCH", credentialPath, {
     body: credential,
   });
-  const { data: updatedAccount } = checkedBody(assigned, 200, ServiceAccountResponse);
+  const { data: updatedAccount } = checkedInjectedBody(assigned, 200, ServiceAccountResponse);
 
   // A real account ID never becomes accessible by substituting a sibling Namespace in the URL.
   for (const { method, suffix, options } of [
@@ -450,7 +398,11 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(authorizedAccount.status, 200);
 
   const accountList = await injectedRequest(readerApp, "GET", accountsPath);
-  const { data: visibleAccounts } = checkedBody(accountList, 200, ServiceAccountListResponse);
+  const { data: visibleAccounts } = checkedInjectedBody(
+    accountList,
+    200,
+    ServiceAccountListResponse,
+  );
   assert.deepEqual(visibleAccounts, [updatedAccount]);
   assert.equal(JSON.stringify(visibleAccounts).includes(accountB.id), false);
   const [visibleAccount] = visibleAccounts;

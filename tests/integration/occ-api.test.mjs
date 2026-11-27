@@ -38,7 +38,6 @@ import {
 import {
   bindHarnessKey,
   bootstrapInstallation as bootstrap,
-  createAgent,
   createConfiguration,
   createInjectedControllerFixture,
   createNamespace,
@@ -47,6 +46,7 @@ import {
   identifier,
   injectedRequest,
   readyNamespaceFixture as bootstrapReadyNamespace,
+  requestForFixture,
   slackValidationConfiguration,
 } from "./occ-api-injected-fixture.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
@@ -294,9 +294,6 @@ function pluginPolicy(overrides = {}) {
 
 function createInjectedFixture(options = {}) {
   return createInjectedControllerFixture(options, {
-    wrapPlatformState(baseState) {
-      return baseState;
-    },
     invokeApplication(factory, appOptions) {
       return factory(appOptions);
     },
@@ -305,11 +302,7 @@ function createInjectedFixture(options = {}) {
 
 async function configuredController(options = {}) {
   const fixture = await createInjectedFixture(options);
-  return {
-    fixture,
-    /** @type {import("./occ-api-injected-fixture.ts").FixtureRequest} */
-    request: (method, pathname, options) => injectedRequest(fixture.app, method, pathname, options),
-  };
+  return { fixture, request: requestForFixture(fixture) };
 }
 
 async function readyNamespaceFixture(namespaceName, controllerOptions, bootstrapName) {
@@ -546,9 +539,6 @@ test("ordinary deploy rejects request bodies and admits the current saved genera
 test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", () =>
   runResourceRoutes({
     configuredController,
-    bootstrap,
-    createNamespace,
-    createAgent,
     missingRevisionId,
     missingAgentId,
   }));
@@ -962,9 +952,6 @@ test("OCC development subprocess requires PostgreSQL-backed startup", async (t) 
 test("bodyless OCC routes reject request payloads before IAM or domain side effects", () =>
   runBodylessRoutes({
     configuredController,
-    bootstrap,
-    createNamespace,
-    createAgent,
     missingRevisionId,
   }));
 
@@ -1015,9 +1002,6 @@ test("API serializer compiler is the copy Fastify itself loads", () => {
 test("OCC isolates Namespace ownership and filters collections by exact IAM grants", () =>
   runNamespaceIsolation({
     configuredController,
-    bootstrap,
-    createNamespace,
-    createAgent,
     missingRevisionId,
   }));
 

@@ -650,11 +650,9 @@ export async function bootstrapInstallation(
   name = "Enterprise development",
 ) {
   const response = await request("POST", "/installation/bootstrap", { body: { name } });
-  const message = JSON.stringify(response.body);
-  assert.equal(response.status, 201, message);
-  assert(Check(InstallationResponse, response.body), message);
-  const { data } = response.body;
+  const { data } = checkedInjectedBody(response, 201, InstallationResponse);
   assert.equal(data.name, name);
+  assert.match(data.id, identifier("ins"));
   assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
   return data;
 }
@@ -673,11 +671,9 @@ export async function createNamespace(
   name: string,
 ) {
   const response = await request("POST", "/namespaces", { body: { name } });
-  const message = JSON.stringify(response.body);
-  assert.equal(response.status, 201, message);
-  assert(Check(NamespaceResponse, response.body), message);
-  const { data } = response.body;
+  const { data } = checkedInjectedBody(response, 201, NamespaceResponse);
   assert.equal(data.name, name);
+  assert.match(data.id, identifier("ns"));
   assert.equal(data.status, "provisioning");
   assert.equal(Object.hasOwn(data, "installationId"), false);
   return data;
