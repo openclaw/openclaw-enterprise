@@ -6038,6 +6038,7 @@ export async function renderAgentDetail(
           }
         },
         savedNotice,
+        cancelAnnouncement,
         saveDenied: agentSaveDenied.then(() => agentSaveReason()),
         followSaveReason: (apply) => {
           followConfigurationAccess(() => {

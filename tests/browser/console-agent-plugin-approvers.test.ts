@@ -3074,6 +3074,12 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`),
   );
   assert.equal(Object.hasOwn(savedAgent, "pluginApprovers"), false);
+
+  const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
+  await savedNotice.waitFor();
+  await page.getByLabel("Default plugin approvers mode").selectOption("none");
+  assert.equal(await savedNotice.isVisible(), false, "The new approver draft is unsaved");
+  assert.equal(await page.getByText("Unsaved plugin changes.", { exact: true }).isVisible(), true);
 });
 
 test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {
@@ -3095,10 +3101,17 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
+  const mode = page.getByLabel("Default plugin approvers mode", { exact: true });
   await waitForEnabled(deploy);
 
-  await page.getByLabel("Default plugin approvers mode").selectOption("none");
+  const cleanNotice = page.getByText("No plugin changes to save.", { exact: true });
+  const unsavedNotice = page.getByText("Unsaved plugin changes.", { exact: true });
+  await cleanNotice.waitFor();
+  await mode.selectOption("none");
   assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await cleanNotice.isVisible(), false, "The approver draft has changes to save");
+  assert.equal(await unsavedNotice.isVisible(), true);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -3106,12 +3119,42 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
-  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "none");
+  await plugins.click();
+  assert.equal(await mode.inputValue(), "none");
   await page
     .getByText("Save or discard plugin changes before deploying.", { exact: true })
     .waitFor();
   assert.equal(await deploy.isDisabled(), true);
+
+  // Moving focus during Save defers its live-region announcement until after the editor rebuilds.
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const patchUrl = new URL(path, fixture.origin).href;
+  const held = await holdRequests(t, page, patchUrl, {
+    once: true,
+    method: "PATCH",
+    afterServer: true,
+  });
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+  await page.clock.install();
+  await page.clock.pauseAt(Date.now() + 1000);
+  const saved = responseTo(page, "PATCH", patchUrl);
+  await save.press("Enter");
+  assert.equal((await held.requested)?.status(), 200);
+  await plugins.focus();
+  held.release();
+  assert.equal((await saved).status(), 200);
+  await waitForEnabled(deploy);
+  assert.equal(await plugins.evaluate((tab) => tab === document.activeElement), true);
+
+  const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
+  assert.equal(await savedNotice.isVisible(), false, "The save announcement is pending");
+  await mode.selectOption("inherit");
+  await page.clock.runFor(200);
+  assert.equal(await savedNotice.isVisible(), false, "The new approver draft is unsaved");
+  assert.equal(await unsavedNotice.isVisible(), true);
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(await deploy.isDisabled(), true);
+  assert.deepEqual(responseData(await fixture.request("GET", path)).pluginApprovers, []);
 });
 
 // A member who can only read the Agent sees the draft's saved default approvers, which the next
