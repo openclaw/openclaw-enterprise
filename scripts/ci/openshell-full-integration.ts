@@ -12,7 +12,12 @@ export function isOpenShellInstallerFile(file: string | undefined) {
 }
 
 export function isOpenShellLane(lane: string) {
-  return lane === "openshell" || lane === policyLane || lane === installerLane;
+  return (
+    lane === "openshell" ||
+    lane === "openshell-namespace-recovery" ||
+    lane === policyLane ||
+    lane === installerLane
+  );
 }
 
 function hasFiles(lane: unknown): lane is { files: { path: string }[] } {

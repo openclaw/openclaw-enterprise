@@ -1036,6 +1036,10 @@ export function createOpenShellKubernetesFixture({
         : process.env.CODEX_ACCESS_TOKEN,
       "The selected Harness requires OPENAI_API_KEY (native or custom endpoint) or CODEX_ACCESS_TOKEN (default Codex).",
     );
+    return validateNamespacePrerequisites();
+  }
+
+  async function validateNamespacePrerequisites() {
     assert.ok(
       openShellHelmPath,
       "OCC_TEST_OPENSHELL_HELM must point at the Helm binary used to install the namespace-scoped OpenShell gateway.",
@@ -2306,6 +2310,7 @@ export function createOpenShellKubernetesFixture({
   return {
     ...base,
     validateOpenShellPrerequisites: validatePrerequisites,
+    validateOpenShellNamespacePrerequisites: validateNamespacePrerequisites,
     customResources,
     maybeResource,
     readAgentTransportCredentials,

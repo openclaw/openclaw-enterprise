@@ -1939,6 +1939,7 @@ async function prepareLane({
       await prepareLaneLogging(resolvedStatePath, state, env, cluster);
       break;
     }
+    case "openshell-namespace-recovery":
     case "openshell-installers":
     case "openshell-policy":
     case "openshell": {
@@ -1956,7 +1957,7 @@ async function prepareLane({
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
-        buildController: true,
+        buildController: name !== "openshell-namespace-recovery",
         buildRuntime: true,
         reuseEngineImages: !fullOpenShellSourceBuild,
       });
@@ -2013,6 +2014,9 @@ async function prepareLane({
         source: agentSandbox.sourceImage!,
         reference: agentSandbox.reference!,
       });
+      if (name === "openshell-namespace-recovery") {
+        break;
+      }
       // The OAuth2 refresh proof's Keycloak: pulled here with pullImage's retry and
       // imported, so the cluster never pulls it from the registry.
       env.OCC_TEST_KEYCLOAK_IMAGE = (
