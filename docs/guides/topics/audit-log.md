@@ -44,11 +44,18 @@ If OCC cannot save admission, it returns `503` before running the handler.
 If it cannot save the result, it keeps the selected response and logs
 `http.audit_append_failed` with the request ID. This usually applies if it
 cannot save a separate permission-denial record. A device login scope denial
-returns `503` if OCC cannot save its required denial record. If OCC cannot
-confirm a commit, look for `http.commit_outcome_unknown` and check the current
-resource or job state before retrying. Bootstrap and runtime log reads use
-their own audit paths. Authentication callbacks, native proxy traffic, and
-unmatched routes are outside these request records.
+returns `503` if OCC cannot save its required denial record.
+
+If OCC logs `http.commit_outcome_unknown`, keep the original request ID.
+The transaction can still commit after an HTTP error or an empty lookup.
+Look for a successful mutation audit event with that ID and check the resource.
+If an `openclaw.controller_work.queued` event has the same request ID, use
+its work ID to follow the job. Do not resubmit the request while its outcome
+is unknown.
+
+Bootstrap and runtime log reads use their own audit paths. Authentication
+callbacks, native proxy traffic, and unmatched routes are outside these
+request records.
 
 Control Plane audit is on by default in PostgreSQL development. Production
 requires the [audit setting](../../reference/settings/production.md#control-plane-audit)

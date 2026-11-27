@@ -40,6 +40,35 @@ const feedbackClass = (page: Page) =>
       node.className === "status" ? node.getAttribute("data-tone") : node.className,
     );
 
+function jsonErrorVisibility(node: HTMLTextAreaElement, actionsSelector?: string) {
+  let visibleBottom = window.innerHeight;
+  if (actionsSelector) {
+    const actions = document.querySelector(actionsSelector);
+    if (!actions) {
+      throw new Error(`Missing sticky actions: ${actionsSelector}`);
+    }
+    visibleBottom = Math.min(visibleBottom, actions.getBoundingClientRect().top);
+  }
+  const { paddingTop, lineHeight } = getComputedStyle(node);
+  const clientTop = node.getBoundingClientRect().top + node.clientTop;
+  const firstLineTop = clientTop + Number.parseFloat(paddingTop) - node.scrollTop;
+  const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
+  const diagnostic = document.getElementById("configuration-json-error")!.getBoundingClientRect();
+  return {
+    selection: [node.selectionStart, node.selectionEnd],
+    firstLineVisible:
+      node.scrollTop === 0 &&
+      firstLineTop >= Math.max(0, clientTop) &&
+      firstLineBottom <= Math.min(visibleBottom, clientTop + node.clientHeight),
+    diagnosticVisible:
+      diagnostic.height > 0 &&
+      diagnostic.top >= 0 &&
+      diagnostic.bottom <= visibleBottom &&
+      diagnostic.left >= 0 &&
+      diagnostic.right <= document.documentElement.clientWidth,
+  };
+}
+
 async function openEditor(
   page: Page,
   fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
@@ -120,28 +149,7 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
     assert.equal(await json.inputValue(), syntaxDraft);
     assert.equal(patches, 0);
 
-    const visible = await json.evaluate((node: HTMLTextAreaElement) => {
-      const { paddingTop, lineHeight } = getComputedStyle(node);
-      const clientTop = node.getBoundingClientRect().top + node.clientTop;
-      const firstLineTop = clientTop + Number.parseFloat(paddingTop) - node.scrollTop;
-      const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
-      const diagnostic = document
-        .getElementById("configuration-json-error")!
-        .getBoundingClientRect();
-      return {
-        selection: [node.selectionStart, node.selectionEnd],
-        firstLineVisible:
-          node.scrollTop === 0 &&
-          firstLineTop >= Math.max(0, clientTop) &&
-          firstLineBottom <= Math.min(window.innerHeight, clientTop + node.clientHeight),
-        diagnosticVisible:
-          diagnostic.height > 0 &&
-          diagnostic.top >= 0 &&
-          diagnostic.bottom <= window.innerHeight &&
-          diagnostic.left >= 0 &&
-          diagnostic.right <= document.documentElement.clientWidth,
-      };
-    });
+    const visible = await json.evaluate(jsonErrorVisibility);
     assert.deepEqual(
       visible,
       { selection: [1, 1], firstLineVisible: true, diagnosticVisible: true },
@@ -298,7 +306,41 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   // Valid JSON syntax can still contain a number that serialization would replace with null.
   const overflow = template.replace(/^\s*\{/, '{"metadata":{"thresholds":[1,-1e400,3]},');
   assert.notEqual(overflow, template);
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport);
+  // Enlarge the editor using Chromium's native resize grip before shortening the window.
+  await json.scrollIntoViewIfNeeded();
+  const beforeResize = await json.boundingBox();
+  assert.ok(beforeResize);
+  const gripX = beforeResize.x + beforeResize.width - 4;
+  const gripY = beforeResize.y + beforeResize.height - 4;
+  await page.mouse.move(gripX, gripY);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(gripX, gripY + 24, { steps: 4 });
+  } finally {
+    await page.mouse.up();
+  }
+  const resizedHeight = await json.evaluate((node) => node.getBoundingClientRect().height);
+  assert.ok(resizedHeight > beforeResize.height, "the native resize grip enlarges the editor");
+
+  // Just above the compact navigation breakpoint, the sidebar makes the error wrap.
+  const splitViewport = { width: 761, height: 513 };
+  await page.setViewportSize(splitViewport);
   await json.fill(overflow);
+  // A number-range error has no caret location. Keep the user's selection on the first line.
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("Shift+ArrowRight");
+  const editorView = (node: HTMLTextAreaElement) => ({
+    scrollTop: node.scrollTop,
+    height: node.clientHeight,
+  });
+  const beforeError = await json.evaluate(editorView);
+  const firstLineSelection = [0, 1];
+  assert.deepEqual(
+    await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    firstLineSelection,
+  );
   await model.fill("gpt-4.1");
   await model.press("Tab");
   await jsonError
@@ -308,6 +350,23 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
     .waitFor();
   assert.equal(await focusedId(page), "configuration-json");
   assert.equal(await json.inputValue(), overflow);
+  const { selection, diagnosticVisible } = await json.evaluate(
+    jsonErrorVisibility,
+    "#create-agent-form ~ .form-actions",
+  );
+  const editor = await json.boundingBox();
+  assert.deepEqual(await json.evaluate(editorView), beforeError);
+  assert.deepEqual(
+    { selection, editorTopVisible: editor !== null && editor.y >= 0, diagnosticVisible },
+    { selection: firstLineSelection, editorTopVisible: true, diagnosticVisible: true },
+    `Create Agent keeps the selection and shows the editor and number error above its actions at ${splitViewport.width}×${splitViewport.height}`,
+  );
+  await page.setViewportSize(originalViewport);
+  assert.equal(
+    await json.evaluate((node) => node.getBoundingClientRect().height),
+    resizedHeight,
+    "the editor returns to the user's chosen height when the window has room",
+  );
   for (const name of ["Choose a model from the list", "Enter model ID manually"]) {
     await page.getByRole("button", { name, exact: true }).click();
     assert.equal(await focusedId(page), "configuration-json");
@@ -342,6 +401,34 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.deepEqual(JSON.parse(await json.inputValue()), JSON.parse(template));
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
+
+  // Submit from the end of the draft. The very next key should repair the earlier typo.
+  const misplacedComma = template.replace(/^\s*\{/, "$&,");
+  assert.notEqual(misplacedComma, template);
+  const commaOffset = misplacedComma.indexOf(",");
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
+    await page.setViewportSize(viewport);
+    await json.fill(misplacedComma);
+    await json.press("Control+End");
+    await create.press("Enter");
+    await jsonError
+      .getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.", { exact: true })
+      .waitFor();
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal(await json.inputValue(), misplacedComma);
+    const visible = await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions");
+    assert.deepEqual(
+      visible,
+      { selection: [commaOffset, commaOffset], firstLineVisible: true, diagnosticVisible: true },
+      `Create Agent shows the caret line and full diagnostic above its actions at ${viewport.width}×${viewport.height}`,
+    );
+    await page.keyboard.press("Delete");
+    assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
+    assert.equal(await jsonError.isHidden(), true);
+    assert.equal(await page.getByLabel("Agent name").inputValue(), "JSON feedback Agent");
+  }
+  await page.setViewportSize(originalViewport);
 
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).

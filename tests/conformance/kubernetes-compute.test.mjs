@@ -135,6 +135,12 @@ import {
   checkActivationWithoutStatusProxy,
 } from "./kubernetes-workspace-node-activation-cases.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
+import {
+  stagedCredentialDeployment,
+  stagedCredentialOwner,
+  stagedOpenAiModel,
+  stagedSandboxPolicy,
+} from "./kubernetes-staged-inputs.ts";
 import { checkManagedReleaseDelivery } from "./kubernetes-managed-release-cases.ts";
 import { checkChannelPolicyDiagnostic } from "./kubernetes-channel-policy-diagnostic-case.ts";
 import {
@@ -806,16 +812,7 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
     },
     async removeDeployment() {},
   };
-  const owner = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
+  const owner = stagedCredentialOwner(sandbox, proxy);
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver: sandbox,
     credentialDeliveryRegistration: owner,
@@ -843,23 +840,15 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
           tokenServiceInstanceId: auth.tokenServiceInstanceId,
         },
       ],
-      sandboxPolicy: {
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        version: 1,
-        defaults: {},
-        additions: grants,
-      },
+      sandboxPolicy: stagedSandboxPolicy(sandbox, grants),
       executionAdmission: { version: 8, mode: "standalone" },
-      credentialDeployment: {
-        proxyDriverId: proxy.id,
-        driver: owner.ref,
+      credentialDeployment: stagedCredentialDeployment(proxy.id, owner.ref, {
         networkAccessPolicy: {
           allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
         },
         bindings: [binding],
         injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: requests }],
-      },
+      }),
     },
   });
   assert.equal((await fixture.prepare()).ready, false);
@@ -981,16 +970,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         },
         async removeDeployment() {},
       };
-      const registration = {
-        ref: {
-          id: sandbox.id,
-          implementation: sandbox.implementation,
-          configurationId: "a".repeat(64),
-        },
-        require(capability) {
-          return capability === "sandbox" ? sandbox : proxy;
-        },
-      };
+      const registration = stagedCredentialOwner(sandbox, proxy);
       const auth = {
         method: "credential_source",
         sourceId: "cs_model",
@@ -1086,23 +1066,17 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
               })),
             },
             sandboxPolicy: {
-              driverId: sandbox.id,
-              implementation: sandbox.implementation,
-              version: 1,
-              defaults: {},
-              additions: [],
+              ...stagedSandboxPolicy(sandbox, []),
               repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
             },
-            credentialDeployment: {
-              proxyDriverId: proxy.id,
-              driver: registration.ref,
+            credentialDeployment: stagedCredentialDeployment(proxy.id, registration.ref, {
               bindings: [model, repository],
               networkAccessPolicy: { allowed: [modelRequest, ...repositoryRequests] },
               injectionPolicies: [
                 { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
                 { bindingRef: repository.bindingRef, allowedRequests: repositoryRequests },
               ],
-            },
+            }),
           },
         });
       // This controlled release selection exercises Compute; it does not qualify an actual image.
@@ -1273,28 +1247,11 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       presentation: "bearer",
     },
   };
-  const stagedAuth = {
-    method: "credential_source",
-    sourceId: "cs_staged_model",
-    tokenServiceInstanceId: "tokens",
-    sourceType: "static",
-  };
-  const modelGrant = {
-    id: "model-egress",
-    binary: "/usr/local/bin/node",
-    host: "api.openai.com",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const modelBinding = {
-    bindingRef: "model",
-    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: stagedAuth.sourceId },
-    consumer: { kind: "model", providerId: "openai" },
-    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
-  };
+  const model = stagedOpenAiModel(tenant.id);
   let target;
   let prepared;
   const removals = [];
-  const bindings = [pluginBinding, modelBinding];
+  const bindings = [pluginBinding, model.binding];
   const projections = bindings.map((binding) => ({
     bindingRef: binding.bindingRef,
     environment: binding.projection.environment,
@@ -1346,25 +1303,15 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       removals.push(removal);
     },
   };
-  const registration = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
-  const harnessAuth = stagedAuth;
+  const registration = stagedCredentialOwner(sandbox, proxy);
   const modelSource = {
     ...pluginSource,
-    id: stagedAuth.sourceId,
-    type: stagedAuth.sourceType,
+    id: model.auth.sourceId,
+    type: model.auth.sourceType,
     config: { provider_preset: "openai" },
   };
   const context = {
-    harnessAuth,
+    harnessAuth: model.auth,
     credentialSources: [pluginSource, modelSource],
     async configureCredentialDeployment(configuration) {
       assert.deepEqual(configuration.targetRef, target);
@@ -1378,7 +1325,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     revision: {
       ...nativeSandboxRevision(sandbox.id),
       agentId: "agent-mixed",
-      harnessAuth,
+      harnessAuth: model.auth,
       credentialSources: [
         {
           sourceId: pluginSource.id,
@@ -1386,7 +1333,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
           tokenServiceInstanceId: "tokens",
         },
         {
-          sourceId: stagedAuth.sourceId,
+          sourceId: model.auth.sourceId,
           sourceType: "static",
           tokenServiceInstanceId: "tokens",
         },
@@ -1403,39 +1350,16 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
           },
         },
       },
-      sandboxPolicy: {
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        version: 1,
-        defaults: {},
-        additions: [modelGrant],
-      },
+      sandboxPolicy: stagedSandboxPolicy(sandbox, [model.grant]),
       executionAdmission: { version: 8, mode: "standalone" },
-      credentialDeployment: {
-        proxyDriverId: proxy.id,
-        driver: registration.ref,
-        networkAccessPolicy: {
-          allowed: [
-            { binary: modelGrant.binary, host: modelGrant.host, ports: modelGrant.ports },
-            pluginRequest,
-          ],
-        },
+      credentialDeployment: stagedCredentialDeployment(proxy.id, registration.ref, {
+        networkAccessPolicy: { allowed: [model.network, pluginRequest] },
         bindings,
         injectionPolicies: [
           { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest] },
-          {
-            bindingRef: modelBinding.bindingRef,
-            allowedRequests: [
-              {
-                binary: modelGrant.binary,
-                host: modelGrant.host,
-                ports: modelGrant.ports,
-                requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
-              },
-            ],
-          },
+          { bindingRef: model.binding.bindingRef, allowedRequests: [model.request] },
         ],
-      },
+      }),
     },
   });
   // Plugin injection does not supply the model Secret used by separate API-key auth.
@@ -1501,30 +1425,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
   // The real Compute path uses controlled Sandbox and Proxy Drivers; these observations do not
   // establish native Provider readiness, Kubernetes behavior, or a real Harness execution.
-  const auth = {
-    method: "credential_source",
-    sourceId: "cs_staged_model",
-    tokenServiceInstanceId: "tokens",
-    sourceType: "static",
-  };
-  const grant = {
-    id: "model-egress",
-    binary: "/usr/local/bin/node",
-    host: "api.openai.com",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const request = {
-    binary: grant.binary,
-    host: grant.host,
-    ports: grant.ports,
-    requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
-  };
-  const binding = {
-    bindingRef: "model",
-    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
-    consumer: { kind: "model", providerId: "openai" },
-    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
-  };
+  const { auth, grant, network, request, binding } = stagedOpenAiModel(tenant.id);
   const projection = {
     bindingRef: binding.bindingRef,
     environment: binding.projection.environment,
@@ -1646,16 +1547,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       }
     },
   };
-  const selectedOwner = {
-    ref: {
-      id: sandboxDriver.id,
-      implementation: sandboxDriver.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandboxDriver : proxyDriver;
-    },
-  };
+  const selectedOwner = stagedCredentialOwner(sandboxDriver, proxyDriver);
   const context = {
     harnessAuth: auth,
     workspaceSetup: {
@@ -1675,23 +1567,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     ...nativeSandboxRevision(sandboxDriver.id),
     agentId: context.workspaceSetup.agentId,
     harnessAuth: auth,
-    sandboxPolicy: {
-      driverId: sandboxDriver.id,
-      implementation: sandboxDriver.implementation,
-      version: 1,
-      defaults: {},
-      additions: [grant],
-    },
+    sandboxPolicy: stagedSandboxPolicy(sandboxDriver, [grant]),
     executionAdmission: { version: 8, mode: "standalone" },
-    credentialDeployment: {
-      proxyDriverId: proxyDriver.id,
-      driver: selectedOwner.ref,
-      networkAccessPolicy: {
-        allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
-      },
+    credentialDeployment: stagedCredentialDeployment(proxyDriver.id, selectedOwner.ref, {
+      networkAccessPolicy: { allowed: [network] },
       bindings: [binding],
       injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
-    },
+    }),
   };
   const mismatched = dedicatedFirstDeployFixture({
     sandboxDriver,
