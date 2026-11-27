@@ -766,6 +766,20 @@ export function fieldError(input: HTMLElement) {
   };
 }
 
+// After focus has revealed the caret, show the diagnostic too if both fit.
+export function revealEditorError(editor: HTMLTextAreaElement) {
+  const error = fieldErrors.get(editor);
+  if (!error || error.hidden) {
+    return;
+  }
+  const editorTop = editor.getBoundingClientRect().top;
+  const messageBottom = error.getBoundingClientRect().bottom;
+  const viewportHeight = document.documentElement.clientHeight;
+  if (messageBottom > viewportHeight && messageBottom - editorTop <= viewportHeight) {
+    error.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+}
+
 type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement;
 
 function fieldName(control: FormControl) {
