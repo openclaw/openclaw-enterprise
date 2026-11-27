@@ -364,6 +364,7 @@ export function renderWorkspaceFiles(
     const errorNotice = statusBlock("danger", null, null);
     let pending = false;
     let loaded = false;
+    let copyableDraft = false;
     let baseline: string | undefined;
     // An explicit create can contain zero bytes, even though an untouched missing file looks empty.
     let keepMissingDraft = false;
@@ -432,9 +433,8 @@ export function renderWorkspaceFiles(
     choices.push({ ...file, tab, panel });
     surface.append(panel);
     const updateControls = () => {
-      editor.disabled = pending || !loaded;
-      // The file stays readable and selectable, but an edit no Save can keep is not offered.
-      editor.readOnly = operateDenied;
+      editor.disabled = pending || (!loaded && !copyableDraft);
+      editor.readOnly = operateDenied || copyableDraft;
       reload.disabled = pending;
       check.hidden = !outcomeUnknown;
       check.disabled = pending;
@@ -547,6 +547,7 @@ export function renderWorkspaceFiles(
           editor.value = retained.text;
         }
         loaded = true;
+        copyableDraft = false;
         initialized = true;
         outcomeUnknown = restore && retained.outcomeUnknown;
         checkedDraft = mode === "check" && hasEdits();
@@ -586,17 +587,21 @@ export function renderWorkspaceFiles(
         if (confirmsMissingFile(cause)) {
           receive(undefined);
         } else {
+          const readUnavailable = unanswered(cause.status);
+          // A failed comparison can leave an already accessible draft selectable for copying.
+          copyableDraft =
+            mode === "check" && outcomeUnknown && readUnavailable && (loaded || copyableDraft);
           loaded = false;
           status.textContent = "";
           errorNotice.textContent =
-            mode === "check" && unanswered(cause.status)
+            mode === "check" && readUnavailable
               ? withRequestId(
                   `Could not confirm the current contents of ${name}. Use Check save again.`,
                   cause.requestId,
                 )
               : fileError(cause, false, failure);
           // Section Retry only rereads files without pending edits or an uncertain write.
-          if (unanswered(cause.status) && !outcomeUnknown && !hasEdits()) {
+          if (readUnavailable && !outcomeUnknown && !hasEdits()) {
             unreached.set(name, () => load());
           }
         }

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-25
-updated: 2026-11-25
-last_updated_session: authoring-run/2670875e-4890-4aa5-8759-7d812beb4d6e
+updated: 2026-11-27
+last_updated_session: authoring-run/40704daa-5838-4499-b883-f56f94610a64
 ---
 
 # Console Agent workspace files
@@ -87,9 +87,9 @@ missing. The operator can then choose **Save** to create it, even as an empty fi
 A generic resource `404` or a denial keeps the editor and **Save** disabled and
 shows the reason under that file. **Reload** checks again without writing.
 
-A read gets no answer about its file when the request does not reach the API, or
-when the API or the gateway fails. The editor and **Save** stay disabled, and the
-file shows the reason and any request ID under its editor.
+If the first read or an explicit **Reload** cannot reach the API or the gateway,
+the editor and **Save** stay disabled. The file shows the reason and any request
+ID under its editor.
 `workspace.mts:renderWorkspaceFiles` shows one notice above the files. The notice
 names the files that **Retry** reads again, and those files are not marked
 **Needs attention**. The notice changes when the reads in progress end, so files
@@ -108,8 +108,10 @@ If the result is unknown, the editor keeps the draft and disables **Save**.
 nothing to save. If another writer changed the file, the editor shows their
 text below the draft. A user with permission can combine the edits and save,
 or create the file if the controller confirms it is missing. A failed check
-keeps **Save** disabled. A read shows the file at that moment and cannot
-identify which write produced it. Only the user can send another write.
+keeps **Save** disabled. If the API or gateway is unavailable, you can still
+select and copy a draft that was visible when you checked. Use **Check save**
+again when the connection recovers. A read shows the file at that moment and
+cannot identify which write produced it. Only the user can send another write.
 **Reload** discards the draft when it loads the file or confirms its absence.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
@@ -138,6 +140,8 @@ deployment.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-27 06:49: Document keyboard access to a visible draft when Check save cannot reach the file. Accompanying uncommitted changes. (authoring-run/40704daa-5838-4499-b883-f56f94610a64 - 0d2c1dfef541ffe41ea25e693ddaae594471b65b)
 
 - 2026-11-25 06:47: Document Check save, retained edits, current-content comparison, manual retry and the Reload alternative. Accompanying uncommitted changes. (authoring-run/2670875e-4890-4aa5-8759-7d812beb4d6e - 738d973508be39f8c8f426d7e4688d209d094404)
 

@@ -964,13 +964,20 @@ test("a Workspace version change during a Reload or Save rereads the file once i
 test("Check save keeps a draft across an upgrade, compares the current file, and never resends a write", async (t) => {
   const original = "# Original instructions\n";
   let contents = original;
+  let unavailable = false;
   const { fixture, page, requests, filePath, form, makeCurrent, versions } =
     await openWorkspaceVersions(t, "Workspace save comparison", {
       async read({ revision, filename }) {
+        if (unavailable && filename === "AGENTS.md") {
+          return { status: "unavailable" };
+        }
         const content = filename === "AGENTS.md" ? contents : revision.id;
         return { status: "ok", file: { name: filename, content } };
       },
       async write({ filename, content }) {
+        if (unavailable && filename === "AGENTS.md") {
+          return { status: "unavailable" };
+        }
         contents = content;
         return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
       },
@@ -985,20 +992,61 @@ test("Check save keeps a draft across an upgrade, compares the current file, and
   const draft = "  Draft instructions 🐾\n\n";
   await chooseWorkspaceFile(page, "AGENTS.md");
   await editor.fill(draft);
-  await page.route(endpoint, (route) => route.abort("failed"), { times: 1 });
+  unavailable = true;
+  const failedSave = page.waitForResponse(
+    (response) => response.url() === endpoint && response.request().method() === "PUT",
+  );
   await save.click();
+  assert.equal((await failedSave).status(), 503);
   await check.waitFor();
   assert.equal(contents, original);
   assert.equal(await save.isDisabled(), true);
 
+  // During the outage the reader can select the draft with the keyboard while Save stays blocked.
+  const failedCheck = page.waitForResponse(
+    (response) => response.url() === endpoint && response.request().method() === "GET",
+  );
+  await check.click();
+  assert.equal((await failedCheck).status(), 503);
+  await form("AGENTS.md")
+    .getByText(/Use Check save again\. Request ID: req_/)
+    .waitFor();
+  assert.equal(
+    await editor.isDisabled(),
+    false,
+    "failed comparison must leave the visible draft focusable",
+  );
+  assert.equal(await editor.isEditable(), false);
+  await check.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("ControlOrMeta+A");
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected a Workspace textarea");
+      }
+      return {
+        focused: node.ownerDocument.activeElement === node,
+        selection: [node.selectionStart, node.selectionEnd],
+      };
+    }),
+    { focused: true, selection: [0, draft.length] },
+  );
+  await page.keyboard.type("x");
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writes(), 1);
+
+  unavailable = false;
   await check.click();
   await form("AGENTS.md")
     .getByText("AGENTS.md still contains the text you started with.", { exact: false })
     .waitFor();
   assert.equal(await editor.inputValue(), draft);
+  assert.equal(await editor.isEditable(), true);
   assert.equal(await save.isEnabled(), true);
   assert.equal(writes(), 1);
-  // A second explicit attempt also loses its connection before the write reaches the gateway.
+  // A second explicit attempt loses its connection before the write reaches the gateway.
   await page.route(endpoint, (route) => route.abort("failed"), { times: 1 });
   await save.click();
   await check.waitFor();
