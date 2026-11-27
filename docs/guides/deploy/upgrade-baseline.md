@@ -310,11 +310,11 @@ Pause writes to each workspace you need to preserve. Choose a trusted
 regular file the Agent or user wrote in its root. Enter its basename.
 The command accepts spaces but rejects paths and symlinks.
 
-For a dedicated Codex Harness, **verify recent edits on the Harness volume
-before restarting or replacing the Gateway**. Volume backups miss edits stored
-only on the Gateway Pod. If you cannot verify an edit, keep the original
-Gateway Pod running. Keep the upgrade and writes paused until an authorized operator
-preserves and reconciles the files.
+For a dedicated Codex Harness, compare each edited file on the volume with an
+independent copy of its latest submission **before restarting or replacing the
+Gateway Pod**. Unless all match, keep the Pod running. It may hold the only
+copy. Leave writes and the upgrade paused until an authorized operator preserves
+and reconciles the files.
 
 Set `TENANT_NAMESPACE` and `AGENT_ID` per the [production Agent guide](production-agents.md).
 Specify the exact Harness Pod. It must belong to the Agent,
