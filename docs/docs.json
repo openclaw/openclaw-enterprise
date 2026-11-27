@@ -1299,6 +1299,7 @@
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",
+              "flows/local-k3d-launcher",
               "flows/common-logging",
               "flows/audit-ledger",
               "flows/controller-worker",
