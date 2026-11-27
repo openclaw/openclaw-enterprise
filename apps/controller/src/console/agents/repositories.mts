@@ -857,7 +857,8 @@ export function createRepositoryFields(
     } else {
       const name = nextSearchChoice()?.dataset.searchName;
       const summary = state.selected.size ? `${state.selected.size} selected` : "";
-      setText(searchAction, name ? `In search, Enter selects ${name}` : summary);
+      const hint = name ? `In search, Enter selects ${name}` : "";
+      setText(searchAction, summary && hint ? `${summary} in total. ${hint}` : summary || hint);
     }
   }
   function renderResults() {

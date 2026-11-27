@@ -92,9 +92,11 @@ repeats, and the cue changes to `zeta/application`.
 
 Release Enter and press Escape. Press Enter once to reopen the results. The cue
 again names `zeta/application`. Release Enter and press it again to select that
-repository. The cue now names `alpha/application-api`. Check at phone width
-that you can read the next name below the search field even when its row is
-out of view. Select the last two matches. The field now reports **4 selected**.
+repository. Search for `application-api`. Only `alpha/application-api` matches.
+The search hint shows **2 selected in total** and names that repository as the
+next selection. Return to `application` and check at phone width that you can
+read the next name below the search field even when its row is out of view.
+Select the last two matches. The field now reports **4 selected**.
 
 Reset the story and search for `application` at phone width. The hint starts
 with **In search, Enter selects**. Use Down Arrow and Up Arrow to move through
