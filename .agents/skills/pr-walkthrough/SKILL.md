@@ -11,8 +11,8 @@ Three to five meaningful actions usually make a 15–30 second video. Use fewer 
 one interaction explains the change.
 
 Prepare a Playwright page at the viewport you want to show. Finish sign-in and setup
-before recording, and use synthetic data only. The video contains the actual page,
-including visible input values. Label a Storybook scenario as simulated;
+before recording, and use disposable data you can share. The video contains the
+actual page, including visible input values. Label a Storybook scenario as simulated;
 use the real controller when the claim depends on permissions, persistence, or recovery.
 
 When recording a resize, the video keeps its opening width and height. If only
