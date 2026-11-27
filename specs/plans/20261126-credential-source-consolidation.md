@@ -16,10 +16,9 @@ storage. Compute keeps its workload delivery copies.
 
 1. **Move remaining callers.** Use exact Source references for model auth,
    Presets, guided provisioning, authenticated Gateway channel egress, and
-   Gateway startup credentials. Keep provider credentials within the admitted
-   recipient. The [current draft](https://github.com/openclaw/openclaw-enterprise/pull/7486)
-   includes the Envoy, prebound Preset, guided dedicated model, and Slack
-   upgrade changes.
+   Gateway startup credentials. Include the first-Agent CLI and bundled
+   Presets. The [draft PR](https://github.com/openclaw/openclaw-enterprise/pull/7486)
+   tracks the cutover.
 2. **Qualify embedded model delivery.** Worker resolves the admitted Sources.
    Compute puts the values in the revision's Gateway Secret and starts the
    testing-only embedded Pod with its normal credential inputs. Verify an
@@ -35,6 +34,16 @@ storage. Compute keeps its workload delivery copies.
    records readable. Verify real Source enrollment and reuse in the Console
    and that the old HTTP paths are gone. Confirm private Source and Client
    storage and Compute delivery still work after the schema change.
+
+## Remaining launch and restore callers
+
+- Dedicated Codex without an OpenShell Sandbox currently uses a Namespace
+  Secret and a Compute-owned workload. Keep this profile and qualify its
+  Source-backed Credential Proxy path before removing the existing credential
+  path. Keep the hosted smoke and prepared Git proof on the native profile.
+- The split-layout importer currently recreates Secrets on the target release.
+  Reject unsupported credential bindings before creating target resources.
+  Operators recreate credentials as Sources and update their bindings.
 
 ## Release gates
 

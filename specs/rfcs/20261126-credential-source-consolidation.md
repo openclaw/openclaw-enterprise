@@ -43,6 +43,10 @@ Public and private Secrets can both use Kubernetes Secrets as their physical sto
 
 Dedicated OpenAI credentials and Codex PATs already support Sources. Embedded OpenClaw uses the same Source selection and exact authorization, with direct delivery to its Gateway Pod. Preserve its supported model providers, authentication, endpoints, and transports. Existing Plugin OAuth and repository delivery already use Sources.
 
+Keep dedicated Kubernetes Codex without an OpenShell Sandbox. Its current
+model credential uses the Namespace Secret API. Qualify its replacement before
+removing that API.
+
 ## Authorization and delivery
 
 For every selection, OCC checks the caller's exact `credential_source:operate` and target-operation permissions. Require Source and target to share a Namespace; check Source readiness, type, owner instance, and recipient. Deployment also requires the Agent's delegated Source grant. During deployment, Worker rechecks its work claim, both principals' grants, and owner identity across asynchronous resolution. Configuration and revisions persist references, never credential values.
@@ -67,10 +71,11 @@ their selected TokenService. Kubernetes Compute stages the usable values in the
 revision's Gateway Secret and starts OpenClaw with its existing credential
 inputs. Deployment admission checks exact Source access and accepts only ready
 static Sources for direct embedded model and Gateway bindings. OAuth and
-GitHub App Sources cannot be delivered by this path. Dedicated execution still
-owns managed Plugin and native Git credential injection. OpenClaw calls its
-configured model endpoint directly. Gateway and Harness share the Pod, so use
-this mode for testing.
+GitHub App Sources cannot be delivered by this path. Gateway bindings serve
+existing environment inputs. Native Git and managed Plugin injection continue
+to use their existing runtime delivery. OpenClaw calls its configured model
+endpoint directly. Gateway and Harness share the Pod, so use this mode for
+testing.
 
 Compute uses the same authorization, reuse, and cleanup checks as Gateway
 startup delivery. TokenService keeps custody of the Source. A new managed
@@ -78,6 +83,29 @@ revision resolves the current value. A running Pod and any replacement Pod for
 the same revision use its staged copy. Source withdrawal blocks a managed
 start with that Source. Stop or retirement removes the Pod and its copy
 before Worker records revocation.
+
+### Dedicated Kubernetes Codex without OpenShell
+
+Today, the Credential Proxy implementation requires the OpenShell Sandbox.
+The Harness calls the provider with a placeholder. OpenShell substitutes the
+credential when the request matches policy.
+
+For Kubernetes Codex without OpenShell, add a standalone Credential Proxy.
+Kubernetes Compute owns the Codex Deployment and prepared Git delivery. Codex
+calls the Proxy over private HTTPS. The Proxy verifies the exact Harness Pod
+and Agent revision, checks the approved model route, then adds the upstream
+credential from TokenService. For model access, the Pod receives only its
+workload identity. Any process in that Pod can use the approved route. Compute
+keeps the approved Git routes.
+
+Start by testing the pinned Codex app server's provider auth command. The
+command reads a short-lived Kubernetes token bound to the Pod and scoped to
+the Proxy. An explicit HTTPS endpoint avoids intercepting the model provider's
+TLS. The Proxy must handle the startup model probe for the exact preparing
+revision as well as requests from the active revision. Retired or abandoned
+revisions lose access. Existing repository delivery demonstrates private worker
+ingress and separate request authorization. Model access needs its own Pod
+verification and route policy.
 
 ## Interface changes
 
@@ -115,6 +143,12 @@ See the [implementation plan](../plans/20261126-credential-source-consolidation.
 
 ## Open decisions
 
+- **Dedicated Codex without OpenShell:** Prove that the pinned app server can
+  present its Pod identity while preserving the supported API-key and
+  account-token profiles. The custom Responses provider offers an
+  API-key path to test. Verify the existing account operations separately.
+  Verify HTTP streaming, supported WebSocket transport, active revision
+  replacement, and request withdrawal before choosing the final Proxy contract.
 - **OpenShell:** Can Gateway export an OpenShell-owned Source? Decide operator certificate custody, authority, and Provider identity handling, then qualify the path. Do not enable export or silently fall back before that decision.
 
 ## Simplifications
