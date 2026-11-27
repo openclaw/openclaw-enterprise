@@ -24,8 +24,16 @@ AgentRevision.
 If creation says that defaults changed, reload the form and review the defaults
 again. If deployment cannot initialize the workspace, have an operator check
 runtime compatibility and durable storage before retrying. Setup refuses to
-overwrite conflicting edits during an incomplete attempt. After completion,
-restarting or redeploying preserves subsequent workspace edits.
+overwrite conflicting edits during an incomplete attempt. Once setup completes,
+it does not reapply the initial files over later edits.
+
+For a dedicated Codex Harness, pause workspace writes and compare every edited
+file on the durable volume with an independent copy of its latest submission
+before restarting or replacing the Gateway Pod. The [Agent data baseline](../deploy/upgrade-baseline.md#record-agent-data)
+shows how to check one file. If you cannot confirm a match for every file, keep
+the Pod running and keep workspace writes and the upgrade paused. The Pod may
+hold the only copy. An authorized operator must preserve and reconcile the files
+before you proceed.
 
 You cannot edit staged inputs on an undeployed Agent. To correct them, delete
 the Agent (**Delete Agent** on its page, or the API; both need Agent `delete`)
@@ -38,6 +46,10 @@ You need `read` on the Agent to load files and `operate` to save them. The Agent
 must have a selected version and a reachable gateway. Platform workspace access
 is documented for [Kubernetes](../deploy/workspace-routing.md#agent-workspace-files);
 it is not available with the bundled [SSH Driver](../../reference/drivers/ssh-compute.md#credentials-and-supported-boundaries).
+
+Workspace files can be unavailable while a new version replaces the running
+version. Keep a copy of unsaved edits. When the workspace is available again,
+compare the file with your copy before saving again.
 
 1. Open **Agents**, select the Agent in the intended Namespace, and open
    **Workspace files**.
@@ -62,11 +74,10 @@ for credential values.
   reachable, then reload. If
   access stays unavailable, have an operator check
   [workspace routing](../deploy/workspace-routing.md#agent-workspace-files).
-- Workspace files can be unavailable **while a new version replaces the running one**.
-  Keep a copy of unsaved edits. Once deployment succeeds, reload the file.
 - **A save has an unknown outcome:** it may have succeeded. Keep a copy of your
   edit before you select **Reload** for the affected file. Compare the result
-  with your copy before deciding whether to save again. A failure for one file does not establish what happened to the others.
+  with your copy before deciding whether to save again. A failure for one file
+  does not establish what happened to the others.
 - **The request is rejected:** check that the file has one of the four supported
   names. For a load, check Agent `read` permission. For a save, check Agent
   `operate` permission and the text size.
