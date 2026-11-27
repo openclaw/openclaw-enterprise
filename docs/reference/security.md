@@ -256,8 +256,10 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   address, counts, durations or a connection error (error kind, OS error, HTTP
   status, proxy or TLS diagnostic). Other structured output, including
   Codex protocol traffic, payload keys such as `prompt` and `content`, and
-  pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes pattern redaction, which is
-  best-effort. The `content` class has no producer. A failed Codex login or model
+  pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes best-effort pattern redaction.
+  Recognized command-line credential arguments are masked through quoted, escaped and
+  concatenated segments; following ordinary options remain readable.
+  The `content` class has no producer. A failed Codex login or model
   check keeps only its `failureClass` (`network`, `tls`, `http_401_403`,
   `http_5xx`, `http_other`, `timeout`, `empty` or `unknown`), never Codex's error output.
 - **Events.** Pod Event reasons and messages reach the `operate` audience after

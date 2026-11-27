@@ -69,6 +69,8 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
     // Literal escapes next to keywords, flags, key separators and long-token runs.
     ["bearer\\n", "\\nbearer", "--token\\n", "\\n--token", "token=\\n", "Authorization:\\n"],
     ["\\nA_KEY=", "-p\\n", "--password=a\\n", "a\\n0"],
+    // Attached credentials that open quoted spans.
+    ['mysql -p"', "mysql --password='", 'sqlcmd -P"', "redis-cli -a'"],
     // Percent-encoded separators.
     ["%3D", "token%3D", "Authorization%3A"],
   ].flat();
@@ -81,6 +83,17 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
       );
     }
   }
+  // Duplicate client names must not multiply checks of username-only arguments.
+  const clientContext = "lftp ".repeat(Math.floor((32 * 1024) / 10));
+  const usernameOnly = (
+    clientContext + '-u"x y" '.repeat(Math.ceil((32 * 1024 - clientContext.length) / 8))
+  ).slice(0, 32 * 1024);
+  const usernameOnlyElapsed = redactionCpuMs(usernameOnly, budgetMs);
+  assert.ok(
+    usernameOnlyElapsed < budgetMs,
+    `duplicate clients took ${usernameOnlyElapsed.toFixed(0)} ms of CPU`,
+  );
+  assert.equal(redactArgvCredentials(usernameOnly), usernameOnly);
   // A whole page of such messages stays well inside one request's budget.
   const page = Array.from({ length: 50 }, () =>
     JSON.stringify({ level: "info", message: "a-".repeat(15 * 1024) }),
@@ -263,6 +276,101 @@ test("argv masking needs a real client name and keeps a value whole across a lit
     ["cmd -pab\\ncd next", "cmd -p[redacted:argv] next"],
   ] satisfies [string, string][]) {
     assert.equal(redactArgvCredentials(input), expected, input);
+  }
+});
+
+test("argv masking keeps quoted attached credentials whole", () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  const cases = [
+    [`mysql -p"${first} ${last}" --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    [
+      `mysqldump --password='${first} ${last}' --skip-comments`,
+      "mysqldump --password=[redacted:argv] --skip-comments",
+    ],
+    [`sqlcmd -P"${first} ${last}" -S localhost`, "sqlcmd -P[redacted:argv] -S localhost"],
+    [`redis-cli -a'${first} ${last}' ping`, "redis-cli -a[redacted:argv] ping"],
+    [`curl -u"alice:${first} ${last}" --silent`, "curl -u[redacted:argv] --silent"],
+    [
+      `smbclient --user="alice%${first} ${last}" -L localhost`,
+      "smbclient --user=[redacted:argv] -L localhost",
+    ],
+    [`lftp -u"alice,${first} ${last}" -e bye`, "lftp -u[redacted:argv] -e bye"],
+    // A quoted value can also span literal escapes, including the rest of its last word.
+    [
+      `mysql -p"${first}\\ninside ${last}"\\tend --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [
+      `mysql --password="${first} ${last}\\nend" --host localhost`,
+      "mysql --password=[redacted:argv] --host localhost",
+    ],
+    [`mysql -p"${first} ${last}`, "mysql -p[redacted:argv]"],
+    // Escaped quotes cannot end the value; an even backslash pair can precede its close.
+    [
+      String.raw`mysql -p"${first}\" ${last}" --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [
+      String.raw`mysql -p"${first} middle\" ${last}" --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [
+      String.raw`mysql --password="${first}\" ${last}" --host localhost`,
+      "mysql --password=[redacted:argv] --host localhost",
+    ],
+    [
+      String.raw`sqlcmd -P "${first}\" ${last}" -S localhost`,
+      "sqlcmd -P [redacted:argv] -S localhost",
+    ],
+    [String.raw`mysql -p"${first}\" ${last}`, "mysql -p[redacted:argv]"],
+    [String.raw`mysql -p"${first}\\" --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    // Quoted and unquoted segments make one argument, including escaped whitespace.
+    [`mysql -p"${first}"suffix --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    [
+      `mysql -p"${first} ${last}"suffix --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [`mysql -p"${first}"' ${last}' --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    [
+      `mysql -pprefix"${first} ${last}" --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [
+      String.raw`mysql -p${first}\ ${last} --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [String.raw`mysql -p'${first}\' --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    // Userinfo recognition examines the whole value, not only its first printed word.
+    [`curl -u"alice smith:${last}" --silent`, "curl -u[redacted:argv] --silent"],
+    [`curl -u "alice smith:${last}" --silent`, "curl -u [redacted:argv] --silent"],
+    [`curl --user="alice smith:${last}" --silent`, "curl --user=[redacted:argv] --silent"],
+    [
+      `smbclient --user="alice smith%${last}" -L localhost`,
+      "smbclient --user=[redacted:argv] -L localhost",
+    ],
+    [`lftp -u "alice smith,${last}" -e bye`, "lftp -u [redacted:argv] -e bye"],
+    ['curl -u"alice smith" --silent', 'curl -u"alice smith" --silent'],
+    ['curl --user "alice smith" --silent', 'curl --user "alice smith" --silent'],
+    ['smbclient --user="alice smith" -L localhost', 'smbclient --user="alice smith" -L localhost'],
+    ['lftp -u "alice smith" -e bye', 'lftp -u "alice smith" -e bye'],
+    // Existing separate-argument, single-word and noncredential forms stay readable.
+    [`sqlcmd -P "${first} ${last}" -S localhost`, "sqlcmd -P [redacted:argv] -S localhost"],
+    [`mysql -p"${first}" --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    [`mysql -p${first}\\n${last} --host localhost`, "mysql -p[redacted:argv] --host localhost"],
+    ['mysql --host="read replica" --port=3306', 'mysql --host="read replica" --port=3306'],
+    ['node --title="daily report" main.ts', 'node --title="daily report" main.ts'],
+  ] satisfies [string, string][];
+  for (const [input, expected] of cases) {
+    assert.equal(redactArgvCredentials(input), expected, input);
+    // Exercise the same structured gateway message path that emits retained log records.
+    const { records } = sanitize(gatewayStream, [
+      JSON.stringify({ level: "info", subsystem: "gateway", message: input }),
+    ]);
+    assert.equal(records.length, 1);
+    const record = records[0];
+    assert.ok(record?.type === "line");
+    assert.equal(record.message, expected, input);
   }
 });
 

@@ -559,16 +559,20 @@ function basename(token: string): string {
  * `-print`), `--user=a:b`, `--proxy-user a:b`, `-pass pass:X`, the positional token of
  * `vault login`, and client-specific forms: `redis-cli -a`, `sqlcmd -P`,
  * `smbclient -U user%pass` and `lftp -u user,pass`.
- * Input is one command line or log message. The scan visits each whitespace-separated
- * token once; a value that opens a quote extends to the token that closes it.
+ * Input is one command line or log message. Recognized values run to unescaped
+ * whitespace outside quotes. Each inspected argument is consumed once.
  */
 export function redactArgvCredentials(value: string): string {
   const parts = value.split(ARGV_SEPARATOR);
   const tokens: number[] = [];
-  for (let index = 0; index < parts.length; index += 2) {
-    if (parts[index]!.length > 0) {
+  const tokenStarts: number[] = [];
+  let position = 0;
+  for (let index = 0; index < parts.length; index += 1) {
+    if (index % 2 === 0 && parts[index]!.length > 0) {
       tokens.push(index);
+      tokenStarts.push(position);
     }
+    position += parts[index]!.length;
   }
   // wordEnd[at]: the last token of the word that token `at` starts. Tokens joined only by
   // literal escapes (`pa\nss`) form one word: an escape separates a flag from its value,
@@ -583,9 +587,13 @@ export function redactArgvCredentials(value: string): string {
   const clientSecrets = new Set<string>();
   const clientSeparators = new Map<string, string>();
   if (namesClient) {
+    const seenClients = new Set<string>();
     for (const index of tokens) {
-      const client = ARGV_CLIENT_CREDENTIALS.get(basename(parts[index]!));
-      if (client !== undefined) {
+      const name = basename(parts[index]!);
+      const client = ARGV_CLIENT_CREDENTIALS.get(name);
+      if (client !== undefined && !seenClients.has(name)) {
+        // Repeated client names cannot grow the policy checked for every argument.
+        seenClients.add(name);
         client.secret.forEach((flag) => clientSecrets.add(flag));
         for (const [flag, separator] of Object.entries(client.userinfo)) {
           clientSeparators.set(flag, (clientSeparators.get(flag) ?? "") + separator);
@@ -599,32 +607,52 @@ export function redactArgvCredentials(value: string): string {
     [...(clientSeparators.get(flag) ?? "")].some((separator) => value.includes(separator));
   let vaultLogin = false;
   // Most lines carry no argv credential; they are returned as they came, not rejoined.
-  let changed = false;
+  const output: string[] = [];
+  let copied = 0;
   const masked = mark("argv");
-  // Puts `replacement` in place of token `at` and clears every part through token `end`.
-  const replaceThrough = (at: number, end: number, replacement: string): number => {
-    parts[tokens[at]!] = replacement;
-    changed = true;
-    for (let index = tokens[at]! + 1; index <= tokens[end]!; index += 1) {
-      parts[index] = "";
-    }
-    return end;
-  };
-  // Replaces the value starting at token position `at`, extending through a quoted span
-  // and the rest of its word.
-  const maskFrom = (at: number): number => {
-    const first = parts[tokens[at]!]!;
-    const quote = first[0] === '"' || first[0] === "'" ? first[0] : undefined;
-    let end = at;
-    if (quote !== undefined && !(first.length > 1 && first.endsWith(quote))) {
-      while (end + 1 < tokens.length) {
-        end += 1;
-        if (parts[tokens[end]!]!.endsWith(quote)) {
-          break;
-        }
+  // Scan the original characters, including gaps inside quotes and escaped whitespace.
+  // Backslashes are literal in single quotes; inside double quotes they escape only
+  // shell-special characters. An unmatched quote consumes the remaining input.
+  const argument = (at: number, offset = 0) => {
+    const start = tokenStarts[at]! + offset;
+    let end = start;
+    let quote: string | undefined;
+    while (end < value.length) {
+      const character = value[end]!;
+      const next = value[end + 1];
+      if (
+        character === "\\" &&
+        quote !== "'" &&
+        next !== undefined &&
+        (quote === undefined ||
+          next === '"' ||
+          next === "\\" ||
+          next === "$" ||
+          next === "`" ||
+          next === "\n")
+      ) {
+        end += 2;
+        continue;
       }
+      if (quote === undefined && /\s/.test(character)) {
+        break;
+      }
+      if (character === quote) {
+        quote = undefined;
+      } else if (quote === undefined && (character === '"' || character === "'")) {
+        quote = character;
+      }
+      end += 1;
     }
-    return replaceThrough(at, wordEnd[end]!, masked);
+    let last = at;
+    while (last + 1 < tokens.length && tokenStarts[last + 1]! < end) {
+      last += 1;
+    }
+    return { start, end, last };
+  };
+  const replaceThrough = (at: number, end: number, replacement: string) => {
+    output.push(value.slice(copied, tokenStarts[at]!), replacement);
+    copied = end;
   };
   for (let at = 0; at < tokens.length; at += 1) {
     const token = parts[tokens[at]!]!;
@@ -633,7 +661,9 @@ export function redactArgvCredentials(value: string): string {
     }
     if (!token.startsWith("-")) {
       if (vaultLogin && !token.includes("=")) {
-        at = maskFrom(at);
+        const span = argument(at);
+        replaceThrough(at, span.end, masked);
+        at = span.last;
       } else if (token === "login" && at > 0 && basename(parts[tokens[at - 1]!]!) === "vault") {
         vaultLogin = true;
       }
@@ -646,14 +676,18 @@ export function redactArgvCredentials(value: string): string {
     const userinfo = ARGV_USERINFO_FLAGS.has(flag) || clientSeparators.has(flag);
     if (secret || userinfo) {
       if (attached !== undefined) {
-        // An attached value that runs on through an escape is masked whole: the part
-        // after the escape may hold the password.
-        if (
-          attached.length > 0 &&
-          !attached.startsWith(MARK) &&
-          (secret || carriesPassword(flag, attached) || wordEnd[at] !== at)
-        ) {
-          at = replaceThrough(at, wordEnd[at]!, `${flag}=${masked}`);
+        // An attached value that runs on through a quote or escape is masked whole:
+        // the later parts may hold the password.
+        if (attached.length > 0 && !attached.startsWith(MARK)) {
+          const span = argument(at, equals + 1);
+          if (
+            secret ||
+            carriesPassword(flag, value.slice(span.start, span.end)) ||
+            wordEnd[at] !== at
+          ) {
+            replaceThrough(at, span.end, `${flag}=${masked}`);
+          }
+          at = span.last;
         }
         continue;
       }
@@ -665,12 +699,17 @@ export function redactArgvCredentials(value: string): string {
         next === undefined ||
         (next.startsWith("-") && wordEnd[at] === at) ||
         next.startsWith(MARK) ||
-        (userinfo && !secret && !carriesPassword(flag, next)) ||
         (flag === "-p" && PATH_VALUE.test(next))
       ) {
         continue;
       }
-      at = maskFrom(at + 1);
+      const span = argument(at + 1);
+      if (secret || carriesPassword(flag, value.slice(span.start, span.end))) {
+        replaceThrough(at + 1, span.end, masked);
+      }
+      // Even a username-only value is consumed, so nested flag-looking text cannot
+      // cause repeated scans of the same quoted argument.
+      at = span.last;
       continue;
     }
     // Attached short forms: `-pPASSWORD`, `-ualice:pw`, `-Ualice%pw`, `-aPASSWORD`.
@@ -678,16 +717,18 @@ export function redactArgvCredentials(value: string): string {
       const short = token.slice(0, 2);
       const rest = token.slice(2);
       const runsOn = wordEnd[at] !== at;
-      if (
-        (short === "-p" && (mysql || runsOn || !/^[a-z]+$/.test(rest))) ||
-        ((short === "-u" || short === "-U") && (runsOn || carriesPassword(short, rest))) ||
-        clientSecrets.has(short)
-      ) {
-        at = replaceThrough(at, wordEnd[at]!, `${short}${masked}`);
+      const shortSecret =
+        (short === "-p" && (mysql || runsOn || !/^[a-z]+$/.test(rest))) || clientSecrets.has(short);
+      if (shortSecret || short === "-u" || short === "-U") {
+        const span = argument(at, 2);
+        if (shortSecret || runsOn || carriesPassword(short, value.slice(span.start, span.end))) {
+          replaceThrough(at, span.end, `${short}${masked}`);
+        }
+        at = span.last;
       }
     }
   }
-  return changed ? parts.join("") : value;
+  return output.length === 0 ? value : output.join("") + value.slice(copied);
 }
 
 // Standard scheduler and kubelet Event shapes that name cluster objects: the node a Pod
