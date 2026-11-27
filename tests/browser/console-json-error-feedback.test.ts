@@ -344,7 +344,8 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.equal(await json.getAttribute("aria-invalid"), null);
 
   // Submit from the end of the draft. The very next key should repair the earlier typo.
-  const misplacedComma = template.replace("{", "{,");
+  const misplacedComma = template.replace(/^\s*\{/, "$&,");
+  assert.notEqual(misplacedComma, template);
   await json.fill(misplacedComma);
   await json.press("Control+End");
   await page.getByRole("button", { name: "Create Agent", exact: true }).press("Enter");
