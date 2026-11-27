@@ -747,6 +747,32 @@ async function finishProvisioningAttempt({
   });
 }
 
+// The warning can wrap onto more lines than the default scroll padding allows.
+// Measure the mounted bar so native focus scrolling clears it, including after Back.
+const createActionsSelector = "#create-agent-form ~ .form-actions";
+let actionSize: ResizeObserver | undefined;
+function observeCreateActions(actions = document.querySelector(createActionsSelector)) {
+  if (!actions) {
+    return;
+  }
+  actionSize ??= new ResizeObserver((entries, observer) => {
+    for (const { target } of entries) {
+      if (!target.isConnected) {
+        observer.unobserve(target);
+        if (!document.querySelector(createActionsSelector)) {
+          document.documentElement.style.removeProperty("--create-actions-height");
+        }
+        continue;
+      }
+      document.documentElement.style.setProperty(
+        "--create-actions-height",
+        `${Math.ceil(target.getBoundingClientRect().height)}px`,
+      );
+    }
+  });
+  actionSize.observe(actions, { box: "border-box" });
+}
+
 export function renderCreateAgent(
   context: CreateAgentContext,
   restored?: unknown,
@@ -2695,6 +2721,14 @@ function renderAgentForm(
     }
     return undefined;
   }
+  // Size the editor before the user selects text. Shrinking it when the error appears
+  // can hide the selection at the bottom of a long draft.
+  configuration.addEventListener("focus", () => {
+    configuration.style.setProperty(
+      "--create-editor-actions-height",
+      `${Math.ceil(actions.getBoundingClientRect().height)}px`,
+    );
+  });
   // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
   function focusConfiguration(offset?: number) {
     const details = configuration.closest("details");
@@ -2705,7 +2739,8 @@ function renderAgentForm(
       configuration.setSelectionRange(offset, offset);
     }
     configuration.focus();
-    if (offset === undefined) {
+    const error = configurationError.node;
+    if (error.hidden) {
       return;
     }
 
@@ -2714,9 +2749,7 @@ function renderAgentForm(
       document.documentElement.clientHeight,
       actions.getBoundingClientRect().top,
     );
-    const overlap = Math.ceil(
-      configurationError.node.getBoundingClientRect().bottom - visibleBottom,
-    );
+    const overlap = Math.ceil(error.getBoundingClientRect().bottom - visibleBottom);
     if (overlap > 0 && configuration.getBoundingClientRect().top >= overlap) {
       window.scrollBy(0, overlap);
     }
@@ -4108,6 +4141,18 @@ function renderAgentForm(
       ? { method: authMethod.value }
       : undefined;
   }
+  form.addEventListener("keydown", (event) => {
+    const { target } = event;
+    if (
+      event.key === "Enter" &&
+      target instanceof HTMLInputElement &&
+      target.form === form &&
+      (target.type === "radio" || target.type === "checkbox")
+    ) {
+      // Enter on a choice can activate the form's submit button.
+      event.preventDefault();
+    }
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     // A restored draft sets the name and files without an input event.
@@ -4738,6 +4783,8 @@ function renderAgentForm(
     recovery,
     actions,
   );
+  observeCreateActions(actions);
+  context.onResume?.(observeCreateActions);
   context.setDraftCapture(captureDraft, unsavedDraft);
   context.drafts.forget("preset");
   context.setDiscardOnExit(false);

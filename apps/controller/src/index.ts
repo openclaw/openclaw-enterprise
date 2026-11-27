@@ -1703,25 +1703,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const created = options.createController(installation);
         created.registerDriver(selected);
         created.selectDriver("iam", selected.id);
-        if (options.computeDriver) {
-          created.registerDriver(options.computeDriver);
-          created.selectDriver("compute", options.computeDriver.id);
-        }
-        if (options.configurationDriver) {
-          created.registerDriver(options.configurationDriver);
-          created.selectDriver("configuration", options.configurationDriver.id);
-        }
-        if (options.secretDriver) {
-          created.registerDriver(options.secretDriver);
-          created.selectDriver("secret", options.secretDriver.id);
-        }
-        if (options.channelDriver) {
-          created.registerDriver(options.channelDriver);
-          created.selectDriver("channel", options.channelDriver.id);
-        }
-        if (options.sandboxDriver) {
-          created.registerDriver(options.sandboxDriver);
-          created.selectDriver("sandbox", options.sandboxDriver.id);
+        for (const kind of ["compute", "configuration", "secret", "channel", "sandbox"] as const) {
+          const key = `${kind}Driver` as const;
+          if (options[key]) {
+            created.registerDriver(options[key]);
+            created.selectDriver(kind, options[key].id);
+          }
         }
         await created.transact(async (unit) => {
           await createBootstrapResources(created, context.actorId);

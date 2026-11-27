@@ -92,6 +92,16 @@ steps. The script prints named stages, timing, assertions, and failure diagnosti
 An image build alone is not a passing lifecycle check. Verify that the run
 completes, including cleanup, before reporting success.
 
+If a channel proxy deployment is slow, find its `wait` time in the log. Look
+for `sampled gateway Pod intervals` with the same deployment label. The three
+intervals cover creation to scheduling, scheduling to Gateway container start,
+and container start to the latest time the Pod became Ready. Values are in
+milliseconds. The Pod timestamps have whole-second precision and can come from
+different clocks. The test reads the selected Pod after deployment and omits
+intervals it cannot measure. A failed deployment can have no sample. The
+intervals exclude work before Pod creation and can extend past the deployment
+wait if readiness changed again.
+
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.
 

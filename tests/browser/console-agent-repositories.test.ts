@@ -154,20 +154,49 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   await page.locator("#repository-default-git-full").check();
   await page.getByText("Choose approved access", { exact: true }).waitFor();
-  assert.equal(await page.locator("#repository-inherit-documentation").isVisible(), true);
+  const inheritDocumentation = page.locator("#repository-inherit-documentation");
+  assert.equal(await inheritDocumentation.isVisible(), true);
   await page.getByText("Contributor · Custom", { exact: true }).waitFor();
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository Agent");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(create);
+  const validation = page
     .getByRole("alert")
-    .filter({ hasText: "Choose approved access for each selected repository." })
-    .waitFor();
+    .filter({ hasText: "Choose approved access for each selected repository." });
+
+  // The repository alert should appear only when the user submits the form.
+  const readOnly = defaultAccess.locator("#repository-default-git-read");
+  await readOnly.press("Enter");
+  assert.equal(await validation.isVisible(), false, "Enter on Read-only submitted Create Agent");
+  assert.equal(await readOnly.isChecked(), false);
+  assert.ok(await hasFocus(readOnly));
+  await defaultAccess.getByText("Customize access", { exact: true }).press("Enter");
+  const manageIssues = defaultAccess.getByLabel("Create and manage issues");
+  assert.ok(await manageIssues.isVisible());
+  await manageIssues.press("Enter");
+  assert.equal(
+    await validation.isVisible(),
+    false,
+    "Enter on the issue management checkbox submitted Create Agent",
+  );
+  assert.ok(await manageIssues.isChecked());
+  assert.ok(await hasFocus(manageIssues));
+  await inheritDocumentation.press("Enter");
+  assert.equal(
+    await validation.isVisible(),
+    false,
+    "Enter on the repository inheritance checkbox submitted Create Agent",
+  );
+  assert.ok(await inheritDocumentation.isChecked());
+  assert.ok(await hasFocus(inheritDocumentation));
+  await create.press("Enter");
+  await validation.waitFor();
   // Only the model credential Secret was created; no Configuration or Agent write started.
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-  await page.locator("#repository-inherit-documentation").uncheck();
+  await inheritDocumentation.press("Space");
   await page.locator("#repository-override-documentation-git-read").check();
   await page.locator("#repository-default-git-read").check();
   // A checkbox round trip restores the original position and explicit access.
@@ -1432,6 +1461,22 @@ test("Agent repository search prioritizes exact names before prefix matches", as
     document.addEventListener("submit", () => count.value++, true);
     return count;
   });
+  // With Create Agent enabled, Enter on a choice must stay in the picker.
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent", exact: true }));
+  const firstChoice = repositoryCheckbox(page, "omega/application");
+  await search.press("ArrowDown");
+  assert.ok(await hasFocus(firstChoice));
+  await page.keyboard.press("Enter");
+  assert.equal(
+    await submissions.evaluate((count) => count.value),
+    0,
+    "Enter on a repository checkbox submitted Create Agent",
+  );
+  assert.equal(await firstChoice.isChecked(), false);
+  assert.ok(await hasFocus(firstChoice));
+  await page.keyboard.press("ArrowUp");
+  assert.ok(await hasFocus(search));
+
   // Holding Enter must add only the first match.
   await page.keyboard.down("Enter");
   await page.keyboard.down("Enter");

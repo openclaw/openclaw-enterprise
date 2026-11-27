@@ -97,7 +97,10 @@ import { servedAs } from "../helpers/agent-identity.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { prepareFixture, slackFirstDeploymentFixture } from "./occ-api-first-deployment-fixture.ts";
+import {
+  firstDeploymentFixture,
+  slackFirstDeploymentFixture,
+} from "./occ-api-first-deployment-fixture.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -312,43 +315,6 @@ async function configuredController(options = {}) {
 async function readyNamespaceFixture(namespaceName, controllerOptions, bootstrapName) {
   const controller = await configuredController(controllerOptions);
   return bootstrapReadyNamespace(controller, namespaceName, bootstrapName);
-}
-
-async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
-  const { controller, namespace, agent, path, intent, secretDriver, channelDriver, providerCalls } =
-    await prepareFixture({ ready, slackFetch });
-  const recover = (body = intent, options = {}) =>
-    controller.request(
-      "GET",
-      `${path}/deploy-first/${body.key}/${body.expectedConfigurationId}/${body.expectedGeneration}`,
-      options,
-    );
-  const listRevisions = () =>
-    controller.fixture.platformState.read((state) =>
-      state.revisions.listRevisions(namespace.id, agent.id),
-    );
-  const listRevisionMetadata = () =>
-    controller.fixture.platformState.read((state) =>
-      state.revisions.listRevisionMetadata(namespace.id, agent.id),
-    );
-  const work = () =>
-    controller.fixture.platformState
-      .pendingOperations()
-      .filter((entry) => entry.kind === "agent_revision");
-  return {
-    controller,
-    namespace,
-    agent,
-    path,
-    intent,
-    recover,
-    listRevisions,
-    listRevisionMetadata,
-    work,
-    secretDriver,
-    channelDriver,
-    providerCalls,
-  };
 }
 
 test("guarded first deployment returns 409 and audits an unready Namespace without credential or work effects", async () => {
@@ -634,16 +600,12 @@ test("Names follow the Backend ID text rule, so C1 controls are refused", async 
 });
 
 test("Installation API exposes Agent provisioning capabilities without configured Backends", async () => {
-  let ensureNamespaceCalls;
-  let deleteNamespaceCalls;
   const computeDriver = createReadyComputeDriver("compute-provisioning-capable", {
     agentProvisioning: { executionModes: ["dedicated"] },
     async ensureNamespace(namespace) {
-      ensureNamespaceCalls.push(namespace.id);
       return { namespaceId: namespace.id, namespaceReady: true };
     },
     async deleteNamespace(namespace) {
-      deleteNamespaceCalls.push(namespace.id);
       return { namespaceId: namespace.id, namespaceDeleted: true };
     },
     validateHarnessAuth() {},
@@ -655,10 +617,9 @@ test("Installation API exposes Agent provisioning capabilities without configure
     backendSummaries: [],
     computeDriver,
   });
-  const { computeCalls } = controller.fixture;
-  ensureNamespaceCalls = computeCalls.ensureNamespace;
-  deleteNamespaceCalls = computeCalls.deleteNamespace;
   const bootstrapped = await bootstrap(controller);
+  assert.ok(controller.fixture.controller);
+  assert.equal(controller.fixture.controller.selectedDriver("compute").id, computeDriver.id);
   assert.deepEqual(bootstrapped.capabilities, {
     agentProvisioning: { executionModes: ["dedicated"] },
   });
@@ -668,7 +629,7 @@ test("Installation API exposes Agent provisioning capabilities without configure
   // Without a provisioning Sandbox Driver, dedicated OpenClaw cannot be admitted (finding 1608);
   // without any Sandbox Driver, Embedded OpenClaw can (#2670). Bootstrap reports neither.
   assert.deepEqual(installation.data.capabilities, {
-    ...bootstrapped.capabilities,
+    agentProvisioning: { executionModes: ["dedicated"] },
     openclaw: { executionModes: ["embedded"] },
   });
 

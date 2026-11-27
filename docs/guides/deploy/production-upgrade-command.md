@@ -106,6 +106,15 @@ When you select candidate files or other expert options, pass the same options
 after `--` to `plan` and `apply`. Review the deployment effects and image digests
 before you approve. Schedule a maintenance window even if Agent
 revisions stay the same and the database is current. Deployment stops the OCC API and Worker.
+
+If the plan redeploys an Agent with a dedicated Codex Harness, pause workspace
+writes before you [verify each edit](upgrade-baseline.md#record-agent-data).
+A baseline hash for one file cannot verify the others. If you cannot verify an
+edit, postpone the upgrade and keep the original Gateway Pod running. It may
+hold the only copy. Keep writes paused until you verify the edits through the
+replacement Gateway. If the original Pod is already gone, keep the upgrade
+paused until an authorized operator recovers and verifies any missing edits.
+
 Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.

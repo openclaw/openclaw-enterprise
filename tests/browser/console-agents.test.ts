@@ -2386,7 +2386,25 @@ test("Create Agent offers browser chat only on an enabled installation and submi
   assert.equal(await toggle.isEnabled(), true);
   await page.getByLabel("Agent name", { exact: true }).fill("Native admin test");
   await enterManualModel(page, "synthetic-model-key");
-  await toggle.check();
+
+  // The checkbox must leave the draft alone even when Create Agent can submit it.
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(create);
+  const createClicks = await create.evaluateHandle((button) => {
+    const count = { value: 0 };
+    button.addEventListener("click", () => count.value++);
+    return count;
+  });
+  await toggle.press("Enter");
+  assert.equal(
+    await createClicks.evaluate((count) => count.value),
+    0,
+    "Enter on Enable browser chat activated Create Agent",
+  );
+  assert.equal(await toggle.isChecked(), false);
+
+  await toggle.press("Space");
+  assert.equal(await toggle.isChecked(), true);
   await toggle.uncheck();
   await toggle.check();
   // This browser fixture has no durable provisioning queue. Exercise the real API's
@@ -2394,6 +2412,8 @@ test("Create Agent offers browser chat only on an enabled installation and submi
   const response = await submitCreateAgent(page, fixture, namespace.id, {
     path: "agents/provision",
   });
+  assert.equal(await createClicks.evaluate((count) => count.value), 1);
+  await createClicks.dispose();
   assert.equal(response.request().postDataJSON().nativeAdmin, true);
   assert.equal(response.status(), 503);
   assert.equal(await toggle.isChecked(), true, "a refused create retains the opt-in");
