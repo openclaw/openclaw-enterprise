@@ -2487,19 +2487,7 @@ revisionTest(
     );
     assert.deepEqual(await observe(), exhausted);
 
-    terminating = false;
-    const repeated = await fixture.controller.deleteNamespace(otherActor, namespace.id);
-    assert.equal(repeated.status, "deleting");
-    const retried = await observe();
-    assert.ok(
-      retried === undefined || ["queued", "claimed", "succeeded"].includes(retried.state),
-      "an authorized takeover must requeue the exhausted teardown",
-    );
-    if (retried !== undefined) {
-      assert.equal(retried.actorId, otherActor);
-      assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
-    }
-    // Namespace policy left at teardown is removed with the tombstone and audited.
+    // Seed policy before the retry can start tearing down the Namespace.
     const policyRole = `role-${randomUUID()}`;
     const policyBinding = `binding-${randomUUID()}`;
     await fixture.observerPool.query(
@@ -2513,6 +2501,18 @@ revisionTest(
        VALUES ($1, $2, $3, $4, 'namespace', $2)`,
       [policyBinding, namespace.id, otherActor, policyRole],
     );
+    terminating = false;
+    const repeated = await fixture.controller.deleteNamespace(otherActor, namespace.id);
+    assert.equal(repeated.status, "deleting");
+    const retried = await observe();
+    assert.ok(
+      retried === undefined || ["queued", "claimed", "succeeded"].includes(retried.state),
+      "an authorized takeover must requeue the exhausted teardown",
+    );
+    if (retried !== undefined) {
+      assert.equal(retried.actorId, otherActor);
+      assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
+    }
     await fixture.work(deletion, "succeeded");
     assert.equal(deleteAttempts, 2);
     assert.equal(
