@@ -2028,6 +2028,18 @@ test("invalid runtime snapshots cannot fall back to current images", async () =>
   }
 });
 
+const candidateImages = {
+  gateway: "openclaw-enterprise/gateway-fixture:candidate",
+  agent: "openclaw-enterprise/agent-fixture:candidate",
+};
+
+function reloadRuntimeDriver(driver, overrides) {
+  return new KubernetesComputeDriver(
+    { ...driver.options, ...overrides },
+    { nodeEnrollment: driver.nodeEnrollment },
+  );
+}
+
 test("admitted dedicated runtimes keep their images across maintenance and activation", async () => {
   const fixture = dedicatedFirstDeployFixture();
   await fixture.prepare();
@@ -2040,17 +2052,9 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
   const before = [fixture.gatewayName, fixture.agentName].map((name) =>
     structuredClone(fixture.read("Deployment", name).spec.template),
   );
-  const reloaded = new KubernetesComputeDriver(
-    {
-      ...fixture.driver.options,
-      images: {
-        ...fixture.driver.options.images,
-        gateway: "openclaw-enterprise/gateway-fixture:candidate",
-        agent: "openclaw-enterprise/agent-fixture:candidate",
-      },
-    },
-    { nodeEnrollment: fixture.driver.nodeEnrollment },
-  );
+  const reloaded = reloadRuntimeDriver(fixture.driver, {
+    images: { ...fixture.driver.options.images, ...candidateImages },
+  });
   reloaded.apiClients = Promise.resolve(fixture.clients);
   assert.equal(
     (await reloaded.prepareRevision(fixture.revision, authContext(fixture.revision))).ready,
@@ -2069,13 +2073,9 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
 test("an enforced digest policy rejects previously admitted tags before reconciliation", async () => {
   const fixture = dedicatedFirstDeployFixture();
   const pinned = "registry.example.test/runtime@sha256:" + "a".repeat(64);
-  const reloaded = new KubernetesComputeDriver(
-    {
-      ...fixture.driver.options,
-      images: { gateway: pinned, agent: pinned, requireImmutableDigest: true },
-    },
-    { nodeEnrollment: fixture.driver.nodeEnrollment },
-  );
+  const reloaded = reloadRuntimeDriver(fixture.driver, {
+    images: { gateway: pinned, agent: pinned, requireImmutableDigest: true },
+  });
   reloaded.apiClients = Promise.resolve(fixture.clients);
   for (const operation of ["prepareRevision", "activateRevision"]) {
     await assert.rejects(
@@ -2108,17 +2108,9 @@ test("admitted workspace initialization retains the Gateway image after defaults
       template.spec.initContainers?.some((container) => container.name === "initialize-workspace"),
     ),
   );
-  const reloaded = new KubernetesComputeDriver(
-    {
-      ...fixture.driver.options,
-      images: {
-        ...fixture.driver.options.images,
-        gateway: "openclaw-enterprise/gateway-fixture:candidate",
-        agent: "openclaw-enterprise/agent-fixture:candidate",
-      },
-    },
-    { nodeEnrollment: fixture.driver.nodeEnrollment },
-  );
+  const reloaded = reloadRuntimeDriver(fixture.driver, {
+    images: { ...fixture.driver.options.images, ...candidateImages },
+  });
   reloaded.apiClients = fixture.driver.apiClients;
   assert.equal((await reloaded.prepareRevision(fixture.revision, fixture.context)).ready, true);
   assert.deepEqual(templates(), before);
@@ -2156,16 +2148,16 @@ test("prepared direct-Secret workloads retain their provider across default chan
       undefined,
     ]) {
       const { modelProvider: _previous, ...runtime } = fixture.driver.options.runtime;
-      const reloaded = new KubernetesComputeDriver(
-        {
-          ...fixture.driver.options,
-          runtime: {
-            ...runtime,
-            ...(replacement === undefined ? {} : { modelProvider: replacement }),
-          },
+      const reloaded = reloadRuntimeDriver(fixture.driver, {
+        runtime: {
+          ...runtime,
+          ...(replacement === undefined ? {} : { modelProvider: replacement }),
         },
-        { nodeEnrollment: fixture.driver.nodeEnrollment },
-      );
+      });
+      // Unchanged defaults would also leave the rendered workload unchanged.
+      const current = reloaded.options.runtime;
+      assert.deepEqual(current.modelProvider, replacement);
+      assert.equal(Object.hasOwn(current, "modelProvider"), replacement !== undefined);
       reloaded.apiClients = Promise.resolve(fixture.clients);
       await reloaded.activateRevision(fixture.revision, authContext(fixture.revision));
       assert.deepEqual(
