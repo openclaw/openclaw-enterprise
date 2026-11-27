@@ -923,10 +923,29 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
     true,
     "The keyboard-focused tool filter keeps its viewport position when the last match disappears",
   );
+  // Put the message at the bottom of the pane. The returning tool title needs more room.
+  await noMatches.evaluate((node) => node.scrollIntoView({ block: "end" }));
+  const pane = await dialog.locator(".plugin-detail").boundingBox();
+  const message = await noMatches.boundingBox();
+  assert.ok(pane && message);
+  const paneBottom = pane.y + pane.height;
+  assert.ok(
+    Math.abs(message.y + message.height - paneBottom) <= 1,
+    "The message starts at the bottom of the pane",
+  );
   await page.keyboard.press("Backspace");
   assert.equal(await filter.inputValue(), "Alpha");
   await tool.waitFor();
   await noMatches.waitFor({ state: "hidden" });
+  await nextFrames(page);
+  const field = await filter.boundingBox();
+  const title = await tool.boundingBox();
+  assert.ok(field && title);
+  assert.equal(
+    field.y >= pane.y && title.y + title.height <= paneBottom,
+    true,
+    "Backspace reveals the returning tool title without hiding the filter",
+  );
   await page.keyboard.press("z");
   await noMatches.waitFor();
   assert.deepEqual(ui.reads(), readsBeforeFilter);
