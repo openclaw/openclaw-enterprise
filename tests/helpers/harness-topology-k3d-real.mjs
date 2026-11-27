@@ -3199,6 +3199,14 @@ async function deleteRevisionPods(topology, revisionId) {
   return pods;
 }
 
+/**
+ * @param {string} name
+ * @param {string} namespace
+ */
+function deletePodForRestart(name, namespace) {
+  return kubectl("delete", "pod", name, "--namespace", namespace, "--wait=true", "--timeout=120s");
+}
+
 async function assertStartupFailureDeploymentStatusDurable(context, topology, options = {}) {
   const plugins = options.pluginsEnabled
     ? {
@@ -4328,24 +4336,8 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       const previousHarnessUid = topology.harnessPod.metadata.uid;
       // Replace both Pods with the same Agent revision and retained volumes.
       await Promise.all([
-        kubectl(
-          "delete",
-          "pod",
-          topology.gatewayPod.metadata.name,
-          "--namespace",
-          topology.gatewayPlacement,
-          "--wait=true",
-          "--timeout=120s",
-        ),
-        kubectl(
-          "delete",
-          "pod",
-          topology.harnessPod.metadata.name,
-          "--namespace",
-          topology.placement,
-          "--wait=true",
-          "--timeout=120s",
-        ),
+        deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement),
+        deletePodForRestart(topology.harnessPod.metadata.name, topology.placement),
       ]);
       topology.harnessPod = await waitForReadyAgentPod(
         topology,
@@ -4358,15 +4350,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         previousUid,
       );
     } else {
-      await kubectl(
-        "delete",
-        "pod",
-        topology.gatewayPod.metadata.name,
-        "--namespace",
-        topology.gatewayPlacement,
-        "--wait=true",
-        "--timeout=120s",
-      );
+      await deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement);
       topology.gatewayPod = await waitForReadyGatewayPod(
         topology,
         topology.revision.id,
@@ -4568,15 +4552,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     // Stop/start replaces both Pods. The rollout lives on the Harness claim, so the Gateway's
     // bound thread resumes instead of silently starting a new one.
     const previousHarnessUid = topology.harnessPod.metadata.uid;
-    await kubectl(
-      "delete",
-      "pod",
-      topology.harnessPod.metadata.name,
-      "--namespace",
-      topology.placement,
-      "--wait=true",
-      "--timeout=120s",
-    );
+    await deletePodForRestart(topology.harnessPod.metadata.name, topology.placement);
     topology.harnessPod = await waitForReadyAgentPod(
       topology,
       topology.revision.id,
@@ -4586,15 +4562,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
 
   // Deleting the Pod destroys emptyDir state; only the owning durable claim can preserve these outcomes.
   const previousUid = topology.gatewayPod.metadata.uid;
-  await kubectl(
-    "delete",
-    "pod",
-    topology.gatewayPod.metadata.name,
-    "--namespace",
-    topology.gatewayPlacement,
-    "--wait=true",
-    "--timeout=120s",
-  );
+  await deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement);
   topology.gatewayPod = await waitForReadyGatewayPod(topology, topology.revision.id, previousUid);
   const retained = await assertGatewayPrivateResources(topology);
   assert.equal(retained.metadata.uid, privateClaim.metadata.uid);
@@ -6070,15 +6038,7 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
 
   // A Pod restart reads the existing revision projection; only explicit OCE
   // deployment delivers updated canonical values to a new revision.
-  await kubectl(
-    "delete",
-    "pod",
-    topology.gatewayPod.metadata.name,
-    "--namespace",
-    topology.gatewayPlacement,
-    "--wait=true",
-    "--timeout=120s",
-  );
+  await deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement);
   topology.gatewayPod = await waitForReadyGatewayPod(topology, topology.revision.id, beforePodUid);
   assert.deepEqual(
     await inspectEnvironmentValue(
@@ -6908,15 +6868,7 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     );
   });
 
-  await kubectl(
-    "delete",
-    "pod",
-    harnessPod,
-    "--namespace",
-    topology.placement,
-    "--wait=true",
-    "--timeout=120s",
-  );
+  await deletePodForRestart(harnessPod, topology.placement);
   const restartedHarness = await waitForReadyAgentPod(
     topology,
     topology.revision.id,
