@@ -218,7 +218,7 @@ Create a private evidence directory and record these values before mutation.
       channel grants.
 - [ ] Inventory Credential Source IDs, status and Agent bindings. Record the
       selected TokenService and Credential Proxy and which credentials need
-      [re-enrollment](credential-proxy-upgrade.md) during a Gateway cutover.
+      [re-enrollment](production-upgrade-credentials.md) when upgrading retired Gateway delivery.
       Keep Slack Channel startup Secrets in the separate channel inventory.
 - [ ] Compare Agent drafts and persisted Preset plugin policies with the
       candidate's [plugin policy contract](../../reference/agent-plugins.md).

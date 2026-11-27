@@ -1,10 +1,15 @@
-# Credential Proxy threat model
+# Protected metadata sender threat model
+
+Credential Design 1.0 retires the protected metadata exchange described here.
+This threat model applies only to the deprecated legacy credential-egress code
+until its removal. Ordinary network-only metadata reads return the upstream
+response; they do not provide this exchange's field filtering or live OCC checks.
 
 Assume a downloaded script can read the Agent's environment and files, run
 commands and open network connections. In the credential-free repository metadata profile,
 the grant covers the whole Agent execution. The trusted sender controls which
 requests reach GitHub and which responses return to that execution. See the
-[worked repository read](../../design/credential-proxy.md#read-one-repositorys-identity).
+[deprecated protected metadata exchange](../credential-sources/protected-repository-metadata.md).
 
 ## What can a process inside the execution do?
 
@@ -15,11 +20,11 @@ requests reach GitHub and which responses return to that execution. See the
 | Read extra fields from GitHub's reply.         | The sender holds the whole reply. The adapter checks the ID and name and releases only `id` and the granted `full_name`.     | The script can keep those two fields. The sender withholds a redirect, ambiguous JSON or a reply with a different ID. |
 
 Ordinary OpenShell delivery can expose a placeholder that a child
-can use at the allowed endpoint. Native Git puts a usable repository session
+can use at the allowed endpoint. The separate prepared Git sender puts a usable repository session
 credential in the workload. Direct Harness authentication can supply a real
 model credential to the process that runs the Agent. See
-[OpenShell process matching](../drivers/openshell-credential-gateway.md#what-the-boundary-covers),
-[native Git sessions](../repository-credentials/prepared-native-git.md) and
+[OpenShell enforcement limits](../credential-sources.md#implementation-status),
+[prepared Git sessions](../repository-credentials/prepared-native-git.md) and
 [direct Harness credentials](runtime-isolation.md#temporary-runtime-credential-exceptions).
 
 ## What stops another execution or a direct connection?
@@ -68,7 +73,13 @@ In the [withdrawal example](../../../tests/integration/credential-proxy-withdraw
 
 Once the workload receives data, withdrawal cannot take it back. See
 [credential custody](../credential-sources.md) and
-[OpenShell administrative access](../drivers/openshell-credential-gateway.md#trust-requirements).
+[OpenShell administrative access](../drivers/openshell-sandbox.md#qualification-contract).
+
+OpenShell Workspace members can attach any Provider in that Workspace. Keep
+OCC's management principal as the only member of OCC Workspaces and limit
+OpenShell Platform Admins, who bypass membership. OCC does not validate either
+membership or the administrator list. Its management identity can manage
+Workspaces, Sandboxes, and Providers; keep it outside tenant workloads.
 The [metadata adapter](../../../apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 defines the implemented read. [RFC-0023](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)
 describes the broader proposal. A controlled peer shows what reached that peer.

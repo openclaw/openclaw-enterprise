@@ -28,6 +28,11 @@ export function createControllerResourceValues(
     return result;
   }
 
+  function nextDeviceAuthorizationSessionId(): string {
+    // The existing ID override receives the secret kind for device-login handles.
+    return createId ? nextIdentifier("secret") : `sec_${crypto.randomUUID()}`;
+  }
+
   function timestamp(): string {
     const date = now();
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
@@ -36,7 +41,7 @@ export function createControllerResourceValues(
     return date.toISOString();
   }
 
-  return { now, nextIdentifier, timestamp };
+  return { now, nextIdentifier, nextDeviceAuthorizationSessionId, timestamp };
 }
 
 export type ControllerResourceValues = ReturnType<typeof createControllerResourceValues>;

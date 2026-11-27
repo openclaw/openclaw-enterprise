@@ -751,8 +751,16 @@ function workspaceFiles(): Record<string, string> {
   };
 }
 
-const sharedChange = ({ put }: Pick<ChangeContext, "put">) =>
-  put("packages/shared/src/example.ts", "export const value = 1;\n");
+const writeFiles =
+  (files: Files): Change =>
+  ({ put }) => {
+    for (const [path, content] of Object.entries(files)) {
+      put(path, content);
+    }
+  };
+
+const sharedFile = { "packages/shared/src/example.ts": "export const value = 1;\n" };
+const sharedChange = writeFiles(sharedFile);
 const affected = {
   status: "affected",
   reason: "workspace_typescript",
@@ -827,7 +835,8 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   for (const path of [storybookWorkflow, preparer]) {
     initial[path] = existsSync(join(repositoryRoot, path)) ? read(path) : "";
   }
-  const change: Change = ({ put }) => put(asset, "export const paths = ['/console/'];\n");
+  const assetEdit = { [asset]: "export const paths = ['/console/'];\n" };
+  const change = writeFiles(assetEdit);
   const f = await fixture(t, change, initial);
   // The advisory must tolerate an unrelated change to the workflow or preparer
   // on main. Exercise the positive receipt for the verified consumer revisions
@@ -867,14 +876,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   const readShadow = async (input: Fixture, env: NodeJS.ProcessEnv = {}) =>
     shadowData(await pnpmImpactOutput(input, env, ["--shadow"]));
   const alongsideAsset = (path: string, content: string) =>
-    fixture(
-      t,
-      (ctx) => {
-        change(ctx);
-        ctx.put(path, content);
-      },
-      initial,
-    );
+    fixture(t, writeFiles({ ...assetEdit, [path]: content }), initial);
   const expectUnverified = async (input: Fixture) => {
     const shadow = await readShadow(input);
     assert.equal(shadow.mode, "broad");
@@ -894,14 +896,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   assert.equal(incomplete.reason, "incomplete_manifest");
   assert.deepEqual(incomplete.lanes, []);
 
-  const other = await fixture(
-    t,
-    (ctx) => {
-      change(ctx);
-      sharedChange(ctx);
-    },
-    initial,
-  );
+  const other = await fixture(t, writeFiles({ ...assetEdit, ...sharedFile }), initial);
   const mixed = await readShadow(other);
   assert.equal(mixed.mode, "broad");
   assert.equal(mixed.reason, knownConsumer ? "mixed_scope" : "unverified_storybook");
@@ -986,16 +981,10 @@ test("pnpm impact reports affected packages from a depth-two merge checkout", as
 });
 
 test("pnpm impact keeps non-workspace and unverified changes unclassified", async (t) => {
+  const goFile = { "cmd/tool.go": "package main\n" };
   const [f, mixed] = await settle([
-    fixture(t, ({ put }) => put("cmd/tool.go", "package main\n"), workspaceFiles()),
-    fixture(
-      t,
-      ({ put }) => {
-        sharedChange({ put });
-        put("cmd/tool.go", "package main\n");
-      },
-      workspaceFiles(),
-    ),
+    fixture(t, writeFiles(goFile), workspaceFiles()),
+    fixture(t, writeFiles({ ...sharedFile, ...goFile }), workspaceFiles()),
   ]);
   await each(
     [
@@ -1191,12 +1180,28 @@ type ChangeCase = [change: Change, initial?: Files];
 const expectAll = (t: TestContext, mode: string, cases: ChangeCase[]) =>
   each(cases, async ([change, initial]) => (await fixture(t, change, initial)).expect(mode));
 
-const rename =
-  (from: string, to: string): Change =>
+const addFiles =
+  (...paths: string[]): Change =>
+  ({ put }) => {
+    for (const path of paths) {
+      put(path);
+    }
+  };
+
+const addExecutable =
+  (path: string): Change =>
+  ({ put, repo }) => {
+    put(path);
+    chmodSync(join(repo, path), 0o755);
+  };
+
+const renameCase = (from: string, to: string): ChangeCase => [
   async ({ git, repo }) => {
     mkdirSync(dirname(join(repo, to)), { recursive: true });
     await git("mv", from, to);
-  };
+  },
+  { [from]: "same\n" },
+];
 
 test("verified merge selects documentation and handles unusual names and deletions", async (t) => {
   const f = await fixture(
@@ -1238,11 +1243,11 @@ test("mixed code, Helm, workflow and tooling changes select full", async (t) => 
       "specs/rfcs/0034-reusable-model-providers/provider.png.ts",
       "AGENTS.md",
     ].map((path) => [
-      ({ put }) => {
-        put("docs/change.md");
-        put("specs/rfcs/0034-reusable-model-providers/agent-selection.png");
-        put(path);
-      },
+      addFiles(
+        "docs/change.md",
+        "specs/rfcs/0034-reusable-model-providers/agent-selection.png",
+        path,
+      ),
     ]),
   );
 });
@@ -1252,11 +1257,11 @@ test("generated API reference changes select full across additions, edits, delet
     t,
     "full",
     ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].flatMap((path) => [
-      [({ put }) => put(path)],
+      [addFiles(path)],
       [({ put }) => put(path, "changed\n"), { [path]: "old\n" }],
       [({ repo }) => rmSync(join(repo, path)), { [path]: "old\n" }],
-      [rename(path, "docs/ordinary.md"), { [path]: "same\n" }],
-      [rename("docs/ordinary.md", path), { "docs/ordinary.md": "same\n" }],
+      renameCase(path, "docs/ordinary.md"),
+      renameCase("docs/ordinary.md", path),
     ]),
   );
 });
@@ -1272,7 +1277,7 @@ test("Markdown near generated API reference paths remains documentation", async 
       "docs/reference/cheatsheets/api-extra.md",
       "docs/reference/cheatsheets/other.md",
       "specs/reference/api.md",
-    ].map((path) => [({ put }) => put(path)]),
+    ].map((path) => [addFiles(path)]),
   );
 });
 
@@ -1296,35 +1301,18 @@ test("instruction files under docs and specs select full when added or modified"
 
 test("renames across the allowlist boundary in either direction select full", async (t) => {
   await expectAll(t, "full", [
-    [rename("docs/old.md", "src/old.md"), { "docs/old.md": "same\n" }],
-    [rename("src/old.md", "docs/old.md"), { "src/old.md": "same\n" }],
-    [
-      rename("specs/rfcs/0034-reusable-model-providers/old.png", "tests/fixtures/old.png"),
-      { "specs/rfcs/0034-reusable-model-providers/old.png": "same\n" },
-    ],
-    [
-      rename("tests/fixtures/old.png", "specs/rfcs/0034-reusable-model-providers/old.png"),
-      { "tests/fixtures/old.png": "same\n" },
-    ],
+    renameCase("docs/old.md", "src/old.md"),
+    renameCase("src/old.md", "docs/old.md"),
+    renameCase("specs/rfcs/0034-reusable-model-providers/old.png", "tests/fixtures/old.png"),
+    renameCase("tests/fixtures/old.png", "specs/rfcs/0034-reusable-model-providers/old.png"),
   ]);
 });
 
 test("all changes are inspected beyond API file-list limits", async (t) => {
-  const manyDocs = (put: Repository["put"]) => {
-    for (let i = 0; i < 305; i += 1) {
-      put(`docs/${i}.md`);
-    }
-  };
+  const docs = Array.from({ length: 305 }, (_, i) => `docs/${i}.md`);
   await settle([
-    expectAll(t, "docs", [[({ put }) => manyDocs(put)]]),
-    expectAll(t, "full", [
-      [
-        ({ put }) => {
-          manyDocs(put);
-          put("z-code.ts");
-        },
-      ],
-    ]),
+    expectAll(t, "docs", [[addFiles(...docs)]]),
+    expectAll(t, "full", [[addFiles(...docs, "z-code.ts")]]),
   ]);
 });
 
@@ -1343,12 +1331,7 @@ test("symlinks and executable documentation select full", async (t) => {
           symlinkSync("../base.txt", join(repo, path));
         },
       ],
-      [
-        ({ put, repo }) => {
-          put(path);
-          chmodSync(join(repo, path), 0o755);
-        },
-      ],
+      [addExecutable(path)],
       [
         ({ repo }) => {
           rmSync(join(repo, path));
@@ -1664,17 +1647,14 @@ test("main push compares every commit since before, not just the last commit", a
 
 test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
   for (const change of [
-    ({ put }) => {
-      put("specs/rfcs/0034-reusable-model-providers/agent-selection.png");
-      put("apps/controller/src/changed.ts");
-    },
+    addFiles(
+      "specs/rfcs/0034-reusable-model-providers/agent-selection.png",
+      "apps/controller/src/changed.ts",
+    ),
     ({ put }) => put("tests/integration/ci-impact.test.ts"),
     ({ put }) => put(".github/workflows/ci.yml"),
     ({ put }) => put("scripts/ci/impact.ts", policy + "\n// changed\n"),
-    ({ put, repo }) => {
-      put("docs/executable.md");
-      chmodSync(join(repo, "docs/executable.md"), 0o755);
-    },
+    addExecutable("docs/executable.md"),
     ({ repo }) => {
       mkdirSync(join(repo, "docs"));
       symlinkSync("../base.txt", join(repo, "docs/link.md"));
@@ -1687,26 +1667,25 @@ test("main push keeps tests, policy changes, symlinks and executable docs in ful
   }
 });
 
-test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
-  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
-  const [f, shallow] = await policyFixture(t, ({ put }) => {
+const untrustedDocsChange =
+  (marker: string): Change =>
+  ({ put }) => {
     put("scripts/ci/impact.ts", untrustedSelector(marker, "mode=docs\\n"));
     put("docs/change.md");
-  });
+  };
+
+test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
+  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
+  const [f, shallow] = await policyFixture(t, untrustedDocsChange(marker));
   mainPushEvent(f);
   await shallow.expectReason("ineligible_change", mainPushEnvironment);
   assert.equal(existsSync(marker), false);
   // A trusted before-tree containing only the old filename cannot authorize
   // execution of either that policy or the policy introduced by the push.
   const transitionMarker = join(f.dir, "transition-marker");
-  const transition = await fixture(
-    t,
-    ({ put }) => {
-      put("scripts/ci/impact.ts", untrustedSelector(transitionMarker, "mode=docs\\n"));
-      put("docs/change.md");
-    },
-    { "scripts/ci/impact.mjs": untrustedSelector(transitionMarker, "mode=docs\\n") },
-  );
+  const transition = await fixture(t, untrustedDocsChange(transitionMarker), {
+    "scripts/ci/impact.mjs": untrustedSelector(transitionMarker, "mode=docs\\n"),
+  });
   const transitionCheckout = await shallowBootstrap(transition);
   await transitionCheckout.expectReason("bootstrap_policy_unavailable");
   assert.notEqual((await transitionCheckout.run("verify", "tests")).status, 0);
@@ -1746,10 +1725,7 @@ test("workflow executes only the base policy on a shallow merge checkout", async
   const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const [[, docs], [, mixed], [, code]] = await settle([
     policyFixture(t, docsChange),
-    policyFixture(t, ({ put }) => {
-      put("scripts/ci/impact.ts", untrustedSelector(marker, "mode=docs\\n"));
-      put("docs/change.md");
-    }),
+    policyFixture(t, untrustedDocsChange(marker)),
     policyFixture(t, ({ put }) => put("src/app.ts")),
   ]);
   await settle([docs.expect("docs"), mixed.expect("full"), code.expect("full")]);
@@ -1781,17 +1757,11 @@ test("a non-documentation change still selects full after main moves", async (t)
   const moveMain: Change = ({ put }) => put("docs/main.md");
   // The pull request's own selector still never runs, even on a moved base.
   const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
-  const untrusted: Change = ({ put }) => {
-    put("scripts/ci/impact.ts", untrustedSelector(marker, "mode=docs\\n"));
-    put("docs/change.md");
-  };
+  const untrusted = untrustedDocsChange(marker);
   await each(
     [
       ({ put }) => put("src/app.ts"),
-      ({ put }) => {
-        put("docs/change.md");
-        put("src/app.ts");
-      },
+      addFiles("docs/change.md", "src/app.ts"),
       ({ put }) => put(".github/workflows/ci.yml", "name: changed\n"),
       untrusted,
     ],
@@ -2939,13 +2909,19 @@ test("event inspection failures in actual bootstrap and selector are unavailable
   ]);
 });
 
+const postgresA = "tests/integration/postgres-a.test.mjs";
+const postgresB = "tests/integration/postgres-b.test.mjs";
+const postgresC = "tests/integration/postgres-c.test.ts";
+const k3dA = "tests/integration/k3d-a.test.mjs";
+const postgresManifestPath = "scripts/ci/test-suites/postgres.json";
+
 // A small suite index with the shape of scripts/ci/test-suites.json: four CI
 // lanes, the separate fixture job and one manual (non-CI) lane.
 const suiteLanes = {
   "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs", "tests/integration/typed.test.ts"],
   "checks-baseline-2": [],
-  postgres: ["tests/integration/postgres-a.test.mjs", "tests/integration/postgres-b.test.mjs"],
-  "k3d-fixture-state": ["tests/integration/k3d-a.test.mjs"],
+  postgres: [postgresA, postgresB],
+  "k3d-fixture-state": [k3dA],
   "runtime-image-fixture": ["tests/integration/fixture-image.test.mjs"],
   openshell: ["tests/integration/openshell-real.test.mjs"],
 };
@@ -2955,6 +2931,19 @@ function laneManifest(
   env: NodeJS.ProcessEnv = { NODE_OPTIONS: "--max-old-space-size=4096" },
 ) {
   return `${JSON.stringify({ env, files: paths.map((path) => ({ path })) }, null, 2)}\n`;
+}
+
+// Copy the exact index bytes parsed here and only the manifests they reference.
+function checkedInSuites() {
+  const indexPath = "scripts/ci/test-suites.json";
+  const contents = read(indexPath);
+  const index = indexData(contents);
+  const files: Record<string, string> = { [indexPath]: contents };
+  for (const target of Object.values(index.lanes)) {
+    const path = join("scripts/ci", target);
+    files[path] = read(path);
+  }
+  return { index, files };
 }
 
 function suiteFiles(
@@ -3009,7 +2998,18 @@ const withEdit =
     context.put(path, "// edited\n");
     return change(context);
   };
-const postgresEdit = (change: Change) => withEdit("tests/integration/postgres-a.test.mjs", change);
+const postgresEdit = (change: Change) => withEdit(postgresA, change);
+
+const postgresManifest =
+  (paths: string[], env?: NodeJS.ProcessEnv): Change =>
+  ({ put }) =>
+    put(postgresManifestPath, laneManifest(paths, env));
+
+const addListedPostgresTest = (body: string) =>
+  writeFiles({
+    [postgresC]: body,
+    [postgresManifestPath]: laneManifest([...suiteLanes.postgres, postgresC]),
+  });
 
 async function suiteFixture(
   t: TestContext,
@@ -3029,7 +3029,7 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
   const helper = "tests/helpers/runtime.mjs";
   const bridge = "tests/helpers/bridge.mjs";
   const fullRoot = "tests/integration/openshell-real.test.mjs";
-  const ordinaryRoot = "tests/integration/postgres-a.test.mjs";
+  const ordinaryRoot = postgresA;
   const fullTypedRoot = "tests/integration/typed-full.test.ts";
   const unrelatedRoot = "tests/integration/unrelated.test.ts";
   const security = "tests/helpers/auth.mjs";
@@ -3145,7 +3145,6 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
 });
 
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
-  const path = "tests/integration/postgres-a.test.mjs";
   const broad: string[] = [];
   const narrow = ["postgres", "postgres-application"];
   const extraLane = present(suiteFiles()["scripts/ci/test-suites.json"]).replaceAll(
@@ -3154,12 +3153,7 @@ test("main test advisory reports only a verified single modification and leaves 
   );
   // Keep these edits bound to the maintained index and lane manifests. The
   // worker shutdown case also needs the TypeScript checks lane.
-  const indexPath = "scripts/ci/test-suites.json";
-  const registered: Files = { [indexPath]: read(indexPath) };
-  for (const target of Object.values(indexData(read(indexPath)).lanes)) {
-    const manifest = join("scripts/ci", target);
-    registered[manifest] = read(manifest);
-  }
+  const { files: registered } = checkedInSuites();
   const registeredEdit = (stem: string, extension: string): [Change, Files] => {
     const file = `tests/integration/${stem}.test.${extension}`;
     return [editTest(file), { ...registered, [file]: "// original\n" }];
@@ -3169,7 +3163,7 @@ test("main test advisory reports only a verified single modification and leaves 
       ...registeredEdit("postgres-worker-process-shutdown", "ts"),
       ["checks-baseline-2", "postgres-application", "postgres-platform"],
     ],
-    [editTest(path), {}, narrow],
+    [editTest(postgresA), {}, narrow],
     [
       ...registeredEdit("postgres-external-session-provider", "mjs"),
       ["postgres-application", "postgres-auth"],
@@ -3177,31 +3171,27 @@ test("main test advisory reports only a verified single modification and leaves 
     [...registeredEdit("postgres-worker-agent-revision-health", "mjs"), ["postgres-application"]],
     [...registeredEdit("production-kubernetes-packaging", "mjs"), ["images-packaging"]],
     [postgresEdit(({ put }) => put("docs/change.md")), {}, broad],
-    [postgresEdit(editTest("tests/integration/postgres-b.test.mjs")), {}, broad],
-    [({ repo }) => chmodSync(join(repo, path), 0o755), {}, broad],
+    [postgresEdit(editTest(postgresB)), {}, broad],
+    [({ repo }) => chmodSync(join(repo, postgresA), 0o755), {}, broad],
     [
-      editTest(path),
+      editTest(postgresA),
       {
         "scripts/reader.mjs": 'import "../tests/integration/postgres-a.test.mjs";',
       },
       broad,
     ],
-    [editTest(path), { "scripts/ci/test-suites/postgres.json": laneManifest([]) }, broad],
+    [editTest(postgresA), { [postgresManifestPath]: laneManifest([]) }, broad],
     [
-      editTest(path),
+      editTest(postgresA),
       {
         "scripts/ci/test-suites.json": extraLane,
-        "scripts/ci/test-suites/unknown-lane.json": laneManifest([path]),
+        "scripts/ci/test-suites/unknown-lane.json": laneManifest([postgresA]),
       },
       broad,
       false,
     ],
-    [
-      postgresEdit(({ put }) => put("scripts/ci/test-suites/postgres.json", laneManifest([path]))),
-      {},
-      broad,
-    ],
-    [({ git }) => git("rm", path), {}, broad],
+    [postgresEdit(postgresManifest([postgresA])), {}, broad],
+    [({ git }) => git("rm", postgresA), {}, broad],
   ];
   const matrix = await buildMatrix(t, "full", "");
   assert.equal(matrix.status, 0, matrix.stderr);
@@ -3274,17 +3264,15 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         async ({ git }) => git("rm", "-q", "tests/integration/typed.test.ts"),
         ["checks-baseline-1", "checks-baseline-2"],
       ],
-      [editTest("tests/integration/postgres-a.test.mjs"), ["postgres"]],
+      [editTest(postgresA), ["postgres"]],
       [
-        withEdit("tests/integration/postgres-b.test.mjs", ({ put }) =>
+        withEdit(postgresB, ({ put }) =>
           put("docs/testing.md", "Notes on tests/integration/postgres-b.test.mjs.\n"),
         ),
         ["postgres"],
       ],
       [
-        withEdit("tests/integration/k3d-a.test.mjs", ({ put }) =>
-          put("tests/integration/fixture-image.test.mjs", "// edited\n"),
-        ),
+        withEdit(k3dA, ({ put }) => put("tests/integration/fixture-image.test.mjs", "// edited\n")),
         ["k3d-fixture-state", "runtime-image-fixture"],
         // Verifies the lanes, and refuses every other form, in selector processes.
         { cliVerify: true },
@@ -3301,36 +3289,21 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         ["checks-baseline-1", "postgres"],
       ],
       // The owning lane runs a new TypeScript test; baseline 2 type-checks it.
-      [
-        ({ put }) => {
-          put("tests/integration/postgres-c.test.ts", "// new\n");
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.ts"]),
-          );
-        },
-        ["checks-baseline-2", "postgres"],
-      ],
+      [addListedPostgresTest("// new\n"), ["checks-baseline-2", "postgres"]],
       // A deleted file and its manifest entry.
       [
         async ({ git, put }) => {
-          await git("rm", "-q", "tests/integration/postgres-b.test.mjs");
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest(["tests/integration/postgres-a.test.mjs"]),
-          );
+          await git("rm", "-q", postgresB);
+          put(postgresManifestPath, laneManifest([postgresA]));
         },
         ["postgres"],
       ],
       // A file that moves between lanes runs in both.
       [
         ({ put }) => {
-          put("tests/integration/k3d-a.test.mjs", "// moved\n");
+          put(k3dA, "// moved\n");
           put("scripts/ci/test-suites/k3d-fixture-state.json", laneManifest([]));
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/k3d-a.test.mjs"]),
-          );
+          put(postgresManifestPath, laneManifest([...suiteLanes.postgres, k3dA]));
         },
         ["k3d-fixture-state", "postgres"],
       ],
@@ -3353,7 +3326,7 @@ test("a test-only change selects the lanes that list its files", async (t) => {
 test("a test-only change keeps its lanes after main moves", async (t) => {
   const [f, shallow] = await suiteFixture(
     t,
-    editTest("tests/integration/k3d-a.test.mjs"),
+    editTest(k3dA),
     {},
     {
       moveMain: ({ put }) => {
@@ -3427,34 +3400,24 @@ test("mixed test and code, tooling, workflow or package changes select full", as
 });
 
 test("manifest changes beyond the changed test files select full", async (t) => {
-  const postgresManifest =
-    (paths: string[], env?: NodeJS.ProcessEnv): Change =>
-    ({ put }) =>
-      put("scripts/ci/test-suites/postgres.json", laneManifest(paths, env));
   await expectFullReasons(
     t,
     "manifest_change",
     [
       // Another file's entry removed, added or moved.
-      postgresEdit(postgresManifest(["tests/integration/postgres-a.test.mjs"])),
+      postgresEdit(postgresManifest([postgresA])),
       postgresEdit(({ put }) =>
         put(
           "scripts/ci/test-suites/k3d-fixture-state.json",
-          laneManifest([
-            ...suiteLanes["k3d-fixture-state"],
-            "tests/integration/postgres-b.test.mjs",
-          ]),
+          laneManifest([...suiteLanes["k3d-fixture-state"], postgresB]),
         ),
       ),
       // Other files reordered (the changed file's own position may change).
-      withEdit(
-        "tests/integration/k3d-a.test.mjs",
-        postgresManifest([...suiteLanes.postgres].reverse()),
-      ),
+      withEdit(k3dA, postgresManifest([...suiteLanes.postgres].reverse())),
       // Lane environment.
       postgresEdit(postgresManifest(suiteLanes.postgres, {})),
       // A manifest change without any test change.
-      postgresManifest(["tests/integration/postgres-a.test.mjs"]),
+      postgresManifest([postgresA]),
       // A new lane manifest.
       postgresEdit(({ put }) => put("scripts/ci/test-suites/extra.json", laneManifest([]))),
     ].map((change) => [change]),
@@ -3462,7 +3425,7 @@ test("manifest changes beyond the changed test files select full", async (t) => 
 });
 
 test("a computed import of a changed test requires full pull request coverage", async (t) => {
-  const producer = "tests/integration/postgres-a.test.mjs";
+  const producer = postgresA;
   const reader = "tests/browser/consumer.test.mjs";
   // The browser test assembles the filename at runtime, so a literal reference search misses it.
   const [f, shallow] = await suiteFixture(
@@ -3498,38 +3461,28 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
   withoutTypecheck.groups.ci = withoutTypecheck.groups.ci.filter(
     (lane) => lane !== "checks-baseline-2",
   );
-  const editA = editTest("tests/integration/postgres-a.test.mjs");
+  const editA = editTest(postgresA);
   const cases: Record<string, FullReasonCase[]> = {
     // Not registered in any lane, or only in a manual lane.
     unmapped_test: [
       [({ put }) => put("tests/integration/unlisted.test.mjs", "// new\n")],
-      [({ put }) => put("tests/integration/postgres-c.test.ts", "// new\n")],
+      [({ put }) => put(postgresC, "// new\n")],
       [editTest("tests/integration/openshell-real.test.mjs")],
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.
     referenced_test: [
       // Removing the last export still affects consumers of the old interface.
-      [editA, { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" }],
+      [editA, { [postgresA]: "export const value = 1;\n" }],
+      [({ git }) => git("rm", "-q", postgresA), { [postgresA]: "export const value = 1;\n" }],
+      [addListedPostgresTest("export type Case = string;\n")],
       [
-        ({ git }) => git("rm", "-q", "tests/integration/postgres-a.test.mjs"),
-        { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" },
-      ],
-      [
-        ({ put }) => {
-          const path = "tests/integration/postgres-c.test.ts";
-          put(path, "export type Case = string;\n");
-          put("scripts/ci/test-suites/postgres.json", laneManifest([...suiteLanes.postgres, path]));
-        },
-      ],
-      [
-        editTest("tests/integration/postgres-b.test.mjs"),
+        editTest(postgresB),
         { "scripts/ci/prepare.ts": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
       ],
       [
-        editTest("tests/integration/k3d-a.test.mjs"),
+        editTest(k3dA),
         {
-          "tests/integration/postgres-a.test.mjs":
-            'new URL("./k3d-a.test.mjs", import.meta.url);\n',
+          [postgresA]: 'new URL("./k3d-a.test.mjs", import.meta.url);\n',
         },
       ],
       // Git grep cannot see a symbolic link's target, so a link on main selects full.
@@ -3544,7 +3497,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     ],
     // Executable or symlinked test files.
     ineligible_change: [
-      [({ repo }) => chmodSync(join(repo, "tests/integration/postgres-a.test.mjs"), 0o755)],
+      [({ repo }) => chmodSync(join(repo, postgresA), 0o755)],
       [
         ({ repo }) =>
           symlinkSync("postgres-a.test.mjs", join(repo, "tests/integration/postgres-c.test.mjs")),
@@ -3563,7 +3516,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
   };
   await settle([
     ...Object.entries(cases).map(([reason, changes]) => expectFullReasons(t, reason, changes)),
-    fixture(t, editTest("tests/integration/k3d-a.test.mjs"), {
+    fixture(t, editTest(k3dA), {
       ...suiteFiles(),
       "docs/testing.md": "See tests/integration/k3d-a.test.mjs.\n",
     }).then((mentioned) => mentioned.expectTests(["k3d-fixture-state"])),
@@ -3878,18 +3831,8 @@ test("tests mode flows through the gate to a source-bound aggregate of only its 
 });
 
 test("the checked-in suite index and manifests support test-only selection", async (t) => {
-  // Copy the real index and lane manifests, so an index shape the policy does
-  // not accept fails here instead of silently selecting full for every PR.
-  const indexPath = "scripts/ci/test-suites.json";
-  const index = indexData(read(indexPath));
-  const initial: Record<string, string> = {
-    "scripts/ci/impact.ts": policy,
-    [indexPath]: read(indexPath),
-  };
-  for (const target of Object.values(index.lanes)) {
-    const path = join("scripts/ci", target);
-    initial[path] = read(path);
-  }
+  const { index, files } = checkedInSuites();
+  const initial: Record<string, string> = { "scripts/ci/impact.ts": policy, ...files };
   const lane = present(index.groups.ci.find((name) => name !== "checks-baseline-1"));
   const manifest = laneManifestData(
     present(initial[join("scripts/ci", present(index.lanes[lane]))]),
@@ -3998,6 +3941,12 @@ test("full integration selects images and gates runtime artifact consumers", (t)
   type SelectorOutputs = Partial<
     Record<"gateway-image" | "agent-image" | "use-runtime-artifact", string>
   >;
+  const github = {
+    repository: "openclaw/openclaw-enterprise",
+    ref: "refs/heads/main",
+    ref_type: "branch",
+    run_attempt: "1",
+  };
   const context = (
     lane: string,
     producer = "success",
@@ -4008,19 +3957,13 @@ test("full integration selects images and gates runtime artifact consumers", (t)
     },
   ) => ({
     cancelled: () => false,
-    github: {
-      repository: "openclaw/openclaw-enterprise",
-      ref: "refs/heads/main",
-      ref_type: "branch",
-      event_name: "workflow_dispatch",
-      run_attempt: "1",
-    },
+    github: { ...github, event_name: "workflow_dispatch" },
     needs: {
       preflight: {
         result: "success",
         outputs: { run_all: lane === "all" ? "true" : "false", selected_lane: lane },
       },
-      "gateway-image-selection": { result: "success", outputs: snapshot },
+      "gateway-image-selection": { result: "success", outputs: { ...snapshot } },
       "runtime-artifact": {
         result: producer,
         outputs: {
@@ -4109,6 +4052,10 @@ test("full integration selects images and gates runtime artifact consumers", (t)
   // The same snapshot decides whether to build and what the consumer imports.
   const selector = present(workflow.jobs["gateway-image-selection"]);
   assert.equal(selector.environment, "integration-main");
+  const gatewayJob = present(workflow.jobs["gateway-routing"]);
+  const gatewayInputs = present(
+    gatewayJob.steps.find((step) => step.uses === "./.github/actions/run-ci-lane"),
+  ).with;
   const selectionDirectory = temporaryDirectorySync(t, "gateway-image-selection-");
   for (const [index, [gateway, agent]] of (
     [
@@ -4164,65 +4111,39 @@ test("full integration selects images and gates runtime artifact consumers", (t)
         evaluate(present(workflow.jobs["runtime-artifact"]).if, values),
         selection === "all" || (!gateway && !agent),
       );
-      assert.equal(
-        evaluate(present(workflow.jobs["gateway-routing"]).if, values),
-        Boolean(gateway || agent),
-      );
-      const job = present(workflow.jobs["gateway-routing"]);
-      assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE, values), gateway);
-      assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_AGENT_IMAGE, values), agent);
+      assert.equal(evaluate(gatewayJob.if, values), Boolean(gateway || agent));
+      assert.equal(evaluate(gatewayJob.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE, values), gateway);
+      assert.equal(evaluate(gatewayJob.env.OCC_TEST_KUBERNETES_AGENT_IMAGE, values), agent);
       if (gateway && agent) {
-        assert.equal(runGuard(job, values).status, 0);
+        assert.equal(runGuard(gatewayJob, values).status, 0);
       }
-      const inputs = present(
-        job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane"),
-      ).with;
-      assert.equal(evaluate(inputs["runtime-artifact-id"], values), gateway || agent ? "" : "123");
+      assert.equal(
+        evaluate(gatewayInputs["runtime-artifact-id"], values),
+        gateway || agent ? "" : "123",
+      );
     }
   }
   // Actions can suppress individual job outputs while reporting selector
   // success. Exercise received snapshots through the shipped mappings and guard;
   // neither missing mode nor missing refs may silently select a source build.
+  const artifactMode = { "use-runtime-artifact": "true" };
+  const explicitMode = { "use-runtime-artifact": "false" };
+  const explicitImages = { ...explicitMode, "gateway-image": "gateway", "agent-image": "agent" };
   for (const [label, snapshot, producer, id, expected] of [
-    ["artifact", { "use-runtime-artifact": "true" }, "success", "123", 0],
-    [
-      "explicit",
-      { "use-runtime-artifact": "false", "gateway-image": "gateway", "agent-image": "agent" },
-      "skipped",
-      "",
-      0,
-    ],
+    ["artifact", artifactMode, "success", "123", 0],
+    ["explicit", explicitImages, "skipped", "", 0],
     ["missing mode", {}, "success", "123", 1],
     ["unknown mode", { "use-runtime-artifact": "unknown" }, "success", "123", 1],
-    ["both refs omitted", { "use-runtime-artifact": "false" }, "skipped", "", 1],
-    [
-      "gateway omitted",
-      { "use-runtime-artifact": "false", "agent-image": "agent" },
-      "skipped",
-      "",
-      1,
-    ],
-    [
-      "agent omitted",
-      { "use-runtime-artifact": "false", "gateway-image": "gateway" },
-      "skipped",
-      "",
-      1,
-    ],
-    ["artifact omitted", { "use-runtime-artifact": "true" }, "success", "", 1],
-    [
-      "conflicting ref",
-      { "use-runtime-artifact": "true", "gateway-image": "gateway" },
-      "success",
-      "123",
-      1,
-    ],
+    ["both refs omitted", explicitMode, "skipped", "", 1],
+    ["gateway omitted", { ...explicitMode, "agent-image": "agent" }, "skipped", "", 1],
+    ["agent omitted", { ...explicitMode, "gateway-image": "gateway" }, "skipped", "", 1],
+    ["artifact omitted", artifactMode, "success", "", 1],
+    ["conflicting ref", { ...artifactMode, "gateway-image": "gateway" }, "success", "123", 1],
   ] satisfies [string, SelectorOutputs, string, string, number][]) {
     const values = context("all", producer, snapshot);
     values.needs["runtime-artifact"].outputs["artifact-id"] = id;
-    const job = present(workflow.jobs["gateway-routing"]);
-    assert.equal(evaluate(job.if, values), true, label);
-    assert.equal(runGuard(job, values).status, expected, label);
+    assert.equal(evaluate(gatewayJob.if, values), true, label);
+    assert.equal(runGuard(gatewayJob, values).status, expected, label);
   }
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
@@ -4232,13 +4153,7 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       assert.equal(
         evaluate(condition, {
           cancelled: () => false,
-          github: {
-            repository: "openclaw/openclaw-enterprise",
-            ref: "refs/heads/main",
-            ref_type: "branch",
-            event_name: "schedule",
-            run_attempt: "1",
-          },
+          github: { ...github, event_name: "schedule" },
           needs: {
             preflight: { result: "success", outputs: { run_all: runAll } },
             "runtime-artifact": { result: producer },

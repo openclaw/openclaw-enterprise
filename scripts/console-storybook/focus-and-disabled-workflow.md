@@ -6,6 +6,12 @@ inside a scrolling list or tab strip, which would clip an outer ring. Wrappers
 draw the ring for a borderless child. Use the keyboard, not the mouse: the ring
 follows `:focus-visible`. No part of any ring may be cut off.
 
+At 1440 × 900, open **Pages / Agent detail / New Version**. Tab to
+**Edit Configuration** and press Enter. Press Space, Tab to **Save
+Configuration**, Tab to **Cancel**, then press Shift+Tab to return to **Save
+Configuration**. Before scrolling at each stop, check that the whole focus
+ring, including its bottom edge, is visible. Repeat at 390 px.
+
 1. Open **Pages / Agents / Populated**. Tab from the navigation to the Agent
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
@@ -45,6 +51,15 @@ follows `:focus-visible`. No part of any ring may be cut off.
 5. Open **Components / Dialogs / Plugins (wide)**. Tab through the search field,
    Load plugins and the plugin list. The search field and buttons show the
    outer ring; each plugin in the list shows the inset ring.
+
+   In **Pages / Agent detail / Plugins Search While Loading**, select **Plugins**
+   and open **Configure plugins**. Once the list loads, type `Workspace`.
+   **Load plugins** keeps its label while disabled. The status and spinner show
+   that the search is running. The signed-in browser test **A dedicated Agent
+   with empty configuration can browse the default OpenClaw catalog** also
+   simulates a failed search. It parks the pointer just inside the button’s left
+   edge. Clicking there after the error appears should retry the same search once.
+
 6. Open **Pages / Create Agent / Repositories using the Agent default**. Tab to
    a repository row. The row draws an inset ring around its checkbox.
 7. Open **Components / Channels / Slack directory channels**. Tab into the
@@ -62,22 +77,24 @@ follows `:focus-visible`. No part of any ring may be cut off.
    status line, and Enter or Space does nothing. Its label, fill and edge fade,
    not the whole button, so its focus ring keeps full contrast. **Deploy new
    version**, **Save plugin selections**, **Discard changes**, **Save channel
-   Secrets**, **Strict mode** and the Gateway toggles do the same (finding
+   credentials**, **Strict mode** and the Gateway toggles do the same (finding
    2878); an unavailable checkbox's label draws its ring. So do the list's
    **Create Agent**, Stop and Delete icons, **Create Secret**, **Run
    diagnostics**, the Logs controls, the plugin dialog's **Load plugins** and
-   pager, and the read-only authentication and Slack token fields (finding
-   2899): a select or text field fades its text, and ignores arrow keys and
-   typing too. So do the Secret dialog's **Replace value** and **Delete
-   Secret** (**Pages / Secrets / Read only for this caller**) and the issued
-   account select (**Components / Credentials / Issued service accounts
-   unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
+   pager, and the read-only authentication fields (finding 2899): a select or
+   text field fades its text and ignores arrow keys and typing. Open
+   **Components / Credentials / Slack Sources, viewer can only read**. Tab to
+   each Slack Source selector. It receives focus, names the Configuration
+   read-only reason, and keeps its saved selection when you press an arrow key.
+   The Secret dialog's **Replace value** and **Delete Secret** (**Pages /
+   Credentials / Secrets / Read only for this caller**) and the issued account
+   select (**Components / Credentials / Issued service accounts unavailable**)
+   also stay keyboard-reachable (finding 2925). On **Pages / Agents / Stop from the list**,
    confirm Stop: the Stop icon becomes unavailable and keeps focus, described
    by its Stop requested badge (finding 2926). So do a refused **Create
    Namespace** (**Pages / Namespaces / Create refused, then closed**), **Create
    Agent** waiting for a Namespace (**Pages / Create Agent / Form, Namespace
-   still provisioning**), **Disable Slack** (**Components / Channels / Slack
-   Disable, editor must replace the bot token Secret**), Configure Slack on an
+   still provisioning**), **Disable Slack**, Configure Slack on an
    Embedded Agent, the Share Agent form after a failed change (**Pages / Agent
    detail / Sharing outcome uncertain**) and the Logs controls of a version
    with no running Pod (**Pages / Agent detail / Logs of a version with no
@@ -85,7 +102,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    outcome keeps its fields and confirmation in the Tab order, described by
    its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
    Namespaces / Create permission denied** and **Create outcome unknown**,
-   **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
+   **Pages / Credentials / Secrets / Create denied** and **Concurrent reference conflict**,
    and the Stop and Delete confirmations when a refusal arrives while they are
    open (**Pages / Agents / Stop from the list, permission arrives while
    confirmation is open**, **Components / Stop Agent / Permission arrives while
@@ -141,11 +158,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
     once a deployment completes**, focus the unavailable **Open Agent UI**
     before the poll lands: the live link that replaces it keeps focus.
 
-16. Open **Components / Credentials / Scrolling Secret list**. Click **API key
-    Secret**: the list scrolls. Press Tab: the list closes and focus moves to
-    the metadata link, not the page. The list is never a Tab stop; Up and Down
-    move through its options from the field (finding 1919).
-17. Open **Pages / Create Agent / OpenAI with Codex harness** at 1280 x 800.
+16. Open **Pages / Create Agent / OpenAI with Codex harness** at 1280 x 800.
     The form is taller than the window. **Cancel**, **Start over** and
     **Create Agent** stay in a row at the foot of the window while you scroll,
     and **Create Agent** is the only filled button. At the end of the page the
@@ -203,6 +216,16 @@ unavailable warning. Submitted requests report generic acceptance, refusal or
 unknown outcomes without Agent details or replay. Browser tests also cover session
 expiry. Use the late Stop response story to inspect its generic result.
 
+## Keep your place in the Configuration editor
+
+Open **Pages / Agent detail / Plugins Prefetch Return** and choose
+**Edit Configuration**. Enter enough lines of JSON to scroll. Place the caret
+after a word in the middle of the text. Hold Shift and press Left Arrow until
+you select that word. Choose **Plugins**, then **Configuration**. While focus is
+still on the Configuration tab, check that the same lines are visible. Tab back
+into **Configuration JSON** and type `X`. Check that only the selected word
+changes. Repeat at desktop width and at 390 px.
+
 ## Configuration save conflict
 
 Open **Pages / Agent detail / Configuration conflict preserves moved focus**
@@ -216,3 +239,12 @@ merges the local draft. The story simulates a conflict before sending a write.
 The Agent detail browser test also returns to the tab while a save is pending.
 If the Controller returns `409` during the access check, focus should move from
 the save status to **Reload draft** once access is confirmed.
+
+After the conflict, choose **← Agents**. The existing explanation comes into view
+and takes focus. Press **Shift+Tab** to return to **Reload draft**. Merely focusing
+the link while the save settles must keep focus on the link when the conflict appears.
+
+Choose **Reload draft** and review the warning about the other browser’s saved
+`/gateway/bind` value. Use **Refresh** in the Console header. Focus
+**Save Configuration** and check that the same warning describes it. Confirm your
+local `/gateway/bind` edit remains in the JSON editor.

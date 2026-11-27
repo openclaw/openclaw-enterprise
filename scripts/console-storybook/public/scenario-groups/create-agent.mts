@@ -1,10 +1,10 @@
 import type { PluginFieldsOptions } from "../../../../apps/controller/src/console/agents/plugin-fields.mts";
 import {
   allowEveryoneInSlackChannels,
+  addSlackBotSource,
   click,
   create,
   createModelSecret,
-  createSlackBotSecret,
   modelCredentialSourceTypes,
   form,
   presetSecretsPath,
@@ -22,6 +22,7 @@ import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
   OpenClawConfigurationDocument,
+  CredentialSourceResponse,
   CredentialSourceType,
   InstallationCapabilities,
   NamespaceStatus,
@@ -43,6 +44,7 @@ type CreateAgentScenario = {
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
+  initialCredentialSources?: readonly CredentialSourceResponse["data"][];
   deviceAuthorization?: true;
   modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   extraSecrets?: readonly { id: string; name: string }[];
@@ -103,9 +105,54 @@ const openShellUserNamespacesRefusal =
 const oauthForm: StoryAction[] = [
   ...form,
   { selector: "#agent-auth-method", value: "credential_source" },
+  { selector: "#agent-model-credential", value: "new" },
 ];
 
 const startOAuthLogin: StoryAction[] = [...oauthForm, click("Sign in with OAuth")];
+
+const oauthNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
+const savedCodexOAuthId = "cs_00000000-0000-4000-8000-000000000026";
+const savedTemplateOAuthId = "cs_00000000-0000-4000-8000-000000000027";
+const oauthSource = (id: string, name: string) => ({
+  id,
+  namespaceId: oauthNamespaceId,
+  name,
+  type: "oauth2-refresh-token" as const,
+  state: "ready" as const,
+  ref: { kind: "credential_source" as const, namespaceId: oauthNamespaceId, id },
+  createdAt: "2026-09-01T12:00:00.000Z",
+});
+const savedOAuthSources = [
+  {
+    ...oauthSource(savedCodexOAuthId, "Saved ChatGPT login"),
+    consent: {
+      kind: "builtin_codex",
+      ownerPrincipalId: "storybook-operator",
+      requestedScopes: ["openid"],
+      grantedScopes: ["openid"],
+      issuer: "https://auth.openai.com",
+      tokenUrl: "https://auth.openai.com/oauth/token",
+      clientId: "storybook-builtin-codex-client",
+      account: { accountId: "storybook-account", planType: "demo", isFedramp: false },
+    },
+  },
+  {
+    ...oauthSource(savedTemplateOAuthId, "Template OAuth login"),
+    connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000004",
+    consent: {
+      kind: "connection_template",
+      version: 1,
+      ownerPrincipalId: "storybook-operator",
+      oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+      issuer: "https://identity.example.com",
+      tokenUrl: "https://identity.example.com/token",
+      clientId: "storybook-template-client",
+      requestedScopes: ["messages.read"],
+      grantedScopes: ["messages.read"],
+      destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
+    },
+  },
+] satisfies readonly CredentialSourceResponse["data"][];
 
 const dedicatedOpenclawForm: StoryAction[] = [
   ...form,
@@ -114,12 +161,16 @@ const dedicatedOpenclawForm: StoryAction[] = [
   { selector: "#agent-harness", value: "openclaw" },
   { selector: ".launch-runtime summary", click: true },
   { selector: "#execution-mode", value: "dedicated" },
+];
+
+const managedOpenclawForm: StoryAction[] = [
+  ...dedicatedOpenclawForm,
+  { selector: "#agent-model-credential", value: "new" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
 ];
 
 const provisionableOpenclawForm: StoryAction[] = [
   ...dedicatedOpenclawForm,
-  { selector: "#model-credential-storage", value: "secret" },
   { selector: "#provider-credential-secret", value: "sec_demo_model" },
 ];
 
@@ -224,7 +275,7 @@ const pluginDiscoveryForm: StoryAction[] = [
   ...form,
   { selector: "#agent-auth-method", value: "codex_pat" },
   { selector: "#agent-name", value: "Hosted Apps demo" },
-  { selector: "#model-credential-storage", value: "source" },
+  { selector: "#agent-model-credential", value: "new" },
   { selector: "#provider-api-key", value: "at-storybook-pat" },
   click("Save service account token"),
   click("Configure plugins"),
@@ -241,7 +292,7 @@ const createWorkspaceFields: StoryAction[] = [
   { selector: ".launch-advanced summary", click: true },
   { selector: "#agent-name", value: "Workspace seed demo" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
-  { selector: "#provider-api-key", value: "storybook-model-api-key" },
+  { selector: "#provider-credential-secret", value: "sec_demo_model" },
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -250,13 +301,13 @@ const createWorkspaceFields: StoryAction[] = [
   { selector: "#workspace-USER-md", value: "" },
 ];
 
-const createProvisioningSecrets: StoryAction[] = [
+const createProvisioningSources: StoryAction[] = [
   ...provisionableForm,
   { selector: "#agent-name", value: "Slack research assistant" },
   click("Configure Slack"),
   { selector: "#slack-dm-policy", value: "disabled" },
-  { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
-  ...createSlackBotSecret,
+  { selector: "#slack-source-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000041" },
+  { selector: "#slack-source-slack-bot-token", value: "cs_00000000-0000-4000-8000-000000000042" },
   { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
   ...allowEveryoneInSlackChannels,
   click("Apply channel settings"),
@@ -288,7 +339,6 @@ function ordinarySaveRefused(permission: "Secret operate" | "Configuration read"
     actions: [
       ...form,
       { selector: "#agent-name", value: "Research assistant" },
-      { selector: "#model-credential-storage", value: "secret" },
       { selector: "#provider-credential-secret", value: "Demo model API key" },
       { selector: "#agent-model", value: "gpt-5.6-sol" },
       click("Create Agent"),
@@ -396,11 +446,12 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with Codex harness",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     actions: form,
     description:
       "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; Runtime details also offers Dedicated. No model is selected by default.",
     steps: [
-      "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
+      "Keep OpenAI and the Codex harness. Under Model credential, select Add new credential, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
@@ -411,7 +462,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Model Secret access check",
     path: create,
-    actions: [...form, { selector: "#model-credential-storage", value: "secret" }],
+    actions: form,
     extraSecrets: [
       { id: "sec_storybook_first", name: "Sample A" },
       { id: "sec_storybook_second", name: "Sample B" },
@@ -474,13 +525,12 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Secret creation not permitted",
     path: create,
-    actions: [...form, { selector: "#model-credential-storage", value: "secret" }],
+    actions: form,
     secretCreateNotPermitted: true,
     description:
       "The Namespace permission answer denies Secret creation. Create new Secret... is disabled and names Secret create in this Namespace. The field also offers existing Secrets.",
     steps: [
       "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
-      "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",
     ],
     gap: "The permission answer is simulated; the API still authorizes Secret creation.",
   },
@@ -488,22 +538,12 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Secret operate not permitted",
     path: create,
-    actions: [
-      ...form,
-      { selector: "#agent-name", value: "Slack launch demo" },
-      { selector: "#model-credential-storage", value: "secret" },
-      click("Configure Slack"),
-      { selector: "#slack-dm-policy", value: "disabled" },
-    ],
-    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    actions: [...form, { selector: "#agent-name", value: "Model credential demo" }],
+    secretOperateDenied: ["sec_demo_model_backup"],
     description:
-      "The Namespace Secret answer lists the Slack backup token as readable but not operable for this member. Each Create Agent Secret field lists it disabled with the reason and never stages it, since Agent create would refuse it. Secret operate is then granted per Secret, so a new Secret would have none: each field lists Create new Secret... disabled with the reason, and the drawer hints offer only existing Secrets.",
-    steps: [
-      "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing.",
-      "Type a name no Secret has in Slack bot token. Create new Secret... is listed with the access note under it and opens nothing; the drawer hints say to choose existing Slack token Secrets.",
-      "Close the drawer and type backup in API key Secret: the same option is listed the same way.",
-    ],
-    gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
+      "The model Secret picker lists a readable Secret that this member cannot operate as unavailable; creating a new Secret is also unavailable when exact operate grants cover only existing Secrets.",
+    steps: ["Open the API key Secret picker and inspect the simulated backup model key's denial."],
+    gap: "The Secret permission answer is simulated; this story covers the still-supported model Secret consumer.",
   },
   createAgentSaveRefused: ordinarySaveRefused("Secret operate"),
   createAgentSaveConfigurationReadRefused: ordinarySaveRefused("Configuration read"),
@@ -558,6 +598,7 @@ export const createAgentFormScenarios = {
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#agent-model-credential", value: "new" },
       click("Configure plugins"),
     ],
     description:
@@ -575,11 +616,7 @@ export const createAgentFormScenarios = {
     pluginDiscovery,
     pluginCapabilities,
     modelCredentialSourcePresets: ["openai", "codex-pat"],
-    actions: pluginDiscoveryForm
-      .slice(0, -1)
-      .filter(
-        (action) => !("selector" in action && action.selector === "#model-credential-storage"),
-      ),
+    actions: pluginDiscoveryForm.slice(0, -1),
     rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
     description: "A Source enrollment denial keeps hosted Apps unavailable and shows the reason.",
     gap: "The Source enrollment refusal is simulated.",
@@ -710,6 +747,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Discover plugins with a service account token",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: pluginDiscoveryForm,
@@ -730,6 +768,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Preload plugins after entering a service account token",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: pluginDiscoveryForm.slice(0, -1),
@@ -745,6 +784,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Plugin search loading",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [
@@ -766,6 +806,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Plugin tools loading",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, { selector: 'button[aria-label="Calendar"]', click: true }],
@@ -783,6 +824,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Load plugin tools",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, { selector: 'button[aria-label="Calendar"]', click: true }],
@@ -798,6 +840,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Configure discovered plugin policies",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [
@@ -820,9 +863,9 @@ export const createAgentFormScenarios = {
     ],
     gap: pluginDiscoveryGap,
   },
-  createPluginApproversMissingSecret: {
+  createPluginApproversMissingSource: {
     group: "Pages/Create Agent",
-    name: "Plugin approvers need a Slack bot Secret",
+    name: "Plugin approvers need a Slack bot Source",
     path: create,
     pluginCapabilities,
     actions: [
@@ -830,8 +873,8 @@ export const createAgentFormScenarios = {
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
     ],
     description:
-      "Choose a Slack bot Secret here to search by name, or enter exact IDs. The search choice does not bind the Secret to the Agent.",
-    gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
+      "Choose a Slack bot Source here to search by name, or enter exact IDs. The search choice does not bind the Source to the Agent.",
+    gap: "The fixture does not prove Source permissions or OpenClaw approval enforcement.",
   },
   createPluginApproversLookup: {
     group: "Pages/Create Agent",
@@ -841,18 +884,19 @@ export const createAgentFormScenarios = {
     actions: [
       ...form,
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
-      { selector: "#approver-directory-secret", value: "Slack bot token (simulated)" },
+      { selector: "#approver-directory-source", value: "cs_00000000-0000-4000-8000-000000000042" },
       { selector: '[aria-label="Default plugin approvers people"]', value: "Alex" },
       { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
     ],
     description:
-      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select Alex Chen: their name and handle stay visible while the saved selection resolves.",
-    gap: "The Secret and directory are simulated; no Slack request or permission check is made.",
+      "A search-only Credential Source resolves people by name before the Agent has a Slack channel. Select Alex Chen: their name and handle stay visible while the saved selection resolves.",
+    gap: "The Credential Source and directory are simulated; no Slack request or permission check is made.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",
     name: "Configured plugin access reminder",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [
@@ -875,6 +919,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Browse the next plugin page",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, click("Next page")],
@@ -891,6 +936,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "No plugins returned",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery: {
       pages: { initial: { plugins: [], nextCursor: null, setup: pluginSetup } },
       details: {},
@@ -905,6 +951,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Plugin discovery loading",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: pluginDiscoveryForm,
@@ -917,6 +964,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Plugin discovery token rejected",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     actions: pluginDiscoveryForm,
     rules: [
       {
@@ -934,6 +982,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Plugin discovery unavailable",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     actions: pluginDiscoveryForm,
     rules: [
       {
@@ -950,6 +999,7 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Plugin tool discovery failed",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     pluginDiscovery,
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, { selector: 'button[aria-label="Calendar"]', click: true }],
@@ -990,6 +1040,7 @@ export const createAgentFormScenarios = {
 const gitClientPreview = {
   group: "Pages/Create Agent",
   path: create,
+  modelCredentialSourcePresets: ["openai"],
   credentialSourceTypes: modelCredentialSourceTypes,
   repositoryOptions: [
     {
@@ -1006,13 +1057,13 @@ const gitClientPreview = {
 } satisfies Partial<CreateAgentScenario>;
 
 export const createAgentProvisioningScenarios = {
-  createProvisioningSecrets: {
+  createProvisioningSources: {
     group: "Pages/Create Agent",
-    name: "Provisioning with Slack Secret refs",
+    name: "Provisioning with Slack Source refs",
     path: create,
-    actions: createProvisioningSecrets,
+    actions: createProvisioningSources,
     description:
-      "Codex creation submits provisioning with inline Configuration and Secret references prepared through the channel modal.",
+      "Codex creation submits provisioning with inline Configuration and canonical Credential Source references selected in the Channel drawer.",
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
@@ -1197,36 +1248,47 @@ export const createAgentProvisioningScenarios = {
     description:
       "When the runtime does not advertise first-time Agent provisioning, Codex creation saves a draft Configuration and Agent for later deployment.",
   },
-  createSlackSecretMenu: {
+  createSlackSourceMenu: {
     group: "Pages/Create Agent",
-    name: "Slack Secret menu before Agent exists",
+    name: "Create a Slack credential before the Agent exists",
     path: create,
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
+      ...addSlackBotSource,
     ],
     description:
-      "A new Agent can choose existing simulated Namespace Secrets by name or create new Slack token Secrets before the Agent resource exists.",
+      "Choose Add new credential to see the selected-owner and Slack delivery requirements, then enter a Source name and masked token. Switching modes clears the token. Create credential enrolls a reusable static Source; Cancel returns to selection.",
+    gap: "Source enrollment and permissions are simulated; no real token or Slack request is used.",
   },
-  createSlackCreateSecretModal: {
+  createSlackSourceRefused: {
     group: "Pages/Create Agent",
-    name: "Create Slack Secret before Agent exists",
+    name: "Slack credential creation refused",
     path: create,
-    actions: [
-      ...form,
-      { selector: "#agent-name", value: "Slack launch demo" },
-      click("Configure Slack"),
-      { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
-    ],
+    rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
     description:
-      "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
-    steps: [
-      "Enter a synthetic value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
-      "Open Create new Secret again and confirm Value is empty. Press Escape, then cancel the Slack editor without creating an Agent.",
+      "The simulated API refuses Source creation. The Slack editor reports the refusal without selecting an unconfirmed Source.",
+  },
+  createSlackSourceUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "Slack credential creation unconfirmed",
+    path: create,
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The TokenService cannot complete this source operation.",
+      },
     ],
+    actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
+    description:
+      "A simulated 409 leaves the Source creation outcome unconfirmed. The editor clears the token and blocks another create until the operator checks Credential Sources and the credential owner, then reloads the page.",
+    gap: "The error response is simulated. This does not establish whether a credential owner stored a value.",
   },
   createSecretRequiredFields: {
     group: "Pages/Create Agent",
@@ -1235,9 +1297,7 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
-      click("Configure Slack"),
-      { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
+      { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
       click("Create Secret"),
     ],
     description:
@@ -1251,7 +1311,6 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Research assistant" },
-      { selector: "#model-credential-storage", value: "secret" },
       ...createModelSecret("storybook-model-api-key"),
     ],
     description:
@@ -1264,7 +1323,6 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Research assistant" },
-      { selector: "#model-credential-storage", value: "secret" },
       { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
       { selector: "#create-provider-credential-secret-name", value: "model\tkey" },
       { selector: "#create-provider-credential-secret-value", value: "to\u0000ken" },
@@ -1312,21 +1370,61 @@ export const createAgentProvisioningScenarios = {
     description:
       "Create Agent with Service Accounts and no Secret: the error names the Service account token Secret field and the field takes focus with its list closed, so the error stays in sight.",
   },
-  createSlackSecretStaged: {
+  createSlackNativeSigningSource: {
     group: "Pages/Create Agent",
-    name: "Slack Secret bindings staged",
+    name: "Native Slack signing credential Source",
+    path: create,
+    actions: [
+      ...form,
+      { selector: ".launch-advanced summary", click: true },
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            agents: { defaults: { model: "codex/gpt-5" } },
+            channels: {
+              slack: {
+                enabled: true,
+                mode: "http",
+                botToken: "${SLACK_BOT_TOKEN}",
+                signingSecret: "${SLACK_SIGNING_SECRET}",
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        selector: "#slack-binding-slack-signing-secret",
+        value: "cs_00000000-0000-4000-8000-000000000043",
+      },
+    ],
+    description:
+      "A native Slack signingSecret references SLACK_SIGNING_SECRET. Choose a saved static Credential Source for that key; the form stages only its canonical reference alongside the unsaved Configuration.",
+    gap: "Source metadata and form state are simulated. This does not prove API admission, persistence, or Slack delivery.",
+  },
+  createSlackSourceStaged: {
+    group: "Pages/Create Agent",
+    name: "Slack Source bindings staged",
     path: create,
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
-      ...createSlackBotSecret,
+      {
+        selector: "#slack-source-slack-app-token",
+        value: "cs_00000000-0000-4000-8000-000000000041",
+      },
+      {
+        selector: "#slack-source-slack-bot-token",
+        value: "cs_00000000-0000-4000-8000-000000000042",
+      },
       click("Apply channel settings"),
     ],
     description:
-      "Applying channel settings retains staged Slack Secret bindings for creation. There is no raw Secret bindings JSON editor; token values stay masked.",
+      "Applying Channel settings stages canonical Source references for Agent creation. The form does not receive credential values.",
   },
   createSlackChannelAccessRequired: {
     group: "Pages/Create Agent",
@@ -1426,7 +1524,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",
     path: create,
-    actions: dedicatedOpenclawForm,
+    modelCredentialSourcePresets: ["openai"],
+    actions: managedOpenclawForm,
     description:
       "Dedicated OpenClaw uses the same direct API-key entry as Codex. The simulated API registers a static Credential Source and saves the Agent as a draft.",
     steps: [
@@ -1440,11 +1539,12 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Codex with model Credential Source",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     actions: managedStaticForm,
     description:
       "Enter a dummy API key directly. The selected TokenService owns its static Credential Source; the Agent saves as a draft using that Source.",
     steps: [
-      "Confirm API key is a masked field and the guidance explains Source custody and the draft save.",
+      "Confirm Model credential offers Add new credential and the entered API key stays masked. The guidance explains Source custody and the draft save.",
       "Create the Agent. Its draft opens with authentication bound to the returned Credential Source.",
     ],
   },
@@ -1452,6 +1552,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Credential Source outcome unknown",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     rules: [
       {
         suffix: "/credential-sources",
@@ -1472,6 +1573,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Credential Source creation denied",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
     actions: [...managedStaticForm, click("Create Agent")],
     description:
@@ -1481,6 +1583,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Credential Source creation pending",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     rules: [{ suffix: "/credential-sources", method: "POST", hold: true }],
     actions: [...managedStaticForm, click("Create Agent")],
     description:
@@ -1496,7 +1599,7 @@ export const createAgentProvisioningScenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
+      "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. The model credential field explains that Credential Sources require Dedicated execution. Unsupported channel editing remains disabled.",
   },
   createOpenclawWithoutNativeWorkers: {
     group: "Pages/Create Agent",
@@ -1623,7 +1726,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Repository-only Credential Proxy",
     path: create,
-    actions: dedicatedOpenclawForm,
+    modelCredentialSourcePresets: ["openai"],
+    actions: managedOpenclawForm,
     openclawExecutionModes: ["dedicated"],
     repositoryOptions: [
       {
@@ -1742,6 +1846,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "GitHub repository access",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     oauthCatalog: "ready",
     credentialSourceTypes: modelCredentialSourceTypes,
     repositoryDescriptionsPending: false,
@@ -1765,6 +1870,7 @@ export const createAgentProvisioningScenarios = {
       "Selecting a GitHub repository shows the registered App Client picker and changes the action to Save Agent draft. Application allows only Read-only Git; tooling starts at Read/write Git. Change tooling to Read-only Git, remove it and undo removal to confirm the narrower choice is retained. Saving and deployment require a supporting Installation.",
     steps: [
       "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
+      "Switch tooling to Read-only Git and back. Check the hint for public metadata reads and the additional pull request requirements.",
       "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
     ],
@@ -1875,7 +1981,7 @@ export const createAgentProvisioningScenarios = {
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
     repositoryOptions: repositorySearchOptions,
     description:
-      "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+      "Exact names appear first, followed by prefixes and substrings. The search field names the repository Enter will select. After each selection, the query stays in place and the next name appears.",
   },
   createRepositoriesNoMatches: {
     group: "Pages/Create Agent",
@@ -2276,10 +2382,10 @@ export const createAgentProvisioningScenarios = {
     name: "Standard Codex, Secret operate on some Secrets",
     path: create,
     standardCodexPreset: true,
-    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    secretOperateDenied: ["sec_demo_model_backup"],
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "The Namespace Secret answer lists the Slack backup token as readable but not operable, so this member's Secret operate is granted per Secret and a new Secret would have none. Secret source lists Create new Secret disabled with the reason and starts on Use existing Secret, which lists the backup token disabled too.",
+      "The Namespace Secret answer lists the backup model key as readable but not operable, so this member's Secret operate is granted per Secret and a new Secret would have none. Secret source lists Create new Secret disabled with the reason and starts on Use existing Secret, which lists the backup model key disabled too.",
     steps: [
       "Open Secret source for Model Secret: Create new Secret is disabled, and the hint under the existing Secret list gives the reason.",
       "Choose another Secret and select Use Preset: the form opens with that Secret bound.",
@@ -2628,6 +2734,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Member creates a Credential Source",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     observabilityDenied: true,
     unsupportedProvisioning: true,
     actions: managedStaticForm,
@@ -2723,11 +2830,12 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Service Accounts",
     path: create,
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#model-credential-storage", value: "secret" },
-      ...createModelSecret("at-storybook-pat"),
+      { selector: "#agent-model-credential", value: "new" },
+      { selector: "#provider-api-key", value: "at-storybook-pat" },
     ],
     description:
       "Service Accounts authentication is available with the Codex harness and uses the same fixed OpenAI model list. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
@@ -2743,6 +2851,28 @@ export const createAgentProvisioningScenarios = {
     actions: oauthForm,
     description:
       "Experimental login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+  },
+  createWithSavedCodexOAuth: {
+    group: "Pages/Create Agent",
+    name: "Reuse a saved ChatGPT OAuth Source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
+    initialCredentialSources: savedOAuthSources,
+    actions: [
+      ...oauthForm,
+      { selector: "#agent-name", value: "OAuth reuse example" },
+      click("Enter model ID manually"),
+      { selector: "#agent-model-manual", value: "gpt-5.1" },
+      { selector: "#agent-model-credential", value: savedCodexOAuthId },
+    ],
+    description:
+      "The simulated Create Agent form selects a readable, ready built-in Codex OAuth Source instead of starting another sign-in. The Template OAuth Source is not a compatible model credential and is excluded from the picker.",
+    steps: [
+      "Confirm Provider is OpenAI, Harness is Codex, and Authentication method is ChatGPT OAuth. The saved Source is selected under Model credential; no sign-in is required.",
+      "Select Create Agent. Inspect the simulated request log: the Agent draft references the selected Source ID and no device login or Source enrollment request was sent.",
+    ],
+    gap: "Simulated UI proof only; this story does not prove OAuth exchange, persistence, deployment, or runtime delivery.",
   },
   createOAuthPending: {
     group: "Pages/Create Agent",
@@ -2924,11 +3054,7 @@ export const createAgentOutcomeScenarios = {
     group: "Pages/Create Agent",
     name: "API key storage denied",
     path: create,
-    actions: [
-      ...form,
-      { selector: "#model-credential-storage", value: "secret" },
-      ...createModelSecret("storybook-model-api-key"),
-    ],
+    actions: [...form, ...createModelSecret("storybook-model-api-key")],
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",

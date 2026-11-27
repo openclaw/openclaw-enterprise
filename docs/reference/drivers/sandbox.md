@@ -69,7 +69,7 @@ Construct a new Driver after changing Installation settings.
 | `withdrawHarnessExposure`                    | Optional              | Remove the temporary Harness status endpoint after the dedicated worker's workspace node enrolls.                                                                                                                                                         |
 | `enrollHarness`                              | Optional              | Binds the verified installation to the Harness before Compute releases startup. Protected egress needs this method plus `provisionHarness`, `harnessEndpoint`, and `harnessStatus`.                                                                       |
 | `observeHeldRepositoryGitPreview`            | Optional              | Reports the held or installed stage for request-hook-observed Git startup. Without a stage, startup stays pending.                                                                                                                                        |
-| `harnessResource`                            | Optional              | Derives the Sandbox reference without side effects. Without it, Compute cannot [withdraw credentials](credential-gateway.md#optional-additions) from a running revision.                                                                                  |
+| `harnessResource`                            | Optional              | Derives the Sandbox reference without side effects. Compute uses it to [withdraw protected egress](../credential-sources/withdrawal.md) from a running revision.                                                                                          |
 | `workspaceNodePeerLabels`                    | Optional              | Return exact Pod labels for this revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only those Pods and the serving revision's Pods during replacement.                                                       |
 | `readSandboxLogs`                            | Optional              | Derive the Sandbox from the revision. Return at most `lines` raw lines at or after `sinceTime` and the number examined, using read-only access. OCC classifies and redacts each line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source). |
 | `observeHarness`                             | Optional              | Read provider lifecycle state for [Harness Sandbox status](#harness-sandbox-status).                                                                                                                                                                      |
@@ -176,7 +176,12 @@ the marker is missing or mismatched, refuse startup with
 `SandboxWorkspaceSetupRefusedError` to preserve later edits. See the
 [workspace setup sequence](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution).
 
-For Gateway-owned Sources, [Credential Gateway](credential-gateway.md#lifecycle) issues opaque `{ sourceId, ref }` attachments. Compute passes them in `credentialAttachments`; Sandbox consumes each and rejects foreign references. Compute waits until the Gateway reports every attachment ready before activation. For TokenService-owned Sources, the paired Credential Proxy configures delivery separately.
+For managed credentials, Compute provisions an idle Sandbox. The paired
+[Credential Proxy](credential-proxy.md#interface) configures delivery for the
+revision's admitted Sources. Compute waits for the applied policies and delivery
+before starting the Harness. `credentialAttachments` remains required by the
+launch interface for compatibility. Bundled Kubernetes Compute passes an empty
+array, and OpenShell refuses nonempty attachments on the managed path.
 
 ### Sandbox resource identity
 
@@ -266,7 +271,7 @@ sequenceDiagram
     else Compute owns the Harness
         C->>C: Create Harness workload
     end
-    C->>C: Verify revision and credential attachment readiness
+    C->>C: Verify revision and credential delivery readiness
     C->>C: Activate traffic
     opt Revision stop or retirement
         C->>C: Stop any Compute-owned workload
@@ -340,10 +345,10 @@ inputs as Sandbox startup fields.
 
 ## Implementations
 
-- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation, paired
-  with the OpenShell Credential Gateway through an `openshell` Backend. Trusted
-  YAML can also select an operator-installed Sandbox package, which cannot pair
-  with a Credential Gateway.
+- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation
+  with an `openshell` Backend and paired native Credential Proxy delivery.
+- [Installed Sandbox packages](selection.md#select-the-installed-driver): operators
+  can select a trusted registration in Installation YAML.
 
 ## Related
 

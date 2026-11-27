@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-24
-last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
+updated: 2026-11-26
+last_updated_session: authoring-run/a081fbd2-5a18-464b-a8e2-3c90fbbda8ce
 ---
 
 # Harness Execution Topology Flow
@@ -67,6 +67,7 @@ Docker, SSH and Kubernetes require native HTTP.
 The revision saves [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode),
 native configuration, Harness identity/version/mode, Compute selection, and Agent
 ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
+Gateway Source admission requires qualified dedicated delivery and freezes the TokenService instance.
 Custom images declare native-worker support. An associated `access_token` requires
 dedicated Codex and an opaque Secret snapshot. Compute resolves overrides before
 admission; OCC saves Harness settings, checks consent, and fingerprints the provider.
@@ -106,7 +107,7 @@ reads or execution updates. Refusal requires a new deployment. `runtimeAdmission
 separately reads saved launch facts for cleanup and public-reader withdrawal.
 
 For Secret-based authentication, Kubernetes prepares versioned Harness Secrets;
-dedicated Gateways receive no model keys. Staged Codex account delivery instead
+dedicated Gateways receive no keys through that Harness binding. Staged Codex account delivery instead
 passes the Proxy placeholder and nonsecret account metadata to its dedicated launch.
 Compute selects the native HTTPS provider for the probe and app-server. See the
 [Harness authentication flow](native-service-account-credential-delivery.md).
@@ -122,6 +123,7 @@ own the operator boundary.
 targets; its storage-role label enables discovery. Two-cluster Gateways retain
 their control-cluster target. Dedicated Gateway/Harness Pods, identities and Compute-owned PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
 `deliverHarnessAuth` creates selected model/transport projections.
+Worker callbacks recheck the claim, revision, owner, bindings and grants around Gateway Source resolution. Compute stages the credential, authorizes launch and cleans up after Pods stop. Canonical Secrets remain direct references. See [Gateway startup credentials](../reference/drivers/kubernetes-compute/gateway-credentials.md).
 Compute separates transport and Gateway passwords. It retains combined sources for older Pods and copies the password before switching templates. Concurrent creators accept only an identical password with matching ownership.
 [Namespace routing](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation) defines DNS and exact NetworkPolicy/Service selectors. Compute waits for the candidate Harness peer before namespace-routed Gateway cutover. Harness selectors include version and network profile. Gateway selectors omit version.
 `deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps before rendering NetworkPolicies. It names invalid settings and accepts strings or native null.
@@ -143,15 +145,11 @@ Renewal and cleanup preserve exact ownership.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
 projects `models.providers.openai` and an environment SecretRef. It retains
 normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the first
-as provider default. Custom endpoints require `credential_source`; Secret-backed
-keys stay OpenAI-only. Invalid URLs fail admission.
-`apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
-checks each selected model (`apps/controller/src/drivers/native-openai-catalog.ts:nativeOpenAiModelSelections`,
-the selection Compute renders) against the authorized shared endpoint. Conflicting
-model URLs fail before attachment. Catalog ids match after trimming, as OpenClaw
-merges such entries, so a second match fails. The startup model probe gets only the primary model's entry as rendered
-for the worker, with its endpoint and API as the provider defaults, and no other
-provider setting.
+as provider default. Invalid URLs fail admission. The managed Source path
+requires an approved model preset and the corresponding admitted credential
+projection. Compute prepares the Sandbox and the Worker checks Source access
+before asking Credential Proxy to configure delivery. See the
+[credential Source lifecycle](credential-source-lifecycle.md#3-prepare-credential-delivery).
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
 writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
 Compute and Sandbox supply private temporary directories.
@@ -337,6 +335,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 00:44: Trace Gateway Source admission, Worker resolution and Compute delivery in the accompanying implementation. (authoring-run/a081fbd2-5a18-464b-a8e2-3c90fbbda8ce - b120ae9c861223e56109dd28f477efa28866ad4d)
 
 - 2026-11-24 10:41: Describe placeholder-backed Codex account launch through the native HTTPS provider. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 

@@ -95,6 +95,10 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
   const suffix = randomBytes(5).toString("hex");
   const namespace = `oce-channel-helm-${suffix}`;
   const release = `channel-${suffix}`;
+  const installationSecretNamespace = `oce-installation-secrets-${createHash("sha256")
+    .update(`${namespace}/${release}`)
+    .digest("hex")
+    .slice(0, 15)}`;
   const gatewayClass = `channel-proof-${suffix}`;
   const envoyNamespace = process.env.OCC_TEST_ENVOY_GATEWAY_NAMESPACE ?? "envoy-gateway-system";
   const directory = await mkdtemp(join(tmpdir(), "oce-channel-helm-"));
@@ -127,6 +131,18 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
   let gatewayClassCreated = false;
   context.after(() => rm(directory, { recursive: true, force: true }));
   await kubectl("create", "namespace", namespace);
+  // The chart retains private custody across ordinary Helm uninstall. This disposable
+  // release also owns the separate Namespace containing its enrolled Slack Source values.
+  context.after(() =>
+    kubectl(
+      "delete",
+      "namespace",
+      installationSecretNamespace,
+      "--ignore-not-found=true",
+      "--wait=true",
+      "--timeout=120s",
+    ),
+  );
   context.after(async () => {
     for (const name of [release, `${release}-postgres`]) {
       await run("helm", [
@@ -240,6 +256,9 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     codexSeccompProfile: profile,
     cluster: `channel-proof-${suffix}`,
   });
+  if (!upgrade) {
+    Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+  }
   const { gatewayClients: _gatewayClients, ...network } =
     configuration.drivers.compute.configuration.network;
   const sourceCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
@@ -530,9 +549,16 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
   );
   const saveSecret = (name: string, value: string) =>
     api("POST", `/namespaces/${namespaceId}/secrets`, { name, value }, 201);
+  const saveSource = (name: string, value: string) =>
+    api(
+      "POST",
+      `/namespaces/${namespaceId}/credential-sources`,
+      { name, type: "static", secret: value },
+      201,
+    );
   const model = await saveSecret("model", process.env.OPENAI_API_KEY);
-  const app = await saveSecret("slack-app", slack.appToken);
-  const bot = await saveSecret("slack-bot", slack.botToken);
+  const app = await (upgrade ? saveSecret : saveSource)("slack-app", slack.appToken);
+  const bot = await (upgrade ? saveSecret : saveSource)("slack-bot", slack.botToken);
   const values = createNativeTopologyConfiguration(
     "codex",
     process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel,
@@ -588,6 +614,9 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       )
     : undefined;
   let channelFreeAgent: Record<string, unknown> | undefined;
+  let channelFreeConfiguration: Record<string, unknown> | undefined;
+  let channelFreeValues: Record<string, unknown> | undefined;
+  const workspaceMarker = `One-off workspace continuity ${suffix}\n`;
   if (upgrade) {
     const freeValues = { ...structuredClone(values) };
     delete freeValues.channels;
@@ -595,7 +624,8 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     assert.ok(Array.isArray(freePlugins.allow));
     freePlugins.allow = freePlugins.allow.filter((id) => id !== "slack");
     delete object(freePlugins.entries).slack;
-    const freeConfiguration = await api(
+    channelFreeValues = freeValues;
+    channelFreeConfiguration = await api(
       "POST",
       `/namespaces/${namespaceId}/configurations`,
       {
@@ -609,7 +639,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       `/namespaces/${namespaceId}/agents`,
       {
         name: `channel-free-${suffix}`,
-        configurationId: freeConfiguration.id,
+        configurationId: channelFreeConfiguration.id,
         executionMode: "dedicated",
         harnessAuth: { method: "api_key", source: model.ref },
       },
@@ -627,8 +657,8 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       },
       480_000,
     );
+    await api("PUT", `${freePath}/workspace/files/USER.md`, { content: workspaceMarker });
   }
-  const workspaceMarker = `One-off workspace continuity ${suffix}\n`;
   const agentId = string(agent.id);
   const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
   await api("POST", `${agentPath}/runtime-credentials`, {});
@@ -636,7 +666,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     await waitFor("OCC provider directory access", async () => {
       const result = await request("POST", `/namespaces/${namespaceId}/channel-directory/lookup`, {
         agentId,
-        secretId: bot.id,
+        ...(upgrade ? { secretId: bot.id } : { sourceId: bot.id }),
         kind: "channels",
         ids: [slack.channelId],
       });
@@ -650,7 +680,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     });
     const users = await api("POST", `/namespaces/${namespaceId}/channel-directory/lookup`, {
       agentId,
-      secretId: bot.id,
+      ...(upgrade ? { secretId: bot.id } : { sourceId: bot.id }),
       kind: "users",
       ids: [senderIdentity.user_id],
     });
@@ -668,7 +698,44 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
   secrets.push(password);
   let gatewayPod: Record<string, unknown> | undefined;
   let upgradeReceipt: Record<string, unknown> | undefined;
+  let stagedGatewayCredential: { name: string; namespace: string } | undefined;
+  const gatewayCredentialCopyRemoved = async (copy: { name: string; namespace: string }) =>
+    (
+      await kubectl(
+        "get",
+        "secret",
+        copy.name,
+        "-n",
+        copy.namespace,
+        "--ignore-not-found",
+        "-o",
+        "name",
+      )
+    ).trim() === "";
   const deliveries: Record<string, unknown>[] = [];
+  const saveEvidence = async () => {
+    if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
+      await writeFile(
+        process.env.OCC_TEST_SLACK_EVIDENCE_PATH,
+        JSON.stringify(
+          {
+            ...deliveries.at(-1),
+            workflow: upgrade ? "production-helm-channel-upgrade" : "production-helm",
+            slackDeliveryPhase: upgrade ? "historical-before-stop" : "source-backed-target",
+            deliveryController: upgrade ? sourceController : controller,
+            deliveries,
+            ...(upgradeReceipt ? { upgrade: upgradeReceipt } : {}),
+            controller,
+            runtime,
+            harness,
+          },
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      );
+    }
+  };
   const verifyDelivery = async () => {
     const delivery = await verifySingleSlackDelivery({
       slack,
@@ -694,40 +761,46 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       message_ts: delivery.responseTs,
     });
     deliveries.push({ ...delivery, responsePermalink: link.permalink });
-    if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
-      await writeFile(
-        process.env.OCC_TEST_SLACK_EVIDENCE_PATH,
-        JSON.stringify(
-          {
-            ...delivery,
-            responsePermalink: link.permalink,
-            workflow: upgrade ? "production-helm-channel-upgrade" : "production-helm",
-            deliveries,
-            ...(upgradeReceipt ? { upgrade: upgradeReceipt } : {}),
-            controller,
-            runtime,
-            harness,
-          },
-          null,
-          2,
-        ),
-        { mode: 0o600 },
-      );
-    }
+    await saveEvidence();
   };
   for (let round = 0; round < 2; round++) {
     let revision: Record<string, unknown>;
     if (round === 1 && upgrade) {
-      // The running revision retains the original draft. The one-off must adopt
+      assert.ok(channelFreeAgent && channelFreeConfiguration && channelFreeValues);
+      // Old Slack credentials are intentionally not imported. Stop their consumer on
+      // the old controller; the channel-free Agent still exercises the real one-off.
+      const legacySlack = await api("GET", agentPath);
+      await api("POST", `${agentPath}/stop`, undefined, 202);
+      await waitFor("the historical Slack Agent to stop", async () => {
+        const state = await api("GET", agentPath);
+        return state.desiredRuntimeState === "stopped" && state.activeRevisionId === undefined;
+      });
+      const stoppedSlackPods = await resources(
+        "pods",
+        tenant,
+        "-l",
+        `openclaw.dev/agent=${agentId}`,
+      );
+      assert.ok(
+        stoppedSlackPods?.every(
+          (pod) =>
+            object(object(object(pod).metadata).labels)["openclaw.dev/workload-role"] !== "gateway",
+        ),
+      );
+      const transitionAgentId = string(channelFreeAgent.id);
+      const transitionAgentPath = `/namespaces/${namespaceId}/agents/${transitionAgentId}`;
+      // The running channel-free revision retains the original draft. The one-off must adopt
       // this newly saved draft without changing Agent identity or its workspace.
-      const updatedValues = structuredClone(values);
+      const updatedValues = structuredClone(channelFreeValues);
       const provider = object(object(object(updatedValues.models).providers).codex);
       const model = array(provider.models)[0]!;
       model.name = `Saved draft model ${suffix}`;
-      await api("PATCH", `/namespaces/${namespaceId}/configurations/${String(saved.id)}`, {
-        values: updatedValues,
-      });
-      const before = await api("GET", agentPath);
+      await api(
+        "PATCH",
+        `/namespaces/${namespaceId}/configurations/${String(channelFreeConfiguration.id)}`,
+        { values: updatedValues },
+      );
+      const before = await api("GET", transitionAgentPath);
       const installationFile = join(directory, "upgrade-installation.json");
       const installationIdentity = await api("GET", "/installation");
       await kubectl(
@@ -774,7 +847,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
         upstream: `https://localhost:${httpsPort}`,
         key: operatorKey,
         cert: operatorCert,
-        agentPath,
+        agentPath: transitionAgentPath,
       });
       context.after(() => lost.close());
       const evidence = join(directory, "channel-upgrade");
@@ -836,8 +909,11 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
         /Envoy dependencies are not ready/,
       );
       assert.equal(lost.stopRequests(), 0);
-      assert.equal((await api("GET", agentPath)).activeRevisionId, before.activeRevisionId);
-      assert.equal((await api("GET", agentPath)).desiredRuntimeState, "running");
+      assert.equal(
+        (await api("GET", transitionAgentPath)).activeRevisionId,
+        before.activeRevisionId,
+      );
+      assert.equal((await api("GET", transitionAgentPath)).desiredRuntimeState, "running");
       const executeUpgrade = async (resume: boolean) => {
         try {
           return await run(
@@ -890,32 +966,34 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       const journal = JSON.parse(await readFile(journalPath, "utf8"));
       assert.equal(
         journal.targets.length,
-        2,
-        "both running Agents have no repository and must still be inventoried",
+        1,
+        "only the channel-free Agent remains in the running upgrade set",
       );
       const target = journal.targets.find(
-        (item: Record<string, unknown>) => item.agentId === agentId,
+        (item: Record<string, unknown>) => item.agentId === transitionAgentId,
       );
       assert.ok(target);
       assert.equal(target.originalRevisionId, before.activeRevisionId);
       assert.equal(target.stop, "complete");
       assert.equal(target.deploy, "sending");
-      const acceptedStatus = await api("GET", `${agentPath}/deployments/${String(accepted.id)}`);
-      assert.equal(acceptedStatus.agentId, agentId);
+      const acceptedStatus = await api(
+        "GET",
+        `${transitionAgentPath}/deployments/${String(accepted.id)}`,
+      );
+      assert.equal(acceptedStatus.agentId, transitionAgentId);
       target.deploy = "accepted";
       target.deploymentId = accepted.id;
       await writeFile(journalPath, JSON.stringify(journal), { mode: 0o600 });
       await executeUpgrade(true);
       assert.equal(lost.deploymentRequests(), 1);
-      revision = accepted;
-      const admitted = await api("GET", `${agentPath}/revisions/${String(accepted.id)}`);
+      const admitted = await api("GET", `${transitionAgentPath}/revisions/${String(accepted.id)}`);
       const admittedProvider = object(
         object(object(object(admitted.configuration).models).providers).codex,
       );
       assert.equal(array(admittedProvider.models)[0]!.name, `Saved draft model ${suffix}`);
-      assert.equal((await api("GET", agentPath)).id, agentId);
+      assert.equal((await api("GET", transitionAgentPath)).id, transitionAgentId);
       assert.equal(
-        (await api("GET", `${agentPath}/workspace/files/USER.md`)).content,
+        (await api("GET", `${transitionAgentPath}/workspace/files/USER.md`)).content,
         workspaceMarker,
       );
       const stillStopped = await api(
@@ -949,7 +1027,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
         "--occ",
         occ,
         "--verify-agent",
-        agentId,
+        transitionAgentId,
         "--verify-agent-namespace",
         namespaceId,
       ];
@@ -972,13 +1050,20 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
         await ordinary(false);
       }
       assert.equal(lost.deploymentRequests(), 1);
-      assert.equal((await api("GET", agentPath)).activeRevisionId, accepted.id);
+      assert.equal((await api("GET", transitionAgentPath)).activeRevisionId, accepted.id);
       assert.equal(
         lost.allDeploymentRequests(),
-        2,
-        "only the original running set is deployed, once each",
+        1,
+        "the one-off deploys only the original running channel-free Agent",
       );
-      await verifyDirectory();
+      // The target intentionally rejects the old input. The fresh-install case proves Source lookup;
+      // this historical upgrade does not import the old Namespace Secret into a Source.
+      const retiredDirectory = await request(
+        "POST",
+        `/namespaces/${namespaceId}/channel-directory/lookup`,
+        { agentId, secretId: bot.id, kind: "channels", ids: [slack.channelId] },
+      );
+      assert.equal(retiredDirectory.status, 400);
       const completedJournal = JSON.parse(await readFile(journalPath, "utf8"));
       upgradeReceipt = {
         sourceRevision,
@@ -1000,9 +1085,69 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
         stoppedAgentPreserved: true,
         currentSavedDraftAdopted: true,
         subsequentUpgradeRetainedRevision: true,
-        dependencyRefusedBeforeStop: true,
-        providerDirectoryAfterUpgrade: true,
+        dependencyRefusedBeforeTransitionAgentStop: true,
+        legacySlackStoppedBeforeUpgrade: true,
+        legacySlackRevision: legacySlack.activeRevisionId,
+        channelFreeAgentRedeployed: true,
+        legacyDirectoryInputRefusedAfterUpgrade: true,
       };
+      const stoppedSlack = await api("GET", agentPath);
+      assert.equal(stoppedSlack.desiredRuntimeState, "stopped");
+      assert.equal(stoppedSlack.activeRevisionId, undefined);
+      const freePods = await resources(
+        "pods",
+        tenant,
+        "-l",
+        `openclaw.dev/agent=${transitionAgentId},openclaw.dev/revision=${String(accepted.id)}`,
+      );
+      assert.ok(freePods);
+      const freeGateway = freePods
+        .map(object)
+        .find(
+          (pod) => object(object(pod.metadata).labels)["openclaw.dev/workload-role"] === "gateway",
+        );
+      assert.ok(freeGateway);
+      const freeEnv = array(array(object(freeGateway.spec).containers)[0]!.env);
+      assert.ok(
+        !freeEnv.some((entry) =>
+          ["HTTPS_PROXY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"].includes(string(entry.name)),
+        ),
+      );
+      const freeGatewayName = string(object(freeGateway.metadata).name);
+      const channelProxy = `http://${egress.serviceName}.${namespace}.svc:${egress.listenerPortStart}`;
+      assert.notEqual(
+        (await probeChannelConnect(tenant, freeGatewayName, channelProxy, "slack.com")).status,
+        200,
+      );
+      upgradeReceipt.channelFreeDenied = true;
+      const freePasswordSecret = object(
+        await resource("secret", `gateway-password-${kubernetesHash(transitionAgentId)}`, tenant),
+      );
+      const freePassword = Buffer.from(
+        string(object(freePasswordSecret.data)["gateway-password"]),
+        "base64",
+      ).toString("utf8");
+      secrets.push(freePassword);
+      const forward = await forwards.startPortForwardTarget(
+        tenant,
+        `pod/${freeGatewayName}`,
+        "0:8080",
+      );
+      try {
+        await assertGatewayModelTurn({
+          gatewayUrl: forward.url,
+          gatewayPassword: freePassword,
+          nonce: `HELM-CHANNEL-UPGRADE-${randomUUID()}`,
+          secrets,
+        });
+      } finally {
+        await forward.stop();
+      }
+      await saveEvidence();
+      t.diagnostic(
+        "Historical Slack Agent stayed stopped; channel-free upgrade, native model turn, and legacy directory refusal passed.",
+      );
+      break;
     } else {
       revision = await api("POST", `${agentPath}/deploy`, undefined, 202);
     }
@@ -1041,6 +1186,37 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     const gatewayEnv = array(array(object(gatewayPod.spec).containers)[0]!.env);
     const harnessEnv = array(array(object(harnessPod.spec).containers)[0]!.env);
     assert.ok(!gatewayEnv.some((entry) => entry.name === "OPENAI_API_KEY"));
+    if (!upgrade) {
+      const stagedName = `gateway-secrets-${kubernetesHash(agentId)}-${kubernetesHash(string(revision.id))}`;
+      for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
+        const projection = object(
+          object(gatewayEnv.find((entry) => entry.name === key)?.valueFrom).secretKeyRef,
+        );
+        assert.equal(projection.name, stagedName);
+        assert.equal(projection.key, key);
+        assert.equal(projection.optional ?? false, false);
+      }
+      const gatewayNamespace = string(object(gatewayPod.metadata).namespace);
+      const staged = object(await resource("secret", stagedName, gatewayNamespace));
+      assert.deepEqual(Object.keys(object(staged.data)).sort(), [
+        "SLACK_APP_TOKEN",
+        "SLACK_BOT_TOKEN",
+      ]);
+      const versions = JSON.parse(
+        string(object(object(staged.metadata).annotations)["openclaw.dev/gateway-source-versions"]),
+      );
+      assert.deepEqual(Object.keys(object(versions)).sort(), [
+        "SLACK_APP_TOKEN",
+        "SLACK_BOT_TOKEN",
+      ]);
+      if (stagedGatewayCredential !== undefined) {
+        const predecessor = stagedGatewayCredential;
+        await waitFor("the retired Gateway revision credential copy to be removed", () =>
+          gatewayCredentialCopyRemoved(predecessor),
+        );
+      }
+      stagedGatewayCredential = { name: stagedName, namespace: gatewayNamespace };
+    }
     assert.ok(
       !harnessEnv.some((entry) =>
         ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "HTTPS_PROXY"].includes(string(entry.name)),
@@ -1067,45 +1243,6 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       (await probeChannelConnect(tenant, gatewayName, proxy, "127.0.0.1")).status,
       200,
     );
-    if (upgrade && round === 1) {
-      const free = await api(
-        "GET",
-        `/namespaces/${namespaceId}/agents/${String(channelFreeAgent!.id)}`,
-      );
-      const freePods = await resources(
-        "pods",
-        tenant,
-        "-l",
-        `openclaw.dev/agent=${String(free.id)},openclaw.dev/revision=${String(free.activeRevisionId)}`,
-      );
-      assert.ok(freePods);
-      const freeGateway = freePods
-        .map(object)
-        .find(
-          (pod) => object(object(pod.metadata).labels)["openclaw.dev/workload-role"] === "gateway",
-        );
-      assert.ok(freeGateway);
-      const freeEnv = array(array(object(freeGateway.spec).containers)[0]!.env);
-      assert.ok(
-        !freeEnv.some((entry) =>
-          ["HTTPS_PROXY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"].includes(string(entry.name)),
-        ),
-      );
-      assert.notEqual(
-        (
-          await probeChannelConnect(
-            tenant,
-            string(object(freeGateway.metadata).name),
-            proxy,
-            "slack.com",
-          )
-        ).status,
-        200,
-      );
-      assert.ok(upgradeReceipt);
-      upgradeReceipt.channelFreeDenied = true;
-      upgradeReceipt.privateAddressDenied = true;
-    }
     // A real public Slack address is a negative direct-connection case.
     const direct = await kubectl(
       "exec",
@@ -1131,15 +1268,16 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       await forward.stop();
     }
     if (upgrade && round === 0) {
-      await api("PUT", `${agentPath}/workspace/files/USER.md`, { content: workspaceMarker });
       await verifyDelivery();
     }
     t.diagnostic(
       `Helm revision ${round + 1}: dedicated model turn, channel route and network denials passed.`,
     );
   }
-  assert.ok(gatewayPod);
-  await verifyDelivery();
+  if (!upgrade) {
+    assert.ok(gatewayPod);
+    await verifyDelivery();
+  }
   if (channelFreeAgent) {
     assert.equal(
       (await request("DELETE", `/namespaces/${namespaceId}/agents/${String(channelFreeAgent.id)}`))
@@ -1159,6 +1297,13 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     "normal Agent deletion",
     async () => (await request("GET", agentPath)).status === 404,
   );
+  if (stagedGatewayCredential !== undefined) {
+    assert.equal(
+      await gatewayCredentialCopyRemoved(stagedGatewayCredential),
+      true,
+      "Agent deletion must remove the final revision delivery copy",
+    );
+  }
   const slots = array(
     object(JSON.parse(await kubectl("get", "envoypatchpolicies", "-n", namespace, "-o", "json")))
       .items,
@@ -1172,6 +1317,8 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     }),
   );
   t.diagnostic(
-    "Full Helm Slack exchange and native Codex evidence passed; Agent listener retired.",
+    upgrade
+      ? "Historical Slack proof ended at Stop; the unrelated channel-free upgrade completed."
+      : "Full Helm Slack exchange and native Codex evidence passed; Agent listener retired.",
   );
 }

@@ -533,6 +533,14 @@ function undescribe(control: Element, id: string) {
   }
 }
 
+/** Adds or removes one description, keeping other descriptions and avoiding redundant announcements. */
+export function setDescription(control: Element, id: string, show: boolean) {
+  const linked = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id);
+  if (linked !== show) {
+    (show ? describe : undescribe)(control, id);
+  }
+}
+
 let reasonIds = 0;
 
 /**
@@ -563,8 +571,8 @@ export function describeDisabled(
     undescribe(control, linked);
     delete control.dataset.disabledReason;
   }
-  if (id && !(control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id)) {
-    describe(control, id);
+  if (id) {
+    setDescription(control, id, true);
   }
   if (id && linked !== id) {
     control.dataset.disabledReason = id;

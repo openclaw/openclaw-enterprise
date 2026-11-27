@@ -18,7 +18,7 @@ and generated CSS. API, session, credential, and runtime state remain simulated.
    40 × 40 px at sign-in. In Long Name,
    the drawer wraps the full name. The phone’s top bar truncates it with an
    ellipsis so the menu and account controls stay reachable.
-3. Compare **Pages/Secrets → Mobile**: the bundled 48 × 38 px mascot has a white
+3. Compare **Pages/Credentials/Secrets → Mobile**: the bundled 48 × 38 px mascot has a white
    outline on navy and dims with the header when a sheet opens. With forced
    colors active, navigation uses the original artwork within the same 48 × 48 px limit.
    **Pages/Sign in** also keeps the original artwork, at 40 × 40 px.

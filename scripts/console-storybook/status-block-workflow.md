@@ -79,6 +79,11 @@ at 390.
     (`pages-agent-detail--deployment-failed-codex-requirements-size`): the remedy
     names the 1 MiB limit and asks the policy owner to reduce the document.
 
+19. Open **Pages / Agent detail / New version failed, Gateway credential delivery refused**
+    (`pages-agent-detail--deployment-failed-gateway-credential-delivery`). Confirm
+    the failure asks a platform operator to check the worker diagnostic. Open
+    **v7 Logs** and confirm v7 remains selected. This is simulated UI evidence.
+
 ## Check Console startup recovery
 
 At 1440 and 390, open `/console/index.html` on the built Storybook server

@@ -590,7 +590,8 @@
       "path": "tests/integration/occ-api-channel-directory.test.ts",
       "expectedTests": [
         "Channel directory accepts Slack's null terminal cursor without losing prior matches",
-        "Channel directory lookup checks the exact edit target and Secret before and after reading"
+        "Slack directory refuses a non-bot Source before sending its value to Slack",
+        "Channel directory lookup checks the exact edit target and Source before and after resolution"
       ]
     },
     {

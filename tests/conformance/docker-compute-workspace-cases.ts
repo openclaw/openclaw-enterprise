@@ -254,6 +254,18 @@ export function registerWorkspaceCases() {
           (entry) => entry.Labels["org.openclaw.enterprise.role"] === "workspace-setup",
         );
         assert.ok(initializer);
+        const gateway = creations.find(
+          (entry) => entry.Labels["org.openclaw.enterprise.role"] === "gateway",
+        );
+        assert.ok(gateway);
+        for (const container of [initializer, gateway]) {
+          assert.deepEqual(
+            container.Env.filter((entry) =>
+              entry.startsWith("OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF="),
+            ),
+            ["OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF=1"],
+          );
+        }
         const host = readRecord(initializer.HostConfig);
         assert.equal(host.NetworkMode, "none");
         assert.equal(readRecord(host.LogConfig).Type, "none");

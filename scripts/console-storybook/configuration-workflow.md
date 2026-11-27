@@ -67,6 +67,19 @@ and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and conf
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
 
+## Return to an offscreen Configuration selection
+
+Open **Pages → Agent detail → Edit Configuration** in its own preview tab.
+Replace **Configuration JSON** with a long unsaved JSON draft whose last
+setting, just above the closing brace, is `"review": "Review A"`. Press
+Ctrl+End, Up, End, and Left, then Shift+Left to select just the final A.
+
+Wheel to the top inside **Configuration JSON**. Press Shift+Tab, then wheel
+the page up until the editor is below the window. Press Tab. The editor and
+its focus outline should come into view, while the selected line may still
+be below the editor's visible text. Type B and check that the draft now says
+`"review": "Review B"` with the rest unchanged. Leave the draft unsaved.
+
 ## Correct an offscreen Configuration syntax error
 
 In **Pages → Agent detail → Invalid Configuration JSON** (`invalidConfiguration`),
@@ -97,6 +110,22 @@ Restore the original Model ID before retrying.
 Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
+
+## Correct a Create Agent Configuration syntax error
+
+Open **Pages → Create Agent → Invalid Configuration JSON**
+(`createInvalidConfiguration`). Tab to **Reset template**, press Enter, and
+confirm the discard prompt to restore the valid draft. Reopen **Advanced
+settings** if needed and focus **Configuration JSON**. Press Ctrl+Home and type
+`x` before the opening brace. Press Ctrl+End, then tab through the controls to
+**Create Agent** and press Enter.
+
+Check that the error reports line 1, column 1 and the editor has focus with the
+caret immediately before the visible `x`. Press Delete once. The editor must
+match the restored draft exactly, the error must clear, and the other form
+fields must stay unchanged. Repeat in a short desktop window and at phone
+width. If the editor and error cannot fit together, check that the caret stays
+visible. Leave the corrected draft unsaved.
 
 ## Inspect, save, and withdraw repository grants
 

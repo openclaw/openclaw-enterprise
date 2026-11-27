@@ -252,9 +252,9 @@ configuration reads and writable native-admin copies.
 
 Canonical Configuration, OCC Secret and managed account credential sources live
 in the shared tenant namespace in a single cluster, or the control-cluster
-storage target with the two-cluster profile. Dedicated Gateways reference
-admitted channel Secrets there directly; Compute verifies their scope and UID.
-There is no Gateway Secret mirror.
+storage target with the two-cluster profile. For admitted Namespace Secret bindings, dedicated Gateways reference the canonical Secret directly; Compute verifies its scope and UID. Slack instead requires static Credential Source bindings, which Compute stages separately for each revision.
+
+See [Gateway startup credentials](gateway-credentials.md) for static Source delivery and cleanup.
 
 New credentials use `transport-<agent-hash>` (configured prefix) with only
 `app-server-token`, and `gateway-password-<agent-hash>` with only
@@ -277,11 +277,9 @@ Stop and retirement wait for the workload to stop, then delete its projection
 and ConfigMaps for that Agent revision by UID. Canonical sources survive retirement; Agent deletion removes transport/password.
 Account and OCC Secret lifecycles remain independent.
 
-Source updates do not restart processes. Update the OCC Secret, redeploy each
-consumer through OCE, wait for readiness and selection, then verify a model
-request. Preparation refreshes the runtime Secret; Pod or Deployment restarts
-only reread the existing projection. See
-[update and redeploy](../kubernetes-secret.md#update-and-redeploy).
+After updating a direct OCC Secret, [redeploy each consumer](../kubernetes-secret.md#update-and-redeploy)
+and verify a model request after activation. Redeployment refreshes the
+projection. A Pod restart rereads the existing projection.
 Deleting a source or runtime Secret does not revoke bytes a process loaded or a
 provider accepted.
 Transport rotation, finite token TTL and immediate revocation remain open; see
@@ -313,31 +311,31 @@ the only Kubernetes gateway mode; the API never returns the password. Plaintext 
 is rejected.
 
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
-selects the model credential. API keys use the selected OCC Secret Driver's
-exact reference; account tokens use an account-owned CP source. Compute selects
-the explicit login mode during workload rendering. The embedded workload
-or dedicated Harness receives a direct credential; a dedicated Gateway does not.
-With a [Credential Source](../../credential-sources.md), Compute renders no model
-Secret. The paired Credential Proxy or legacy Gateway supplies credential delivery
-through the Sandbox.
+selects the model credential. For a direct API key or imported PAT, Compute
+configures login and projects the selected Secret into the embedded workload
+or dedicated Harness. For a [TokenService model Source](../../credential-sources.md),
+Compute renders no model Secret. Credential Proxy delivers the credential
+through the Sandbox on approved requests.
 
 Enabled channels require [managed channel egress](channel-egress.md). Only the
 Gateway receives its assigned listener URL; Harness transport and model
 credential placement remain separate.
 
-Agent revisions with repository bindings support embedded OpenClaw or dedicated Codex,
-without a Sandbox Driver. Compute delivers each immutable repository-material
-generation only to the container that executes commands:
+For file-based repository sessions without a Sandbox Driver, Compute delivers each
+immutable repository-material generation only to the container that executes commands.
+The [Source-backed Git path](../../repository-credentials/access-levels.md#native-git-delivery)
+uses the Sandbox and Credential Proxy instead.
 
 | Credential material      | Embedded gateway/Harness | Dedicated gateway | Dedicated Codex |
 | ------------------------ | ------------------------ | ----------------- | --------------- |
 | Repository session files | Yes                      | No                | Yes             |
-| Model credential         | Yes                      | No                | Yes             |
+| Direct model credential  | Yes                      | No                | Yes             |
 | Slack channel tokens     | Unsupported              | Yes               | No              |
 
-Readiness must match that consumer's Agent revision ID and credential material generation.
-Credential rotation for the same Agent revision ID replaces the consuming workload; a Ready Pod carrying
-older material is insufficient. Cleanup retains Secrets while owned Deployments
+For file-based repository sessions, readiness must match the consumer's Agent
+revision ID and repository material generation. When that material changes for
+the same revision, Compute replaces the consuming workload and waits for the
+new generation. Cleanup retains Secrets while owned Deployments
 or Pods still reference them. The
 [repository credential flow](../../../flows/agent-repository-credentials.md#4-deliver-and-retain-one-complete-runtime-generation)
 covers generation rechecks, missing-material repair, and how dedicated

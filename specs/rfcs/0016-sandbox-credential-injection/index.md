@@ -119,7 +119,7 @@ Kubernetes Compute are selected.
 
 ### Driver interface
 
-The method set matches main's [interface](../../../docs/reference/drivers/credential-gateway.md).
+The method set matches main's [interface](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/credential-gateway.md).
 
 ```ts
 interface CredentialGatewayDriver extends Driver {

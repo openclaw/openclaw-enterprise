@@ -38,7 +38,8 @@ closed. No private-code bootstrap is attempted.
 
 The source must be in the selected `main` workflow's history. For Release OCE,
 promotion verifies the qualification record and full-suite aggregate for the
-source and original qualifying workflow. For Enterprise Containers, promotion
+source and original qualifying workflow. Image-only Release OCE runs are
+ineligible for this promotion. For Enterprise Containers, promotion
 checks the successful push CI run for the source. The receipt's base digest
 must still match `CONTAINER_NODE_BASE_IMAGE`.
 The two images are not an atomic transaction. Inspect the remote digests after

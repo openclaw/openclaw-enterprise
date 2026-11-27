@@ -257,11 +257,10 @@ the Agent or the source removes them, as
 A Default user cannot read the Installation, so the console's Create Agent
 reads `GET /namespaces/:namespaceId/agent-capabilities` instead. The caller
 needs `agent:create` in that Namespace. The answer holds the Installation
-capabilities that Agent creation uses, such as a Credential Gateway's
-credential source types. With those types, the console registers the member's
-model Secret as a credential source before it saves the Agent, as it does for
-an administrator. Without that source, a deploy on a Credential Gateway
-Installation is refused.
+capabilities the form uses, including the supported TokenService provider
+presets. For a managed model credential, the Console saves a draft with the
+selected Source. Enrollment requires `credential_source:create`. Saving or
+deploying with an existing Source requires `credential_source:operate`.
 
 The response omits only `agentProvisioning` because guided provisioning
 requires Installation `administer`. When the Installation enables browser

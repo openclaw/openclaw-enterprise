@@ -3,10 +3,6 @@ import { story } from "./story.ts";
 export default { title: "Components/Channels" };
 
 export const Slack = { ...story("slack"), name: "Slack configured" };
-export const SlackDisableReplaceDenied = {
-  ...story("slackDisableReplaceDenied"),
-  name: "Slack Disable, editor must replace the bot token Secret",
-};
 export const SlackDmPolicy = { ...story("slackDmPolicy") };
 export const SlackEnterpriseDm = { ...story("slackEnterpriseDm") };
 export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
@@ -23,7 +19,7 @@ export const SlackDirectoryUsers = story("slackDirectoryUsers");
 export const SlackDirectoryDenied = story("slackDirectoryDenied");
 export const SlackDirectoryLoading = story("slackDirectoryLoading");
 export const SlackDirectorySearchRace = story("slackDirectorySearchRace");
-export const SlackDirectoryMissingSecret = story("slackDirectoryMissingSecret");
+export const SlackDirectoryMissingSource = story("slackDirectoryMissingSource");
 export const SlackEveryone = { ...story("slackEveryone"), name: "Slack everyone in channels" };
 export const SlackRestrictedUsers = {
   ...story("slackRestrictedUsers"),
@@ -35,19 +31,13 @@ export const SlackChannelAccessIncomplete = {
 };
 export const SlackTokensMissing = {
   ...story("slackTokensMissing"),
-  name: "Slack token Secrets missing",
+  name: "Slack Credential Sources missing",
 };
-export const SlackSecretMenu = { ...story("slackSecretMenu"), name: "Slack Secret menu" };
-export const SlackSecretNameCollision = story("slackSecretNameCollision");
-export const SlackCreateSecretModal = {
-  ...story("slackCreateSecretModal"),
-  name: "Slack create Secret modal",
-};
-export const SlackDuplicateSecret = story("slackDuplicateSecret");
-export const SlackSecretStaged = {
-  ...story("slackSecretStaged"),
-  name: "Slack staged Secret binding",
-};
+export const SlackSourceMenu = story("slackSourceMenu");
+export const SlackSourceListLoading = story("slackSourceListLoading");
+export const SlackSourceListUnavailable = story("slackSourceListUnavailable");
+export const SlackSourceOperateDenied = story("slackSourceOperateDenied");
+export const SlackSourceStaged = story("slackSourceStaged");
 export const SlackOpen = { ...story("slackOpen"), name: "Slack open policy" };
 export const SlackDisabled = { ...story("slackDisabled"), name: "Slack disabled policy" };
 export const SlackPluginDenied = { ...story("slackPluginDenied"), name: "Slack plugin denied" };
@@ -77,22 +67,9 @@ export const ChannelChangedElsewhere = story("channelChangedElsewhere");
 export const ChannelChangedElsewhereWithEdits = story("channelChangedElsewhereWithEdits");
 export const ChannelChangedElsewhereMerged = story("channelChangedElsewhereMerged");
 export const ChannelSavePending = { ...story("channelSavePending"), name: "Channel save pending" };
-export const ChannelSecretGrantRefused = {
-  ...story("channelSecretGrantRefused"),
-  name: "Slack token saved, grant refused",
-};
-export const ChannelSecretGrantMemberUnverified = {
-  ...story("channelSecretGrantMemberUnverified"),
-  name: "Member Slack token saved, access not verified",
-};
 export const ChannelSaveUnknown = {
   ...story("channelSaveUnknown"),
   name: "Channel save outcome unknown",
 };
 
 export const SlackNavigation = story("slackNavigation");
-
-export const RevisionSecretsDenied = story("revisionSecretsDenied");
-export const RevisionSecretsMissing = story("revisionSecretsMissing");
-export const RevisionSecretsLoading = story("revisionSecretsLoading");
-export const RevisionSecretsAbsent = story("revisionSecretsAbsent");

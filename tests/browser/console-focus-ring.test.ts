@@ -9,13 +9,13 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   consoleViewports,
+  createSlackSourceConsoleFixture,
   detailUrl,
   fileBrowser,
   login,
   nativeValues,
   newPage,
   repositoryCheckbox,
-  selectSecret,
   settledView,
 } from "./console-agents-browser-helpers.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
@@ -115,6 +115,16 @@ const focusedRing = (page: Page, selector: string | null = null) =>
       const reach = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
       const box = owner.getBoundingClientRect();
       const clipped = [];
+      const { clientWidth, clientHeight } = document.documentElement;
+      const viewportCut = Math.max(
+        reach - box.top,
+        reach - box.left,
+        box.bottom + reach - clientHeight,
+        box.right + reach - clientWidth,
+      );
+      if (viewportCut >= 1) {
+        clipped.push(`viewport hides ${viewportCut.toFixed(1)}px`);
+      }
       for (
         let scroller = owner.parentElement;
         scroller && scroller !== document.documentElement;
@@ -449,31 +459,14 @@ test("repository rows and the Slack people search on Create Agent show an unclip
       namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
     })),
   );
+  const sourceSetup = await createSlackSourceConsoleFixture(t, "People search focus");
   const driver = new CodexPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  sourceSetup.fixture.controller.registerDriver(driver);
+  sourceSetup.fixture.controller.selectDriver("plugin", driver.id);
+  const bot = (await sourceSetup.enroll("Search bot", "xoxb")).source;
   for (const viewport of consoleViewports) {
     const label = `Create Agent at ${viewport.width}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    // Only the provider directory is simulated: one person matches any search.
-    await page.route(
-      `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
-      (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            data: {
-              workspaceId: "TTEST123",
-              workspaceName: "Test workspace",
-              candidates: [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }],
-              complete: true,
-            },
-            meta: { requestId: "req_00000000-0000-4000-8000-000000001963" },
-          }),
-        }),
-    );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await repositoryCheckbox(page, "example/app").waitFor();
@@ -511,13 +504,41 @@ test("repository rows and the Slack people search on Create Agent show an unclip
         `${label}: an access option is framed by ${frame} (${JSON.stringify(access)})`,
       );
     }
-    await openAdvancedSettings(page);
-    await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+    const { fixture: sourceFixture, namespace: sourceNamespace } = sourceSetup;
+    const { page: sourcePage } = await newPage(t, sourceFixture, {
+      browser,
+      context: { viewport },
+    });
+    // Only the provider directory is simulated for this visual focus test.
+    await sourcePage.route(
+      `${sourceFixture.origin}/namespaces/${sourceNamespace.id}/channel-directory/lookup`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          json: {
+            data: {
+              workspaceId: "TTEST123",
+              workspaceName: "Test workspace",
+              candidates: [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }],
+              complete: true,
+            },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000001963" },
+          },
+        }),
+    );
+    await login(sourcePage, sourceFixture, `/console/agents/new?namespace=${sourceNamespace.id}`);
+    await sourcePage.getByRole("button", { name: "Start without Preset" }).click();
+    await openAdvancedSettings(sourcePage);
+    await sourcePage.getByLabel("Default plugin approvers mode").selectOption("chosen");
     // The people search input has no outline of its own; its chip field draws the ring.
-    await page.getByLabel("Default plugin approvers mode").focus();
-    const people = await tabStops(page, ({ name }) => name === "Default plugin approvers people");
+    await sourcePage.getByLabel("Default plugin approvers mode").focus();
+    const people = await tabStops(
+      sourcePage,
+      ({ name }) => name === "Default plugin approvers people",
+    );
     assert.equal(people.at(-1)?.name, "Default plugin approvers people");
-    await assertVisibleRings(page, label, [...repositories, ...access, ...people]);
+    await assertVisibleRings(page, label, [...repositories, ...access]);
+    await assertVisibleRings(sourcePage, label, people);
     // The 18 px checkbox alone is easy to miss, so its whole result row draws the inset ring.
     const { inset } = await tokenRings(page);
     const app = repositories.find(({ name }) => name.includes("example/app"));
@@ -529,19 +550,21 @@ test("repository rows and the Slack people search on Create Agent show an unclip
     );
     // The arrowed-to result keeps focus in the search input, so measure the active option itself
     // against its results scroller (finding 1963).
-    await selectSecret(page, "Slack bot token Secret for people search", bot);
-    const search = page.getByRole("combobox", {
+    await sourcePage
+      .getByLabel("Slack bot Credential Source for people search", { exact: true })
+      .selectOption(bot.id);
+    const search = sourcePage.getByRole("combobox", {
       name: "Default plugin approvers people",
       exact: true,
     });
     await search.fill("free");
-    await page.getByRole("option", { name: /Freeman Example/ }).waitFor();
+    await sourcePage.getByRole("option", { name: /Freeman Example/ }).waitFor();
     await search.press("ArrowDown");
-    const result = await focusedRing(page, ".slack-directory-result.active");
+    const result = await focusedRing(sourcePage, ".slack-directory-result.active");
     assert.ok(result, "ArrowDown activates a directory result");
     assert.match(result.name, /Freeman Example/, `${label}: ArrowDown activates a result`);
     assert.equal(result.ring, inset, `${label}: the active result draws the inset ring`);
-    await assertVisibleRings(page, `${label} people results`, [result]);
+    await assertVisibleRings(sourcePage, `${label} people results`, [result]);
   }
 });
 

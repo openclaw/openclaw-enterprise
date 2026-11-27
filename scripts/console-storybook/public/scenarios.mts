@@ -25,7 +25,6 @@ import {
 import {
   credentialsOAuthScenarios,
   credentialsScenarios,
-  credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
 import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
@@ -37,9 +36,9 @@ import {
 } from "./scenario-groups/create-agent.mts";
 import {
   allowEveryoneInSlackChannels,
+  addSlackBotSource,
   click,
   create,
-  createSlackBotSecret,
   presetSecretsPath,
   provisionableForm,
 } from "./create-agent-form-data.mts";
@@ -54,6 +53,7 @@ import {
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
+import { credentialSourceScenarios } from "./scenario-groups/credential-sources.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
 
@@ -263,8 +263,8 @@ const devdayCreateCheckpoint: StoryAction[] = [
   { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
   { selector: "#slack-channel-access", value: "selected" },
   { selector: "#slack-allowed-user-ids-search", value: "UDEMO123", key: "Enter" },
-  { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
-  { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
+  { selector: "#slack-source-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000041" },
+  { selector: "#slack-source-slack-bot-token", value: "cs_00000000-0000-4000-8000-000000000042" },
   click("Apply channel settings"),
   click("Create Agent"),
   { text: "devday claw" },
@@ -1034,6 +1034,7 @@ const authoredScenarios = {
   } satisfies LocalScenario,
   ...namespacesScenarios,
   ...connectionTemplateScenarios,
+  ...credentialSourceScenarios,
   ...settingsScenarios,
   notFound: {
     group: "Pages/Navigation",
@@ -1459,21 +1460,19 @@ const authoredScenarios = {
     description:
       "The compact drawer keeps the document in place while its own contents scroll. API responses are simulated.",
     steps: [
-      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Secrets page behind it stays in place.",
-      "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
-      "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
+      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Credentials page behind it stays in place.",
+      "Choose Namespaces, then use Back. The Credentials heading and Secret search return in view.",
+      "Open navigation and press Escape. Scroll Credentials normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
   } satisfies LocalScenario,
   ...channelsScenarios({
     click,
     draft,
     revision,
-    presetSecretsPath,
     reservedConfigurationWrite,
   }),
   ...credentialsScenarios({ draft, reservedConfigurationWrite }),
   ...agentDetailScenarios.saveAccess,
-  ...credentialsRecoveryScenarios({ draft }),
   nativeOperatorChat: {
     group: "Components/Native admin",
     name: "Operator chat",
@@ -2259,9 +2258,9 @@ const authoredScenarios = {
     ],
     gap: "This Storybook flow proves the UI request body and fixture readback path. It does not prove real gateway filesystem writes or serving health.",
   } satisfies LocalScenario,
-  createSlackSecretsFlow: {
+  createSlackSourcesFlow: {
     group: "Flows",
-    name: "Create with Slack Secrets",
+    name: "Create with Slack Credential Sources",
     path: create,
     emptyAgents: true,
     transport: false,
@@ -2272,19 +2271,23 @@ const authoredScenarios = {
       { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
       ...allowEveryoneInSlackChannels,
-      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
-      ...createSlackBotSecret,
+      {
+        selector: "#slack-source-slack-app-token",
+        value: "cs_00000000-0000-4000-8000-000000000041",
+      },
+      ...addSlackBotSource,
+      click("Create credential"),
       click("Apply channel settings"),
     ],
     description:
-      "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
+      "Guided create-form state with an existing app Source and a newly enrolled bot Source staged into the Agent Configuration.",
     steps: [
       "Start with default Preset and enter the Agent name.",
-      "Open Configure Slack, choose the existing Slack app Secret, create a new Slack bot Secret from the modal, and allow everyone in the selected channel.",
-      'Apply channel settings. The form receives channel JSON with users: ["*"] and Secret binding JSON while token values stay hidden.',
-      "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
+      "Open Configure Slack, select a saved app Source, and add a new bot credential. Confirm the bot token stays masked, create it, and allow everyone in the selected channel.",
+      "Apply channel settings. The form receives Channel JSON and Source references while credential values stay private.",
+      "Create the Agent to persist the Configuration. Deployment admission handles the Agent principal’s Source grant.",
     ],
-    gap: "The fixture proves the Console request workflow with simulated Secret metadata. Use a live Namespace and Slack app to prove real Secret propagation and Slack replies.",
+    gap: "The fixture shows the Console workflow with simulated Source metadata. It does not prove deployment, credential delivery, or Slack replies.",
   } satisfies LocalScenario,
   devdayCreateFlow: {
     group: "Flows",
@@ -2319,25 +2322,17 @@ const authoredScenarios = {
         id: "sec_devday_model_token",
         name: "DevDay Codex service account (simulated)",
       },
-      {
-        id: "sec_devday_slack_app_token",
-        name: "devday claw Slack app token (simulated)",
-      },
-      {
-        id: "sec_devday_slack_bot_token",
-        name: "devday claw Slack bot token (simulated)",
-      },
     ],
     nextStory: "devdayAdminFlow",
     description:
-      "DevDay create-flow rehearsal using real Console controls with fake service-account and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
+      "DevDay create-flow rehearsal using real Console controls with simulated service-account and Slack Credential Source data. Provisioning and deployment progress are simulated in the Storybook fixture.",
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "The picker includes SWE Agent, Standard Codex, and Standard OpenClaw. Select SWE Agent and enter devday claw for its name.",
       "Keep the default gpt-6-astra model and click Use Preset. Choose the existing DevDay Codex service account (simulated) Secret, or explicitly create a new simulated Secret. No credential is preselected. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
       "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access, then turn off issue management to match the approved profiles.",
-      "Open Edit Slack. Confirm no channels are prefilled. Add the simulated channel CDEMO123. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
+      "Open Edit Slack. Confirm no channels are prefilled. Add the simulated channel CDEMO123. Allow simulated user UDEMO123, then select existing simulated Slack Credential Sources and apply settings.",
       "Create Agent and wait for provisioning to open Agent details. Inspect Deployment activity; it finishes simulated activation after a few seconds, or use Refresh deployment.",
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],
@@ -2375,14 +2370,6 @@ const authoredScenarios = {
       {
         id: "sec_devday_model_token",
         name: "DevDay Codex service account (simulated)",
-      },
-      {
-        id: "sec_devday_slack_app_token",
-        name: "devday claw Slack app token (simulated)",
-      },
-      {
-        id: "sec_devday_slack_bot_token",
-        name: "devday claw Slack bot token (simulated)",
       },
     ],
     actions: devdayCreateCheckpoint,

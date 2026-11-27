@@ -20,10 +20,10 @@ type CredentialClientSecretOwner = Pick<CredentialClient, "id" | "namespaceId"> 
   readonly tokenServiceInstanceId: string;
 };
 
-/** OAuth material is available only for the approved client's token endpoint. */
+/** OAuth material belongs to the exact client registration and issuer. */
 export type OAuthClientSecretInstance = CredentialClientSecretOwner & {
   readonly kind: "oauth2";
-  readonly tokenUrl: string;
+  readonly issuer: string;
 };
 
 /** GitHub App signing material is used by its issuer inside TokenService. */
