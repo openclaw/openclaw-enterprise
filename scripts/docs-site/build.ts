@@ -391,6 +391,11 @@ function copyAssets({ source, destination, filter }: AssetCopy) {
 }
 
 function checkRouteOutput(route: string, owner: string) {
+  if (route.startsWith("/pagefind/")) {
+    throw new Error(
+      `Output collision at /pagefind/: Pagefind generates the search bundle there after the site build. Give ${owner} a route outside /pagefind/.`,
+    );
+  }
   const index = routeIndex(route);
   const prefixes: string[] = [];
   let relative = "";

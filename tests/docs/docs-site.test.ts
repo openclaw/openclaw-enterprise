@@ -378,6 +378,10 @@ test("docs reject unsafe and duplicate page routes before touching output", asyn
     ["old/index.html/child/README", "Output collision at /old/index.html"],
     ["manifest.json", "Output collision at /manifest.json:"],
     ["manifest.json/child", "Output collision at /manifest.json:"],
+    [
+      "pagefind/pagefind.js",
+      "Output collision at /pagefind/: Pagefind generates the search bundle",
+    ],
     ["assets/site.css", "Output collision at /assets/site.css:"],
     [fontOutput, "Output collision at /" + fontOutput + ":"],
     ["snippets/tutorial", "Output collision at /snippets/tutorial/index.html:"],
@@ -387,7 +391,11 @@ test("docs reject unsafe and duplicate page routes before touching output", asyn
     await writeFile(join(docs, source), "# Folder index\n");
     pages.push(slug);
     await writeDocsConfig(fixture, routeConfig);
-    await assertRefused(source, diagnostic, slug === "manifest.json/child");
+    await assertRefused(
+      source,
+      diagnostic,
+      slug === "manifest.json/child" || slug === "pagefind/pagefind.js",
+    );
     pages.pop();
     await writeFile(join(docs, source), "---\npublished: false\n---\n# Folder index\n");
   }
@@ -400,6 +408,8 @@ test("docs reject unsafe and duplicate page routes before touching output", asyn
     ["/assets/manual/intro/", "/assets/manual"],
     ["/assets/examples/", "/assets/examples/index.html"],
     ["/assets/linked/child/", "/assets/linked"],
+    ["/pagefind/", "/pagefind/"],
+    ["/pagefind/chunks/legacy/", "/pagefind/"],
   ] as const) {
     const withRedirect = {
       ...routeConfig,
@@ -427,6 +437,7 @@ test("docs reject unsafe and duplicate page routes before touching output", asyn
     "other/index.html",
     "other/manifest.json",
     "assets/fonts/guide",
+    "pagefind-guide",
   ];
   for (const directory of validDirectories) {
     await mkdir(join(docs, directory), { recursive: true });
@@ -455,6 +466,7 @@ test("docs reject unsafe and duplicate page routes before touching output", asyn
   for (const directory of validDirectories) {
     assert.match(await readFile(join(output, directory, "index.html"), "utf8"), /id="nested-page"/);
   }
+  assert.ok(!existsSync(join(output, "pagefind")));
   const examples = manifest.filter((page) => page.route === "/example/");
   assert.equal(examples.length, 1);
   assert.equal(examples[0]?.source, "example.md");
