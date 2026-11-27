@@ -22,6 +22,7 @@ import type {
   RevisionFixture,
   WorkIdentity,
 } from "../helpers/postgres-worker-refused-candidate.ts";
+import { deferWork } from "../helpers/postgres-worker-revision-queue.ts";
 import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import type { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
@@ -754,6 +755,15 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           await fixture.compute.retireRevision(revision);
         },
       };
+      // An attempt stays visible while a retry holds a lease. Defer queued work
+      // before stopping the Worker so an interrupted retry cannot block the next revision.
+      const park = async (key: string) => {
+        const parked = await waitFor("a queued deployment to defer", async () => {
+          const result = await deferWork(fixture.observerPool, { key, state: "queued" });
+          return result.rowCount === 0 ? undefined : result;
+        });
+        assert.equal(parked.rowCount, 1);
+      };
       if (active) {
         await fixture.start(initial ? computeSupportingRepositoryPolicy(compute) : compute);
         if (overdue) {
@@ -761,16 +771,13 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
             queue.findWorkAttempt(older.idempotencyKey, "REVISION_FINALIZATION_INCOMPLETE"),
           );
           assert.ok(original);
+          await park(older.idempotencyKey);
         } else {
           await fixture.work(older, "succeeded");
         }
         await fixture.stop();
-      }
-      if (!active || overdue) {
-        await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
-          [older.idempotencyKey],
-        );
+      } else {
+        await park(older.idempotencyKey);
       }
       const options =
         enforcement === "legacy"
@@ -782,6 +789,8 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         await waitFor("the scoped deployment stays queued after preparation", () =>
           queue.findWorkAttempt(candidate.idempotencyKey, "REVISION_INCOMPLETE"),
         );
+        // Queued work with prior Compute effects can still own the Gateway during maintenance.
+        await park(candidate.idempotencyKey);
       } else {
         assert.equal(
           (await settledRevision(fixture, candidate)).reasonCode,
@@ -789,15 +798,6 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         );
       }
       await fixture.stop();
-      if (converging) {
-        // Keep the already-prepared candidate queued while maintenance runs.
-        // A queued operation with prior Compute effects can still own the Gateway.
-        const parked = await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1 AND state = 'queued'",
-          [candidate.idempotencyKey],
-        );
-        assert.equal(parked.rowCount, 1);
-      }
       assert.equal(
         (await fixture.currentAgent(owner))?.activeRevisionId,
         active ? older.id : undefined,
@@ -810,11 +810,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       if (queued !== undefined) {
         // A later admission is only queued. It has not touched the Gateway
         // installed by the held, deny-all revision.
-        const moved = await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1 AND state = 'queued'",
-          [queued.idempotencyKey],
-        );
-        assert.equal(moved.rowCount, 1);
+        await park(queued.idempotencyKey);
       }
 
       if (active) {
