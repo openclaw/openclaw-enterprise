@@ -129,6 +129,37 @@ export async function verifyPlatformStateTransactions(
     );
   }
 
+  await store.transact(async ({ iamPolicy }) => {
+    const role = {
+      id: identifier("role"),
+      namespaceId: namespace.id,
+      name: `Namespace reader ${randomUUID()}`,
+      permissions: [{ action: "read", resourceKind: "namespace" }],
+    } as const;
+    await iamPolicy.createRole(role);
+    const listed = await iamPolicy.listRoles(namespace.id);
+    assert.ok(Object.isFrozen(listed));
+    for (const actual of [
+      await iamPolicy.getRole(namespace.id, role.id),
+      listed.find(({ id }) => id === role.id),
+    ]) {
+      assert.ok(actual);
+      assert.deepEqual(actual, role);
+      assert.ok(Object.isFrozen(actual));
+      assert.ok(Object.isFrozen(actual.permissions));
+      assert.ok(Object.isFrozen(actual.permissions[0]));
+    }
+
+    const otherNamespace = identifier("ns");
+    assert.equal(await iamPolicy.getRole(otherNamespace, role.id), undefined);
+    const otherRoles = await iamPolicy.listRoles(otherNamespace);
+    assert.equal(
+      otherRoles.some(({ id }) => id === role.id),
+      false,
+    );
+    assert.equal(await iamPolicy.deleteRole(namespace.id, role.id), true);
+  });
+
   // The draft binding and the pending deployment both reference the key: one Agent entry.
   await store.read(async (state) => {
     assert.deepEqual(await state.secrets.listReferences(namespace.id, harnessSecret.id, 50), {

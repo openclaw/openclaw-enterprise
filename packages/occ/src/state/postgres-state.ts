@@ -1563,30 +1563,44 @@ function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
   });
 }
 
-function permissions(value: unknown): readonly Permission[] {
+function permissionArray(value: unknown): readonly unknown[] {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (!Array.isArray(parsed)) {
     throw new PersistedStateInvalidError("Persisted IAM permissions must be an array.");
   }
-  return Object.freeze(
-    parsed.map((permission): Permission => {
-      if (
-        permission === null ||
-        typeof permission !== "object" ||
-        typeof permission.action !== "string" ||
-        !PERMISSION_ACTIONS.has(permission.action) ||
-        typeof permission.resourceKind !== "string" ||
-        !RESOURCE_KINDS.has(permission.resourceKind)
-      ) {
-        throw new PersistedStateInvalidError("Persisted IAM permissions are invalid.");
-      }
-      // A new object of two strings: freezing it is all a copy would add.
-      return Object.freeze({
-        action: permission.action as Permission["action"],
-        resourceKind: permission.resourceKind as Permission["resourceKind"],
-      });
-    }),
-  );
+  return parsed;
+}
+
+function assertPermission(permission: unknown): asserts permission is Permission {
+  const fields = permission as Readonly<Record<string, unknown>>;
+  if (
+    permission === null ||
+    typeof permission !== "object" ||
+    typeof fields.action !== "string" ||
+    !PERMISSION_ACTIONS.has(fields.action) ||
+    typeof fields.resourceKind !== "string" ||
+    !RESOURCE_KINDS.has(fields.resourceKind)
+  ) {
+    throw new PersistedStateInvalidError("Persisted IAM permissions are invalid.");
+  }
+}
+
+const ROLE_COLUMNS = "id, namespace_id, name, permissions";
+
+function roleFromRow(row: PostgresRow): Readonly<Role> {
+  const namespaceId = optionalText(row, "namespace_id");
+  const name = optionalText(row, "name");
+  return Object.freeze({
+    id: text(row, "id"),
+    ...(namespaceId === undefined ? {} : { namespaceId }),
+    ...(name === undefined ? {} : { name }),
+    permissions: Object.freeze(
+      permissionArray(row.permissions).map((permission) => {
+        assertPermission(permission);
+        return Object.freeze({ action: permission.action, resourceKind: permission.resourceKind });
+      }),
+    ),
+  });
 }
 
 /** The advisory lock that serializes writes of durable authority with the `iam` configuration. */
@@ -1710,7 +1724,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (SELECT id, namespace_id, agent_id, kind, issuer, subject FROM occ.iam_identities) v),
           '[]'::jsonb) AS identities,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
-          (SELECT id, namespace_id, name, permissions FROM occ.iam_roles) v),
+          (SELECT ${ROLE_COLUMNS} FROM occ.iam_roles) v),
           '[]'::jsonb) AS roles,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, name FROM occ.iam_groups) v),
@@ -1769,16 +1783,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       throw new PersistedStateInvalidError("Persisted IAM identity has an invalid owner.");
     });
 
-    const roles = roleRows.map((row): Role => {
-      const namespaceId = optionalText(row, "namespace_id");
-      const name = optionalText(row, "name");
-      return {
-        id: text(row, "id"),
-        ...(namespaceId === undefined ? {} : { namespaceId }),
-        ...(name === undefined ? {} : { name }),
-        permissions: permissions(row.permissions),
-      };
-    });
+    const roles = roleRows.map(roleFromRow);
 
     const groups = groupRows.map((row): Group => {
       const namespaceId = optionalText(row, "namespace_id");
@@ -1829,7 +1834,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const restrictions = restrictionRows.map(restrictionFromRow);
 
     const state = { identities, groups, memberships, roles, bindings, restrictions };
-    this.validateIAMState(state, true);
+    this.validateIAMState(state);
     // Everything above was built from this query's rows and is shared with nobody, so freezing
     // it in place makes the whole policy immutable without a copy (permissions and restrictions
     // come back already frozen all the way down). An immutable snapshot also lets the IAM
@@ -4634,17 +4639,6 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
-    const roleFromRow = (row: PostgresRow): Readonly<Role> => {
-      const namespaceId = optionalText(row, "namespace_id");
-      const name = optionalText(row, "name");
-      return immutableCopy({
-        id: text(row, "id"),
-        ...(namespaceId === undefined ? {} : { namespaceId }),
-        ...(name === undefined ? {} : { name }),
-        permissions: permissions(row.permissions),
-      });
-    };
-
     const servicePrincipalFromRow = (row: PostgresRow): Readonly<ServicePrincipal> =>
       Object.freeze({
         kind: "service_principal",
@@ -4710,7 +4704,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze(
           decodeQueryRows(
             await client.query(
-              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 ORDER BY id",
+              `SELECT ${ROLE_COLUMNS} FROM occ.iam_roles WHERE namespace_id = $1 ORDER BY id`,
               [namespaceId],
             ),
           ).map(roleFromRow),
@@ -4718,7 +4712,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       getRole: async (namespaceId, roleId) => {
         const found = decodeQueryRows(
           await client.query(
-            "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
+            `SELECT ${ROLE_COLUMNS} FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2`,
             [namespaceId, roleId],
           ),
         )[0];
@@ -4894,7 +4888,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       listConfiguredPolicy: async () => {
         const roles = decodeQueryRows(
           await client.query(
-            `SELECT id, namespace_id, name, permissions FROM occ.iam_roles
+            `SELECT ${ROLE_COLUMNS} FROM occ.iam_roles
                WHERE id LIKE $1 ORDER BY id`,
             [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.role)],
           ),
@@ -4924,10 +4918,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           throw new ScopeViolationError("A configured IAM Role is an Installation Role.");
         }
         const existing = decodeQueryRows(
-          await client.query(
-            "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE id = $1 FOR UPDATE",
-            [role.id],
-          ),
+          await client.query(`SELECT ${ROLE_COLUMNS} FROM occ.iam_roles WHERE id = $1 FOR UPDATE`, [
+            role.id,
+          ]),
         ).map(roleFromRow)[0];
         const permissionsJson = JSON.stringify(role.permissions);
         if (existing === undefined) {
@@ -6086,7 +6079,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
   }
 
-  private validateIAMState(state: PersistedNativeIAMState, requireComplete: boolean): void {
+  private validateIAMState(state: PersistedNativeIAMState): void {
     const identities = new Map<string, Identity>();
     const groups = new Map<string, Group>();
     const roles = new Map<string, Role>();
@@ -6123,7 +6116,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (roles.has(role.id)) {
         throw new PersistedStateInvalidError("Persisted IAM roles are invalid or ambiguous.");
       }
-      permissions(role.permissions);
+      Array.prototype.forEach.call(permissionArray(role.permissions), assertPermission);
       roles.set(role.id, role);
     }
     for (const binding of state.bindings) {
@@ -6170,10 +6163,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       restrictionIds.add(restriction.id);
     }
     if (
-      requireComplete &&
-      (!state.identities.some((identity) => identity.kind === "principal") ||
-        state.roles.length === 0 ||
-        state.bindings.length === 0)
+      !state.identities.some((identity) => identity.kind === "principal") ||
+      state.roles.length === 0 ||
+      state.bindings.length === 0
     ) {
       throw new PersistedStateInvalidError("Persisted native IAM state is incomplete.");
     }
@@ -6183,7 +6175,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     context: TransactionContext,
     state: PersistedNativeIAMState,
   ): Promise<void> {
-    this.validateIAMState(state, true);
+    this.validateIAMState(state);
     for (const identity of state.identities) {
       await context.client.query(
         `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind, issuer, subject)

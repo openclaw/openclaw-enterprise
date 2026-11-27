@@ -27,16 +27,17 @@ export function createSlackApproverField({
   directorySetup?: HTMLElement | null;
   onDirectoryVisibilityChange?(visible: boolean): void;
 }) {
+  const id = `slack-approvers-${crypto.randomUUID()}`;
+  const helper = element("p", { className: "hint", id: `${id}-hint` });
   const select = element(
     "select",
-    { "aria-label": `${label} mode` },
+    { "aria-label": `${label} mode`, "aria-describedby": helper.id },
     ...(allowInherit ? [element("option", { value: "inherit" }, inheritedLabel)] : []),
     element("option", { value: "none" }, "No Slack approvers"),
     element("option", { value: "chosen" }, "Selected Slack users"),
   );
-  const helper = element("p", { className: "hint" });
   const control = element("input", {
-    id: `slack-approvers-${crypto.randomUUID()}`,
+    id,
     type: "hidden",
   });
   const picker = createSlackDirectoryField({
