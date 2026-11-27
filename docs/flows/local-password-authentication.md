@@ -222,43 +222,48 @@ reject Google with native administration. OIDC permits shared-cookie or host-onl
 `apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
 canonical origin and profile before activation. Invalid configuration leaves
 sessions, enrollment and recovery designation unchanged.
-On first activation, `PostgresHumanAuthentication.activateRecovery` enrolls
-qualifying password users with their Principals and reports skipped users, who
-cannot sign in until repaired. It requires a usable selected recovery
-administrator, then designates that account and removes unbound historical
-sessions in one State transaction before serving. See the
-[deployment procedure](../guides/deploy/production-installation.md#enable-external-browser-sign-in).
+On [first activation](../guides/deploy/production-installation.md#enable-external-browser-sign-in),
+`PostgresHumanAuthentication.activateRecovery` enrolls eligible password users
+with their Principals. Users reported as skipped require repair before sign-in.
+Before serving, State atomically designates the selected, usable recovery
+administrator and removes unbound historical sessions.
 
 `apps/controller/src/index.ts:humanAccountActor` requires a current human session,
-Native IAM Installation `administer`, and the configured `Origin`. For a GET without
-`Origin`, it requires the configured Console `Host` and same-origin browser Fetch
-Metadata. Reads return current state, not prior-operation receipts. The [session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-define the headers. Authorized calls without an external provider return `409 RESOURCE_CONFLICT`.
+Native IAM Installation `administer` and the configured `Origin`. GETs without
+`Origin` require the configured Console `Host` and same-origin browser
+[Fetch Metadata](../reference/authentication/external-sign-in.md#session-and-recovery-controls).
+Reads report current state only. Authorized calls
+without an external provider return `409 RESOURCE_CONFLICT`.
 
-State locks actor and target to check `expectedVersion`. After method or recovery
-locks, `human-authentication.ts:guardAuthority` holds six IAM tables through commit
-(`0073_account_administration_policy.sql`), rechecks IAM through the actor
-callback, then rechecks the session. `READ COMMITTED` sees grant changes during
-waits. `NOWAIT` contention returns retryable `503`. HTTP audits after denial rollback.
-Attaching, disabling or revoking advances the account version and ends target sessions
-and proofs. IAM grants persist. Unknown outcomes return a dependency failure.
-Resolve them before another action, without replay or compensation.
-Logout commits deletion and audit before clearing the cookie.
+State locks actor and target for `expectedVersion`. After method or recovery
+locks, `human-authentication.ts:guardAuthority` holds six IAM tables through
+commit (`0073_account_administration_policy.sql`), invokes the actor’s IAM
+recheck, then rechecks the session. `READ COMMITTED` sees intervening grant
+changes. `NOWAIT` contention returns retryable `503`.
+
+For permission advice, Backend reads and locked actor and successor rechecks,
+`validateAuthorizationDecision` requires matching Driver identity and explicit,
+nonempty IDs throughout each evidence array. Missing or malformed decisions
+return `503 DEPENDENCY_UNAVAILABLE`. Recovery rolls back, preserving account
+versions and the designation without a success or denial audit.
+
+HTTP audits policy denials after rollback. Attaching, disabling or revoking
+advances account versions, ends target sessions and proofs, and preserves IAM grants.
+Resolve unknown outcomes (dependency failures) before proceeding, without
+replay or compensation. Logout commits deletion and audit before clearing the cookie.
 
 ### 4. Admit and authorize protected API calls
 
 `ControllerAdmissionVerifier.verifyControllerRequest` checks
 [browser origin](../reference/authentication.md#browser-request-origin) before
-admitting unsafe session requests, including before sign-out revokes the session
-and before the external admission lane reads a result for exchange. Explicit service
-API keys skip the check and never fall back to a cookie.
+unsafe session requests, sign-out revocation and external result reads for
+exchange. Explicit service API keys skip this check without cookie fallback.
 
-`apps/controller/src/index.ts:createFastifyApp` validates the session. The selected
-IAM Driver resolves its Installation-owned issuer/user ID and authorizes the exact
-resource. Lookup and authorization read current policy separately, exposing
-account and permission changes across controllers. Missing or invalid sessions
-return `401`. Permission denials return `403`. Dependency failures fail closed.
-The controller rejects bearer credentials and caller-supplied identity headers.
+`apps/controller/src/index.ts:createFastifyApp` rejects bearer credentials and
+caller-supplied identity headers. Missing or invalid sessions return `401`.
+The selected IAM Driver resolves the Installation-owned issuer/user ID and
+authorizes the exact resource. Separate policy reads expose account and permission
+changes across controllers. Permission denials return `403`. Dependency failures fail closed.
 
 ### 5. Provision additional accounts
 
