@@ -131,10 +131,12 @@ On a signed-in saved Agent with a working catalog, start at 1280 × 900. Set an
 unsaved enablement and approval override for an available tool. Check its
 **Overrides** badge and values, and leave another tool inheriting defaults. In
 the available plugin's details, enter a query in **Filter tools** that matches
-no tools. Choose **Done** and remove the final `}` from **Plugin selections
-JSON**. Reopen **Configure plugins** and return to the same plugin's details.
-The query should still be present and **Filter tools** should remain enabled.
-Focus the search field, select its text with the keyboard and press Backspace.
+no tools. Check that **Tools** still shows the unfiltered total and that the pane
+says "No matching tools. Change or clear the filter." Choose **Done** and remove
+the final `}` from **Plugin selections JSON**. Reopen **Configure plugins** and
+return to the same plugin's details. The query and guidance should still be
+present, and **Filter tools** should remain enabled. Focus the search field,
+select its text with the keyboard and press Backspace. The guidance should disappear.
 The tool rows should return. Expand the same tool. Its name, ID when different,
 description and provider should remain available under **Details**. The policy
 is unknown while the draft is unreadable. The override and inheritance badges,

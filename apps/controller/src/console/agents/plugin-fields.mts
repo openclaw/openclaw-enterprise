@@ -1687,13 +1687,23 @@ export function createPluginFields({
         );
       }
       const toolRows: [Tool, HTMLDetailsElement][] = [];
+      const toolFilterStatus = element("div", { role: "status" });
       const filterTools = () => {
         const query = tabState().toolQuery.toLowerCase();
+        let hasMatch = false;
         for (const [tool, row] of toolRows) {
           row.hidden = ![tool.name, tool.description ?? "", tool.id].some((value) =>
             value.toLowerCase().includes(query),
           );
+          hasMatch ||= !row.hidden;
         }
+        const showNoMatches = toolRows.length > 0 && !hasMatch;
+        // Keep the empty live region in place without adding hint spacing.
+        toolFilterStatus.classList.toggle("hint", showNoMatches);
+        setText(
+          toolFilterStatus,
+          showNoMatches ? "No matching tools. Change or clear the filter." : "",
+        );
       };
       if (tools.size) {
         const filter = element("input", {
@@ -1719,7 +1729,7 @@ export function createPluginFields({
             ),
           );
         }
-        details.append(element("div", { className: "form-field" }, filter));
+        details.append(element("div", { className: "form-field" }, filter, toolFilterStatus));
       }
       for (const tool of tools.values()) {
         const toolDetails = createPluginToolRow({
