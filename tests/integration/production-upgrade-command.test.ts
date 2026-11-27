@@ -24,6 +24,8 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const command = join(repository, "scripts/upgrade-production");
 const runtimeImage = "registry.example/runtime@sha256:" + "b".repeat(64);
+const missingPodWarning =
+  /If the original Pod is gone, have an authorized operator recover missing edits from independent copies before resuming/;
 const runtimeEditWarning = /For each dedicated Codex Harness, pause workspace writes/;
 
 function kubeconfigFor(context: string, selected: Record<string, string | boolean> = {}) {
@@ -745,13 +747,18 @@ test("runtime plan and apply warn about edits on the outgoing Gateway before app
   const prompt = declined.stdout.indexOf("Type yes to continue:");
   assert.ok(prompt > 0, declined.stdout);
   for (const preview of [plan.stdout, declined.stdout.slice(0, prompt)]) {
-    assert.match(preview, /The Gateway Pod may hold the only copy of an edit/);
+    assert.doesNotMatch(preview, missingPodWarning);
     assert.match(preview, runtimeEditWarning);
     assert.match(
       preview,
-      /Compare each edited file on the persistent volume with an independent copy/,
+      /Compare every edited file on the persistent volume with an independent copy/,
     );
-    assert.match(preview, /pause the upgrade and keep the original Gateway Pod running/);
+    assert.match(preview, /If any edit is unverified, do not approve the upgrade/);
+    assert.match(preview, /Keep the original Gateway Pod running if it still exists/);
+    assert.match(
+      preview,
+      /Keep writes paused until you verify the edits through the replacement Gateway/,
+    );
   }
   assert.match(declined.stdout, /Apply cancelled; no command dispatched/);
   assert.deepEqual((await readdir(f.directory)).sort(), [
@@ -824,10 +831,7 @@ test("resume warns about Installation writes before approval even if the local f
   assert.match(beforeApproval, /replace the live mutable Installation Secret/);
   assert.match(beforeApproval, /switch to the recorded immutable Secret/);
   assert.match(beforeApproval, runtimeEditWarning);
-  assert.match(
-    beforeApproval,
-    /If the original Pod is gone, reconcile any unverified edits before resuming/,
-  );
+  assert.match(beforeApproval, missingPodWarning);
   assert.match(declined.stdout, /Resume cancelled; no command dispatched/);
   assert.doesNotMatch(declined.stdout + declined.stderr, /OCC_URL must use HTTPS/);
 

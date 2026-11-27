@@ -839,12 +839,13 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, oper
     elif "runtime" in images:
         print("  Agents: redeploy those running at the start of the upgrade")
         print(
-            "  For each dedicated Codex Harness, pause workspace writes. The Gateway Pod may hold the only copy of an edit.\n"
-            "  Compare each edited file on the persistent volume with an independent copy of the latest edit.\n"
-            "  If you cannot verify an edit, pause the upgrade and keep the original Gateway Pod running."
+            "  For each dedicated Codex Harness, pause workspace writes before comparing files.\n"
+            "  Compare every edited file on the persistent volume with an independent copy of its latest version.\n"
+            "  If any edit is unverified, do not approve the upgrade. Keep the original Gateway Pod running if it still exists.\n"
+            "  Keep writes paused until you verify the edits through the replacement Gateway."
         )
         if operation == "resume":
-            print("  If the original Pod is gone, reconcile any unverified edits before resuming.")
+            print("  If the original Pod is gone, have an authorized operator recover missing edits from independent copies before resuming.")
     else:
         print("  Agents: keep current revisions")
     for name in input_names:
