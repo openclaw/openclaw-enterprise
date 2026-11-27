@@ -22,6 +22,7 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
+import { readyGateway } from "../../scripts/ci/first-agent-smoke/agents.ts";
 import {
   channelProxyDeploymentStep,
   waitForChannelProxyReadiness,
@@ -401,6 +402,201 @@ test("smoke timing preserves a rejected proxy wait and omits unreached waits", a
       },
     );
   }
+});
+
+test("channel proxy gateway timings report bounded intervals from the exact Ready Pod", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-gateway-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, "calls");
+  const podList = join(directory, "pods.json");
+  await writeFile(
+    join(directory, "kubectl"),
+    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SMOKE_POD_CALLS"\nexec /bin/cat "$SMOKE_POD_LIST"\n',
+    { mode: 0o755 },
+  );
+  const keyPath = join(directory, "key");
+  const stack = {
+    directory,
+    keyPath,
+    kubeconfig: join(directory, "kubeconfig"),
+    context: "fixture",
+    origin: "http://127.0.0.1",
+    state: { keyPath, cluster: "fixture", apiPort: 0, platformNamespace: "fixture" },
+    api: async () => assert.fail("gateway observation made an API call"),
+  };
+  const context = "channel-proxy-move-deploy-a" as const;
+  const agentId = "agt_00000000-0000-4000-8000-000000000004";
+  const labels = {
+    "openclaw.dev/agent": agentId,
+    "openclaw.dev/workload-role": "gateway",
+  };
+  const running = (startedAt: string) => ({ running: { startedAt } });
+  const gateway = {
+    name: "gateway",
+    ready: true,
+    restartCount: 0,
+    state: running("2026-03-02T07:00:19Z"),
+  };
+  const sidecar = { ...gateway, name: "envoy", state: running("2026-03-02T07:00:08Z") };
+  const scheduled = {
+    type: "PodScheduled",
+    status: "True",
+    lastTransitionTime: "2026-03-02T07:00:07Z",
+  };
+  const ready = { type: "Ready", status: "True", lastTransitionTime: "2026-03-02T07:00:41Z" };
+  const pod = {
+    metadata: {
+      labels,
+      name: "unlogged-pod",
+      namespace: "unlogged-namespace",
+      creationTimestamp: "2026-03-02T07:00:00Z",
+    },
+    // Hashes of the fixture Agent ID and revision in the Kubernetes ConfigMap name.
+    spec: { volumes: [{ configMap: { name: "gateway-55ec0f2908b7-rev-0564d7e3f77e" } }] },
+    status: {
+      phase: "Running",
+      conditions: [scheduled, ready],
+      containerStatuses: [sidecar, gateway],
+    },
+  };
+  const oldPod = {
+    ...pod,
+    // The stale Pod is also Ready, but all of its intervals differ from the requested Pod's.
+    metadata: {
+      ...pod.metadata,
+      name: "unlogged-old-pod",
+      creationTimestamp: "2026-03-02T06:59:00Z",
+    },
+    status: {
+      ...pod.status,
+      conditions: [
+        { ...scheduled, lastTransitionTime: "2026-03-02T06:59:01Z" },
+        { ...ready, lastTransitionTime: "2026-03-02T06:59:06Z" },
+      ],
+      containerStatuses: [sidecar, { ...gateway, state: running("2026-03-02T06:59:03Z") }],
+    },
+    spec: { volumes: [{ configMap: { name: "gateway-55ec0f2908b7-rev-79a910c37317" } }] },
+  };
+  const otherAgent = {
+    ...pod,
+    metadata: { ...pod.metadata, labels: { ...labels, "openclaw.dev/agent": "another-agent" } },
+  };
+  const withContainers = (...containerStatuses: unknown[]) => ({
+    ...pod,
+    status: { ...pod.status, containerStatuses },
+  });
+  const scheduledMs = "createdToScheduledMs=7000";
+  const startMs = "scheduledToGatewayStartMs=12000";
+  const readyMs = "gatewayStartToLatestPodReadyMs=22000";
+  const observations = [
+    {
+      label: "exact revision",
+      items: [oldPod, pod],
+      context,
+      fields: [scheduledMs, startMs, readyMs],
+    },
+    { label: "unrelated call", items: [pod], context: undefined, fields: [] },
+    { label: "mismatched Agent label", items: [otherAgent], context, fields: [] },
+    {
+      label: "missing timing fields",
+      items: [
+        { ...pod, status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] } },
+      ],
+      context,
+      fields: [],
+    },
+    {
+      label: "restarted gateway",
+      items: [withContainers(sidecar, { ...gateway, restartCount: 1 })],
+      context,
+      fields: [scheduledMs],
+    },
+    { label: "sidecar only", items: [withContainers(sidecar)], context, fields: [scheduledMs] },
+    {
+      label: "ambiguous gateway status",
+      items: [withContainers(gateway, gateway)],
+      context,
+      fields: [scheduledMs],
+    },
+    {
+      label: "malformed gateway start",
+      items: [withContainers(sidecar, { ...gateway, state: running("unlogged-invalid-time") })],
+      context,
+      fields: [scheduledMs],
+    },
+    {
+      label: "ambiguous Ready transition",
+      items: [{ ...pod, status: { ...pod.status, conditions: [scheduled, ready, ready] } }],
+      context,
+      fields: [scheduledMs, startMs],
+    },
+    {
+      label: "unusable calendar date and backwards Ready",
+      items: [
+        {
+          ...pod,
+          metadata: { ...pod.metadata, creationTimestamp: "2026-02-30T07:00:00Z" },
+          status: {
+            ...pod.status,
+            conditions: [scheduled, { ...ready, lastTransitionTime: "2026-03-02T07:00:15Z" }],
+          },
+        },
+      ],
+      context,
+      fields: [startMs],
+    },
+    {
+      label: "creation interval above its bound",
+      items: [{ ...pod, metadata: { ...pod.metadata, creationTimestamp: "2026-03-02T05:00:00Z" } }],
+      context,
+      fields: [startMs, readyMs],
+    },
+  ];
+
+  await withEnvironment(
+    { PATH: commandPath(directory), SMOKE_POD_CALLS: calls, SMOKE_POD_LIST: podList },
+    async () => {
+      // Capture the real diagnostic while the existing kubectl lookup consumes each PodList.
+      const lines: string[] = [];
+      const write = t.mock.method(process.stdout, "write", (chunk: string) => {
+        lines.push(chunk);
+        return true;
+      });
+      try {
+        for (const observation of observations) {
+          await writeFile(podList, JSON.stringify({ items: observation.items }));
+          const result = await readyGateway(stack, agentId, revision, observation.context);
+          assert.deepEqual(result, { namespace: "unlogged-namespace", pod: "unlogged-pod" });
+          assert.deepEqual(
+            lines.splice(0),
+            observation.fields.length === 0
+              ? []
+              : [
+                  `[first-agent-smoke] ${context}: sampled gateway Pod intervals ${observation.fields.join(" ")}\n`,
+                ],
+            observation.label,
+          );
+        }
+        // Timing must neither convert a selection failure to success nor log either candidate.
+        await writeFile(podList, JSON.stringify({ items: [pod, pod] }));
+        await assert.rejects(
+          readyGateway(stack, agentId, revision, context),
+          /found 2 of 2 Agent Pods/u,
+        );
+        assert.deepEqual(lines, []);
+      } finally {
+        write.mock.restore();
+      }
+    },
+  );
+  assert.deepEqual(
+    (await readFile(calls, "utf8")).trimEnd().split("\n"),
+    Array.from(
+      { length: observations.length + 1 },
+      () =>
+        `--kubeconfig ${stack.kubeconfig} --context fixture get pods --all-namespaces -l openclaw.dev/agent=${agentId} -o json`,
+    ),
+  );
 });
 
 test("the Actions smoke command reports no retirement waits when image setup is missing", async (t) => {
