@@ -7,7 +7,6 @@ import {
   postgresAgentAuditState,
 } from "./control-plane-audit.ts";
 import { closeResources } from "./close-resources.ts";
-import { installEgressAuthority } from "./egress-authority.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
@@ -111,7 +110,6 @@ export async function composeProduction(
     configurationDriver,
     secretDriver,
     sandboxDriver,
-    protectedDriver,
     pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
@@ -143,13 +141,11 @@ export async function composeProduction(
     ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
-  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, protectedDriver, database);
+    closeResources(config.drivers.credentialDeliveryRegistration, database);
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
-      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -225,7 +221,6 @@ export async function composeProduction(
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
-        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -385,8 +380,6 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
-    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
-    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {

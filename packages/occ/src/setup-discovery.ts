@@ -30,7 +30,7 @@ import {
 } from "./errors.ts";
 import { exactNamespace } from "./resource-scope.ts";
 import { driverOperation } from "./driver-operation.ts";
-import { PROTECTED_SOURCE_TIMEOUT_MS } from "./credential-source-drivers.ts";
+import { CHANNEL_SOURCE_RESOLUTION_TIMEOUT_MS } from "./channel-secret-bindings.ts";
 
 export interface LookupChannelDirectoryInput {
   readonly sourceId: string;
@@ -226,7 +226,7 @@ export class SetupDiscovery {
     await this.authorizeChannelDirectoryUse(principalId, namespaceId, input);
     let token: string;
     try {
-      const timeout = AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS);
+      const timeout = AbortSignal.timeout(CHANNEL_SOURCE_RESOLUTION_TIMEOUT_MS);
       const resolved = await driverOperation(
         () =>
           first.owner.resolveCredential(

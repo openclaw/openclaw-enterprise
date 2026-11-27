@@ -55,6 +55,7 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
+import { WITHDRAWAL_SOURCE_NOT_USED } from "../helpers/refusal-credential-admission.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
@@ -495,7 +496,6 @@ test(
       assert.ok(runtime);
       assert.ok(runtime.repositoryRegistry && runtime.repositoryAdmission);
       assert.equal(Object.hasOwn(runtime.installation.drivers, "credential_gateway"), false);
-      assert.equal(runtime.repositoryGitDriver, undefined);
       Reflect.set(
         runtime.computeDriver,
         "apiClients",
@@ -1250,6 +1250,18 @@ test(
       )?.activeRevisionId,
       firstId,
     );
+    // This revision uses only its model Source. Withdrawal must hide whether an unused Source exists.
+    for (const sourceId of [gitSource.id, `cs_${randomUUID()}`]) {
+      const withdrawal = await request(
+        "POST",
+        `${agentPath}/credential-sources/${sourceId}/withdraw`,
+      );
+      assert.equal(withdrawal.statusCode, 409, withdrawal.body);
+      assert.deepEqual(withdrawal.json().error, {
+        code: "RESOURCE_CONFLICT",
+        message: WITHDRAWAL_SOURCE_NOT_USED,
+      });
+    }
     const draft = await request("PATCH", agentPath, {
       configurationId: config.json().data.id,
       repositoryAccess: {
@@ -1517,7 +1529,8 @@ test(
     const creatorRevision = await state.read((view) =>
       view.revisions.findRevision(namespaceId, creatorAgentId, creatorDeploy.json().data.id),
     );
-    const creatorGitSourceId = creatorRevision?.credentialSources?.find(
+    assert.ok(creatorRevision && isNativeStagedRepositoryRevision(creatorRevision));
+    const creatorGitSourceId = creatorRevision.credentialSources?.find(
       ({ sourceType }) => sourceType === "github-app-installation",
     )?.sourceId;
     assert.ok(creatorGitSourceId);
@@ -1541,6 +1554,32 @@ test(
     assert.ok(creatorCredential.credential);
     assert.ok(creatorCredential.expiresAt);
 
+    // Keep the Read peer eligible for the later active Provider check. Admit a separate
+    // native revision so the staged IAM change can deny it independently.
+    const deniedAgent = await request("POST", `${base}/agents`, {
+      name: `Git authorization race ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+      repositoryAccess: selected("read"),
+    });
+    assert.equal(deniedAgent.statusCode, 201, deniedAgent.body);
+    const deniedAgentId = deniedAgent.json().data.id;
+    const deniedDeployment = await request("POST", `${base}/agents/${deniedAgentId}/deploy`, {});
+    assert.equal(deniedDeployment.statusCode, 202, deniedDeployment.body);
+    const { deniedRevision, deniedPolicy } = await state.read(async (view) => ({
+      deniedRevision: await view.revisions.findRevision(
+        namespaceId,
+        deniedAgentId,
+        deniedDeployment.json().data.id,
+      ),
+      deniedPolicy: await view.sandboxPolicies.find(namespaceId, deniedAgentId),
+    }));
+    assert.ok(deniedRevision && isNativeStagedRepositoryRevision(deniedRevision));
+    assert.ok(deniedPolicy);
+    const deniedWorkKey = `agent_revision:${deniedRevision.id}:reconcile`;
+
     // Run the actual Worker against the real admission and queue. Control only the Compute
     // workload boundary, since this fixture does not start a Gateway or Sandbox.
     const compute = runtime.computeDriver;
@@ -1551,17 +1590,27 @@ test(
       revisionId: id,
       ready: true,
     });
+    let creatorPrepareStarted = false;
+    const permitCreatorPrepare = Promise.withResolvers<void>();
     t.mock.method(compute, "preflight", async () => ({ warnings: [] }));
     const prepare = t.mock.method(
       compute,
       "prepareRevision",
       async (revision: AgentRevision, context?: ComputeRevisionContext) => {
         assert.equal(typeof context?.configureCredentialDeployment, "function");
+        if (revision.id === creatorRevision.id) {
+          creatorPrepareStarted = true;
+          await permitCreatorPrepare.promise;
+        }
         return ready(revision);
       },
     );
     t.mock.method(compute, "observeRevision", async () => ({ state: "running" as const }));
-    t.mock.method(compute, "activateRevision", async () => {});
+    const activate = t.mock.method(
+      compute,
+      "activateRevision",
+      async (_revision: AgentRevision) => {},
+    );
     const stop = t.mock.method(compute, "stopRevision", async (_revision: AgentRevision) => {});
     t.mock.method(compute, "retireRevision", async () => {});
     const withdraw = t.mock.method(
@@ -1591,9 +1640,17 @@ test(
     const readPeerWorkKey = `agent_revision:${readPeerRevision.id}:reconcile`;
     await pool.query(
       `UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour'
-       WHERE namespace_id=$1 AND idempotency_key NOT IN ($2, $3) AND state='queued'`,
-      [namespaceId, workKey, readPeerWorkKey],
+       WHERE namespace_id=$1 AND state='queued'`,
+      [namespaceId],
     );
+    async function resumeDeployment(key: string) {
+      const resumed = await pool.query(
+        `UPDATE occ.controller_work SET available_at=clock_timestamp()
+         WHERE namespace_id=$1 AND idempotency_key=$2 AND state='queued'`,
+        [namespaceId, key],
+      );
+      assert.equal(resumed.rowCount, 1);
+    }
     const work = (key: string) => state.read((view) => view.operations.findWork(key));
     const succeed = (key: string) =>
       waitFor(key, async () => {
@@ -1614,8 +1671,13 @@ test(
       },
       secretDriver: driver,
     };
+    const workerPool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 1,
+      options: "-c default_transaction_isolation=repeatable\\ read",
+    });
     const worker = createControllerWorker({
-      pool: new pg.Pool({ connectionString: databaseUrl }),
+      pool: workerPool,
       drivers,
       pollIntervalMs: 15,
       maxAttempts: 1,
@@ -1623,8 +1685,63 @@ test(
     });
     const mintsBeforeWorker = github.issuesOfTokens.length;
     try {
-      await worker.start();
+      const {
+        rows: [workerSession],
+      } = await workerPool.query<{ pid: number; isolation: string }>(
+        "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+      );
+      assert.equal(workerSession?.isolation, "repeatable read");
+
+      // PostgreSQL can take a Repeatable Read snapshot before the writer commits. The Worker
+      // must reauthorize with the committed policy before handing the revision to Compute.
+      const writer = await pool.connect();
+      try {
+        await writer.query("BEGIN");
+        const {
+          rows: [writerSession],
+        } = await writer.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
+          ["occ:iam-configuration"],
+        );
+        assert.ok(writerSession);
+        await resumeDeployment(deniedWorkKey);
+        await worker.start();
+        await waitFor("Worker waits on the IAM policy writer", async () => {
+          const result = await pool.query(
+            `SELECT 1 FROM pg_locks
+             WHERE pid=$1 AND locktype='advisory' AND mode='ShareLock' AND NOT granted
+               AND $2 = ANY(pg_blocking_pids(pid))`,
+            [workerSession.pid, writerSession.pid],
+          );
+          return result.rowCount === 1 || undefined;
+        });
+        assert.equal((await work(deniedWorkKey))?.state, "claimed");
+        await writer.query(
+          `INSERT INTO occ.iam_restrictions
+            (id, namespace_id, action, resource_kind, resource_id, effect)
+            VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespaceId, deniedPolicy.id],
+        );
+        await writer.query("COMMIT");
+      } finally {
+        await writer.query("ROLLBACK").finally(() => writer.release());
+      }
+      const deniedBeforePreparation = await waitFor("the native revision is denied", async () => {
+        const result = await work(deniedWorkKey);
+        return result?.state === "failed_permanent" ? result : undefined;
+      });
+      assert.equal(deniedBeforePreparation.reasonCode, "AUTHORIZATION_DENIED");
+      assert.equal(prepare.mock.callCount(), 0);
+      assert.equal(activate.mock.callCount(), 0);
+      assert.equal(
+        (await state.read((view) => view.agents.findAgent(namespaceId, deniedAgentId)))
+          ?.activeRevisionId,
+        undefined,
+      );
+
+      await resumeDeployment(workKey);
       await succeed(workKey);
+      await resumeDeployment(readPeerWorkKey);
       await succeed(readPeerWorkKey);
       assert.equal(
         (await state.read((view) => view.agents.findAgent(namespaceId, readPeerRevision.agentId)))
@@ -1676,7 +1793,42 @@ test(
       assert.equal(running?.activeRevisionId, agedRevision.id);
       assert.equal(running?.desiredRuntimeState, "running");
       assert.equal(github.issuesOfTokens.length, mintsBeforeWorker);
+
+      // The creator was authorized when Compute began preparing its native Repository
+      // revision. Revocation during preparation must still prevent activation.
+      const creatorWork = `agent_revision:${creatorRevision.id}:reconcile`;
+      await resumeDeployment(creatorWork);
+      await waitFor(
+        "creator's admitted native revision enters preparation",
+        () => creatorPrepareStarted || undefined,
+      );
+      const policy = await state.read((view) =>
+        view.sandboxPolicies.find(namespaceId, creatorAgentId),
+      );
+      assert.ok(policy);
+      await pool.query(
+        `INSERT INTO occ.iam_restrictions
+          (id, namespace_id, action, resource_kind, resource_id, effect)
+          VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+        [`restriction-${randomUUID()}`, namespaceId, policy.id],
+      );
+      permitCreatorPrepare.resolve();
+      const denied = await waitFor("creator's native revision refuses activation", async () => {
+        const result = await work(creatorWork);
+        return result?.state === "failed_permanent" ? result : undefined;
+      });
+      assert.equal(denied.reasonCode, "AUTHORIZATION_DENIED");
+      assert.equal(
+        activate.mock.calls.some(({ arguments: [revision] }) => revision.id === creatorRevision.id),
+        false,
+      );
+      assert.equal(
+        (await state.read((view) => view.agents.findAgent(namespaceId, creatorAgentId)))
+          ?.activeRevisionId,
+        undefined,
+      );
     } finally {
+      permitCreatorPrepare.resolve();
       await worker.stop();
     }
 

@@ -5,12 +5,8 @@ import {
   type CredentialSourceStatus,
   type CredentialWithdrawalStatus,
   type PushAgentCredentialsBody,
-  type SecretReference,
 } from "@openclaw-enterprise/contracts";
-import type {
-  LegacyCredentialSourceMetadata,
-  UpdateManagedCredentialSourceInput,
-} from "@openclaw-enterprise/occ";
+import type { UpdateManagedCredentialSourceInput } from "@openclaw-enterprise/occ";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../backends/token-service/codex-oauth-preset.ts";
 
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
@@ -22,40 +18,8 @@ function phaseAudit(event: AuditEvent, phase: string | undefined): AuditEvent {
 }
 
 function clientCredentialSource(
-  source:
-    | Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>
-    | LegacyCredentialSourceMetadata,
+  source: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>,
 ): Record<string, unknown> {
-  if ("ownerCapability" in source) {
-    const {
-      id,
-      namespaceId,
-      name,
-      type,
-      ownerCapability,
-      config,
-      secrets,
-      state,
-      ref,
-      egress,
-      status,
-    } = source;
-    return {
-      id,
-      namespaceId,
-      name,
-      type,
-      ownerCapability,
-      config,
-      secrets,
-      state,
-      ref,
-      ...(egress === undefined
-        ? {}
-        : { egress: { adoption: egress.adoption, retention: egress.retention } }),
-      ...(status === undefined ? {} : { status }),
-    };
-  }
   if (source.type === "oauth2-refresh-token" && source.consent.kind === "builtin_codex") {
     return { ...source, consent: { ...source.consent, ...BUILTIN_CODEX_OAUTH_PRESET } };
   }
@@ -113,25 +77,6 @@ export const credentialSourceHandlers = {
           name: body.name as string,
         },
         (resource, phase) => phaseAudit(mutationEvent(resource), phase),
-      );
-      reply
-        .status(201)
-        .send({ data: clientCredentialSource(created), meta: { requestId: request.id } });
-      return;
-    }
-    if (body && !("secret" in body)) {
-      const created = await controller.createCredentialSource(
-        context.actorId,
-        {
-          namespaceId,
-          name: body.name as string,
-          type: body.type as string,
-          ...(body.config === undefined ? {} : { config: body.config as Record<string, string> }),
-          ...(body.secrets === undefined
-            ? {}
-            : { secrets: body.secrets as Record<string, SecretReference> }),
-        },
-        (source) => mutationEvent({ kind: "credential_source", id: source.id, namespaceId }),
       );
       reply
         .status(201)

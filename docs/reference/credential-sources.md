@@ -5,8 +5,8 @@ Sources for static credentials, OAuth grants, and finite GitHub installation
 tokens. A Source can reference a Connection Template. The Source API exposes
 metadata and controls access to the Source. Ordinary credential-free metadata
 reads use separate Sandbox network access and return the upstream response; they
-do not need a Source. The older [protected metadata Source](credential-sources/protected-repository-metadata.md)
-is deprecated and retired from Credential Design 1.0, pending code removal.
+do not need a Source. The [protected metadata Source](credential-sources/protected-repository-metadata.md)
+is retired.
 [Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
 covers Channel and Gateway Secret delivery. An authorized caller can also select a ready static OCC-owned Source for a dedicated Kubernetes Gateway through [Configuration secret bindings](configuration/secrets.md#secret-bindings), independently of any Proxy binding.
 

@@ -4,8 +4,8 @@ For Credential Design 1.0, choose repository **Read** or **Read/write**.
 TokenService supplies credentials for admitted Git operations. Either access
 level can permit [public repository metadata](#public-repository-metadata).
 Read/write can also authorize [pull request creation](#pull-request-creation)
-when the additional conditions are met. The prepared broker and deprecated
-protected profiles documented below are outside 1.0.
+subject to the Source's Repository coverage. Branch protection and the separate
+prepared broker are outside Credential Design 1.0.
 
 ## Registry profiles
 
@@ -38,9 +38,8 @@ The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
 as described below. `git-full` does not mean unrestricted GitHub administration.
 
-Installation-wide access uses a separate
-[`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
-`github-installation` is not a value in a repository's `profiles` list.
+The retired protected adapter supported an
+[installation-wide access mode](protected-openshell-git.md#grant-access-to-a-github-app-installation).
 
 ### TokenService registry example
 

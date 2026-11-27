@@ -87,7 +87,7 @@ export async function installTokenServiceDriver(
   if (!selection || !drivers) {
     return;
   }
-  const delivery = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  const delivery = drivers.credentialDeliveryRegistration?.require("credential_proxy");
   if (selection.implementation === OpenShellTokenServiceDriver.implementation) {
     const backend = drivers.openShellTokenServiceBackend;
     if (!backend || !(delivery instanceof OpenShellCredentialProxyDriver)) {
@@ -190,7 +190,7 @@ export async function installTokenServiceDriver(
       await import("../drivers/credential-proxy/openshell-pushed-provider.ts");
     delivery.bindSourceNamespaceResolver(async (sourceRef, signal) => {
       signal.throwIfAborted();
-      if (controller.selectedDriver("credential_proxy_delivery") !== delivery) {
+      if (controller.selectedDriver("credential_proxy") !== delivery) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
       const { namespace, source } = await state.read(async (view) => ({
@@ -220,7 +220,7 @@ export async function installTokenServiceDriver(
     delivery.bindSourceRevisionResolver(async (sourceRef, agentId, revisionId, signal) => {
       signal.throwIfAborted();
       if (
-        controller.selectedDriver("credential_proxy_delivery") !== delivery ||
+        controller.selectedDriver("credential_proxy") !== delivery ||
         controller.selectedDriver("token_service") !== owner
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();

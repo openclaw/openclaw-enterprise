@@ -285,16 +285,10 @@ removal.
 
 [Strands companion](strands-box-companion.md).
 
-- `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
-  reports `worker.openshell-git-continuity-refused` with the failed comparison.
-  Held-startup comparisons expose SHA-256 hashes through `keyHash`.
-  Sandbox comparisons report restart count, Never-policy result and ID-change result.
-- `apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`
-  logs `runtime.protected_startup` with the same startup hash.
-  `runtime.process_exit` and `runtime.process_error` report fixed component,
-  exit/signal or spawn-error metadata. Collect these while Pods exist; stop can
-  remove their logs. Reporting failures preserve the guard and restart decisions.
-  A changed startup still requires a new supported lifecycle; never replay its release.
+- `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
+  reports `runtime.process_exit` and `runtime.process_error` with the component
+  and exit, signal, or spawn-error metadata. Collect these events while Pods
+  exist. Stop can remove their logs.
 - `codex-plugin-stdio.ts:CODEX_PLUGIN_STDIO_HELPER` reports catalog queue, pipe-write,
   pending and matched-reply flags, plus bounded message and unmatched-ID-type counts.
   Pipe-write completion does not establish native acceptance. Counts retain no ID

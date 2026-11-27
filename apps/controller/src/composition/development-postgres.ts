@@ -1,7 +1,6 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { oauthIssuerOperations } from "../connections/oauth-issuer.ts";
 import { closeResources } from "./close-resources.ts";
-import { installEgressAuthority } from "./egress-authority.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
@@ -126,12 +125,10 @@ export async function composePostgresDevelopment(
     ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
-  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, drivers?.protectedDriver, database);
+    closeResources(drivers?.credentialDeliveryRegistration, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();
@@ -154,7 +151,6 @@ export async function composePostgresDevelopment(
       }
     }
     const sandboxDriver = drivers?.sandboxDriver;
-    const protectedDriver = drivers?.protectedDriver;
     const configurationDriver =
       options.configurationDriver ??
       ("installation" in options
@@ -200,7 +196,6 @@ export async function composePostgresDevelopment(
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
-        ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -216,7 +211,7 @@ export async function composePostgresDevelopment(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    installSelectedSandboxDrivers(controller, drivers ?? { sandboxDriver, protectedDriver });
+    installSelectedSandboxDrivers(controller, drivers ?? { sandboxDriver });
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);
       controller.selectDriver("configuration", configurationDriver.id);
@@ -356,8 +351,6 @@ export async function composePostgresDevelopment(
       },
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
-    drivers?.repositoryTransport?.connectRestartObservation?.(pool);
-    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {

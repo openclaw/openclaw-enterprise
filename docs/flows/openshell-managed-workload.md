@@ -97,7 +97,7 @@ Before replacing runtime Provider material or reconciling the owned Sandbox,
 `SandboxRevisionUnsupportedError` as permanent. See
 [recovery before upgrade](../reference/drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 `reconcilePolicy` reads the latest policy separately from the creation
-specification and checks static policy and non-Git middleware.
+specification and checks the fixed policy, including middleware.
 For changed attachments, it clears base rules while stopped.
 `reconcileProviders` verifies that intermediate policy, detaches obsolete
 Providers, then attaches replacements. Readback after each write verifies
@@ -106,58 +106,21 @@ the final policy. A rejected policy leaves the attachments in place so the
 next attempt can resume while stopped. With unchanged attachments, OCE updates
 policy directly.
 
-`ManagedOpenShellSandbox.gitScopeAnnotations` fingerprints the repository
-Driver and bindings. `verifyRetiredGit` checks the stopped predecessor's
-ownership and the absence of Git middleware and its revision-owned Provider.
-Enabling Git creates a fresh Provider and middleware binding. Disabling Git
-removes its environment, annotations and enrollment configuration.
-`verifyGitSandbox` checks workload, ownership and live policy. Confirmed
-mismatches close the route. See the
-[repository flow](agent-repository-credentials.md) for identity checks.
-
-`OpenShellSandboxDriver.gitContinuity` checks ownership, readiness and process
-identity across two reads. Git verifies Provider receipts, network and supervisor
-identities against [OpenShell execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
-The launch fingerprint excludes OpenShell-internal annotations.
-
-For a deployment-scoped Git grant (protected execution version 9), the Sandbox binds each
-repository route to one attached Provider. Its profile supplies credentials and
-contributes zero endpoints. The Worker compares the loaded policy with the
-authored rules, the sibling Providers and the current supervisor generation.
-It binds the held launcher to that observation before selecting the finite
-credential and checks the recipient again before rotation and release. OpenShell
-authorizes Git locally. Replacing the launcher requires a new revision.
-Standalone managed credentials retain execution version 8 and use a separate
-activation path. Each revision can admit only one of these delivery modes.
-
-For an online grant after a restart, `observeHeldPreview` requires a fresh authenticated denial before
-`releasePreview` acknowledges the launcher. The original worker records release
-intent before sending. Uncertain release or worker replacement requires a new
-revision. Git lookup checks the same startup acknowledgment after observation.
-PostgreSQL checks durable acknowledgment before credential use. Stop withdraws
-the binding.
+`ManagedOpenShellSandbox.gitScopeAnnotations` fingerprints the Repository Driver
+and the saved Agent bindings. For Source-backed Git, the native Credential Proxy
+installs the admitted Git and model rules. Each credentialed rule names an
+attached Provider. Compute checks the loaded policy and Provider readiness
+before it reports preparation complete. The Worker then activates the revision.
+See the [repository flow](agent-repository-credentials.md).
 
 `openshell-gateway-client.ts:updateSandbox` sends the latest resource version.
-The Driver verifies the workload and live policy separately before start because
-the specification retains the creation policy.
+Before starting the Sandbox, the Driver verifies the workload and reads back the
+stored policy separately because the specification retains the creation policy.
 
-`ManagedOpenShellSandbox.observeHarness` reports running when OpenShell
-loads the latest policy. The Driver checks the policy fingerprint saved in
-the Sandbox annotations before live edits and Git continuity checks. Agent
-grants can change independently. Replacement saves the successor's fingerprint.
-
-`apps/controller/src/drivers/egress-proxy/openshell.ts:loadedPolicyVersion`
-checks OpenShell's loaded version against its active version. OCE's egress
-plan has a separate generation. `wiringStatus` verifies the expected policy
-and execution evidence before enrollment or revalidation.
-
-`apps/controller/src/worker.ts:retireEgressInstallation` retires the
-predecessor's enrollment after Compute confirms its stop.
-`recordEgressInstallation` records the eligible successor under the Agent
-lock. PostgreSQL stores one immutable receipt per revision and permits one
-non-retired receipt per sender and Sandbox. Request lookup excludes retired
-receipts. Cleanup names the predecessor revision, leaving the successor eligible
-for its own enrollment.
+`ManagedOpenShellSandbox.observeHarness` reports running after OpenShell loads
+the latest policy. The Driver checks the policy baseline fingerprint in the
+Sandbox annotations before live network policy edits. Replacement saves the
+successor's fingerprint.
 
 Before restarting a native OpenClaw Sandbox whose new revision has not enrolled,
 `reconcileHarness` restores a missing startup exposure through `ExposeService`.
@@ -224,25 +187,19 @@ selects `/sandbox/oce/workspace`. See
 
 `apps/controller/src/drivers/sandbox/openshell/managed.ts:cleanup` checks the
 Sandbox owner and revision. For the current running revision, it calls
-`StopSandbox` and reads the Sandbox again to
-confirm that it stopped. A stop retains Sandbox storage. Cleanup for an older
-revision leaves the successor workload running.
+`StopSandbox` and reads the Sandbox again to confirm that it stopped. A stop
+retains Sandbox storage. Cleanup for an older revision leaves the successor
+workload running.
 
-For a staged credential deployment, Compute stops the managed Sandbox.
-`OpenShellCredentialProxyDriver.removeDeployment` removes the stopped revision's
-routes that refer to the Providers it will detach. It verifies the stored
-policy before detaching them because OpenShell checks the policy even after
-the Supervisor has stopped.
-
-For a prepared Git session, `OpenShellGitRuntime.withdrawConfirmed` first blocks local use
-and waits for the route store to record withdrawal. Failure prevents replacement.
-After stop, `ManagedOpenShellSandbox.retireGit` removes Git middleware and clears
-base network rules, then detaches the old Git Provider with readback. It deletes
-only Providers and profiles marked for that revision, including artifacts left by
-an interrupted attempt. Cleanup does not resolve current repository policy.
-`releaseWithdrawn` releases the in-memory route while retaining its tombstone.
-Late predecessor cleanup can remove its detached artifacts but cannot stop or
-change the successor. The successor restores its complete policy before start.
+When a stopped revision has staged credentials, Compute reads the saved Sandbox
+target and calls `CredentialProxyDriver.removeDeployment`. The native Proxy
+verifies the target is stopped, then updates the stored policy to remove
+endpoints that reference the revision's credential Providers. It reads back the
+stored policy and confirms the Sandbox is still stopped before detaching those
+Providers. It checks the resulting Sandbox attachments. Compute deletes the
+saved target after Proxy cleanup succeeds.
+TokenService retains the Sources. See the
+[Credential Proxy lifecycle](../reference/drivers/credential-proxy.md#lifecycle).
 
 `KubernetesComputeDriver.deleteAgentRuntimeCredentials` resolves the tenant's
 Kubernetes namespace name and calls `ManagedOpenShellHarnessRuntime.deleteAgent`.

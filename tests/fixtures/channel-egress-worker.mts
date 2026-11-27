@@ -33,7 +33,7 @@ class CurrentChannelDriver extends SlackChannelDriver {
 const installed = await loadInstallationConfiguration({ mode: "production" });
 assert.ok(installed);
 assert.ok(
-  !installed.sandboxDriver && !installed.protectedDriver && !installed.repositoryTransport,
+  !installed.sandboxDriver && !installed.credentialDeliveryRegistration,
   "this fixture covers ordinary dedicated Compute, not a provider-owned Harness or repository transport",
 );
 const selection = installed.installation.drivers.compute;
@@ -45,7 +45,6 @@ const computeDriver = new KubernetesComputeDriver(
     implementation: selection.implementation,
     lifecycleDrivers: [installed.configurationDriver],
     channelDrivers,
-    ...(installed.tokenService ? { preparedTokens: installed.tokenService } : {}),
     nodeEnrollment: createGatewayNodeEnrollment(() => {
       assert.ok(process.env.OCC_GATEWAY_API_KEY_PATH);
       return readWorkspaceFilesApiKey(process.env.OCC_GATEWAY_API_KEY_PATH);

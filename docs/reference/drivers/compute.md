@@ -41,8 +41,6 @@ kind: reference/driver
   - [`validateRepositoryCredentialSupport`](#method-validate-repository-credential-support)
   - [`validateRepositoryCredentials`](#method-validate-repository-credentials)
   - [`validateExecutionAdmission`](#method-validate-execution-admission)
-  - [`admitsProtectedRepositoryNetworkPolicySave`](#method-admits-protected-repository-network-policy-save)
-  - [`validateProtectedRepositoryNetworkPolicy`](#method-validate-protected-repository-network-policy)
   - [`admitRevision`](#method-admit-revision)
   - [`snapshotRuntimeInputs`](#method-snapshot-runtime-inputs)
   - [`activateRevision`](#method-activate-revision)
@@ -124,8 +122,6 @@ For exports, `ComputeRevisionContext.gatewayStartupCredentials` supplies Worker-
 | <a id="method-validate-repository-credential-support"></a>`validateRepositoryCredentialSupport`                      | Optional    | Check support for repository credentials on the selected Sandbox topology. Without it, OCC cannot offer repository options.                                                                                                                                                                                                                               |
 | <a id="method-validate-repository-credentials"></a>`validateRepositoryCredentials`                                   | Optional    | Check repository bindings against the requested Harness and Sandbox. OCC refuses bindings if it cannot validate them.                                                                                                                                                                                                                                     |
 | <a id="method-validate-execution-admission"></a>`validateExecutionAdmission`                                         | Optional    | Check whether Compute supports the requested execution at admission and again before release. Without it the platform admits ordinary unprotected execution only.                                                                                                                                                                                         |
-| <a id="method-admits-protected-repository-network-policy-save"></a>`admitsProtectedRepositoryNetworkPolicySave`      | Optional    | Qualify protected grant saves.                                                                                                                                                                                                                                                                                                                            |
-| <a id="method-validate-protected-repository-network-policy"></a>`validateProtectedRepositoryNetworkPolicy`           | Optional    | Validate frozen policy before credentials.                                                                                                                                                                                                                                                                                                                |
 | <a id="method-admit-revision"></a>`admitRevision`                                                                    | Optional    | Return Driver-owned admission data for OCC to save with the revision. Without it, OCC stores the revision without Driver admission data.                                                                                                                                                                                                                  |
 | <a id="method-snapshot-runtime-inputs"></a>`snapshotRuntimeInputs`                                                   | Optional    | Capture bounded private launch inputs after admission; omission preserves legacy behavior. These facts are not execution authority.                                                                                                                                                                                                                       |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
@@ -288,12 +284,7 @@ sequenceDiagram
 Before calling Compute, the worker checks its selected identity and current
 credential references.
 Activation must be safe to repeat. A failed activation after selection resumes
-at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
-both version 5 `online-request` and version 6 `request-hook-observed` support
-selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
-and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
-record the selection. The original work stays queued until that revision is ready;
-only then does the worker activate it, retire its predecessor, and complete the work.
+at finalization.
 
 Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
 before closing credentials and stopping predecessors. Failed stop blocks preparation.

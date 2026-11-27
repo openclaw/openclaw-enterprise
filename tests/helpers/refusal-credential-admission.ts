@@ -94,7 +94,5 @@ export const WITHDRAWAL_NO_ACTIVE_VERSION =
 export const WITHDRAWAL_NOT_FOUND =
   "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
 // Credential Gateway refusals that name the Installation setting and who changes it (D763).
-export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
-  "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";
 export const CREDENTIAL_SOURCE_DRIVER_CHANGED =
   "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver. To update or delete this source, an Installation administrator must first re-select the driver that registered it.";

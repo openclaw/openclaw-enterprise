@@ -199,8 +199,9 @@ and check [current support](reference/credential-sources.md#implementation-statu
 The [Credential Design 1.0 RFC](../specs/rfcs/20261124-credential-design-1-0/index.md)
 records the detailed decisions.
 Credential Gateway and Credential Refresh selections are retired and unsupported.
-The separate [legacy credential-egress Driver](reference/drivers/credential-proxy.md#legacy-protected-egress)
-is deprecated and pending removal. Its special protected metadata and repository exchanges are retired from the 1.0 design.
+The separate legacy credential-egress Driver and its protected metadata and
+repository exchanges are retired. Ordinary credential-free requests use Sandbox
+network policy.
 
 The OpenShell integration supports dedicated Harness delivery within the documented
 identity, storage, admission, and gateway-authentication limits. See
@@ -230,11 +231,9 @@ In direct model authentication paths, the credential reaches the executing Harne
 
 <a id="openclaw-as-the-open-enterprise-agent-platform"></a>
 
-Kubernetes Compute supports [protected execution](reference/credential-sources/protected-inference.md)
-with the selected Credential Proxy and a matching OpenShell Sandbox. Compute verifies
-the current installation before it signs the workload release. Other Compute Drivers
-and readers that cannot interpret the admission refuse it. The bundled OpenShell
-release cannot enforce this path; qualify the exact pair before rollout.
+The Worker and Compute refuse saved revisions that require the retired protected
+execution path before preparing the workload. See the [current credential
+workflow](design/credential-proxy.md) for supported delivery.
 
 ### Native admin pilot exception
 

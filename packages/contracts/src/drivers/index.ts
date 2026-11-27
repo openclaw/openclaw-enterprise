@@ -6,9 +6,7 @@ import type {
   ConfigurationDefinition,
 } from "../configuration-definition.ts";
 import type { ConfigurationDriver } from "./configuration/index.ts";
-import type { CredentialGatewayDriver } from "./credential-gateway/index.ts";
-import type { CredentialProxyDriver, LegacyEgressProxyDriver } from "./credential-proxy/index.ts";
-import type { CredentialRefreshDriver } from "./credential-refresh/index.ts";
+import type { CredentialProxyDriver } from "./credential-proxy/index.ts";
 import type { IAMDriver } from "./iam/index.ts";
 import type { PluginDriver } from "./plugin/index.ts";
 import type { RepositoryPolicyDriver } from "./repo/index.ts";
@@ -27,10 +25,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "plugin",
   "channel",
   "repo",
-  "credential_gateway",
-  "credential_refresh",
   "credential_proxy",
-  "credential_proxy_delivery",
   "token_service",
 ] as const);
 
@@ -60,11 +55,7 @@ export type DriverByCapability = {
   plugin: PluginDriver;
   channel: ChannelDriver;
   repo: RepositoryPolicyDriver;
-  credential_gateway: CredentialGatewayDriver;
-  credential_refresh: CredentialRefreshDriver;
-  credential_proxy: LegacyEgressProxyDriver;
-  // TODO(credential proxy cutover): use credential_proxy for the canonical Driver after legacy retirement.
-  credential_proxy_delivery: CredentialProxyDriver;
+  credential_proxy: CredentialProxyDriver;
   token_service: TokenServiceDriver;
 };
 

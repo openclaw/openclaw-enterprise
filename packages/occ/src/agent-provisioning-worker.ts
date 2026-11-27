@@ -55,10 +55,8 @@ import {
   ComputeProvisioningRefusedError,
   ComputeRepositoryCredentialsUnsupportedError,
   ConfigurationHarnessError,
-  CredentialProxyAdmissionError,
-  CredentialProxyRepositoryOnlyError,
-  CredentialSourceUnprotectedError,
   DependencyUnavailableError,
+  InstallationRepositoryAccessRetiredError,
   ModelProviderSettingError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -135,9 +133,8 @@ class ProvisioningConfigurationSettlingError extends DependencyUnavailableError 
 
 /**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,
- * Compute refusal, Secret Driver ownership, missing ChatGPT Backend, repository and Credential
- * Proxy texts and the
- * plugin-policy, native-support and Configuration Harness refusals pass through; other error
+ * Compute refusal, Secret Driver ownership, missing ChatGPT Backend, repository,
+ * plugin-policy, native-support and Configuration Harness refusals pass through. Other error
  * messages stay internal. Those refusals name only Installation configuration, the work's own
  * plugin selection and settings in its own Configuration, and HTTP returns them verbatim. The
  * status contract caps `error.message` at 256 characters.
@@ -146,9 +143,6 @@ function provisioningFailureMessage(code: string, error: unknown): string {
   if (code === "PROVISIONING_REJECTED") {
     if (
       (error instanceof ResourceStateConflictError && error.message === AGENT_NAME_CONFLICT) ||
-      // Fixed, id-free text naming the Credential Proxy refusal (finding 2360).
-      error instanceof CredentialProxyRepositoryOnlyError ||
-      error instanceof CredentialSourceUnprotectedError ||
       error instanceof ComputeGatewaySettingError ||
       error instanceof ComputeProvisioningRefusedError ||
       // Fixed, id-free text that names the fix (save replacement Secrets, submit a new request).
@@ -158,13 +152,11 @@ function provisioningFailureMessage(code: string, error: unknown): string {
       error instanceof ServiceAccountBackendBindingError ||
       // Fixed, id-free text naming the missing repository settings (finding 2362).
       error instanceof RepositoryDriverNotConfiguredError ||
-      // Fixed, id-free repository and protected admission texts (finding 2536): a Compute
-      // Driver without repository credentials, selections the request or the queued work holds
-      // that are not (or no longer) approved, and a Credential Proxy that cannot start the Agent.
+      error instanceof InstallationRepositoryAccessRetiredError ||
+      // Fixed, ID-free refusals for unsupported Compute and unapproved repository selections.
       error instanceof ComputeRepositoryCredentialsUnsupportedError ||
       error instanceof RepositoryBindingSelectionError ||
-      error instanceof SavedRepositorySelectionError ||
-      error instanceof CredentialProxyAdmissionError
+      error instanceof SavedRepositorySelectionError
     ) {
       return error.message;
     }

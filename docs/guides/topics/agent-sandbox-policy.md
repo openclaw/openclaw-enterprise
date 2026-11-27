@@ -87,16 +87,18 @@ access, re-enable editing if needed, remove the addition, and apply or deploy it
 
 If a read fails, retry that read. Manual policy editing remains available when
 logs or recommendations are unavailable. If saving reports a stale version,
-refresh and review the current additions. When the running or next version uses
-protected execution (the Credential Proxy), saving additions and deploying with them
-are refused with `SANDBOX_POLICY_PROTECTED_EXECUTION`, as is live application to a
-protected version; the editor says so and offers only removal of saved rules. With OpenShell Git, an Agent
-with a repository binding cannot add a grant for `github.com` or any name under it
-(any port or matching wildcard), or for an IP address, which may lead to GitHub:
-GitHub goes only through the Git route, so save, binding, deploy and apply refuse
-it and name the grant. After a timeout or unconfirmed
-application, refresh and inspect the recorded state before another explicit
-request; do not assume the provider rejected the change.
+refresh and review the current additions. After a timeout or unconfirmed
+application, refresh and inspect the recorded state before submitting another
+request.
+
+Live application is unavailable while the active revision uses the Credential
+Proxy. Clearing additions updates the saved policy. To remove the running
+revision's access, stop the Agent and wait for Stop to complete. You can then
+edit the saved rules and deploy a new version.
+
+Deployment checks the rules against the Installation ceiling and the Sandbox
+Driver's policy. For native Git, the Credential Proxy also rejects any rule
+that overlaps an admitted Repository credential route.
 
 ## CLI
 

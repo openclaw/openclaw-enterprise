@@ -2689,7 +2689,7 @@ test("Kubernetes Stop detaches native Git and model Providers from a retained ma
   const deployment = f.context.revision.credentialDeployment;
   const owner = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: sandboxOptions },
-    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
+    { capabilities: { sandbox, credential_proxy: proxy } },
   );
   const compute = new KubernetesComputeDriver(
     routedOptions({

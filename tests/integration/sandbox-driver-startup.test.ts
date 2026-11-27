@@ -11,7 +11,6 @@ import {
   registerRevisionProviderRetentionCase,
   registerForeignSandboxAnnotationsCase,
 } from "./sandbox-driver-native-startup-cases.ts";
-import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 import { registerSandboxDriverNamespaceProviderCases } from "./sandbox-driver-namespace-provider-cases.ts";
 import {
   codexHarnessChecks,
@@ -28,10 +27,7 @@ import {
   verifyExistingSandboxAdoption,
   verifySandboxRequestReplay,
 } from "./sandbox-driver-adoption-cases.ts";
-import {
-  negotiatedGoogleGuard,
-  registerManagedPluginPolicyCases,
-} from "./sandbox-driver-provider-policy-cases.ts";
+import { registerManagedPluginPolicyCases } from "./sandbox-driver-provider-policy-cases.ts";
 import { callCount, storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import { registerSandboxDriverNamespaceGatewayCleanupCases } from "./sandbox-driver-namespace-gateway-cleanup-cases.ts";
@@ -72,7 +68,7 @@ test(
   verifyStagedNativeSourceProjection,
 );
 
-registerManagedPluginPolicyCases(credentialGatewayOverProviders);
+registerManagedPluginPolicyCases();
 
 test(
   "OpenShell provisions native OpenClaw without exposing an inbound Harness service",
@@ -154,7 +150,7 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
   await sandboxStartupGuardChecks().rejectsUnsupportedOrForeignRuntimeProviders(t);
 });
 
-registerSandboxDriverNamespaceProviderCases({ sandboxStartupGuardChecks, negotiatedGoogleGuard });
+registerSandboxDriverNamespaceProviderCases({ sandboxStartupGuardChecks });
 
 registerSandboxDriverHookProbeCases();
 

@@ -336,7 +336,7 @@ export async function persistPluginState(context: TestContext): Promise<void> {
   worker = createControllerWorker({
     pool: workerPool,
     pollIntervalMs: 20,
-    drivers: { ...workerDrivers, pluginDriver },
+    drivers: { ...workerDrivers, pluginDrivers: [pluginDriver] },
     emit() {},
   });
   await worker.start();

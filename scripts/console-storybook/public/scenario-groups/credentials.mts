@@ -1,14 +1,13 @@
 import type {
   AgentCredentialSourceBinding,
   Configuration,
-  CredentialSourceType,
   SecretMetadata,
 } from "../../../../packages/contracts/src/index.ts";
 import type { agentSaveGap } from "../../../../apps/controller/src/console/agents/list.mts";
 import type { StoryAction } from "../../story-action.mts";
 import type { configurationValues } from "../configuration-fixture.mts";
 import type { createFixtureFetch } from "../preview-rules.mts";
-import { click, modelCredentialSourceTypes } from "../create-agent-form-data.mts";
+import { click } from "../create-agent-form-data.mts";
 
 type CredentialScenario = Pick<
   Parameters<typeof configurationValues>[0],
@@ -22,7 +21,6 @@ type CredentialScenario = Pick<
   gap?: string;
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
-  credentialSourceTypes?: readonly CredentialSourceType[];
   deviceAuthorization?: true;
   credentialSources?: readonly AgentCredentialSourceBinding[];
   extraSecrets?: readonly Pick<SecretMetadata, "id" | "name">[];
@@ -61,7 +59,6 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT replacement interrupted by navigation (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: modelCredentialSourceTypes,
       deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
@@ -74,7 +71,6 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT sign-in answered on another tab (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: modelCredentialSourceTypes,
       deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
@@ -88,7 +84,6 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT login poll denied (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: modelCredentialSourceTypes,
       deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
@@ -101,7 +96,6 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT sign-in refused on another tab (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: modelCredentialSourceTypes,
       deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
@@ -122,7 +116,6 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT sign-in restarted on another tab (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: modelCredentialSourceTypes,
       deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
@@ -138,7 +131,6 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "Explicit ChatGPT credential replacement (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: modelCredentialSourceTypes,
       deviceAuthorization: true,
       deployed: true,
       auth: "oauth",

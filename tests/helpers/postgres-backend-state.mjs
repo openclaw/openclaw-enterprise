@@ -9,9 +9,10 @@ import pg from "pg";
 import { NativeIAMDriver, createAuthPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { DEFAULT_LOGGING_CONFIGURATION } from "../../apps/controller/src/logging.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
 import { authorizedPrincipal, createDevelopmentIAMState } from "./development-iam-state.ts";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
@@ -196,39 +197,64 @@ export function registerCoreDrivers(controller, state, options = {}) {
   return { compute, configuration };
 }
 
+// The fixture supplies preconstructed Drivers without startup settings.
+/** @satisfies {import("../../packages/contracts/src/index.ts").DriverImplementation} */
+const fixtureDriverDefinition = {
+  configurationSchema: { type: "object", properties: {}, additionalProperties: false },
+  validateConfiguration: () => [],
+};
+
+/** @param {Pick<import("../../packages/contracts/src/index.ts").Driver, "id" | "implementation">} driver */
+function fixtureDriverSelection({ id, implementation }) {
+  return { id, implementation, configuration: {}, definition: fixtureDriverDefinition };
+}
+
 export function createBackendWorkerDrivers(
   computeDriver,
   backends = [backendDefinition()],
   options = {},
 ) {
-  const installation = createInstallationDriverConfiguration();
-  installation.backend = backends;
-  installation.drivers.compute.id = computeDriver.id;
-  if (options.secretDriver !== undefined) {
-    installation.drivers.secret.id = options.secretDriver.id;
-  }
-  if (options.tokenServiceDriverId !== undefined) {
-    installation.drivers.token_service = { id: options.tokenServiceDriverId };
-  }
-  if (backends.length > 0) {
-    installation.drivers.service_account = {
-      id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,
-    };
-  }
+  const configurationDriver = createTestConfigurationDriver({ id: "config-kubernetes" });
+  const secretDriver = options.secretDriver ?? createTestSecretDriver({ id: "secret-kubernetes" });
+  const iam = {
+    id: "native-iam",
+    implementation: "native",
+    configuration: {},
+    definition: NativeIAMDriver,
+  };
+  const installation = {
+    occ: { cluster: "production-west" },
+    backend: backends,
+    logging: DEFAULT_LOGGING_CONFIGURATION,
+    drivers: {
+      configuration: fixtureDriverSelection(configurationDriver),
+      iam,
+      compute: fixtureDriverSelection(computeDriver),
+      secret: fixtureDriverSelection(secretDriver),
+      ...(options.tokenServiceDriverId === undefined
+        ? {}
+        : {
+            token_service: {
+              id: options.tokenServiceDriverId,
+              implementation: OCCTokenServiceDriver.implementation,
+              configuration: {},
+              definition: OCCTokenServiceDriver,
+            },
+          }),
+      ...(backends.length === 0
+        ? {}
+        : {
+            service_account: { id: backends[0]?.drivers.service_account ?? serviceAccountDriverId },
+          }),
+    },
+  };
   return {
     installation,
     computeDriver,
-    ...(options.tokenService && { tokenService: options.tokenService }),
-    configurationDriver: createTestConfigurationDriver({
-      id: installation.drivers.configuration.id,
-    }),
-    secretDriver:
-      options.secretDriver ?? createTestSecretDriver({ id: installation.drivers.secret.id }),
+    configurationDriver,
+    secretDriver,
     createIAMDriver(platformState) {
-      return new NativeIAMDriver(platformState, {
-        id: installation.drivers.iam.id,
-        implementation: "native",
-      });
+      return new NativeIAMDriver(platformState, { id: iam.id, implementation: iam.implementation });
     },
   };
 }

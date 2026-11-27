@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { driverOperation } from "./driver-operation.ts";
-import { PROTECTED_SOURCE_TIMEOUT_MS } from "./credential-source-drivers.ts";
+import { CHANNEL_SOURCE_RESOLUTION_TIMEOUT_MS } from "./channel-secret-bindings.ts";
 import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type {
   ChannelDriver,
@@ -267,7 +267,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
             () =>
               owner.resolveCredential(
                 { sourceRef: source, tokenServiceInstanceId: selected.tokenServiceInstanceId },
-                AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS),
+                AbortSignal.timeout(CHANNEL_SOURCE_RESOLUTION_TIMEOUT_MS),
               ),
             "TokenService",
           ),

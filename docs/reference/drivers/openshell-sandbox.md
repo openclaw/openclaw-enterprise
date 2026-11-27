@@ -41,7 +41,7 @@ and per-tool sandboxes are deferred.
 Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway)
 must list the Sandbox ID. Configure the Gateway service connection and WSS CA
 (`rootCertificatePath`) on that Backend. The Sandbox registration supplies
-`credential_proxy_delivery` for managed Sources.
+`credential_proxy` for managed Sources.
 
 ```yaml
 drivers:
@@ -110,24 +110,6 @@ only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
 express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount mode; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
-
-### Protected Codex artifact rules
-
-For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-with `policy.codexArtifactRuleNames`, for example
-`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
-one existing `policy.networkPolicies` rule. Omission grants no artifact access.
-
-Selected rules require the bundled Codex executable paths, exact DNS hosts,
-port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls` for verified REST TLS inspection. Admission refuses explicit skip and
-deprecated termination modes. Wildcards, numeric
-addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
-
-Admission freezes only that qualified map with empty Agent additions. Preparation
-and replay use the revision, even if Installation defaults change. Select a new
-revision to change artifact authority. Live Agent policy apply remains unavailable.
 
 ### Gateway readiness and workspace
 

@@ -1,10 +1,9 @@
 # Protected repository access with OpenShell
 
 Credential Design 1.0 retires the protected repository exchange described here.
-The deprecated legacy credential-egress implementation still exists in current
-code and is pending removal. Use Source-backed native Git with repository Read
-or Read/write grants; GitHub enforces branch rules. The legacy exchange's
-request-time checks and extended REST operations are outside 1.0.
+The procedure below records the behavior of earlier releases. Use Source-backed
+native Git with repository Read or Read/write grants. Branch protection,
+request-time exchange checks and REST operations are outside 1.0.
 
 The protected OpenShell sender verifies middleware denial before preparing
 credentials and releasing the Agent. Repositories must share permissions. OCE

@@ -1,11 +1,12 @@
-# Legacy credential-egress Driver
+<a id="legacy-credential-egress-driver"></a>
 
-`LegacyEgressProxyDriver` is deprecated and pending removal. Credential 1.0
-retires its protected metadata and repository exchanges, rather than moving their
-response filtering or operation checks to a new interface. Do not extend this
-Driver or use it for new credential delivery. New integrations use the
-[CredentialProxyDriver contract](../reference/drivers/credential-proxy.md#interface)
-with TokenService and Sandbox.
+# Develop a Credential Proxy Driver
+
+For changes to native credential delivery, start with the
+[CredentialProxyDriver contract](../reference/drivers/credential-proxy.md#interface).
+When OCC selects TokenService with the bundled OpenShell Sandbox, both Sandbox
+and `credential_proxy` come from one registration. TokenService owns the
+credential lifecycle, and Sandbox enforces network policy.
 
 <a id="1-choose-the-enforcement-boundary"></a>
 <a id="2-return-one-registration"></a>
@@ -14,6 +15,12 @@ with TokenService and Sandbox.
 <a id="5-exercise-the-normal-agent-path"></a>
 <a id="6-qualify-the-backend"></a>
 
-For maintenance of an existing qualified Driver, see the
-[historical implementation walkthrough](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/contributing/credential-proxy-driver.md)
-and the [legacy contract](../reference/drivers/credential-proxy.md#legacy-protected-egress).
+Exercise [the Agent deployment lifecycle](../reference/drivers/credential-proxy.md#lifecycle)
+through the selected Sandbox. Check that the Proxy refuses a mismatched target
+before resolving a credential, reports readiness for the expected bindings, and
+removes the bindings for the specified target. Follow the
+[Driver verification guide](driver-development.md#3-verify-and-document-the-change).
+
+The `LegacyEgressProxyDriver` and its protected exchanges were removed. The
+[former implementation walkthrough](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/contributing/credential-proxy-driver.md)
+applies to that earlier source revision.

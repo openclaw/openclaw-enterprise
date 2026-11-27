@@ -1657,7 +1657,7 @@ async function stagedCredentialScenario(
     credential: ResolvedCredential;
   }[] = [];
   let configureCalls = 0;
-  const proxy = registration.require("credential_proxy_delivery");
+  const proxy = registration.require("credential_proxy");
   proxy.configureDeployment = async (deploymentContext, input) => {
     configureCalls += 1;
     const supplied = input.bindings[0];
@@ -1848,7 +1848,7 @@ async function attachActiveSource(
   signal: AbortSignal,
 ) {
   const { controller, source, namespaceId, placedName, gatewayTransport } = scenario;
-  const nativeProxy = controller.selectedDriver("credential_proxy_delivery");
+  const nativeProxy = controller.selectedDriver("credential_proxy");
   assert.ok(nativeProxy instanceof OpenShellCredentialProxyDriver);
   const tokenService = controller.selectedDriver("token_service");
   const sourceInstance = {

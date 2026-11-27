@@ -2661,6 +2661,10 @@ exec "$0.fixture" "$@"
     ["older", "a worker reporting the channel policy check unavailable warns and reaches Stop"],
     ["no-result", "a successful worker with no channel policy check result refuses before Stop"],
     [
+      "legacy-proxy-unsettled",
+      "the channel one-off refuses unsettled legacy Proxy delivery before stopping Agents or writers",
+    ],
+    [
       "collision",
       "the channel one-off preserves an Installation key matching the channel input filename",
     ],
@@ -2720,6 +2724,7 @@ exec "$0.fixture" "$@"
             : scenario === "no-result"
               ? "installation-startup-ready\n"
               : undefined;
+        const legacyProxyUnsettled = scenario === "legacy-proxy-unsettled";
         const executionNamespace = {
           metadata: {
             name: executionName,
@@ -2810,6 +2815,14 @@ exec "$0.fixture" "$@"
           channelTransition: true,
           ...(workerLog && {
             preflightResults: { worker: { phase: "Succeeded", log: workerLog } },
+          }),
+          ...(legacyProxyUnsettled && {
+            preflightResults: {
+              migration: {
+                phase: "Failed",
+                log: '{"event":"migration.failed","code":"MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING"}\n',
+              },
+            },
           }),
           ...(twoCluster && {
             executionCluster: {
@@ -3121,6 +3134,16 @@ exec "$0.fixture" "$@"
             failure.stderr,
           );
           await assertStoppedBeforeWriters(f);
+        } else if (legacyProxyUnsettled) {
+          assert.equal(failure.code, 1);
+          assert.match(
+            failure.stderr,
+            /Stop affected Agents and settle their pending legacy Proxy work on the installed controller/,
+          );
+          assert.match(failure.stderr, /No Agent or OCC writer was stopped/);
+          assert.deepEqual(f.stopRequests, []);
+          const state = await assertStoppedBeforeWriters(f);
+          assert.equal(state.helmSubmissions ?? 0, 0);
         } else if (scenario === "no-result") {
           assert.deepEqual(f.stopRequests, []);
           assert.match(

@@ -27,7 +27,7 @@ const credentialDirectories = [
 ];
 const sharedConfigurationFields = "composition/installation-fields.ts";
 const sharedJsonMembers = "drivers/json-members.ts";
-const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const openShellEvidence = "drivers/repo/access/openshell-repository-git-evidence.ts";
 const processEntrypoint = "repository-credentials.ts";
 const requiredEntrypoints = [
   processEntrypoint,
@@ -55,7 +55,7 @@ const reviewedImports: ReviewedModules = {
   // Pure recipient SQL only: no adapter, loader, material or I/O authority.
   [openShellEvidence]: {
     "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
-    "../repo/access/protected-repository-git-installation.ts": [
+    "./protected-repository-git-installation.ts": [
       "admittedAuthorization",
       "recipientAuthorization",
       "peerKey",
@@ -800,12 +800,7 @@ export async function verifyRepositoryCredentialBoundary(
     }
     files.push(...owned.sort());
   }
-  for (const entrypoint of [
-    processEntrypoint,
-    sharedConfigurationFields,
-    sharedJsonMembers,
-    openShellEvidence,
-  ]) {
+  for (const entrypoint of [processEntrypoint, sharedConfigurationFields, sharedJsonMembers]) {
     const path = join(root, entrypoint);
     const stat = await sourceStat(path);
     if (stat && (!stat.isFile() || stat.isSymbolicLink())) {

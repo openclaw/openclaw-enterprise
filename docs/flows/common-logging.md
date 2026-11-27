@@ -231,10 +231,8 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
 `occ.failure` (a device login keeps its own, below), `occ.harness_state`,
 `occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
-`occ.fence`. `worker.openshell-git-expiry` keeps `work.outcome` (`pending`,
-`withdrawn` or `retire-runtime`).
-`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
-adds `failure` and `grpcStatus`, never supplier text.
+`occ.fence`. The collector retains the scrubbed outcome and codes from
+historical `worker.openshell-git-expiry` events.
 `worker.repository-delivery-pending` reports Git delivery failure on the first
 failure and then at most once a minute. Reconciliation retries each second.
 Sandbox Driver, Installation, and Configuration IDs stay local.

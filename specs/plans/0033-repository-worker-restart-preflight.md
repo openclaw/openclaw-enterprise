@@ -40,9 +40,9 @@ rollout is included.
    before reporting `not-applicable`. When repository credentials are present,
    `repositoryAccessContext` checks Namespace ownership and selects the Sandbox
    for delegation. These reads share the cancellation budget. The
-   [OpenShell owner](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts)
+   [OpenShell owner](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts)
    shares held-launch classification with verification and uses the
-   [route store's read-only evidence](../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts).
+   [route store's read-only evidence](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts).
    API composition enables no adoption, issuance or reconciliation. Supported
    held/preview launches require the original worker; unsupported legacy routes
    remain unknown. No bundled owner produces `reverification-supported`.

@@ -20,23 +20,30 @@ preprovisionedNamespace:
   uid: 0f4c2a9e-6b1d-4c3e-9a7f-2d5e8b1c4a60
 ```
 
-The chart refuses other keys, an ID that does not match
-`^ns_[a-zA-Z0-9_-]{1,60}$` and a UID that is not a lowercase UUID. It also
-refuses the value unless all of these are set:
+The chart accepts exactly these two fields. The Namespace ID must match
+`^ns_[a-zA-Z0-9_-]{1,60}$`, and the UID must be a lowercase UUID.
+Set the following Helm values for this profile.
 
 - `executionCluster.enabled: false`
 - `gatewayRouting.enabled: true` with `gatewayRouting.serviceType: ClusterIP`
-- `egressAuthority.enabled: true` or `openshellGit.enabled: true`
-- `auth.passwordSignIn: all`, with `auth.google` and `auth.oidc`
-  and `agentNativeAdmin` disabled
+- `auth.passwordSignIn: all`
+- `auth.google.enabled: false`, `auth.oidc.enabled: false`, and
+  `agentNativeAdmin.enabled: false`
+
+Remove the retired `egressAuthority` and `openshellGit` keys from the Helm values.
+The chart rejects either key even when disabled.
+
+In the Installation configuration, select a TokenService under
+`drivers.token_service` and use the bundled Kubernetes Compute, Configuration,
+and OpenShell Sandbox Drivers. Set `gatewayRouting` in the Compute Driver
+configuration and omit `executionCluster`. Configure a fixed HTTPS endpoint on
+the [OpenShell Backend](../../backends.md#openshell-gateway) with `auth.mode` set
+to `mtls` or `bearerTokenFile`. The Sandbox registration supplies the
+[native Credential Proxy](../credential-proxy.md#configuration).
 
 Helm passes the binding to the API and worker as the JSON environment variable
-`OCC_PREPROVISIONED_NAMESPACE`. At startup, the controller requires the bundled
-Kubernetes Compute, Configuration and OpenShell Sandbox Drivers, an OpenShell
-Backend, Compute `gatewayRouting` without `executionCluster`, and a Credential
-Proxy or OpenShell Git transport. Otherwise startup stops with
-`A preprovisioned Namespace requires single-cluster bundled Kubernetes and
-OpenShell Drivers with Credential Proxy and gateway routing.`
+`OCC_PREPROVISIONED_NAMESPACE`. The controller checks the Installation
+configuration at startup.
 
 ## What the chart changes
 

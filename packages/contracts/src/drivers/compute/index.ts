@@ -4,16 +4,11 @@ import type {
   NamespaceDeletionEligibility,
 } from "../namespace-lifecycle.ts";
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
-import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
   CredentialDeploymentConfiguration,
   CredentialProjection,
 } from "../../credential-deployment.ts";
-import type {
-  CredentialPolicyWithdrawalOptions,
-  EgressInstallation,
-} from "../credential-proxy/index.ts";
-import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
+import type { Driver, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentNetworkProxy,
@@ -33,7 +28,6 @@ import type {
   SecretEnvironmentProjection,
 } from "../../index.ts";
 import type {
-  AdmittedRepositoryBinding,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryExecutionIdentity,
@@ -44,12 +38,7 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type {
-  ProtectedRepositoryNetworkPolicyContext,
-  SandboxNamespaceContext,
-  SandboxHarnessObservation,
-} from "../sandbox/index.ts";
-import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
+import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface AgentChatCompletionsEndpoint {
@@ -80,10 +69,6 @@ export interface ComputeRevisionContext {
   ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
   /** An active provider's maintenance pass may update its existing Harness only. */
   readonly existingHarnessOnly?: true;
-  /** Worker persists only an authenticated receipt for this admitted plan. */
-  readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
-  /** A fresh read of the still-authorized revision and its exact committed installation. */
-  readonly currentEgressInstallation?: () => Promise<EgressInstallation | undefined>;
   /** Verify the live Worker-owned grant and exact broker session immediately before releasing it. */
   readonly verifyRepositorySessionRelease?: (
     binding: RepositoryCredentialMaterialRef & { readonly deadlineWallMs: number },
@@ -250,26 +235,10 @@ export interface ComputePreflightResult {
 export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
-/** Current desired topology and exact proposed policy, when saving. */
-export interface ProtectedRepositoryNetworkPolicySaveContext {
-  readonly nativeGit?: "v1";
-  /** Saved Agent placement and its authorized Configuration, for local topology checks. */
-  readonly placement?: Pick<
-    AgentRevision,
-    "agentId" | "namespaceId" | "gatewayManagedMode" | "configuration"
-  >;
-  readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
-  readonly sandboxDriverId: string;
-  /** The selected registration that owns both Sandbox and Credential Proxy. */
-  readonly protectedDriver: DriverRegistrationRef;
-  readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
-  /** The complete proposed policy, including an explicit empty list when applicable. */
-  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
-  readonly harnessCredentialSource: Readonly<{
-    type: string;
-    ownerCapability: "credential_gateway" | "credential_proxy";
-    driverId: string;
-  }>;
+export interface CredentialAttachmentStatus {
+  readonly sourceId: string;
+  readonly state: "ready" | "pending" | "withheld" | "failed" | "revoked" | "absent";
+  readonly reason?: string;
 }
 
 export interface ComputeDriver extends Driver {
@@ -294,37 +263,6 @@ export interface ComputeDriver extends Driver {
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;
-  /**
-   * Optionally qualify the selected topology for editing when several policy lists are possible.
-   * Use only local Driver state. This hint is independent of any particular list.
-   */
-  supportsProtectedRepositoryNetworkPolicyPlacement?(
-    context: Omit<ProtectedRepositoryNetworkPolicySaveContext, "repositoryNetworkPolicy">,
-  ): true | false;
-  /**
-   * Admit the exact proposed policy using local Driver state. Only an affirmative result admits
-   * a save. Release still requires frozen revision admission.
-   */
-  admitsProtectedRepositoryNetworkPolicySave?(
-    context: ProtectedRepositoryNetworkPolicySaveContext,
-  ): true | false;
-  /**
-   * Side-effect-free placement check on a frozen revision, including protected runtime inputs.
-   * During deployment admission OCC also invokes the selected Sandbox's independent frozen
-   * policy validator. Throw or reject for an unsupported topology.
-   */
-  validateProtectedRepositoryNetworkPolicy?(
-    context: ProtectedRepositoryNetworkPolicyContext,
-  ): void | Promise<void>;
-  /**
-   * After release is refused, select a withdrawal only for a grant this Compute previously
-   * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
-   * revision's authorized claim; resolve only after observing the grant and workload gone.
-   * Neither selection nor completion permits preparing, activating or replacing that revision.
-   */
-  rejectedExecutionWithdrawal?(
-    revision: Readonly<AgentRevision>,
-  ): (() => Promise<void>) | undefined;
   readonly supportsWorkspaceSetup?: true;
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;
@@ -510,23 +448,20 @@ export interface ComputeDriver extends Driver {
     signal: AbortSignal,
   ): Promise<SandboxNamespaceContext>;
   /**
-   * The Namespace as the paired Sandbox and Credential Gateway see it: `name` is this
-   * Compute Driver's runtime placement. Required to register Credential Gateway sources.
+   * Resolves the runtime Namespace name used by the paired Sandbox and native
+   * credential delivery.
    */
   resolveSandboxNamespace?(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>>;
   /**
-   * Revokes `source` from the revision's paired Sandbox through the selected Credential
-   * Gateway. Returns `revoked` only after the gateway confirms revocation, and `absent` when
-   * the revision has no Sandbox or attachment left to revoke. Required for withdrawal.
-   * `options.recheck` is passed through to the gateway's withdrawal context. Throws OCC's
-   * CredentialWithdrawalRefusedError when retrying cannot help: a configuration that cannot
-   * reach the revision's Sandbox, or an object the Driver does not own.
+   * Withdraws the Source's admitted bindings from the exact revision. Repeated calls target
+   * the same bindings. Returns `revoked` or `absent` after confirmation. Required for withdrawal.
+   * Throws OCC's CredentialWithdrawalRefusedError for unsupported configuration or an object
+   * the Driver does not own.
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
     source: Readonly<StoredCredentialSource>,
     signal: AbortSignal,
-    options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;
   /**
    * Withdraws the Harness exposure a Sandbox Driver created for Compute's status read of a

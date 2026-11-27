@@ -117,7 +117,7 @@ function stagedManagedRelease(
   const proxy: CredentialProxyDriver = {
     id: sandbox.id,
     implementation: sandbox.implementation,
-    capability: "credential_proxy_delivery",
+    capability: "credential_proxy",
     async deployProxy() {
       return {};
     },
@@ -131,7 +131,7 @@ function stagedManagedRelease(
   };
   const registration = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: {} },
-    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
+    { capabilities: { sandbox, credential_proxy: proxy } },
   );
   const modelSourceId = "cs_00000000-0000-4000-8000-000000000012";
   const pluginTemplate = { id: "ctp_00000000-0000-4000-8000-000000000013", version: 1 };

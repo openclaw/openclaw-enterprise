@@ -184,7 +184,6 @@ test("QA repository inputs start the controller, worker owner and repository ser
   assert.equal(loaded.repositoryAdmission.backendId, registry.backendId);
   assert.ok(installation.repository);
   assert.equal(loaded.repositoryAdmission.policy.id, installation.repository.id);
-  assert.equal(loaded.repositoryGitDriver, undefined);
   assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
   assert.equal(
     "resolveRepositoryDelivery" in loaded ? loaded.resolveRepositoryDelivery : undefined,
@@ -317,7 +316,7 @@ test("the retired QA repository shape is refused at startup", async (t) => {
       mode: "production",
       environment: { OCC_CONFIG_PATH: join(root, "installation.yaml") },
     }),
-    /drivers\.repo native admission is retired/,
+    /drivers\.repo startup admission is retired/,
   );
   await assert.rejects(
     loadConfiguration(join(root, "service-config.json"), createSystemClock()),

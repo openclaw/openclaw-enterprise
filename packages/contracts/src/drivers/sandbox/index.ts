@@ -1,6 +1,4 @@
 import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
-import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
-import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type {
   CredentialDeploymentTarget,
   CredentialProjection,
@@ -20,16 +18,41 @@ import type {
 import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
 import type {
-  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
 
-export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
-
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
+
+/** Codex account context and a placeholder for the Sandbox to resolve. */
+export interface ExternalChatgptAuth {
+  /** Placeholder only: copy unchanged for the paired Sandbox to resolve; never a real token. */
+  readonly accessTokenPlaceholder: string;
+  readonly accountId: string;
+  readonly planType: string;
+  readonly userId?: string;
+  /** Membership identity from the access token, distinct from the global user ID. */
+  readonly accountUserId?: string;
+  readonly email?: string;
+  readonly isFedramp?: boolean;
+}
+
+/** Credential attachment whose opaque grant reference the Sandbox consumes. */
+export interface CredentialSourceAttachment {
+  readonly sourceId: string;
+  readonly ref: string;
+  /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
+  readonly requestScope?: {
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly scopes: readonly string[];
+  };
+  /** External Codex authentication carries no refresh token into the workload. */
+  readonly externalChatgptAuth?: ExternalChatgptAuth;
+}
 
 export interface SandboxWorkspaceMount {
   readonly claimName: string;
@@ -92,9 +115,8 @@ export interface HarnessLaunchDescription {
   };
   readonly environment: readonly SandboxEnvironmentVariable[];
   readonly files: readonly SandboxWorkloadFile[];
-  /** Credential Gateway attachments the paired Sandbox must consume in full. */
+  /** Credential Source attachments the paired Sandbox must consume in full. */
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
-  readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
 }
 
@@ -104,8 +126,6 @@ export interface HarnessWorkloadRequirements extends HarnessLaunchDescription {
 }
 
 export interface SandboxResourceRef {
-  /** Trusted Sandbox output, including its exact auxiliary rules, for independent observation. */
-  readonly proxyWiring?: ProxyWiring;
   readonly namespaceName: string;
   readonly resourceName: string;
   readonly agentId: string;
@@ -257,17 +277,6 @@ export interface SandboxDriver extends Driver {
     policy: RepositoryNetworkPolicy,
     network: SandboxPolicySnapshot,
   ): SandboxPolicySnapshot["defaults"];
-  /** Revalidate effective policy and the current credential scope on the frozen revision. */
-  validateProtectedRepositoryNetworkPolicy?(
-    revision: ProtectedRepositoryNetworkPolicyContext,
-  ): void;
-  /**
-   * Side-effect-free admission for protected, dedicated Codex repository execution.
-   * A normal network-policy result cannot acknowledge this purpose. The result names
-   * exactly the qualified defaults map's keys and carries no Agent additions.
-   * Absence refuses this composition; it never imports ordinary defaults.
-   */
-  admitProtectedCodexArtifactPolicy?(version: number): ProtectedCodexArtifactPolicyAdmission;
   observeNetworkPolicy?(
     context: SandboxLogContext,
     snapshot: SandboxPolicySnapshot,
@@ -326,23 +335,6 @@ export interface SandboxDriver extends Driver {
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
-  /** The launcher stays held while the Driver observes its request challenge.
-   * A denial observed here can select material, never release work. */
-  observeHeldRepositoryGitPreview?(
-    context: SandboxHarnessStatusContext,
-  ): Promise<"held" | "installed" | undefined>;
-  /**
-   * Release the exact protected Harness startup only after Compute has committed
-   * this current installation. Authenticate the transport peer and bind its fresh
-   * startup challenge to the admitted execution/plan. No material or send authority
-   * is conveyed. A starting transport may remain pending until the next reconcile.
-   */
-  enrollHarness?(
-    context: SandboxHarnessStatusContext,
-    installation: EgressInstallation,
-    /** Compute alone may release this exact fresh startup; the transport bearer cannot. */
-    release: (startupId: string) => Promise<Readonly<Record<string, unknown>>>,
-  ): Promise<void>;
   /**
    * Returns the provider-owned transport for the exact provisioned Harness. When present,
    * Compute must route the Agent Gateway through this endpoint instead of its native Harness

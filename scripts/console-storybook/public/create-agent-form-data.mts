@@ -1,4 +1,3 @@
-import type { CredentialSourceType } from "@openclaw-enterprise/contracts";
 import type { StoryAction } from "../story-action.mts";
 
 export const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
@@ -27,23 +26,6 @@ export const provisionableForm: StoryAction[] = [
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   { selector: "#provider-credential-secret", value: "sec_demo_model" },
-];
-
-export const modelCredentialSourceTypes: CredentialSourceType[] = [
-  {
-    type: "openai",
-    config: [
-      {
-        name: "authorized_base_url",
-        required: false,
-        description:
-          "Immutable destination authorization. Must match the revision destination; omission authorizes only the default OpenAI endpoint.",
-      },
-    ],
-    secrets: [{ name: "api_key", required: true }],
-    rotation: "none",
-    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-  },
 ];
 
 export const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";

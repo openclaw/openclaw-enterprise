@@ -782,37 +782,6 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             );
           }
           const input = Object(body) as Record<string, unknown>;
-          if (
-            input.type === "openai" &&
-            scenario.credentialSourceTypes?.some(({ type }) => type === input.type)
-          ) {
-            const refs = Object(input.secrets) as Record<string, unknown>;
-            const key = Object(refs.api_key) as Partial<SecretReference>;
-            const secret = typeof key.id === "string" ? secrets.get(key.id) : undefined;
-            if (
-              typeof input.name !== "string" ||
-              "secret" in input ||
-              key.kind !== "secret" ||
-              key.namespaceId !== namespaceId ||
-              !secret
-            ) {
-              return error(400, "INVALID_REQUEST", "Choose a model Secret in this Namespace.");
-            }
-            const id = nextId("cs");
-            const saved: StoredCredentialSource = {
-              id,
-              namespaceId,
-              name: input.name,
-              type: input.type,
-              ownerCapability: "credential_gateway",
-              config: {},
-              secrets: { api_key: secret.ref },
-              state: "ready",
-              ref: { kind: "credential_source", namespaceId, id },
-            };
-            credentialSources.set(id, saved);
-            return response(saved, 201);
-          }
           const material = input.secret;
           if (
             input.type !== "static" ||

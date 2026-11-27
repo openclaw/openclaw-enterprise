@@ -1,5 +1,6 @@
 import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import type { GitHubProfile } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import {
@@ -10,9 +11,8 @@ import {
   AgentResponse,
   AgentRevisionReadResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { ProvisionAgentBody, SandboxDriver } from "../../packages/contracts/src/index.ts";
+import type { ProvisionAgentBody } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/index.ts";
-import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createFailedPreHandoffAgent } from "./postgres-agent-provisioning-handoff-cases.ts";
 import {
   type Fixture,
@@ -32,7 +32,6 @@ import {
   BROKER_PROXY_DISABLED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
-  CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   PROVISIONING_NOT_COMPLETED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
@@ -91,8 +90,7 @@ function provisioningRepositoryPolicy(
 // A fresh Namespace with its provisioning Secrets, and a fixture that exercises real repository
 // policy for `project` (approved for `profiles`; with `installationAccess`, also installation-wide
 // access) and Kubernetes topology admission (`topologyId`, with the Sandbox Driver in `options`,
-// if any) without contacting either external system. `compose` opens another app on the same
-// Drivers, as after a change of the Installation's selection.
+// if any) without contacting either external system.
 async function repositoryProvisioningFixture(
   context: TestContext,
   topologyId: string,
@@ -116,15 +114,13 @@ async function repositoryProvisioningFixture(
   const computeDriver = initial.computeDriver;
   computeDriver.validateRepositoryCredentials =
     topology.validateRepositoryCredentials.bind(topology);
-  const compose = (composeOptions: FixtureOptions = {}) =>
-    createFixture(context, {
-      computeDriver,
-      configurationDriver: initial.configurationDriver,
-      secretDriver: initial.secretDriver,
-      repoDriver,
-      ...composeOptions,
-    });
-  const fixture = await compose(options);
+  const fixture = await createFixture(context, {
+    computeDriver,
+    configurationDriver: initial.configurationDriver,
+    secretDriver: initial.secretDriver,
+    repoDriver,
+    ...options,
+  });
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
   return {
     namespace,
@@ -132,7 +128,6 @@ async function repositoryProvisioningFixture(
     computeDriver,
     fixture,
     secrets,
-    compose,
     secretDriver: initial.secretDriver,
   };
 }
@@ -505,12 +500,8 @@ export function registerRepositoryCases() {
     },
   );
 
-  // Finding 2536 (review-3732): installation-wide repository access needs a Credential Proxy, and
-  // this Installation selects none. The request names one repository at an approved profile, so it
-  // is accepted; the worker's deploy step refuses it, and every attempt would. The job fails at once
-  // and its status names the refusal in fixed text, not "could not complete".
   test(
-    "a provisioning job whose installation-wide access needs a Credential Proxy names the refusal in its status",
+    "provisioning refuses retired installation-wide Repository access before creating resources",
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
       const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
@@ -518,75 +509,90 @@ export function registerRepositoryCases() {
         "provisioning-installation-access",
         { installationAccess: true },
       );
-      const body = repositoryProvisioningBody(namespace.id, secrets, {
-        repositoryAccess: {
-          defaultProfile: "git-write",
-          repositories: [{ repositoryRef: "installation", profile: "github-installation" }],
-        },
-      });
-      const admitted = await fixture.requestChecked(
-        AgentProvisioningResponse,
-        "POST",
-        `/namespaces/${namespace.id}/agents/provision`,
-        {
-          body,
-        },
-      );
-      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-      const failed = await workerFailure(fixture, namespace.id, body.requestId, "installation");
-      const error = {
-        code: "PROVISIONING_REJECTED",
-        message: CREDENTIAL_PROXY_INSTALLATION_ACCESS,
+      const repositoryAccess = {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "installation", profile: "github-installation" }],
       };
+      const message =
+        "Installation-wide repository access (profile github-installation) is unavailable. Select the approved repositories individually.";
+      const body = repositoryProvisioningBody(namespace.id, secrets, { repositoryAccess });
+      const path = `/namespaces/${namespace.id}/agents/provision`;
+      const rejected = await fixture.request("POST", path, { body });
+      assertApiError(rejected, 409, "RESOURCE_CONFLICT");
+      assert.equal(provisioningError(rejected).message, message);
+      const queued = await fixture.pool.query(
+        "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id=$1 AND request_id=$2",
+        [namespace.id, body.requestId],
+      );
+      assert.equal(queued.rowCount, 0);
+
+      // Use the production storage port to seed work accepted by an earlier Installation.
+      // The current API refuses that plan, and PostgreSQL keeps accepted plans immutable.
+      const actorId = await fixture.administratorPrincipalId();
+      const workId = `agent-provisioning:${randomUUID().replaceAll("-", "")}`;
+      await fixture.state.transact((unit) =>
+        unit.provisioning.create({
+          workId,
+          namespaceId: namespace.id,
+          actorId,
+          requestId: body.requestId,
+          requestFingerprint: "0".repeat(64),
+          plan: {
+            name: body.name,
+            configuration: body.configuration,
+            harnessAuth: body.harnessAuth,
+            executionMode: body.executionMode,
+            gatewayManagedMode: true,
+            repositoryAccess,
+            drivers: {
+              compute: fixture.computeDriver.id,
+              configuration: fixture.configurationDriver.id,
+              iam: "native-iam",
+            },
+          },
+        }),
+      );
+      const configurationDriver = fixture.configurationDriver;
+      const createExact = configurationDriver.createExact?.bind(configurationDriver);
+      assert.ok(createExact);
+      let configurationWrites = 0;
+      configurationDriver.createExact = (...args) => {
+        configurationWrites++;
+        return createExact(...args);
+      };
+      const failed = await workerFailure(fixture, namespace.id, body.requestId, "retired profile");
+      assert.equal(configurationWrites, 0);
+      const error = { code: "PROVISIONING_REJECTED", message };
       assert.equal(failed.status, "failed");
+      assert.equal(failed.configuration_id, null);
+      assert.equal(failed.agent_id, null);
       assert.deepEqual(failed.progress.error, error);
+      const statusPath = `${path}/${workId}`;
       const status = await fixture.requestChecked(
         AgentProvisioningStatusResponse,
         "GET",
-        admitted.data.provisioning.url,
+        statusPath,
       );
       assert.equal(status.status, 200, JSON.stringify(status.body));
       assert.deepEqual(status.data.error, error);
+      const retried = await fixture.request("POST", `${statusPath}/retry`);
+      assertApiError(retried, 409, "RESOURCE_CONFLICT");
+      assert.equal(provisioningError(retried).message, message);
+      assert.equal(
+        (await provisioningRow(fixture.pool, namespace.id, body.requestId)).status,
+        "failed",
+      );
     },
   );
 
-  // Finding 2350: a Codex network proxy setting that blocks the repository credential broker is
-  // refused at the provisioning request, and the worker and retry repeat the check for the stored
-  // record. A Sandbox Driver with its own repository path carries the broker traffic instead, so
-  // the request is accepted while one is selected; when the Installation then drops that Sandbox
-  // Driver, the stored record would send it through the blocking proxy and is refused.
   test(
-    "a stored provisioning record whose Codex proxy blocks the repository broker is refused after its Sandbox repository path goes away",
+    "provisioning with the independent Repository broker rejects a disabled Codex proxy",
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
-      // This case ends before the worker reaches the Sandbox: only that it has a repository path
-      // matters, so every Sandbox operation fails the test.
-      const unused = () => assert.fail("this case ends before repository delivery");
-      const sandboxDriver: SandboxDriver = {
-        id: "sandbox-repository-path",
-        capability: "sandbox",
-        implementation: "test-provisioning",
-        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-        facets: ["networking", "filesystem", "process"],
-        repositoryAccess: {
-          verifyExecution: unused,
-          retireExpired: unused,
-          routeReadiness: unused,
-          materialSettledAt: unused,
-          isRouteBlockedError: unused,
-        },
-        async provisionHarness() {
-          assert.fail("this case ends before provisioning effects");
-        },
-        async cleanup() {},
-      };
-      const { namespace, computeDriver, fixture, secrets, compose } =
-        await repositoryProvisioningFixture(context, "provisioning-sandbox-repositories", {
-          sandboxDriver,
-        });
-      const withoutSandbox = createTestKubernetesComputeDriver("provisioning-proxy-repositories", {
-        repositoryCredentials: true,
-      });
+      const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
+        context,
+        "provisioning-proxy-repositories",
+      );
       const { agents, models } = createHarnessConfiguration("codex", "gpt-6-astra");
       const body = repositoryProvisioningBody(namespace.id, secrets, {
         configuration: {
@@ -605,28 +611,20 @@ export function registerRepositoryCases() {
           },
         },
       });
-      const admitted = await fixture.requestChecked(
-        AgentProvisioningResponse,
+      const rejected = await fixture.request(
         "POST",
         `/namespaces/${namespace.id}/agents/provision`,
         {
           body,
         },
       );
-      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-
-      // The Installation now has no Sandbox Driver: the Codex network proxy carries the broker
-      // traffic, and the stored setting blocks it.
-      computeDriver.validateRepositoryCredentials =
-        withoutSandbox.validateRepositoryCredentials.bind(withoutSandbox);
-      const switched = await compose();
-      const failed = await workerFailure(switched, namespace.id, body.requestId, "Codex proxy");
-      assert.equal(failed.status, "failed");
-      assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
-      // Retry names the setting, as Agent save and the request do.
-      const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
-      assertApiError(retried, 400, "INVALID_REQUEST");
-      assert.equal(provisioningError(retried).message, BROKER_PROXY_DISABLED);
+      assertApiError(rejected, 400, "INVALID_REQUEST");
+      assert.equal(provisioningError(rejected).message, BROKER_PROXY_DISABLED);
+      const queued = await fixture.pool.query(
+        "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id=$1 AND request_id=$2",
+        [namespace.id, body.requestId],
+      );
+      assert.equal(queued.rowCount, 0);
     },
   );
 }

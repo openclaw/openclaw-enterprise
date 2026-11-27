@@ -7,6 +7,8 @@ import {
   unsubstitutedReference,
 } from "./environment-references.ts";
 
+export const CHANNEL_SOURCE_RESOLUTION_TIMEOUT_MS = 30_000;
+
 type SettingError = (setting: string, requirement: string) => Error;
 
 // `channels` keys that hold shared channel settings, not a provider.

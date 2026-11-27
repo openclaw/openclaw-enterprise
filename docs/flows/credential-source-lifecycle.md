@@ -59,9 +59,12 @@ graph TD
 
 OCC checks `credential_source:create` and validates any static Template. TokenService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between commits.
 
+Installation startup rejects retired `credential_gateway` and `credential_refresh`
+Backend members (`packages/occ/src/backends.ts:validateOpenShellBackend`).
+
 The OpenShell TokenService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
 
-The deprecated legacy Proxy still exposes a separate [protected metadata Source](../reference/credential-sources/protected-repository-metadata.md). Credential 1.0 retires it; ordinary metadata reads have only a Sandbox network rule.
+Ordinary public metadata requests use a separately admitted Sandbox network rule. The [earlier protected metadata Source](../reference/credential-sources/protected-repository-metadata.md) is retired.
 
 After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 
@@ -135,11 +138,10 @@ OCC checks permission on the exact Source and dispatches static credential repla
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-For OCC custody, Proxy uses trusted Namespace placement. TokenService sends the
-Source, committed version, and instance-bound resolver. Proxy resolves the
-credential once for existing Providers, updates copies as needed, and checks
-active Sandbox receipts. A versioned retry checks serving readiness for matching copies
-without rewriting them.
+OCC custody uses trusted Namespace placement. TokenService sends the Source,
+committed version, and instance-bound resolver. Proxy resolves the credential
+once, updates Provider copies as needed, and checks active Sandbox receipts.
+Retries verify serving readiness without rewriting matching copies.
 
 With OpenShell custody, TokenService updates the authoritative Workspace Provider. Proxy checks its resource version after the update. OpenShell propagates the change to attached Sandboxes.
 

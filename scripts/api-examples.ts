@@ -721,17 +721,7 @@ export const responseExamples = {
   },
   getNamespaceAgentCapabilities: {
     capabilities: {
-      credentialSources: {
-        types: [
-          {
-            type: "openai",
-            config: [{ name: "authorized_base_url", required: false }],
-            secrets: [{ name: "api_key", required: true }],
-            rotation: "external",
-            harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-          },
-        ],
-      },
+      modelCredentialSourcePresets: ["openai", "codex-pat"],
       openclaw: { executionModes: ["dedicated"] },
     },
   },

@@ -117,7 +117,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     assert.ok(drivers.secretDriver instanceof KubernetesSecretDriver);
     // Substitute only the Core API transport; ownership checks remain in the real Driver.
     Reflect.set(drivers.secretDriver, "client", Promise.resolve(core));
-    const proxy = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+    const proxy = drivers.credentialDeliveryRegistration?.require("credential_proxy");
     assert.ok(proxy);
     if (initialDrivers === undefined && role === "api") {
       initialDrivers = drivers;

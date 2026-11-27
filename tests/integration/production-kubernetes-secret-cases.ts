@@ -204,14 +204,6 @@ export function registerDatabaseCaCases({
     "database CA mounts stay distinct from active production volume mounts",
     tooling,
     async () => {
-      const authorityValues = {
-        "egressAuthority.enabled": "true",
-        "egressAuthority.tlsSecretName": "authority-server-tls",
-        "egressAuthority.issuerSecretName": "gateway-jwt-keys",
-        "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-          "openshell-system",
-        "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
-      };
       const optionalFeatures = {
         ...repositoryCredentialValues,
         ...gatewayRoutingValues,
@@ -221,7 +213,7 @@ export function registerDatabaseCaCases({
       for (const features of [
         {},
         optionalFeatures,
-        { ...authorityValues, "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
+        { "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
       ]) {
         const objects = await resources((await render(features)).stdout);
         // Derive the existing mounts from shipped workloads, independently of the validation list.
@@ -273,8 +265,6 @@ export function registerDatabaseCaCases({
       // Paths reserved by optional features remain available when those features are disabled.
       for (const mountPath of [
         "/etc/openclaw/openshell",
-        "/etc/openclaw/egress/tls",
-        "/etc/openclaw/egress/issuer",
         "/etc/openclaw/execution",
         "/etc/openclaw/repository-registry",
         "/etc/openclaw/repository-ca",

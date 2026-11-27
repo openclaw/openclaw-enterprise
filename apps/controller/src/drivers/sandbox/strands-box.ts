@@ -473,7 +473,6 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const ref = this.harnessResource(context);
     if (
       context.revision.egressPlan !== undefined ||
-      context.requirements.proxyWiring !== undefined ||
       context.requirements.credentialAttachments.length !== 0
     ) {
       throw new SandboxRevisionUnsupportedError(

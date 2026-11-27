@@ -241,7 +241,7 @@
 
 - [`listCredentialSources`](../api.md#get-namespacesnamespaceidcredentialsources): List readable credential sources without revealing credential values.
 - [`getCredentialSource`](../api.md#get-namespacesnamespaceidcredentialsourcescredentialsourceid): Get one readable credential source and its available status.
-- [`createCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsources): Register a credential source.
+- [`createCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsources): Register a TokenService credential source.
 - [`updateCredentialSource`](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid): Update a Source through its recorded owner.
 - [`rotateCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate): Renew an OAuth or GitHub App installation credential source.
 - [`deleteCredentialSource`](../api.md#delete-namespacesnamespaceidcredentialsourcescredentialsourceid): Remove an unreferenced credential source.

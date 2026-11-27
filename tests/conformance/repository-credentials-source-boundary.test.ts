@@ -22,9 +22,9 @@ const sharedJsonMembers = "drivers/json-members.ts";
 const installation = "drivers/repo/github/installation.ts";
 const preparedConfiguration = "drivers/repo/github/access/prepared-configuration.ts";
 const preparedGit = "drivers/repo/github/access/prepared-repository-git.ts";
-const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const openShellEvidence = "drivers/repo/access/openshell-repository-git-evidence.ts";
 const custodySelection = "composition/repository-credentials/custody-selection.ts";
-const evidenceImport = "../../drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const evidenceImport = "../../drivers/repo/access/openshell-repository-git-evidence.ts";
 const entrypoints = [
   "repository-credentials.ts",
   sharedFields,
@@ -211,12 +211,19 @@ test("credential source boundary rejects new raw capabilities in the real source
       try {
         if (replacement === "symlink") {
           await symlink(saved, path);
+          await assert.rejects(verify(root), {
+            message: `Credential source must not be a symlink: ${path}`,
+          });
         } else {
           await mkdir(path);
+          await assert.rejects(verify(root), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.ok(
+              error.message.includes(`Missing credential entrypoint: ${openShellEvidence}`),
+            );
+            return true;
+          });
         }
-        await assert.rejects(verify(root), {
-          message: `Invalid credential entrypoint: ${openShellEvidence}`,
-        });
       } finally {
         await rm(path, { recursive: true });
         await rename(saved, path);
@@ -242,12 +249,12 @@ test("credential source boundary rejects new raw capabilities in the real source
           "adjacent contract symbol",
           'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
         ],
-        ["credential material", 'import * as material from "../repo/github/access/material.ts";'],
+        ["credential material", 'import * as material from "../github/access/material.ts";'],
         [
           "additional loader",
-          'import { loadPublicCa } from "../../composition/repository-credentials/public-ca.ts";',
+          'import { loadPublicCa } from "../../../composition/repository-credentials/public-ca.ts";',
         ],
-        ["adapter source", 'import "./openshell.ts";'],
+        ["broker server source", 'import "./server.ts";'],
         ["side-effect import", 'import "@openclaw-enterprise/contracts";'],
         ["namespace import", 'import * as contracts from "@openclaw-enterprise/contracts";'],
         ["inline type side effect", 'import { type Extra } from "@openclaw-enterprise/contracts";'],
@@ -258,7 +265,7 @@ test("credential source boundary rejects new raw capabilities in the real source
         ],
         [
           "relative dependency expansion",
-          'import { extra } from "../repo/access/protected-repository-git-installation.ts";',
+          'import { extra } from "./protected-repository-git-installation.ts";',
         ],
       ] satisfies readonly MutationSource[]
     ).map(([label, source]): RejectedMutation => [

@@ -12,7 +12,6 @@ import {
   admitRepositoryNetworkPolicy,
   type AgentRevision,
   type ComputeDriver,
-  type SandboxDriver,
   type RepositoryNetworkGrant,
   type SandboxNetworkGrant,
   type SandboxPolicy,
@@ -25,6 +24,7 @@ import {
   ScopeViolationError,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
+import { assertScopedRepositoryHistory } from "../../packages/occ/src/repository-network-policy.ts";
 import { seedPlatformState } from "../conformance/platform-state-contract-fixture.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 
@@ -880,29 +880,28 @@ export async function rejectStaleRepositoryPolicySave(
   }
 }
 
-export async function verifyScopedDeploymentTransition(
-  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
-) {
+export async function verifyScopedDeploymentTransition(fixture: PolicyApp) {
   const { namespace, agent, revision, original } = await policyEditor(fixture);
   const { inject, state } = fixture;
   const next = { ...original, version: original.version + 1, repositoryNetworkPolicy: [] };
   await state.transact((unit) => unit.sandboxPolicies.save(next, original.version));
-  Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
-  Object.assign(fixture.computeDriver, {
-    validateProtectedRepositoryNetworkPolicy: async () => {},
-  });
   const deploy = () => inject("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
   const denied = async () => {
     const result = await deploy();
     assert.equal(result.statusCode, 409, result.body);
-    assert.match(result.json().error.message, /Create a new Agent/);
-    const rows = await state.read((view) =>
-      view.revisions.listRevisionMetadata(namespace.id, agent.id),
+    // The historical empty policy cannot deploy without a native Repository Source.
+    assert.match(
+      result.json().error.message,
+      /cannot enforce this Agent's repository network policy/,
+    );
+    const history = await state.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
     );
     assert.deepEqual(
-      rows.map(({ id }) => id),
+      history.map(({ id }) => id),
       [revision.id],
     );
+    assert.throws(() => assertScopedRepositoryHistory(history, true), /Create a new Agent/);
   };
   // A legacy Worker may still claim a queued unscoped revision without an active pointer.
   await denied();
@@ -976,7 +975,9 @@ export async function verifyScopedDeploymentTransition(
   }
 }
 
-async function createScopedDeployment(fixture: PolicyApp) {
+const testChannelToken = "xoxb-synthetic-channel";
+
+async function createChannelDeployment(fixture: PolicyApp) {
   const { controller, inject, state } = fixture;
   const starter = await fixture.deployAgent("setup");
   const { namespace, secretRef } = starter;
@@ -999,7 +1000,7 @@ async function createScopedDeployment(fixture: PolicyApp) {
   const credential = await inject("POST", root + "/credential-sources", {
     name: "synthetic-channel",
     type: "static",
-    secret: "xoxb-synthetic-channel",
+    secret: testChannelToken,
   });
   assert.equal(credential.statusCode, 201, credential.body);
   const source = credential.json().data.ref;
@@ -1010,34 +1011,25 @@ async function createScopedDeployment(fixture: PolicyApp) {
   });
   assert.equal(bound.statusCode, 201);
   const created = await inject("POST", root + "/agents", {
-    name: "scoped channel",
+    name: "channel deployment",
     executionMode: "dedicated",
     configurationId: bound.json().data.id,
     harnessAuth: { method: "api_key", source: secretRef },
   });
   assert.equal(created.statusCode, 201);
   const agent = created.json().data;
-  await state.transact(async (unit) => {
-    const p = await unit.sandboxPolicies.find(namespace.id, agent.id);
-    assert.ok(p);
-    await unit.sandboxPolicies.save(
-      { ...p, repositoryNetworkPolicy: [], version: p.version + 1 },
-      p.version,
-    );
-  });
   return {
     namespace,
     agent,
     source,
+    owner,
     deploy: () => inject("POST", root + "/agents/" + agent.id + "/deploy"),
   };
 }
 
-export async function verifyChannelPolicyHandoff(
-  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
-) {
-  const { state, computeDriver, sandboxDriver, controller } = fixture;
-  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
+export async function verifyChannelPolicyHandoff(t: TestContext, fixture: PolicyApp) {
+  const { state, controller } = fixture;
+  const { namespace, agent, source, owner, deploy } = await createChannelDeployment(fixture);
   const { pool } = fixture;
   const writer = await pool.connect();
   const pid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
@@ -1062,7 +1054,8 @@ export async function verifyChannelPolicyHandoff(
   };
   const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
   channel.validateCredentials = async (_values, use) => {
-    await use("CHANNEL_TOKEN", "channel", async () => {
+    await use("CHANNEL_TOKEN", "channel", async (value) => {
+      assert.equal(value, testChannelToken);
       calls.push(revoked ? "after revocation" : "before revocation");
       // A provider waiting on this writer must not keep the Namespace locked.
       await revocation;
@@ -1070,31 +1063,55 @@ export async function verifyChannelPolicyHandoff(
   };
   controller.registerDriver(channel);
   controller.selectDriver("channel", channel.id);
-  Object.assign(sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
-  Object.assign(computeDriver, {
-    validateProtectedRepositoryNetworkPolicy: async () => {
-      if (revocation) {
-        return;
-      }
-      revocation = revoke();
-      await waitFor("the permission change is waiting on the admission lock", async () => {
-        const result = await pool.query<{ waiting: boolean }>(
-          "SELECT cardinality(pg_blocking_pids($1))>0 AS waiting",
-          [pid],
-        );
-        return result.rows[0]?.waiting || undefined;
-      });
-    },
+  let sourceResolved = false;
+  const resolve = owner.resolveCredential.bind(owner);
+  t.mock.method(owner, "resolveCredential", async (...args: Parameters<typeof resolve>) => {
+    const result = await resolve(...args);
+    sourceResolved = true;
+    return result;
   });
-  // Hold the controller's continuation after rollback until the waiting writer
-  // commits. This exposes any credential handoff performed in the unlocked gap.
+  // Let TokenService resolve the Source first. Start the writer once the later
+  // provider handoff has locked this Namespace, using the real lock to order it.
+  type Query = (this: pg.Client, ...args: unknown[]) => unknown;
+  const query: Query = pg.Client.prototype.query as Query;
+  const lock = t.mock.method(pg.Client.prototype, "query", function (
+    this: pg.Client,
+    ...args: unknown[]
+  ) {
+    const [statement, values] = args;
+    const result = query.apply(this, args);
+    if (
+      sourceResolved &&
+      !revocation &&
+      typeof statement === "string" &&
+      /FROM occ\.namespaces\s+WHERE id = \$1 AND deleted_at IS NULL\s+FOR UPDATE/.test(statement) &&
+      Array.isArray(values) &&
+      values[0] === namespace.id &&
+      result instanceof Promise
+    ) {
+      return result.then(async (rows: unknown) => {
+        revocation = revoke();
+        await waitFor("the permission change is waiting on the Namespace lock", async () => {
+          const result = await pool.query<{ waiting: boolean }>(
+            "SELECT cardinality(pg_blocking_pids($1))>0 AS waiting",
+            [pid],
+          );
+          return result.rows[0]?.waiting || undefined;
+        });
+        return rows;
+      });
+    }
+    return result;
+  } as typeof pg.Client.prototype.query);
+
   const tx = state.transact.bind(state);
-  state.transact = async (work) => {
+  state.transact = async (work, options) => {
     try {
-      return await tx(work);
-    } catch (error) {
+      return await tx(work, options);
+    } finally {
+      // If the controller delays the handoff until after releasing the lock, the writer
+      // commits before it can send the credential. The callback must start under the lock.
       await revocation;
-      throw error;
     }
   };
   try {
@@ -1110,6 +1127,7 @@ export async function verifyChannelPolicyHandoff(
     );
     assert.deepEqual(revisions, []);
   } finally {
+    lock.mock.restore();
     state.transact = tx;
     try {
       await revocation;
@@ -1124,7 +1142,15 @@ export async function verifyDeploymentAuthorityAfterWait(
   boundary: "channel" | "admission",
 ): Promise<void> {
   const { state, pool, controller, computeDriver } = fixture;
-  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
+  const { namespace, agent, source, deploy } = await createChannelDeployment(fixture);
+  await state.transact(async (unit) => {
+    const p = await unit.sandboxPolicies.find(namespace.id, agent.id);
+    assert.ok(p);
+    await unit.sandboxPolicies.save(
+      { ...p, repositoryNetworkPolicy: [], version: p.version + 1 },
+      p.version,
+    );
+  });
   const writer = await pool.connect();
   let response: ReturnType<typeof deploy> | undefined;
   let channelCalls = 0;
@@ -1155,7 +1181,7 @@ export async function verifyDeploymentAuthorityAfterWait(
       controller.selectDriver("channel", channel.id);
     }
     Object.assign(computeDriver, {
-      validateProtectedRepositoryNetworkPolicy: async () => {
+      validateGatewaySettings() {
         computeChecks += 1;
       },
     });

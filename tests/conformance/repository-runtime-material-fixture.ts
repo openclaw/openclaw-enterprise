@@ -12,7 +12,6 @@ import type {
   AgentRevision,
   ComputeAgentBinding,
   ComputeRevisionContext,
-  LegacyEgressProxyDriver,
   HarnessExecutionMode,
   OpenClawConfigurationValue,
   RepositoryCredentialRuntimeBinding,
@@ -94,7 +93,6 @@ interface ComputeFixturePorts {
     network: Mutable<KubernetesComputeDriverOptions["network"]>;
   };
   apiClients: Promise<KubernetesMaterialClients>;
-  readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   waitBeforeRetry: () => Promise<void>;
   sandboxDriver:
     | {
@@ -117,10 +115,6 @@ interface ComputeFixturePorts {
     ownership: ReturnType<ComputeFixturePorts["pluginRuntimeOwnership"]>,
     namespace: { name: string; plane: "execution" },
   ): Omit<FixtureSecret, "data">;
-  validateRevisionExecution(
-    revision: AgentRevision,
-    context?: Pick<ComputeRevisionContext, "currentEgressInstallation">,
-  ): void;
   codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch;
   pluginRuntimeSnapshot(
     revision: AgentRevision,
@@ -138,10 +132,6 @@ export function computeFixturePorts(driver: KubernetesComputeDriver): ComputeFix
     "pluginRuntimeOwnership" in instance && typeof instance.pluginRuntimeOwnership === "function",
   );
   assert.ok("manifest" in instance && typeof instance.manifest === "function");
-  assert.ok(
-    "validateRevisionExecution" in instance &&
-      typeof instance.validateRevisionExecution === "function",
-  );
   assert.ok("codexLaunch" in instance && typeof instance.codexLaunch === "function");
   assert.ok(
     "pluginRuntimeSnapshot" in instance && typeof instance.pluginRuntimeSnapshot === "function",

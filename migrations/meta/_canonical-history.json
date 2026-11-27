@@ -801,6 +801,14 @@
       "tag": "0100_native_github_pull_request_publication",
       "breakpoints": true,
       "sha256": "61ceb2b3dadc83a167ea12f2efa22b6fc2708be8119cbc2e9590da71ac6095b4"
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787000000101,
+      "tag": "0101_retire_legacy_proxy_sources",
+      "breakpoints": true,
+      "sha256": "a640884901d29605bc6ad51f5ec58760930d22d4752fa988d45630a38bfd50a8"
     }
   ],
   "initialSchemaStates": {
@@ -1150,7 +1158,8 @@
     "preOAuthEndpointAuthority": "e5206b563b039db975bc282dd4c620dcaa1453eaab4a64049a6652200e9f02aa",
     "preSharedGitSourceRepositoryGrants": "a44fc9a21dc89366b538065b2d43353ba6901b4b2ceae115a0752242a345f323",
     "preGatewayStartupCredentials": "1e94152f097386bbe3413ab5f319a2617f017b89c685ac059cbe646594a91155",
-    "preNativeGitHubPullRequestPublication": "c36527db89096b5bf0eae3bfa880986db02d195c9c17da00e45ac1aa91d8eb10"
+    "preNativeGitHubPullRequestPublication": "c36527db89096b5bf0eae3bfa880986db02d195c9c17da00e45ac1aa91d8eb10",
+    "preLegacyProxySourceRetirement": "27515391035c1b59d678970feca31da0abd9a64921c0cf1f4cd3cec9c85fea47"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

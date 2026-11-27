@@ -136,7 +136,8 @@ try {
     (error.code === "MIGRATION_HISTORY_UNSUPPORTED" ||
       error.code === "MIGRATION_HISTORY_NOT_EMPTY" ||
       error.code === "MIGRATION_HISTORY_PENDING" ||
-      error.code === "MIGRATION_REGISTRATION_PENDING")
+      error.code === "MIGRATION_REGISTRATION_PENDING" ||
+      error.code === "MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING")
   ) {
     code = error.code;
     operatorMessage = error.message;

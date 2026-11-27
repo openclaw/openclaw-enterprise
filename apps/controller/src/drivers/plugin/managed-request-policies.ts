@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { OpenShellOnlineHttpRequest } from "../egress-proxy/openshell-online-authority.ts";
+import type { OpenShellOnlineHttpRequest } from "./openshell-online-authority.ts";
 import { googleWorkspaceRequestPolicy } from "./google-workspace/request-policy.ts";
 
 interface PluginRequestPolicy {

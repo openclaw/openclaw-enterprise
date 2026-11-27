@@ -197,8 +197,6 @@ The claim survives Agent cleanup. `verifyScratchVolume` checks it after shutdown
 `workspaceVolumeMounts` preserves writable `/sandbox/scratch`.
 
 `sandboxDataMount` rejects scratch selection and overlapping paths.
-`OpenShellGitRuntime.prepare` sets process-scoped `safe.directory` for the mount
-and enables `push.negotiate`.
 
 Dedicated Harnesses require Landlock. The Driver checks filesystem, process, and
 [binary-scoped network policy](agent-sandbox-policy.md) before Kubernetes calls.
@@ -282,10 +280,6 @@ permits replacement. Each Harness has one unnamed bearer-passthrough
 [`withdrawHarnessExposure`](../../apps/controller/src/worker/harness-exposure-sweep.ts)
 confirms withdrawal, or after adoption or recreation with `workspaceNodeEnrolled`.
 
-HTTP `400` or `404` requires a recorded release acknowledgment and authenticated
-WebSocket in `observeHeldRepositoryGitPreview` and `enrollHarness`. Other
-non-`200` responses stay pending or refuse enrollment without upgrading.
-
 The Backend reuses clients and retries setup. Cancellation follows
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
 After dispatch it stops local gRPC, but remote mutations may require recovery.
@@ -339,19 +333,6 @@ Activation requires the Harness Pod and enrolled Secret node. Each retry rereads
 provider setup, retaining valid values during projection outages. The Codex
 supervisor restarts workspace-node one second after every exit until shutdown.
 
-`apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts:previewPolicyAndRecipient`
-checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTIALS`;
-legacy preview accepts absent binding fields.
-
-`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
-arms one-use denial: `git-write` probes
-`/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
-installation-shaped providers, including `github-repository`, probe
-`/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`.
-The HTTPS launcher sends no credentials. The authority sends every request under either
-probe prefix to the denial handler before binding lookup. Only the exact challenge qualifies.
-Observation alone cannot release the Harness.
-
 `attachmentStatus`/`GetSandboxProviderStatus` retries pending/missing status;
 `failed`, `withheld`, `revoked` or `absent` fails preparation. Version `cleanup`
 calls `GetSandbox`, `DeleteSandbox`, then deletes runtime and Git providers/profile.
@@ -367,25 +348,19 @@ Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
 ### 6. Withdraw Git without retiring the execution
 
-`apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
-keeps the transport inside the installed Driver. The Token Service supplies material;
-`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` stores target, binding,
-fence, desired and observed policy, installed and pending material versions. Unknown
-writes survive restart. A forward migration preserves receipts and fences former writers.
+`apps/controller/src/worker.ts:ControllerWorker.withdrawStagedRepositoryAccess`
+resolves the Repository binding's exact TokenService Source and rechecks its owner.
+Compute asks the native Credential Proxy to remove delivery for that binding.
 
-On withdrawal, `apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:expire`
-fences delivery and commits reduction intent through
-`packages/occ/src/state/credential-delivery-reductions.ts:CredentialDeliveryReductions`.
-`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
-conditionally detaches Git, independently verifying reduced generation, original process/network,
-retained providers and model attachment. Applied detaches require observation; only unapplied
-intent repeats. Replacement cannot settle it.
+`apps/controller/src/drivers/credential-proxy/openshell.ts:withdrawRepositoryDeploymentRoute`
+checks the loaded Sandbox policy against the admitted revision. It removes the
+rules bound to the Repository Provider and verifies the reduced policy before
+detaching the Provider. Other credential routes and the credential-free public
+Repository metadata rule remain available.
 
-With one Git binding and separate model authorization, removing the last Git route preserves the
-conversation. Multiple independent Git bindings remain unsupported. Generic `withdrawBinding`
-returns `retire-runtime`. Compute reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`
-without Sandbox deletion or a detachment claim. The worker keeps that source pending and
-attempts other authorized withdrawals. Retirement remains separate.
+The worker records withdrawal after Compute reports the Source revoked or absent.
+Unconfirmed removal stays pending. If the binding cannot be withdrawn on its own,
+the worker requires runtime retirement.
 
 ## Debugging and verification
 

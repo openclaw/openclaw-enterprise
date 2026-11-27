@@ -92,66 +92,13 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       validClientScopes(candidate.clientScopes)
     );
   }
-  if (driver.capability === "credential_proxy_delivery") {
+  if (driver.capability === "credential_proxy") {
     return (
       ["deployProxy", "configureDeployment", "getDeploymentStatus", "removeDeployment"].every(
         (operation) => typeof candidate[operation] === "function",
       ) &&
       (candidate.notifyCredentialUpdated === undefined ||
         typeof candidate.notifyCredentialUpdated === "function")
-    );
-  }
-  if (driver.capability === "credential_proxy") {
-    const control = asRecord(candidate.sourceControl);
-    const reduction = asRecord(candidate.policyReduction);
-    return (
-      (candidate.bindExchange === undefined || typeof candidate.bindExchange === "function") &&
-      (candidate.bindRepositoryGit === undefined ||
-        typeof candidate.bindRepositoryGit === "function") &&
-      (candidate.policyReduction === undefined ||
-        ((reduction?.version === 1 ||
-          (reduction?.version === 2 && typeof reduction.assertAvailable === "function")) &&
-          typeof reduction.apply === "function" &&
-          typeof reduction.observe === "function")) &&
-      control !== undefined &&
-      typeof control.assertAvailable === "function" &&
-      Array.isArray(control.providers) &&
-      (control.providers.length > 0 || typeof candidate.bindRepositoryGit === "function") &&
-      control.providers.every((value) => {
-        const provider = asRecord(value);
-        return (
-          provider !== undefined &&
-          [
-            "normalizeConfig",
-            "normalizeGrant",
-            "routes",
-            "classify",
-            "inject",
-            "protectResponse",
-          ].every((operation) => typeof provider[operation] === "function")
-        );
-      }) &&
-      ["configureRevision", "wiringStatus", "verifyInstallation", "removeRevision"].every(
-        (operation) => typeof candidate[operation] === "function",
-      )
-    );
-  }
-  if (driver.capability === "credential_gateway") {
-    return [
-      "listSourceTypes",
-      "validateSourceConfig",
-      "registerSource",
-      "updateSource",
-      "sourceStatus",
-      "removeSource",
-      "attachForRevision",
-      "attachmentStatus",
-      "withdraw",
-    ].every((operation) => typeof candidate[operation] === "function");
-  }
-  if (driver.capability === "credential_refresh") {
-    return ["configureRefresh", "rotate", "refreshStatus", "removeRefresh"].every(
-      (operation) => typeof candidate[operation] === "function",
     );
   }
   if (driver.capability === "service_account") {
@@ -258,7 +205,6 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
   const policy = candidate.networkPolicy;
   const methods = [
-    "admitProtectedCodexArtifactPolicy",
     "admitNetworkPolicy",
     "observeNetworkPolicy",
     "applyNetworkPolicy",

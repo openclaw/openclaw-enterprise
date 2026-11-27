@@ -19,7 +19,6 @@ type InstallationScenario = {
   openclawExecutionModes?: NonNullable<InstallationCapabilities["openclaw"]>["executionModes"];
   openclawSettingRefusal?: string;
   sandboxDriverUnavailable?: boolean;
-  credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
   deviceAuthorization?: true;
   modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
@@ -117,33 +116,6 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
           ] satisfies DriverConfigurationDescriptor[])
         : []),
       {
-        capability: "credential_gateway",
-        driverId: "credential-gateway-openshell",
-        implementation: "openshell",
-        scope: "installation",
-        key: "startup",
-        binding: "installation-startup",
-        configurationSchema: {
-          type: "object",
-          ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-          required: ["binaries"],
-          additionalProperties: false,
-          properties: {
-            binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-            toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
-          },
-        },
-        ...(scenario.installationValuesUnavailable
-          ? {}
-          : {
-              startupConfiguration: {
-                binaries: ["/usr/bin/git", "/usr/bin/curl"],
-                toolBinaries: ["/usr/bin/python3"],
-              },
-            }),
-        actions: {},
-      },
-      {
         capability: "sandbox",
         driverId: "sandbox-openshell",
         implementation: "openshell",
@@ -234,9 +206,6 @@ export function installationFixture(
       ...(scenario.modelCredentialSourcePresets === undefined
         ? {}
         : { modelCredentialSourcePresets: scenario.modelCredentialSourcePresets }),
-      ...(scenario.credentialSourceTypes !== undefined
-        ? { credentialSources: { types: scenario.credentialSourceTypes } }
-        : {}),
       pluginCatalogs:
         scenario.pluginCatalogs ??
         (scenario.pluginCapabilities

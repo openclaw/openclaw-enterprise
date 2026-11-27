@@ -8,7 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-From the repository root, use official OpenShell `v0.1.9`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
+From the repository root, use official OpenShell `v0.1.9`. See [test setup](#test-setup-and-cleanup).
 
 ## Start a reusable development environment
 
@@ -169,11 +169,8 @@ initializer; those checks alone do not prove the OpenShell transport.
 
 <a id="external-chatgpt-authentication-boundary"></a>
 
-Experimental ChatGPT OAuth has separate [receiver fixtures and full-stack
-qualification](openshell-oauth.md#receiver-fixtures-and-full-stack-qualification).
-The [controlled-issuer proof](openshell-oauth.md) covers Gateway refresh and
-official operator-mTLS access-token retrieval. Synthetic issuer results do not
-prove real ChatGPT login or model execution; repeat credentialed qualification
+Use the [TokenService account checks](openshell-oauth.md#tokenservice-codex-account-verification)
+to verify login with a controlled issuer. Run the live account and model checks
 against the exact selected images.
 
 General installers, including focused runs, and native OpenClaw use `OPENAI_API_KEY`.

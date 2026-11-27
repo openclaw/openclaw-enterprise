@@ -6,7 +6,7 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { DriverSelectionError, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { installedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { installedDriverPackage } from "../helpers/installed-driver-package.ts";
 
 const packageName = "@fixture/external-sandbox-driver";
 const sandboxId = "external-sandbox";
