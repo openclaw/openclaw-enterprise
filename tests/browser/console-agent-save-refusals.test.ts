@@ -532,23 +532,46 @@ test("a plugin edit kept across a revoked Agent update no longer holds Deploy", 
   const held = page.getByText("Save or discard plugin changes before deploying.", {
     exact: true,
   });
-  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
-  const json = page.getByLabel("Plugin selections JSON", { exact: true });
+  const plugins = page.getByRole("tabpanel", { name: "Plugins", exact: true });
+  const cleanNotice = plugins.getByText("No plugin changes to save.", { exact: true });
+  const unsavedNotice = plugins.getByText("Unsaved plugin changes.", { exact: true });
+  await cleanNotice.waitFor();
+  await plugins.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  const json = plugins.getByLabel("Plugin selections JSON", { exact: true });
   await waitForEnabled(json);
-  await json.fill(JSON.stringify({ "codex-plugin:linear@openai-curated-remote": {} }));
+  const edit = JSON.stringify({ "codex-plugin:linear@openai-curated-remote": {} });
+  await json.fill(edit);
+  await unsavedNotice.waitFor();
+  await cleanNotice.waitFor({ state: "hidden" });
   await held.waitFor();
 
-  // Leaving the tab keeps the edit. Agent update is revoked, and Reload authentication source
-  // rereads the permission answer.
+  // A tab switch alone can reuse the same editor. Refresh before checking the restored draft.
+  const firstEditor = await json.evaluateHandle((node) => node);
+  const reload = page.getByRole("button", { name: "Reload authentication source", exact: true });
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const firstReload = await reload.evaluateHandle((node) => node);
+  await reload.click();
+  await page.waitForFunction((node) => !node.isConnected, firstReload);
+  await firstReload.dispose();
+  await waitForEnabled(reload);
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await unsavedNotice.waitFor();
+  assert.equal(await json.evaluate((node, initial) => node !== initial, firstEditor), true);
+  await firstEditor.dispose();
+  assert.equal(await json.inputValue(), edit);
+
+  // Reload authentication source rereads the permission after Agent update is revoked.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   revokeMemberGrant(fixture, READER, ["update", "agent"]);
-  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await reload.click();
   await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
   await held.waitFor();
 
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections", exact: true }).waitFor();
   await page.getByText("No plugins are selected.", { exact: true }).waitFor();
+  await unsavedNotice.waitFor({ state: "detached" });
+  await cleanNotice.waitFor({ state: "detached" });
   await held.waitFor({ state: "detached" });
   // The kept edit is gone for good: leaving and reopening the tab does not bring it back.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
