@@ -426,9 +426,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     startedAt: 1_800_000_000_000,
     endedAt: 1_800_000_001_000,
   }));
-  const maintenanceDiagnostic = {
-    event: "worker-maintenance-unconfirmed",
-    reason: "own-budget-exhausted",
+  const maintenanceLogSummary = {
     logReads: 3,
     logReadSuccesses: 2,
     logReadFailures: 1,
@@ -437,28 +435,36 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     parseFailures: 4,
     tailLimitReads: 1,
     completionsTruncated: false,
+  } as const;
+  const unchangedMaintenanceCompletions = [
+    { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
+    // Ordinary revision readiness must remain distinguishable from Git cleanup.
+    { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
+    { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
+    // Keep the optional runtime failure separate from the maintenance wait code.
+    {
+      outcome: "pending",
+      code: "REVISION_INCOMPLETE",
+      failure: "REPOSITORY_ROUTE_BLOCKED",
+    },
+    {
+      outcome: "pending",
+      code: "REVISION_FINALIZATION_INCOMPLETE",
+      failure: "MODEL_PROBE_FAILED",
+    },
+  ] as const;
+  const maintenanceDiagnostic = {
+    event: "worker-maintenance-unconfirmed",
+    reason: "own-budget-exhausted",
+    ...maintenanceLogSummary,
     completions: [
       { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING", error: forbidden },
       { outcome: "retry", code: forbidden, failure: forbidden },
-      { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
-      // Ordinary revision readiness must remain distinguishable from Git cleanup.
-      { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
-      { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
-      // Keep the optional runtime failure separate from the maintenance wait code.
-      {
-        outcome: "pending",
-        code: "REVISION_INCOMPLETE",
-        failure: "REPOSITORY_ROUTE_BLOCKED",
-      },
-      {
-        outcome: "pending",
-        code: "REVISION_FINALIZATION_INCOMPLETE",
-        failure: "MODEL_PROBE_FAILED",
-      },
+      ...unchangedMaintenanceCompletions,
       {
         outcome: "pending",
         code: `REPOSITORY_GIT_ROUTE_PENDING_${forbidden}`,
@@ -1295,34 +1301,11 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       kind: retentionKind,
       event: "worker-maintenance-unconfirmed",
       reason,
-      logReads: 3,
-      logReadSuccesses: 2,
-      logReadFailures: 1,
-      linesRead: 2004,
-      parsedEvents: 2000,
-      parseFailures: 4,
-      tailLimitReads: 1,
-      completionsTruncated: false,
+      ...maintenanceLogSummary,
       completions: [
         { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING" },
         { outcome: "retry", code: "unrecognized", failure: "UNRECOGNIZED" },
-        { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
-        { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
-        { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
-        {
-          outcome: "pending",
-          code: "REVISION_INCOMPLETE",
-          failure: "REPOSITORY_ROUTE_BLOCKED",
-        },
-        {
-          outcome: "pending",
-          code: "REVISION_FINALIZATION_INCOMPLETE",
-          failure: "MODEL_PROBE_FAILED",
-        },
+        ...unchangedMaintenanceCompletions,
         { outcome: "pending", code: "unrecognized", failure: "UNRECOGNIZED" },
       ],
     })),

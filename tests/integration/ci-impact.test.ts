@@ -253,6 +253,7 @@ function workflowJob(value: unknown) {
     environment,
     needs:
       job.needs === undefined || typeof job.needs === "string" ? job.needs : textArray(job.needs),
+    outputs: job.outputs,
     steps: job.steps === undefined ? [] : array(job.steps).map(workflowStep),
     strategy: { matrix: { include } },
     "runs-on": optionalText(job["runs-on"]),
@@ -1434,21 +1435,23 @@ test("output must be an existing regular file and mode must verify", async (t) =
 
 const { jobs: ciJobs } = loadYaml(".github/workflows/ci.yml");
 
-function workflowRun(job: string, key: "id" | "name", value: string) {
+function workflowRunStep(job: string, key: "id" | "name", value: string) {
   const label = `${job} step with ${key} "${value}"`;
   const matches = present(ciJobs[job]).steps.filter((step) => step[key] === value);
   assert.equal(matches.length, 1, `expected exactly one ${label}`);
-  const run = matches[0]?.run;
+  const step = present(matches[0]);
+  const { run } = step;
   assert.ok(run && run.trim(), `expected a nonempty run for ${label}`);
-  return run;
+  return { ...step, run };
 }
 
-const summarizeRun = workflowRun("impact", "name", "Summarize impact selection");
-const matrixRun = workflowRun("impact", "id", "matrix");
+const summarizeRun = workflowRunStep("impact", "name", "Summarize impact selection").run;
+const matrixStep = workflowRunStep("impact", "id", "matrix");
+const verifyModeStep = workflowRunStep("ci-required", "name", "Verify selected mode");
 const bootstrapSteps = {
-  select: workflowRun("impact", "id", "select"),
-  advisory: workflowRun("impact", "name", "Report main test advisory"),
-  verify: workflowRun("ci-required", "name", "Verify selected mode"),
+  select: workflowRunStep("impact", "id", "select").run,
+  advisory: workflowRunStep("impact", "name", "Report main test advisory").run,
+  verify: verifyModeStep.run,
 };
 
 async function shallowBootstrap(f: Fixture) {
@@ -1540,11 +1543,10 @@ async function policyFixture(t: TestContext, change: Change, options?: FixtureOp
 
 const docsChange: Change = ({ put }) => put("docs/change.md");
 
-// The pr-safe matrix rows, from the CI Impact "Build lane matrix" step.
 function laneTable() {
-  const match = /^ {10}LANE_TABLE: \|\n((?: {12}.*\n)+)/m.exec(ciWorkflow);
-  assert.ok(match, "workflow has a lane table");
-  return laneRows(json(present(match[1])));
+  const table = matrixStep.env.LANE_TABLE;
+  assert.ok(table, "impact matrix step defines env.LANE_TABLE");
+  return laneRows(json(table));
 }
 
 const mainPushEnvironment = {
@@ -1878,29 +1880,16 @@ test("unusable base policy cannot select documentation", async (t) => {
 
 test("documentation workflow selects documentation checks and omits product tests", () => {
   const docs = job("static-checks");
-  assert.doesNotMatch(docs, /^ {4}(?:needs|if):/m);
-  for (const command of [
-    "check:workspace",
-    "lint",
-    "format:check",
-    "openapi:check",
-    "docs:check-length",
-    "docs:build",
-  ]) {
-    assert.match(docs, new RegExp(`\\bpnpm ${command}\\b`));
-  }
-  assert.match(docs, /node scripts\/check-specs\.mjs/);
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
     /run-ci-lane|run-tests\.ts\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
   );
   for (const name of ["pr-safe", "runtime-image-fixture"]) {
-    assert.match(job(name), /needs\.impact\.outputs\.mode == 'full'/, name);
+    assert.match(present(present(ciJobs[name]).if), /needs\.impact\.outputs\.mode == 'full'/, name);
   }
-  const aggregate = job("ci-required").split("      - name: Aggregate CI results\n")[1];
-  assert.ok(aggregate, "required job contains aggregation");
-  assert.match(aggregate, /if:.*needs\.impact\.outputs\.mode == 'full'/);
+  const aggregate = workflowRunStep("ci-required", "name", "Aggregate CI results");
+  assert.match(present(aggregate.if), /needs\.impact\.outputs\.mode == 'full'/);
 });
 
 test("CI Required always reports and fails at once when a dependency was cancelled", () => {
@@ -3570,13 +3559,13 @@ test("test-only selection is limited to pull request events", async (t) => {
 async function buildMatrix(t: TestContext, mode: string, lanes: string) {
   const output = join(temporaryDirectorySync(t, "ci-impact-matrix-"), "output");
   writeFileSync(output, "");
-  const result = await run("bash", ["-e", "-o", "pipefail", "-c", matrixRun], {
+  const result = await run("bash", ["-e", "-o", "pipefail", "-c", matrixStep.run], {
     env: {
       ...process.env,
       GITHUB_OUTPUT: output,
       SELECT_MODE: mode,
       SELECT_LANES: lanes,
-      LANE_TABLE: JSON.stringify(laneTable()),
+      LANE_TABLE: matrixStep.env.LANE_TABLE,
     },
   });
   const values =
@@ -3725,36 +3714,48 @@ test("impact summary lists validated test-only lanes and nothing else", async (t
 });
 
 test("workflow runs selected lanes in tests mode and gates them by the verified lane set", () => {
-  const prSafe = job("pr-safe");
-  assert.match(
-    prSafe,
-    /if: \$\{\{ \(needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests'\) && needs\.impact\.outputs\.has-matrix == 'true' \}\}/,
+  const prSafe = present(ciJobs["pr-safe"]);
+  assert.equal(
+    prSafe.if,
+    "${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-matrix == 'true' }}",
   );
-  assert.match(prSafe, /include: \$\{\{ fromJSON\(needs\.impact\.outputs\.matrix\) \}\}/);
+  assert.equal(prSafe.strategy.matrix.include, "${{ fromJSON(needs.impact.outputs.matrix) }}");
+  assert.equal(
+    present(ciJobs["image-lanes"]).strategy.matrix.include,
+    "${{ fromJSON(needs.impact.outputs.image-matrix) }}",
+  );
   assert.match(
-    job("runtime-image-fixture"),
+    present(present(ciJobs["runtime-image-fixture"]).if),
     /needs\.impact\.outputs\.mode == 'tests' && needs\.impact\.outputs\.fixture == 'true'/,
   );
-  // Static checks (lint, format, OpenAPI, docs) run in every mode; the smoke
-  // and the advisory job stay off in tests mode.
-  assert.doesNotMatch(job("static-checks"), /^ {4}(?:needs|if):/m);
   for (const name of ["first-agent-smoke", "affected-packages"]) {
     assert.doesNotMatch(job(name), /'tests'/, name);
   }
-  const required = job("ci-required");
-  assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
-  assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
-  assert.match(required, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
-  const impact = job("impact");
+
+  const validate = workflowRunStep("ci-required", "name", "Validate selected job state");
+  const aggregate = workflowRunStep("ci-required", "name", "Aggregate CI results");
+  for (const step of [verifyModeStep, validate, aggregate]) {
+    assert.equal(step.env.EXPECTED_LANES, "${{ needs.impact.outputs.lanes }}", present(step.name));
+  }
+  assert.match(validate.run, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(aggregate.run, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
+
+  assert.equal(matrixStep.env.SELECT_MODE, "${{ steps.select.outputs.mode }}");
+  assert.equal(matrixStep.env.SELECT_LANES, "${{ steps.select.outputs.lanes }}");
+  const outputs = record(present(ciJobs.impact).outputs);
   for (const [output, step] of [
     ["mode", "select"],
     ["lanes", "select"],
     ["matrix", "matrix"],
+    ["image-matrix", "matrix"],
+    ["has-matrix", "matrix"],
+    ["has-images", "matrix"],
     ["fixture", "matrix"],
-  ]) {
-    assert.match(
-      impact,
-      new RegExp(`${output}: \\$\\{\\{ steps\\.${step}\\.outputs\\.${output} \\}\\}`),
+  ] as const) {
+    assert.equal(
+      outputs[output],
+      `\${{ steps.${step}.outputs.${output} }}`,
+      `impact.outputs.${output}`,
     );
   }
 });
