@@ -84,6 +84,27 @@ Real-model proof and native image checks on both architectures remain required.
 Current delivery evidence and gaps belong to
 [TASK-0053](../../specs/plans/0053-native-restart-recovery.md).
 
+## Check worker reuse across an image change
+
+If a saved goal needs the same Codex worker after an upgrade, run this extra
+check on a disposable installation. Repeat it for the return image.
+
+1. In native chat, give the Agent a goal with two harmless tasks for one
+   worker. Specify that the second task must wait until you resume the goal.
+   Once the first task starts, use `/goal pause` and check `/goal status`.
+2. Before replacing the images, confirm the first task settled and the second
+   was neither queued nor started. Record the parent thread ID (`/codex binding`
+   where permitted), the worker ID from the spawn result, the answer and the
+   selected model.
+3. Reopen the same chat. Check the saved answer, model and paused goal. Once
+   idle, use `/goal resume` once. This can queue a turn, so avoid sending the
+   task again. Verify both IDs on the resumed turn and confirm the original
+   worker completed the second task once and the parent used its answer.
+
+A changed tool list can replace the native parent even when the chat and goal
+survive. If either ID changes or is unavailable, worker reuse is unproven.
+Check earlier tasks and their effects before continuing with a fresh worker.
+
 ## Recovery boundaries
 
 OpenClaw owns interruption detection and continuation admission. OCC does not
