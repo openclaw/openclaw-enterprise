@@ -29,8 +29,8 @@ import {
   element,
   field as formField,
   fieldError,
-  jsonObjectDiagnostic,
   followEditorError,
+  jsonObjectDiagnostic,
   setFieldError,
   setHidden,
   setStatusTone,
@@ -2714,7 +2714,12 @@ function renderAgentForm(
       focusConfiguration(diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined);
       followEditorError(configuration, {
         actions,
-        beforeResize: updateConfigurationActionHeight,
+        beforeResize: () => {
+          configuration.style.setProperty(
+            "--create-editor-actions-height",
+            `${Math.ceil(actions.getBoundingClientRect().height)}px`,
+          );
+        },
         isCurrent: () => context.isCurrent(),
       });
     } else if (reportInvalid) {
@@ -2729,13 +2734,12 @@ function renderAgentForm(
   }
   // Size the editor before the user selects text. Shrinking it when the error appears
   // can hide the selection at the bottom of a long draft.
-  configuration.addEventListener("focus", updateConfigurationActionHeight);
-  function updateConfigurationActionHeight() {
+  configuration.addEventListener("focus", () => {
     configuration.style.setProperty(
       "--create-editor-actions-height",
       `${Math.ceil(actions.getBoundingClientRect().height)}px`,
     );
-  }
+  });
   // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
   function focusConfiguration(offset?: number) {
     const details = configuration.closest("details");
