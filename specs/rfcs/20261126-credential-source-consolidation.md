@@ -61,7 +61,7 @@ For every selection, OCC checks the caller's exact `credential_source:operate` a
 ### Other consumers
 
 - **Slack validation:** Channel Driver uses authorized values transiently. Bot validation calls Slack `auth.test`; directory requests use the bot token. App-token validation checks its role locally without opening a socket. Preserve named accounts and HTTP mode.
-- **Dedicated models:** Credential Proxy enforces the admitted destination and credential presentation. The Harness uses a placeholder.
+- **Dedicated models:** Credential Proxy enforces the admitted destination and credential presentation. The OpenShell Harness uses a placeholder.
 - **Upstream proxy:** Compute calls Worker's authorization and resolution callbacks and supplies the Basic authorization value to Envoy's credential slot. Workload managers in the OCC release namespace can mount the staged Secret. Managed redeploy picks up changes. Withdrawal fences delivery and reuse for affected revisions. It stays pending until Stop or retirement drains the route, clears the slot, and confirms removal from Envoy. Gateway and Harness receive no copy.
 
 ### Embedded OpenClaw delivery
@@ -165,6 +165,7 @@ Hiding the Secret page while retaining its API would still leave duplicate crede
 ## Acceptance Criteria
 
 - **Authorization:** Admission denial creates no revision or unauthorized provider request. A later Worker denial discards resolved values, stops delivery, and cleans an abandoned revision copy.
+- **Standalone Pod identity:** Replay a valid token from a different Pod with the same ServiceAccount. The Proxy refuses it before resolving the Source or forwarding a request.
 - **Real callers:** Register regular Agent workflow integration for PostgreSQL Worker/Compute, Gateway Slack startup, model Proxy admission, authenticated channel egress, repair, and Namespace teardown.
 - **Embedded model:** On Kubernetes, run an embedded OpenClaw turn using a directly delivered Source. Verify the runtime receives the expected credential input and uses its configured endpoint. Verify a managed redeploy picks up a replacement, Stop clears the old copy, and another Agent can still use the Source.
 - **Lifecycle:** Verify redeploy, revocation, Stop, retirement, abandonment, and Pod-before-Secret cleanup. Distinguish fixtures or process-environment proof from native provider use; live Slack messages require separate authorization.
