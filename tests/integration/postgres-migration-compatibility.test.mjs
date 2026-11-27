@@ -837,6 +837,13 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
       }
       return { ok: false, code: "MIGRATION_REGISTRATION_PENDING" };
     }
+    if (code === 1 && output.includes('"code":"MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING"')) {
+      assert.equal(stdout, "", "A blocked retirement must not report a successful check.");
+      if (refusal !== undefined) {
+        assert.match(output, refusal);
+      }
+      return { ok: false, code: "MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING" };
+    }
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
       assert.ok(
         output.includes("use --check to inspect migration history without applying changes"),
@@ -3696,6 +3703,13 @@ async function assertLegacyProxySourceRetirement(context, db) {
     assert.deepEqual(await historyReceipts(db.migrator), previous);
     assert.equal((await proxyRows()).rowCount, 2);
   }
+  const pending = { ok: false, code: "MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING" };
+  const retirementRefusal =
+    /Stop affected Agents and settle their pending legacy Proxy work on the installed controller/;
+  assert.deepEqual(
+    await runHistoryCommand(db, "production", "--check", retirementRefusal),
+    pending,
+  );
   await assertRetirementBlocked();
   await db.app.query(
     `INSERT INTO occ.egress_installations
@@ -3713,7 +3727,18 @@ async function assertLegacyProxySourceRetirement(context, db) {
     "UPDATE occ.agents SET active_revision_id=NULL,desired_runtime_state='stopped' WHERE id=$1",
     [agent],
   );
-  // Losing the active pointer cannot hide an enrollment that still serves the route.
+  // An enrollment without an active revision is outside the one-off's Agent Stop list.
+  assert.deepEqual(
+    await runHistoryCommand(
+      db,
+      "production",
+      "--check-for-installation",
+      retirementRefusal,
+      installation,
+    ),
+    pending,
+  );
+  // Apply must enforce the same guard and preserve the existing receipts and Sources.
   await assertRetirementBlocked();
   const retiredEnrollment = (
     await db.app.query(
@@ -3843,10 +3868,11 @@ async function assertLegacyProxySourceRetirement(context, db) {
     [agent],
   );
 
-  assert.deepEqual(await runHistoryMigration(db, "production"), {
-    ok: true,
-    history: "preLegacyProxySourceRetirement",
-  });
+  const ready = { ok: true, history: "preLegacyProxySourceRetirement" };
+  assert.deepEqual(await runHistoryCommand(db, "production", "--check"), ready);
+  assert.deepEqual(await historyReceipts(db.migrator), previous);
+  assert.equal((await proxyRows()).rowCount, 2);
+  assert.deepEqual(await runHistoryMigration(db, "production"), ready);
   await assertCompletedHistory(db, previous);
   assert.equal((await proxyRows()).rowCount, 0);
   assert.deepEqual((await db.app.query("SELECT * FROM occ.credential_sources")).rows, managed);

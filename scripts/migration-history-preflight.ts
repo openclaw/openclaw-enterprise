@@ -273,7 +273,7 @@ export async function preflight(
   client: MigrationSession,
   manifest: MigrationManifest,
   classifyReceipts: (receipts: MigrationReceipt[], manifest: MigrationManifest) => MigrationHistory,
-): Promise<MigrationHistory> {
+): Promise<{ history: MigrationHistory; appliedCount: number }> {
   await requireMigrationRoles(client);
   const ledger = catalogDigest(await migrationCatalog(client, "drizzle"));
   let receipts: MigrationReceipt[] = [];
@@ -303,5 +303,29 @@ export async function preflight(
   if (shape === "providerCompleted" || shape === "backendCompleted") {
     await requireUnambiguousTerminologyData(client);
   }
-  return shape;
+  return { history: shape, appliedCount: receipts.length };
+}
+
+export async function requireLegacyProxyRetirementReady(
+  client: MigrationSession,
+  guard: string,
+): Promise<void> {
+  // Run the same verified guard as the migration, with writes disabled.
+  await client.query("BEGIN READ ONLY");
+  try {
+    await client.query(guard);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "55000") {
+      throw Object.assign(
+        new Error(
+          "Legacy Proxy retirement requires settlement. " +
+            "Stop affected Agents and settle their pending legacy Proxy work on the installed controller before retrying the upgrade.",
+        ),
+        { code: "MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING" },
+      );
+    }
+    throw error;
+  } finally {
+    await client.query("ROLLBACK");
+  }
 }

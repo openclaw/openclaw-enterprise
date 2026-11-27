@@ -1664,7 +1664,13 @@ run_preflight_jobs() {
             draft_refusals=$(node scripts/upgrade-startup-preflight.ts refusals \
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
-          if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+          if [[ "$component" == migration && "$phase" == Failed && "$logs_status" == 0 ]] && jq -Rse '
+            [split("\n")[] | fromjson? | objects |
+              select(.event | strings | startswith("migration.")) | [.event, .code]]
+              == [["migration.failed", "MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING"]]
+          ' "$evidence_dir/preflight-migration.log" >/dev/null 2>&1; then
+            message="The selected controller image cannot retire unsettled legacy Proxy delivery (MIGRATION_LEGACY_PROXY_RETIREMENT_PENDING). Stop affected Agents and settle their pending legacy Proxy work on the installed controller before retrying. No ${writer_qualifier}Agent or OCC writer was stopped. See preflight-migration.log in $evidence_dir."
+          elif [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
             if [[ "$phase" == Failed && "$logs_status" == 0 ]] && jq -Rse '
               [split("\n")[] | fromjson? | objects |
                 select(.event | strings | startswith("migration.")) | [.event, .code]]

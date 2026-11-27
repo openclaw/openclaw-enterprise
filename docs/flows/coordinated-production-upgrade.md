@@ -151,12 +151,12 @@ Admission failure retains protected diagnostics and prevents shutdown.
 images, credentials, mounts, deadline and zero retries. `preflight_startup`
 refuses changed UIDs or multiple children. Job failure overrides child success.
 
-`migrationMode` reads the rendered initialization Job. `--require-current`
-selects separate mode. Invalid and new-install invocations fail. `migrationJob`
-keeps policy labels and checks recognized history with `--check` or
-`--check-for-installation` with the Installation ID. Separate mode records
-migrator and CA Secret identities and requires `migration.checked-for-installation`.
-After cleanup, recheck and bind the Secret identities to the evidence.
+`migrationMode` accepts upgrade hooks. `--require-current` selects separate mode.
+`migrationJob` preserves policy labels and runs `--check` or
+`--check-for-installation` with the expected ID. After credential cutover, a
+pending legacy Proxy retirement checks for unsettled delivery before Agent or
+writer Stop. Separate mode requires `migration.checked-for-installation` and
+binds migrator and CA Secret identities after cleanup.
 
 The API Job tests themes. Both Jobs load startup and Installation
 configuration without database access and check token file readability without

@@ -8,6 +8,7 @@ import {
   readManifest,
   receiptsMatchEntries,
   refuse,
+  requireLegacyProxyRetirementReady,
   requireReceiptsMatchEntries,
 } from "./migration-history-preflight.ts";
 
@@ -318,7 +319,7 @@ export async function migrateWithHistory(
     }
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
-    const history = await preflight(client, manifest, classifyReceipts);
+    const { history, appliedCount } = await preflight(client, manifest, classifyReceipts);
     // Check first-install intent while holding the migration lock. A separate --check
     // could observe empty history and then lose a race to another installer.
     if (expectEmpty && history !== "empty") {
@@ -373,7 +374,21 @@ export async function migrateWithHistory(
         );
       }
     }
-    if (!checkOnly) {
+    if (checkOnly) {
+      const cutover = manifest.entries.findIndex(({ tag }) => tag === "0095_credential_cutover");
+      const retirement = manifest.entries.findIndex(({ tag }) =>
+        tag.endsWith("_retire_legacy_proxy_sources"),
+      );
+      // The credential cutover leaves the legacy tables and Source ownership
+      // predicates used by the retirement guard available in recognized history.
+      if (cutover >= 0 && appliedCount > cutover && appliedCount <= retirement) {
+        const guard = migrations[retirement]?.sql[0];
+        if (!guard) {
+          refuse("the pending legacy Proxy retirement has no readiness guard");
+        }
+        await requireLegacyProxyRetirementReady(client, guard);
+      }
+    } else {
       if (history === "completed") {
         // Keep Drizzle's refusal on read-only sessions, including standbys,
         // without overriding the operator's transaction mode.
