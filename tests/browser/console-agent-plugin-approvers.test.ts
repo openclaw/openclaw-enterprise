@@ -2461,7 +2461,12 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
     const { createPluginFields } = module;
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
     const beta = { id: "beta", name: "Beta", available: false, tools: [] };
-    const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+    const catalog: PluginFieldCatalog = {
+      status: "ready",
+      canLoad: true,
+      entries: [alpha, beta],
+      setup: { message: "Connect plugin accounts before deployment.", links: [] },
+    };
     const input = globalThis.document.createElement("textarea");
     input.id = "plugin-live-selections";
     input.value = "{}";
@@ -2560,7 +2565,19 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await beta.click();
   const betaCard = pluginCard(dialog, "beta");
   assert.equal(await betaCard.locator(".plugin-detail-header .badge").textContent(), "Unavailable");
-  assert.equal(await page.locator("#plugin-live-selections").inputValue(), "[");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const input = page.locator("#plugin-live-selections");
+  assert.equal(await input.inputValue(), "[");
+
+  // A typo should neither insert nor remove the setup reminder above the editor.
+  const reminder = page.locator(".plugin-setup-reminder");
+  assert.equal(await reminder.isVisible(), false);
+  await input.fill('{"alpha":{"enabled":false}}');
+  assert.equal(await reminder.isVisible(), true);
+  await input.fill("[");
+  assert.equal(await reminder.isVisible(), true);
+  await input.fill("{}");
+  assert.equal(await reminder.isVisible(), false);
 });
 
 test("Create Agent searches approvers with a search-only Slack Source", async (t) => {
