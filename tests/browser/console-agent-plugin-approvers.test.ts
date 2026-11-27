@@ -3257,6 +3257,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
   await savedNotice.waitFor();
+  // The old editor announces the save before the replacement can accept the next edit.
+  await waitForEnabled(page.getByRole("button", { name: "Configure plugins", exact: true }));
   assert.equal(await defaultMode.locator("option:checked").textContent(), "Use OpenClaw routing");
   assert.equal(await accessibleDescription(defaultMode), "No default approver list is set.");
 
