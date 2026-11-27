@@ -1,7 +1,7 @@
 ---
 created: 2026-10-25
 updated: 2026-11-27
-last_updated_session: authoring-run/40704daa-5838-4499-b883-f56f94610a64
+last_updated_session: authoring-run/efaedf81-9bec-4ebe-b1a3-7f1985d3232e
 ---
 
 # Console Agent workspace files
@@ -22,30 +22,24 @@ Agent's workspace. See the [parent flow](../platform-console.md) and
 
 ```mermaid
 graph TD
-  A["Open Workspace tab"] -->|no selected version| U["Files unavailable; no request"]
+  A["Open Workspace tab. Files stay unavailable without a selected version."]
   A -->|selected version| R["GET requested workspace files"]
   R -->|contents| E["Editor with baseline"]
   R -->|exact missing-file 404| M["Empty editor; Save creates it"]
   R -->|denied or generic 404| D["Editor and Save disabled; reason under the file"]
   R -->|no answer| N["Editor and Save disabled; reason under the file"]
-  N -->|Retry, unless the file has unsaved edits or an unknown save| R
-  N -->|Reload| R
   E -->|text differs| S["PUT file content"]
   M --> S
-  M -->|version changes| V["Reread missing file"]
-  V -->|still missing| M
+  M -->|version changes| V["Reread the file to check whether it is still missing"]
   V -->|read fails| F["Needs attention; keep editor"]
-  F -->|later confirmed missing| M
-  S -->|filename confirmed| E
-  S -->|outcome unknown| L["Keep edits and disable Save"]
-  L -->|Check save| C["GET current file and keep edits"]
-  C -->|matches edits| E
-  C -->|differs| B["Compare current contents with edits"]
-  B -->|operator chooses Save| S
-  C -->|exact missing-file 404| K["Keep edits ready to create file"]
-  K -->|operator chooses Save| S
-  C -->|read fails| L
-  L -->|Reload and discard edits| R
+  S -->|success without an observed switch| T["Saved"]
+  S -->|success after observed switch between selected revisions| C["Read current file and keep draft"]
+  S -->|outcome unknown| L["Keep draft; Save disabled"]
+  L -->|Check save| C
+  C -->|matches| Y["Current file matches the draft"]
+  C -->|differs| B["Keep draft for review"]
+  C -->|exact missing-file 404| K["Keep draft until user chooses Save to create"]
+  C -->|read fails| Q["Keep draft and offer Check save or Reload"]
 ```
 
 ## Execution Trace
@@ -102,7 +96,12 @@ The notice lists only the files it will read.
 
 **Save** sends the selected file's contents in a `PUT` and checks the returned
 filename. The write leaves Configuration and Agent versions unchanged.
-If the result is unknown, the editor keeps the draft and disables **Save**.
+If the same open editor observes a switch from one selected revision to another
+while the write is pending, the reply may describe the previous version.
+After a successful reply, the editor reads the current file. It reports
+success if the text matches and keeps the draft if it differs. If this read
+fails or the write outcome is unknown, the editor keeps the draft and disables
+**Save** until the user checks the file or reloads it.
 
 **Check save** reads that file once. If its text matches the draft, there is
 nothing to save. If another writer changed the file, the editor shows their
@@ -140,6 +139,8 @@ deployment.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-27 08:30: Explain how the editor checks a pending save across a version change. Accompanying uncommitted changes. (authoring-run/efaedf81-9bec-4ebe-b1a3-7f1985d3232e - d3de1af54d06c6f49527560486571ff3e2c4c5ab)
 
 - 2026-11-27 06:49: Document keyboard access to a visible draft when Check save cannot reach the file. Accompanying uncommitted changes. (authoring-run/40704daa-5838-4499-b883-f56f94610a64 - 0d2c1dfef541ffe41ea25e693ddaae594471b65b)
 

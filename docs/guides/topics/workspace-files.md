@@ -63,10 +63,12 @@ for credential values.
   access stays unavailable, have an operator check
   [workspace routing](../deploy/workspace-routing.md#agent-workspace-files).
 - **If you don’t know whether a save succeeded**, select **Check save**.
-  This reads the file and keeps your edits. If the file matches, you’re done.
-  If someone else changed it, combine the changes in your draft before you
-  select **Save**. If the file is missing, **Save** creates it. Use **Reload**
-  only if you want to discard your edits.
+  This reads the file and keeps your edits. If the open editor detects a
+  version change before a successful reply, it checks the file automatically.
+  If the file matches, you’re done. If it differs, compare it with your draft
+  before you select **Save**. If the file is missing, **Save** creates it.
+  If the check fails, try **Check save** again when access returns. Checking
+  never resends your edits. Use **Reload** only to discard them.
 - **The request is rejected:** check that the file has one of the four supported
   names. For a load, check Agent `read` permission. For a save, check Agent
   `operate` permission and the text size.

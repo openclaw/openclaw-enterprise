@@ -29,7 +29,6 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   settlePageRequests,
-  waitForCondition,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
@@ -902,19 +901,29 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
 
 test("a Workspace version change during a Reload or Save rereads the file once it settles", async (t) => {
   const saved = new Map<string, string>();
+  const userDraft = "# Saved during the deployment\n";
+  const identityDraft = "# Keep these identity edits\n";
   const { fixture, page, requests, filePath, form, makeCurrent, versions } =
     await openWorkspaceVersions(t, "Workspace deferred reread", {
-      async read({ revision, filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
-        const content = saved.get(filename) ?? `# ${filename} served by ${revision.id}\n`;
+      async read({ revision, filename }) {
+        const content =
+          saved.get(`${revision.id}/${filename}`) ?? `# ${filename} served by ${revision.id}\n`;
         return { status: "ok", file: { name: filename, content } };
       },
-      async write({ filename, content }: Parameters<ControllerWorkspaceFilesAccess["write"]>[0]) {
-        saved.set(filename, content);
-        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
+      async write({ revision, filename, content }) {
+        saved.set(`${revision.id}/${filename}`, content);
+        return {
+          status: "ok",
+          file: { name: filename, size: Buffer.byteLength(content) },
+        };
       },
     });
   const soul = page.getByLabel("SOUL.md", { exact: true });
   const user = page.getByLabel("USER.md", { exact: true });
+  const identity = page.getByLabel("IDENTITY.md", { exact: true });
+  const [previous, next] = versions;
+  assert.ok(previous && next);
+  const previousId = previous.id;
   // A Reload of SOUL.md reads the first version, and its answer is held.
   const reload = await holdRequests(t, page, `${fixture.origin}${filePath("SOUL.md")}`, {
     once: true,
@@ -922,43 +931,80 @@ test("a Workspace version change during a Reload or Save rereads the file once i
   });
   await chooseWorkspaceFile(page, "SOUL.md");
   await page
-    .getByRole("button", { name: "Reload SOUL.md", exact: true, includeHidden: true })
+    .getByRole("button", {
+      name: "Reload SOUL.md",
+      exact: true,
+      includeHidden: true,
+    })
     .click();
   await reload.requested;
-  // A Save of USER.md is held before it reaches the server.
-  const save = await holdRequests(t, page, `${fixture.origin}${filePath("USER.md")}`, {
-    once: true,
-    method: "PUT",
-  });
-  await chooseWorkspaceFile(page, "USER.md");
-  await user.fill("# Saved during the deployment\n");
-  await chooseWorkspaceFile(page, "USER.md");
-  await page
-    .getByRole("button", { name: "Save USER.md", exact: true, includeHidden: true })
-    .click();
-  await save.requested;
+  // Hold one request before it reaches the server and the other after the old version writes.
+  async function holdSave(file: string, editor: Locator, draft: string, afterServer: boolean) {
+    const held = await holdRequests(t, page, `${fixture.origin}${filePath(file)}`, {
+      once: true,
+      method: "PUT",
+      afterServer,
+    });
+    await chooseWorkspaceFile(page, file);
+    await editor.fill(draft);
+    await form(file)
+      .getByRole("button", { name: `Save ${file}`, exact: true })
+      .click();
+    assert.equal((await held.requested)?.status(), afterServer ? 200 : undefined);
+    assert.equal(saved.get(`${previousId}/${file}`), afterServer ? draft : undefined);
+    return held;
+  }
+  const userSave = await holdSave("USER.md", user, userDraft, false);
+  const identitySave = await holdSave("IDENTITY.md", identity, identityDraft, true);
 
   await makeCurrent();
-  assert.ok(versions[1]);
   await waitForInputValue(
     page.getByLabel("AGENTS.md", { exact: true }),
-    `# AGENTS.md served by ${versions[1].id}\n`,
+    `# AGENTS.md served by ${next.id}\n`,
   );
   // The Reload answers with the first version; the file is then reread from the second.
   reload.release();
-  await waitForInputValue(soul, `# SOUL.md served by ${versions[1].id}\n`);
+  await waitForInputValue(soul, `# SOUL.md served by ${next.id}\n`);
   await form("SOUL.md")
     .getByText("SOUL.md reloaded with its current contents.", { exact: true })
     .waitFor({ state: "attached" });
-  // The Save lands, and the reread after it keeps the saved text.
+  // The acknowledged write cannot replace the reader's draft with the successor's different text.
+  const identityPath = filePath("IDENTITY.md");
+  identitySave.release();
+  await waitForSettledFetches(page, identityPath, 3);
+  assert.equal(await identity.inputValue(), identityDraft, "The draft survives the readback");
+  const currentIdentity = page.getByLabel("Current contents of IDENTITY.md", {
+    exact: true,
+  });
+  assert.equal(await currentIdentity.isVisible(), true);
+  assert.equal(await currentIdentity.inputValue(), `# IDENTITY.md served by ${next.id}\n`);
+  assert.equal(await identity.isEditable(), true);
+  const replaceIdentity = form("IDENTITY.md").getByRole("button", {
+    name: "Save IDENTITY.md",
+    exact: true,
+  });
+  assert.equal(await replaceIdentity.isEnabled(), true);
+  assert.equal(pathRequests(requests, "PUT", identityPath).length, 1);
+
+  // A matching readback confirms a save only after the browser receives the current file.
   const userReads = () => pathRequests(requests, "GET", filePath("USER.md")).length;
   assert.equal(userReads(), 1);
-  save.release();
+  const readback = await holdRequests(t, page, `${fixture.origin}${filePath("USER.md")}`, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  userSave.release();
+  assert.equal((await readback.requested)?.status(), 200);
+  assert.notEqual(await workspaceStatus(form("USER.md")), "USER.md saved.");
+  readback.release();
   await form("USER.md").getByText("USER.md saved.", { exact: true }).waitFor({ state: "attached" });
-  await waitForCondition(() => userReads() === 2, "USER.md was not reread after its Save");
   await waitForSettledFetches(page, filePath("USER.md"), 3);
-  assert.equal(await user.inputValue(), "# Saved during the deployment\n");
+  assert.equal(saved.get(`${next.id}/USER.md`), userDraft);
+  assert.equal(userReads(), 2);
+  assert.equal(await user.inputValue(), userDraft);
   assert.equal(await workspaceStatus(form("USER.md")), "USER.md saved.");
+  assert.equal(pathRequests(requests, "PUT", filePath("USER.md")).length, 1);
 });
 
 test("Check save keeps a draft across an upgrade, compares the current file, and never resends a write", async (t) => {

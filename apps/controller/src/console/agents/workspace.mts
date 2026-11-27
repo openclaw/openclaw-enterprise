@@ -517,11 +517,14 @@ export function renderWorkspaceFiles(
         target.focus();
       }
     };
-    async function load(mode: "open" | "reload" | "check" = "open") {
+    async function load(
+      mode: "open" | "reload" | "check" = "open",
+      afterSave?: { heldFocus: boolean },
+    ) {
       if (pending || !context.isCurrent()) {
         return;
       }
-      const held = form.contains(document.activeElement);
+      const held = afterSave?.heldFocus ?? form.contains(document.activeElement);
       operations += 1;
       pending = true;
       rereadFailed = false;
@@ -567,7 +570,11 @@ export function renderWorkspaceFiles(
                 : "Unsaved edits restored. Reload replaces them with the current file.";
           }
         } else {
-          status.textContent = mode === "check" ? matchesDraft : `${name} loaded.`;
+          status.textContent = afterSave
+            ? `${name} saved.`
+            : mode === "check"
+              ? matchesDraft
+              : `${name} loaded.`;
         }
       }
       try {
@@ -643,6 +650,7 @@ export function renderWorkspaceFiles(
         return;
       }
       const held = form.contains(document.activeElement);
+      let needsReadback = false;
       operations += 1;
       pending = true;
       writing = true;
@@ -664,9 +672,16 @@ export function renderWorkspaceFiles(
         if (saved.name !== name) {
           throw new Error("Workspace save response did not identify the requested file");
         }
-        baseline = content;
-        outcomeUnknown = false;
-        status.textContent = `${name} saved.`;
+        if (refreshAfterPending) {
+          // The write may have reached the previous version. Keep the draft through readback.
+          needsReadback = true;
+          checkedDraft = false;
+          outcomeUnknown = true;
+        } else {
+          baseline = content;
+          outcomeUnknown = false;
+          status.textContent = `${name} saved.`;
+        }
       } catch (failure) {
         if (!context.isCurrent()) {
           return;
@@ -683,12 +698,17 @@ export function renderWorkspaceFiles(
         if (context.isCurrent()) {
           pending = false;
           writing = false;
-          updateControls();
-          returnFocus(held, editor);
-          // A version change during this request may have been answered by the old version.
-          if (refreshAfterPending) {
+          if (needsReadback) {
             refreshAfterPending = false;
-            void refresh();
+            await load("check", { heldFocus: held });
+          } else {
+            updateControls();
+            returnFocus(held, editor);
+            // A version change during this request may have been answered by the old version.
+            if (refreshAfterPending) {
+              refreshAfterPending = false;
+              void refresh();
+            }
           }
         }
       }
