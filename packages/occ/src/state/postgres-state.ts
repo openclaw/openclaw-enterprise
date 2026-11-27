@@ -226,7 +226,7 @@ export interface PersistedNativeIAMState {
 }
 
 export interface PostgresPlatformStateOptions {
-  /** Installed Credential Service binds its custody proof to this exact transaction. */
+  /** Installed CredentialService binds its custody proof to this exact transaction. */
   readonly preparedTokenProof?:
     ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;

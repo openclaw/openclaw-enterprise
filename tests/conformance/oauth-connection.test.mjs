@@ -108,7 +108,7 @@ async function oauthCustody(grant, signal) {
   return { driver, custody, schedule, service, worker };
 }
 
-test("the Credential Service keeps the first access token in custody and serializes rotation", async (t) => {
+test("the CredentialService keeps the first access token in custody and serializes rotation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
   const requests = [];
   const first = randomUUID();

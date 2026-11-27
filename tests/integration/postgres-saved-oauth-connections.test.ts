@@ -469,7 +469,7 @@ test(
       }
     });
 
-    // The API and Credential Service use the fixture Secret store. Keycloak authenticates the
+    // The API and CredentialService use the fixture Secret store. Keycloak authenticates the
     // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
     const secretDriver = {
       ...createTestSecretDriver(),
@@ -1074,7 +1074,7 @@ test(
         ["openid"],
       ],
     );
-    // The trusted Credential Service consumer can use the grant. Saving/rotating alone creates no sender.
+    // The trusted CredentialService consumer can use the grant. Saving/rotating alone creates no sender.
     const sourceInstance = {
       sourceRef: { kind: "credential_source", namespaceId, id } as const,
       credentialServiceInstanceId: instanceId,
@@ -1090,7 +1090,7 @@ test(
       assert.equal(
         result.status,
         200,
-        "Keycloak accepts the Credential Service's prepared access token",
+        "Keycloak accepts the CredentialService's prepared access token",
       );
       return (await result.json()).sub;
     };
@@ -1334,7 +1334,7 @@ test(
     const resolving = tokenOwner.resolveCredential(sourceInstance, t.signal);
     await observed.promise;
     // The SQL revocation survives a transient custody failure. A worker with the same
-    // Secret store and Credential Service finishes it after the API request has returned.
+    // Secret store and CredentialService finishes it after the API request has returned.
     const unavailableDelete = t.mock.method(privateStore, "delete", async () => {
       throw new DependencyUnavailableError("Secret store unavailable");
     });

@@ -179,7 +179,7 @@ const reviewedImports: ReviewedModules = {
     ],
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
   },
-  // Credential Service compares complete admissions. Provider I/O remains in the existing adapter.
+  // CredentialService compares complete admissions. Provider I/O remains in the existing adapter.
   "backends/credential-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
   "backends/credential-service/service.ts": {
     "node:crypto": ["randomUUID"],

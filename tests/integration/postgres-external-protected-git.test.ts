@@ -739,7 +739,7 @@ function externalGitJourney(
         ...repositoryGitAuthority(drivers),
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
-    // Observe the installed Credential Service's loop so the cold fetch can run before it starts.
+    // Observe the installed CredentialService's loop so the cold fetch can run before it starts.
     const maintenanceAttachment = coldFetch
       ? t.mock.method(repositoryGitAuthority(drivers).credentialService, "ownFamilies")
       : undefined;
@@ -2142,7 +2142,7 @@ function externalGitJourney(
         if (coldFetch) {
           assert.ok(
             scheduledMaintenance,
-            "the installed Credential Service attached Git maintenance",
+            "the installed CredentialService attached Git maintenance",
           );
           scheduledMaintenance.start();
         }
@@ -2496,7 +2496,7 @@ function externalGitJourney(
       const providerTraffic = () => ({
         connections: traffic().connections - directProbeRequests,
         requests: traffic().requests - directProbeRequests,
-        // Credential Service retirement is lifecycle traffic, not a workload send.
+        // CredentialService retirement is lifecycle traffic, not a workload send.
         apiRequests: broad?.installation.traffic().workloadRequests,
         issuerRequests: broad?.installation.traffic().issuerRequests,
         issues: gh.issuesOfTokens.length,

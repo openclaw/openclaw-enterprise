@@ -296,7 +296,7 @@ function validatedInstallation(installation: Installation): Readonly<Installatio
 function createPreparedTokenAccess(preparedTokens: CredentialService | undefined) {
   function credentialService(): CredentialService {
     if (!preparedTokens) {
-      throw new DependencyUnavailableError("The Credential Service is unavailable.");
+      throw new DependencyUnavailableError("The CredentialService is unavailable.");
     }
     return preparedTokens;
   }

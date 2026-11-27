@@ -45,6 +45,11 @@ import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.t
 import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
+import { OpenShellCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/openshell.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { grpc, loader, openShellService } from "../helpers/openshell-grpc-sdk.ts";
+import { bindWireServer } from "../conformance/openshell-gateway-wire-fixture.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
@@ -2456,6 +2461,208 @@ test(
   },
 );
 
+async function assertOpenShellSourceUpgrade(context, fixture) {
+  const db = await historyDatabase(context, fixture, "credential_service_openshell", {
+    prefix: 100,
+  });
+  const installationId = `ins_${randomUUID()}`;
+  const namespaceId = `ns_${randomUUID()}`;
+  const sourceId = `cs_${randomUUID()}`;
+  const instanceId = randomUUID();
+  const storeIdentity = randomUUID();
+  const workspaceId = randomUUID();
+  const providerId = randomUUID();
+  const driverId = "openshell";
+  const backendId = "openshell-gateway";
+  const registeredStoreIdentity = `openshell:${backendId}:${storeIdentity}`;
+  const workspace = "ns-upgrade";
+  // Freeze the names and ownership data emitted by the predecessor, independently of the
+  // renamed Driver. The peer retains these objects throughout the database migration.
+  const digest = createHash("sha256").update(sourceId).digest("hex").slice(0, 24);
+  const providerName = `oce-cs-${digest}`;
+  const environment = `OCE_SOURCE_${digest.toUpperCase()}`;
+  const labels = {
+    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+    "openclaw.dev/credential-source-id": sourceId,
+    "openclaw.dev/namespace-id": namespaceId,
+    "openclaw.dev/token-service": driverId,
+  };
+  const profile = {
+    id: providerName,
+    resource_version: "4",
+    annotations: labels,
+    credentials: [
+      {
+        name: environment,
+        env_vars: [environment],
+        required: true,
+        auth_style: "bearer",
+        header_name: "authorization",
+        stable_placeholder: true,
+      },
+    ],
+  };
+  const provider = {
+    metadata: { id: providerId, name: providerName, workspace, resource_version: "7", labels },
+    type: providerName,
+    profile_workspace: workspace,
+  };
+  const options = { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true };
+  const serviceFrom = (path) =>
+    openShellService(grpc.loadPackageDefinition(loader.loadSync(path, options)));
+  const wire = serviceFrom(join(repositoryRoot, "tests/fixtures/openshell-v0.1.5-wire.proto"));
+  const production = serviceFrom(
+    join(repositoryRoot, "apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto"),
+  );
+  const server = new grpc.Server();
+  // The independent supplier fixture owns Workspace, Provider and profile messages. Gateway
+  // extension negotiation is absent from that fixture, so use its production descriptor only
+  // for GetGatewayInfo; this is controlled protocol proof, not a live Gateway qualification.
+  server.addService(
+    {
+      GetWorkspace: wire.GetWorkspace,
+      GetProvider: wire.GetProvider,
+      GetProviderProfile: wire.GetProviderProfile,
+      GetGatewayInfo: production.GetGatewayInfo,
+    },
+    {
+      GetWorkspace: (call, done) => {
+        const name = call.request.name;
+        if (name === "default") {
+          return done(null, {
+            workspace: {
+              metadata: { id: storeIdentity, name },
+              status: { phase: "WORKSPACE_PHASE_ACTIVE" },
+            },
+          });
+        }
+        assert.equal(name, workspace);
+        return done(null, {
+          workspace: {
+            metadata: {
+              id: workspaceId,
+              name,
+              labels: {
+                "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                "openclaw.dev/namespace-id": namespaceId,
+              },
+            },
+            status: { phase: "WORKSPACE_PHASE_ACTIVE" },
+          },
+        });
+      },
+      GetGatewayInfo: (_call, done) =>
+        done(null, {
+          extensions: [
+            {
+              kind: 2,
+              configured_name: "openshell-driver-db-credstore",
+              implementation_name: "openshell/openshell-driver-db-credstore",
+            },
+          ],
+        }),
+      GetProvider: (call, done) => {
+        assert.equal(call.request.name, providerName);
+        assert.equal(call.request.workspace_scope.workspace, workspace);
+        done(null, { provider });
+      },
+      GetProviderProfile: (call, done) => {
+        assert.equal(call.request.id, providerName);
+        assert.equal(call.request.workspace_scope.workspace, workspace);
+        done(null, { profile });
+      },
+    },
+  );
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  context.after(() => {
+    client.close();
+    server.forceShutdown();
+  });
+  // The predecessor database points at the already-enrolled Provider; it does not contain
+  // the Provider credential or own the Gateway's label/profile annotation.
+  await db.app.query(
+    "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'OpenShell upgrade',now())",
+    [installationId],
+  );
+  await db.app.query(
+    "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'OpenShell upgrade','ready',now())",
+    [namespaceId],
+  );
+  await db.app.query(
+    "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,$3,$4)",
+    [installationId, instanceId, driverId, registeredStoreIdentity],
+  );
+  await db.app.query(
+    "INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id,backend_ref) VALUES($1,$2,'OpenShell static','static','{}','token_service','ready',now(),$3,$4::jsonb)",
+    [sourceId, namespaceId, instanceId, JSON.stringify({ workspaceId, providerId })],
+  );
+  const receipts = await historyReceipts(db.migrator);
+  assert.deepEqual(await runHistoryMigration(db, "production"), {
+    ok: true,
+    history: "preCredentialServiceRename",
+  });
+  await assertCompletedHistory(db, receipts);
+  assert.deepEqual(
+    (await db.app.query("SELECT id,driver_id,store_identity FROM occ.credential_service_instances"))
+      .rows,
+    [{ id: instanceId, driver_id: driverId, store_identity: registeredStoreIdentity }],
+  );
+  const pool = await createPostgresPool(db.applicationUrl, { max: 1 });
+  try {
+    const state = new PostgresPlatformState(pool);
+    // Startup offers a fresh candidate, but matching the unchanged configured Driver and store
+    // must select the predecessor instance instead of creating a new custody identity.
+    const selected = await state.transact(({ installations }) =>
+      installations.selectCredentialServiceInstance({
+        id: randomUUID(),
+        driverId,
+        storeIdentity: registeredStoreIdentity,
+      }),
+    );
+    assert.deepEqual(selected, {
+      id: instanceId,
+      driverId,
+      storeIdentity: registeredStoreIdentity,
+    });
+    const source = await state.read((view) =>
+      view.credentialSources.findCredentialSource(namespaceId, sourceId),
+    );
+    assert.equal(source?.ownerCapability, "credential_service");
+    assert.equal(source?.credentialServiceInstanceId, instanceId);
+    assert.deepEqual(source?.backendRef, { workspaceId, providerId });
+    const owner = new OpenShellCredentialServiceDriver({
+      id: driverId,
+      credentialServiceInstanceId: selected.id,
+      storeIdentity,
+      state,
+      backend: {
+        id: backendId,
+        client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
+        drivers: { credential_service: driverId },
+      },
+      resolveNamespace: async (namespace) => ({ ...namespace, name: workspace }),
+    });
+    const resolved = await owner.resolveNativeProvider(
+      {
+        sourceRef: { kind: "credential_source", id: sourceId, namespaceId },
+        credentialServiceInstanceId: selected.id,
+      },
+      AbortSignal.timeout(5_000),
+    );
+    assert.deepEqual(resolved, {
+      workspace,
+      workspaceId,
+      name: providerName,
+      id: providerId,
+      resourceVersion: "7",
+      profileVersion: "4",
+    });
+  } finally {
+    await pool.end();
+  }
+}
+
 test(
   "Canonical CredentialService rename preserves predecessor identities, snapshots, and credential resolution",
   requiresHistoryPostgres,
@@ -2804,6 +3011,7 @@ test(
     } finally {
       await pool.end();
     }
+    await assertOpenShellSourceUpgrade(context, fixture);
   },
 );
 

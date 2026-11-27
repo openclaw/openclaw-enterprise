@@ -560,7 +560,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- $credentials := .Values.repositoryCredentials -}}
 {{- if ne $credentials.authority "prepared-git" -}}
-{{- fail "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching to authority prepared-git and worker Credential Service custody; do not transfer keys or replay uncertain work" -}}
+{{- fail "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching to authority prepared-git and worker CredentialService custody; do not transfer keys or replay uncertain work" -}}
 {{- end -}}
 {{- if not $credentials.appKeySecretName -}}{{- fail "repositoryCredentials.appKeySecretName is required when enabled" -}}{{- end -}}
 {{- if not $credentials.appKeyKey -}}{{- fail "repositoryCredentials.appKeyKey is required when enabled" -}}{{- end -}}

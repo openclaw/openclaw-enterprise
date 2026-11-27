@@ -74,7 +74,7 @@ export function selectBundledRepositoryGitCustody(
 export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
   const { credentialService, repositoryGitDriver: driver, repositoryTransport } = drivers;
   if (!credentialService) {
-    throw new Error("Prepared repository Git requires the installed Credential Service.");
+    throw new Error("Prepared repository Git requires the installed CredentialService.");
   }
   if ((driver || repositoryTransport) && (!driver || driver !== drivers.protectedDriver)) {
     throw new Error("Missing the selected Driver's protected repository Git authority.");

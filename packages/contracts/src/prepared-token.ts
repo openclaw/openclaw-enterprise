@@ -158,7 +158,7 @@ export interface OAuthConnectionClient {
   readonly fetchToken?: (init: RequestInit) => Promise<Response>;
 }
 
-/** Trusted handoff from code exchange. The Credential Service retains the reusable grant. */
+/** Trusted handoff from code exchange. The CredentialService retains the reusable grant. */
 export interface OAuthConnectionGrant extends ResolvedToken {
   readonly requestedScopes: readonly string[];
   /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
