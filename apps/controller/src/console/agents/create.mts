@@ -2135,7 +2135,6 @@ function renderAgentForm(
       pluginApprovers = value;
       edited = true;
     },
-    inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     lazyNames: true,
     directorySetup,
     onDirectoryVisibilityChange: (visible) =>
