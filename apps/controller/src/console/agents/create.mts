@@ -2695,6 +2695,14 @@ function renderAgentForm(
     }
     return undefined;
   }
+  // Size the editor before the user selects text. Shrinking it when the error appears
+  // can hide the selection at the bottom of a long draft.
+  configuration.addEventListener("focus", () => {
+    configuration.style.setProperty(
+      "--create-editor-actions-height",
+      `${Math.ceil(actions.getBoundingClientRect().height)}px`,
+    );
+  });
   // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
   function focusConfiguration(offset?: number) {
     const details = configuration.closest("details");
@@ -2705,7 +2713,8 @@ function renderAgentForm(
       configuration.setSelectionRange(offset, offset);
     }
     configuration.focus();
-    if (offset === undefined) {
+    const error = configurationError.node;
+    if (error.hidden) {
       return;
     }
 
@@ -2714,9 +2723,7 @@ function renderAgentForm(
       document.documentElement.clientHeight,
       actions.getBoundingClientRect().top,
     );
-    const overlap = Math.ceil(
-      configurationError.node.getBoundingClientRect().bottom - visibleBottom,
-    );
+    const overlap = Math.ceil(error.getBoundingClientRect().bottom - visibleBottom);
     if (overlap > 0 && configuration.getBoundingClientRect().top >= overlap) {
       window.scrollBy(0, overlap);
     }

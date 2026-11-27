@@ -111,6 +111,15 @@ Replace only `1e400` with `2`. Save or create, then inspect the Configuration fo
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
 
+To check the error in a short window, open **Pages → Create Agent → GitHub
+repository access with a registered App** at 1024 × 360 and 390 × 360. Under
+**Authentication method**, choose **Service Accounts**. Leave the credential
+field empty. Open **Advanced settings**, use the same nested array as above and
+select `1e400` in **Configuration JSON**. Change **Model ID** and press Tab.
+Before scrolling, check that the selection and the whole error are visible above
+the buttons. Type `2` to replace just the selected number. Repeat with the
+application repository unchecked. The deployment warning should stay visible too.
+
 ## Correct a Create Agent Configuration syntax error
 
 Open **Pages → Create Agent → Invalid Configuration JSON**
