@@ -96,6 +96,11 @@ repository. The cue now names `alpha/application-api`. Check at phone width
 that you can read the next name below the search field even when its row is
 out of view. Select the last two matches. The field now reports **4 selected**.
 
+Reset the story and search for `application` at phone width. The hint starts
+with **In search, Enter selects**. Use Down Arrow and Up Arrow to move through
+the results. Check that you can read the full name of each focused repository
+above the Create Agent buttons.
+
 Reset the story and use Enter to commit text with an input method in the search
 field. Committing text must neither select a repository nor submit the form.
 These checks change the unsaved selection. They do not save the form, create an

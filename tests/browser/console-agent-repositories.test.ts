@@ -1214,6 +1214,51 @@ for (const count of [1, 5, 25, 140]) {
   });
 }
 
+test("Create Agent keeps the full focused repository name above sticky actions on a phone", async (t) => {
+  const prefix =
+    "example-developer-infrastructure/platform-observability-release-readiness-and-incident-response-handbook";
+  const suffix = (i: number) => String(i + 1).padStart(2, "0");
+  const repositoryName = (i: number) => `${prefix}-${suffix(i)}`;
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+    Array.from({ length: 12 }, (_, i) => ({
+      repositoryRef: `approved-catalog-entry-${suffix(i)}`,
+      repositoryId: String(3100 + i),
+      repository: repositoryName(i),
+      namespaces: [{ namespaceId, profiles: ["git-read"] as const }],
+    })),
+  );
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const search = page.getByLabel("Find a repository");
+  await search.fill("platform-observability");
+  await page.getByRole("button", { name: "Browse all repositories" }).click();
+  await search.focus();
+  const results = page.locator("#repository-results");
+  const actions = page.locator("#create-agent-form ~ .form-actions");
+
+  // The checkbox can fit above the sticky buttons while the end of its name is hidden.
+  for (const [key, index] of [
+    ["ArrowDown", 0],
+    ["ArrowDown", 1],
+    ["ArrowDown", 2],
+    ["ArrowDown", 3],
+    ["ArrowUp", 2],
+  ] as const) {
+    const name = repositoryName(index);
+    await page.keyboard.press(key);
+    await nextFrames(page);
+    assert.ok(await hasFocus(repositoryCheckbox(page, name)), `Expected focus on ${name}`);
+    const label = await results.getByText(name, { exact: true }).boundingBox();
+    const footer = await actions.boundingBox();
+    assert.ok(label && footer);
+    const fullyVisible = label.height > 0 && label.y >= 0 && label.y + label.height <= footer.y;
+    assert.ok(fullyVisible, `${key} should leave the full name above sticky actions: ${name}`);
+  }
+  assert.equal(await results.getByRole("checkbox", { checked: true }).count(), 0);
+});
+
 test("Agent repository search is stable in a Turkish browser locale", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
     [
