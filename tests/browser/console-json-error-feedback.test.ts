@@ -181,7 +181,8 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
     await page.keyboard.press("Tab");
     assert.equal(await save.evaluate((node) => node === document.activeElement), true);
     await page.keyboard.press("Enter");
-    await error.getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.").waitFor();
+    const syntaxMessage = "Invalid JSON at line 1, column 2. Enter a valid JSON object.";
+    await error.getByText(syntaxMessage).waitFor();
     assert.equal(await focusedId(page), "configuration-json");
     assert.equal(await json.inputValue(), syntaxDraft);
     assert.equal(patches, 0);
@@ -192,6 +193,19 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
       { selection: [1, 1], firstLineVisible: true, diagnosticVisible: true },
       `the first line and the full diagnostic are visible together at ${viewport.width}×${viewport.height}`,
     );
+
+    if (viewport.width === 1440) {
+      await page.setViewportSize({ width: 761, height: 513 });
+      await nextFrames(page);
+      assert.equal(await focusedId(page), "configuration-json");
+      assert.equal(await json.inputValue(), syntaxDraft);
+      assert.equal(await error.textContent(), syntaxMessage);
+      assert.equal(patches, 0);
+      const resized = await json.evaluate(jsonErrorVisibility);
+      assert.deepEqual(resized.selection, visible.selection);
+      assert.equal(resized.firstLineVisible, true, "Configuration keeps the caret line visible");
+      assert.equal(resized.diagnosticVisible, true, "Configuration keeps the error visible");
+    }
 
     // Repair from the caret, without moving focus or scrolling to the diagnostic.
     await page.keyboard.press("Delete");

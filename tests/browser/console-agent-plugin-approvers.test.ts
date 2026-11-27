@@ -3564,6 +3564,66 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
     beforeRepair,
     "neither invalid Save nor editing sends a request",
   );
+  // Enlarge the editor, then shrink the window while the refused draft still has focus.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await input.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await nextFrames(page);
+  const box = await input.boundingBox();
+  assert.ok(box);
+  const gripX = box.x + box.width - 4;
+  const gripY = box.y + box.height - 4;
+  await page.mouse.move(gripX, gripY);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(gripX, gripY + 144, { steps: 6 });
+  } finally {
+    await page.mouse.up();
+  }
+  const grown = await input.boundingBox();
+  assert.ok(grown && grown.height >= box.height + 64, "native grip enlarges the editor");
+  await input.fill(pasted);
+  await input.press("Control+Home");
+  assert.equal(await atLastLine(), false);
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.getByText(/curly quote “.*straight quote/u).waitFor();
+  const message = await error.textContent();
+  for (const height of [900, 513]) {
+    if (height === 513) {
+      await page.setViewportSize({ width: 761, height });
+    }
+    await nextFrames(page);
+    assert.equal(await atLastLine(), true);
+    // The last line can be internally scrolled into view but clipped by a panel or the viewport.
+    const state = await input.evaluate((node: HTMLTextAreaElement) => {
+      const { paddingBottom, paddingLeft, lineHeight } = getComputedStyle(node);
+      const { top, left } = node.getBoundingClientRect();
+      const lastLineBottom = node.scrollHeight - Number.parseFloat(paddingBottom);
+      const bottom = top + node.clientTop + lastLineBottom - node.scrollTop;
+      const x = left + node.clientLeft + Number.parseFloat(paddingLeft) + 1;
+      const exposed = [bottom - Number.parseFloat(lineHeight) + 1, bottom - 1].every(
+        (y) => document.elementFromPoint(x, y) === node,
+      );
+      return {
+        focused: node === document.activeElement,
+        selection: [node.selectionStart, node.selectionEnd],
+        exposed,
+      };
+    });
+    assert.equal(state.focused, true);
+    assert.deepEqual(state.selection, [offset, offset]);
+    assert.equal(state.exposed, true, "Plugins keeps the caret line visible");
+    assert.equal(await input.inputValue(), pasted);
+    assert.equal(await error.textContent(), message);
+    const diagnostic = await error.boundingBox();
+    assert.ok(diagnostic && diagnostic.y >= 0 && diagnostic.y + diagnostic.height <= height);
+  }
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.keyboard.type('"');
+  assert.equal(await input.inputValue(), corrected);
+  assert.equal(await error.isHidden(), true);
+  assert.equal(agentRequests().length, beforeRepair, "resizing and repairing send no request");
   await page.setViewportSize(originalViewport);
 
   // Save must open the raw editor and explain the refusal before its GET preflight or PATCH.
