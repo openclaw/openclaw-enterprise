@@ -2841,11 +2841,15 @@ function renderAgentForm(
         "--create-editor-actions-height",
         `${Math.ceil(actions.getBoundingClientRect().height)}px`,
       );
-      const shift = errorScroll(editorTop());
+      const line = selectionWasVisible ? range?.getBoundingClientRect() : undefined;
+      const innerShift = selectionScroll(line);
+      // When the whole editor cannot fit, keep the selected line and the message together.
+      const shift =
+        errorScroll(editorTop()) ??
+        (line && innerShift !== undefined ? errorScroll(line.top - innerShift) : undefined);
       if (shift === undefined) {
         return;
       }
-      const innerShift = selectionWasVisible && selectionScroll(range?.getBoundingClientRect());
       if (innerShift) {
         editor.scrollBy({ top: innerShift, behavior: "instant" });
       }

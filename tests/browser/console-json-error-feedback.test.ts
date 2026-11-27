@@ -494,7 +494,7 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   await json.press("Control+End");
   await page.keyboard.press("Shift+ArrowLeft");
   await create.press("Enter");
-  for (const viewport of [originalViewport, shortViewport]) {
+  for (const viewport of [originalViewport, shortViewport, { width: 320, height: 480 }]) {
     await page.setViewportSize(viewport);
     await nextFrames(page);
     assert.equal(await focusedId(page), "configuration-json");
