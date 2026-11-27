@@ -8,6 +8,14 @@ import {
 } from "../../packages/iam/src/index.ts";
 import { agentResource } from "./iam-case-fixture.ts";
 
+function readerRequest(): AuthorizationRequest {
+  return {
+    principalId: "principal-reader-a",
+    action: "read",
+    resource: agentResource("agent-a"),
+  };
+}
+
 export function registerPolicyStateCases(state: NativeIAMState): void {
   test("invalid loaded IAM state fails closed", async () => {
     const { roles, bindings, memberships, identities } = state;
@@ -16,25 +24,17 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
     const [membership] = memberships;
     const [identity] = identities;
     assert.ok(role && binding && membership && identity);
-    const invalidStates = [
-      { ...state, groups: undefined },
-      { ...state, roles: [...roles, { ...role, permissions: [] }] },
-      {
-        ...state,
-        bindings: [{ ...binding, subjectKind: undefined }],
-      },
-      {
-        ...state,
-        bindings: [{ ...binding, roleId: "role-unknown" }],
-      },
-      {
-        ...state,
+    const invalidStates = {
+      "missing groups": { groups: undefined },
+      "duplicate role ID": { roles: [...roles, { ...role, permissions: [] }] },
+      "binding without subject kind": { bindings: [{ ...binding, subjectKind: undefined }] },
+      "binding to unknown role": { bindings: [{ ...binding, roleId: "role-unknown" }] },
+      "membership in another namespace": {
         memberships: [{ ...membership, namespaceId: "namespace-b" }],
       },
       // An Installation Group may be bound in a Namespace (RFC-0026 Default users); a Namespace
       // Group bound in another Namespace still fails closed.
-      {
-        ...state,
+      "namespace group bound in another namespace": {
         bindings: [
           {
             ...binding,
@@ -47,8 +47,7 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-      {
-        ...state,
+      "restriction with allow effect": {
         restrictions: [
           {
             id: "restriction-invalid",
@@ -58,8 +57,7 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-      {
-        ...state,
+      "installation restriction scoped to a namespace": {
         restrictions: [
           {
             id: "restriction-installation-inside-namespace",
@@ -70,8 +68,7 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-      {
-        ...state,
+      "namespace restriction targeting another namespace": {
         restrictions: [
           {
             id: "restriction-cross-namespace",
@@ -83,16 +80,13 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-      {
-        ...state,
+      "duplicate external identity": {
         identities: [identity, { ...identity, id: "principal-duplicate-external" }],
       },
-      {
-        ...state,
+      "identity with legacy installation ID": {
         identities: [{ ...identity, installationId: "installation-legacy" }],
       },
-      {
-        ...state,
+      "legacy workload identity": {
         identities: [
           ...identities,
           {
@@ -103,15 +97,13 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-      {
-        ...state,
+      "service principal agent ID without namespace": {
         identities: [
           ...identities,
           { id: "service-principal-unscoped-agent", kind: "service_principal", agentId: "agent-b" },
         ],
       },
-      {
-        ...state,
+      "empty service principal agent ID": {
         identities: [
           ...identities,
           {
@@ -122,8 +114,7 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-      {
-        ...state,
+      "duplicate service principal agent": {
         identities: [
           ...identities,
           {
@@ -134,11 +125,11 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           },
         ],
       },
-    ];
+    };
 
-    for (const rawState of invalidStates) {
+    for (const [label, overlay] of Object.entries(invalidStates)) {
       // Neither the loader nor the test validates or repairs these inputs before IAM sees them.
-      const invalidState = rawState as NativeIAMState;
+      const invalidState = { ...state, ...overlay } as NativeIAMState;
       const driver = new NativeIAMDriver({ loadNativeIAMState: async () => invalidState });
       assert.equal(
         await driver.lookupIdentity({
@@ -146,26 +137,20 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
           subject: "reader-a",
         }),
         undefined,
+        `${label}: Driver identity lookup`,
       );
 
-      const decision = await driver.authorize({
-        principalId: "principal-reader-a",
-        action: "read",
-        resource: agentResource("agent-a"),
-      });
-      assert.equal(decision.allowed, false);
-      assert.match(decision.reason, /policy is invalid/);
+      const decision = await driver.authorize(readerRequest());
+      assert.equal(decision.allowed, false, `${label}: Driver must deny`);
+      assert.match(decision.reason, /policy is invalid/, `${label}: Driver denial reason`);
 
-      const evaluated = evaluateAuthorization(
-        {
-          principalId: "principal-reader-a",
-          action: "read",
-          resource: agentResource("agent-a"),
-        },
-        invalidState,
+      const evaluated = evaluateAuthorization(readerRequest(), invalidState);
+      assert.equal(evaluated.allowed, false, `${label}: direct evaluator must deny`);
+      assert.match(
+        evaluated.reason,
+        /policy is invalid/,
+        `${label}: direct evaluator denial reason`,
       );
-      assert.equal(evaluated.allowed, false);
-      assert.match(evaluated.reason, /policy is invalid/);
     }
   });
 
@@ -178,11 +163,7 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
       identities: snapshot.identities.map((identity) => ({ ...identity })),
     };
     const driver = new NativeIAMDriver({ loadNativeIAMState: async () => mutable });
-    const request: AuthorizationRequest = {
-      principalId: "principal-reader-a",
-      action: "read",
-      resource: agentResource("agent-a"),
-    };
+    const request = readerRequest();
     const identity = { issuer: "https://identity.example.com", subject: "reader-a" };
 
     assert.equal((await driver.authorize(request)).allowed, true);
@@ -232,14 +213,6 @@ export function registerPolicyStateCases(state: NativeIAMState): void {
         }),
       /state unavailable/,
     );
-    await assert.rejects(
-      () =>
-        driver.authorize({
-          principalId: "principal-reader-a",
-          action: "read",
-          resource: agentResource("agent-a"),
-        }),
-      /state unavailable/,
-    );
+    await assert.rejects(() => driver.authorize(readerRequest()), /state unavailable/);
   });
 }
