@@ -18,6 +18,7 @@ import {
   jsonObjectDiagnostic,
   revealStatus,
   setHidden,
+  setText,
   setUnavailable,
   statusBlock,
   validateFields,
@@ -568,7 +569,7 @@ export function renderAgentPlugins(
     );
   }
 
-  function updateState() {
+  function updateState({ showUnsaved = false } = {}) {
     const dirty = input.value !== initialText || approversChanged();
     renderPendingApprovers();
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
@@ -584,7 +585,9 @@ export function renderAgentPlugins(
       feedback.textContent = "Plugin selections changed. Reload this Agent before saving again.";
     } else if (!dirty && !pending) {
       // A caller who may not save reads the selections; nothing addresses an editor.
-      feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
+      setText(feedback, updateDenied ? "" : "No plugin changes to save.");
+    } else if (showUnsaved && !saveUnavailable) {
+      setText(feedback, "Unsaved plugin changes.");
     }
     describeControls();
   }
@@ -599,9 +602,8 @@ export function renderAgentPlugins(
 
   function onEdit() {
     cancelAnnouncement(feedback);
-    feedback.textContent = "";
     saveError.textContent = "";
-    updateState();
+    updateState({ showUnsaved: true });
   }
 
   input.addEventListener("input", () => {
@@ -743,7 +745,7 @@ export function renderAgentPlugins(
     }
   }
 
-  updateState();
+  updateState({ showUnsaved: true });
   if (savedNotice) {
     feedback.textContent = savedNotice;
     describeControls();

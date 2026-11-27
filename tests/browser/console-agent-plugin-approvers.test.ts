@@ -3070,6 +3070,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await savedNotice.waitFor();
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await savedNotice.isVisible(), false, "The new approver draft is unsaved");
+  assert.equal(await page.getByText("Unsaved plugin changes.", { exact: true }).isVisible(), true);
 });
 
 test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {
@@ -3096,10 +3097,12 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   await waitForEnabled(deploy);
 
   const cleanNotice = page.getByText("No plugin changes to save.", { exact: true });
+  const unsavedNotice = page.getByText("Unsaved plugin changes.", { exact: true });
   await cleanNotice.waitFor();
   await mode.selectOption("none");
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(await cleanNotice.isVisible(), false, "The approver draft has changes to save");
+  assert.equal(await unsavedNotice.isVisible(), true);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -3139,6 +3142,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   await mode.selectOption("inherit");
   await page.clock.runFor(200);
   assert.equal(await savedNotice.isVisible(), false, "The new approver draft is unsaved");
+  assert.equal(await unsavedNotice.isVisible(), true);
   assert.equal(await save.isEnabled(), true);
   assert.equal(await deploy.isDisabled(), true);
   assert.deepEqual(responseData(await fixture.request("GET", path)).pluginApprovers, []);
