@@ -103,8 +103,22 @@ draft should stay unchanged. Scroll away deliberately and resize again. The
 page should stay where you scrolled. Move focus elsewhere and resize once
 more. Focus should stay where you put it.
 
-Repeat this resize check in **Pages → Agent detail → Plugin selections JSON error**.
+Repeat this resize check in **Pages → Agent detail → Plugins Required Fields**.
 Enter a typo in **Plugin selections JSON** and press **Save plugin selections**.
+
+In **Pages → Agent detail → Plugins Draft**, set **Plugin selections JSON** to
+`{}`. Check that the summary reports zero. Open **Configure plugins** and
+check that **Configured** also reports zero. Choose **Done** and replace the
+draft with `[`. The summary should tell you which field to fix. Reopen the
+picker. **Configured** should explain the missing catalog credential without
+showing a count or inviting you to add a plugin. Choose **Done**, enter
+`{"sample":{"enabled":false}}`, and check that the summary and **Configured**
+both count the disabled plugin once.
+
+On a saved Agent with a working catalog, repeat the invalid edit at 390 px.
+**Configured** should direct you to **Done** and the JSON editor. In **Available**,
+open a plugin. Check that it has no **Not selected** label. Use the keyboard to
+activate **Back to plugins**. Focus should return to **Search plugins**.
 
 ## Correct an out-of-range Configuration number
 
