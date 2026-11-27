@@ -895,11 +895,17 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
   const noMatchesGuidance = "No matching tools. Change or clear the filter.";
   const noMatches = dialog.getByRole("status").filter({ hasText: noMatchesGuidance });
   const readsBeforeFilter = ui.reads();
+  const filterTop = () => filter.evaluate((node) => node.getBoundingClientRect().top);
 
-  await filter.click();
+  await row.locator("summary").focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await filter.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await page.keyboard.type("Alpha");
   assert.equal(await filter.inputValue(), "Alpha");
   await tool.waitFor();
+  assert.equal(await row.evaluate((node) => node.hasAttribute("open")), true);
+  await nextFrames(page);
+  const topBeforeNoMatches = await filterTop();
   await page.keyboard.press("z");
   assert.equal(
     await filter.evaluate((node) => node === node.ownerDocument.activeElement),
@@ -911,6 +917,12 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
   assert.equal(await noMatches.count(), 1, "The tool filter exposes one no-match status");
   assert.equal(await noMatches.isVisible(), true);
   assert.equal(await noMatches.innerText(), noMatchesGuidance);
+  await nextFrames(page);
+  assert.equal(
+    Math.abs((await filterTop()) - topBeforeNoMatches) <= 1,
+    true,
+    "The keyboard-focused tool filter keeps its viewport position when the last match disappears",
+  );
   await page.keyboard.press("Backspace");
   assert.equal(await filter.inputValue(), "Alpha");
   await tool.waitFor();
