@@ -2749,7 +2749,7 @@ function renderAgentForm(
     }
 
     // Show the message above the sticky actions without scrolling the repair line out of view.
-    const shift = errorScroll(0);
+    const shift = errorScroll(configuration.getBoundingClientRect().top);
     if (shift !== undefined && shift > 0) {
       window.scrollBy(0, shift);
     }
@@ -2760,21 +2760,18 @@ function renderAgentForm(
     const down = Math.ceil(bottom);
     return down <= up ? Math.max(down, Math.min(up, 0)) : undefined;
   }
-  function errorScroll(outset: number) {
+  function errorScroll(top: number) {
     const limit = Math.min(
       document.documentElement.clientHeight,
       actions.getBoundingClientRect().top,
     );
-    return nearestShift(
-      configuration.getBoundingClientRect().top - outset,
-      configurationError.node.getBoundingClientRect().bottom - limit,
-    );
+    return nearestShift(top, configurationError.node.getBoundingClientRect().bottom - limit);
   }
   function followVisibleError() {
     createErrorTracking.get(actions)?.abort();
     const { outlineWidth, outlineOffset } = getComputedStyle(configuration);
     const outset = Math.max(0, Number.parseFloat(outlineWidth) + Number.parseFloat(outlineOffset));
-    if (document.activeElement !== configuration || errorScroll(outset) !== 0) {
+    if (document.activeElement !== configuration) {
       return;
     }
 
@@ -2795,20 +2792,29 @@ function renderAgentForm(
     } = configuration;
     const range = editor.createValueRange?.(selectionStart, selectionEnd);
     signal.addEventListener("abort", () => range?.disconnect?.(), { once: true });
-    function selectionScroll() {
-      const rect = range?.getBoundingClientRect();
+    function selectionScroll(rect: DOMRectReadOnly | undefined) {
       if (rect && rect.height > 0) {
         const edge = editor.getBoundingClientRect().top + editor.clientTop;
         return nearestShift(rect.top - edge, rect.bottom - edge - editor.clientHeight);
       }
       return undefined;
     }
-    const selectionWasVisible = selectionScroll() === 0;
+    // The selected line and message can both be visible even when the editor starts above the window.
+    const editorTop = () => editor.getBoundingClientRect().top - outset;
+    const selection = range?.getBoundingClientRect();
+    const selectionWasVisible = selectionScroll(selection) === 0;
+    const repairTop = selection && selectionWasVisible ? selection.top : editorTop();
+    if (errorScroll(repairTop) !== 0) {
+      stop();
+      return;
+    }
     for (const event of ["blur", "input", "pointerdown", "wheel"]) {
       editor.addEventListener(event, stop, { signal, passive: true });
     }
     function stopIfScrolled() {
-      if (window.scrollY !== y) stop();
+      if (window.scrollY !== y) {
+        stop();
+      }
     }
     window.addEventListener("scroll", stopIfScrolled, { signal });
     function onResize() {
@@ -2835,11 +2841,11 @@ function renderAgentForm(
         "--create-editor-actions-height",
         `${Math.ceil(actions.getBoundingClientRect().height)}px`,
       );
-      const shift = errorScroll(outset);
+      const shift = errorScroll(editorTop());
       if (shift === undefined) {
         return;
       }
-      const innerShift = selectionWasVisible && selectionScroll();
+      const innerShift = selectionWasVisible && selectionScroll(range?.getBoundingClientRect());
       if (innerShift) {
         editor.scrollBy({ top: innerShift, behavior: "instant" });
       }

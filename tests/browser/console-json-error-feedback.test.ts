@@ -488,6 +488,29 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   }
   await page.setViewportSize(originalViewport);
 
+  // A range error preserves the user's selection, even on the last line of a long draft.
+  const longDraft = overflow.trimEnd();
+  await json.fill(longDraft);
+  await json.press("Control+End");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await create.press("Enter");
+  for (const viewport of [originalViewport, shortViewport]) {
+    await page.setViewportSize(viewport);
+    await nextFrames(page);
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal((await json.evaluate(jsonErrorVisibility, actions)).diagnosticVisible, true);
+    const end = await json.evaluate((node: HTMLTextAreaElement) => ({
+      selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+      extent: node.scrollHeight - node.clientHeight,
+      remaining: node.scrollHeight - node.scrollTop - node.clientHeight,
+      lineHeight: Number.parseFloat(getComputedStyle(node).lineHeight),
+    }));
+    assert.deepEqual(end.selection, [longDraft.length - 1, longDraft.length, "backward"]);
+    assert.ok(end.extent > 0, "the draft scrolls inside the editor");
+    assert.ok(end.remaining < end.lineHeight, "the selected last line stays inside the editor");
+  }
+  await page.setViewportSize(originalViewport);
+
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).
   const values = JSON.parse(template);
