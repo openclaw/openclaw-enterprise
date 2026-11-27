@@ -121,6 +121,10 @@ import {
   RepositorySessionWithdrawnError,
   WorkClaimLostError,
 } from "../errors.ts";
+import {
+  assertConfigurationMetadata,
+  configurationGenerationRangeError,
+} from "./configuration-generation.ts";
 
 import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/configurations.ts";
 
@@ -1249,6 +1253,9 @@ function databaseError(error: unknown): Error {
   }
   if (code === "23514" && constraint === "repository_session_admission_not_withdrawn") {
     return new RepositorySessionWithdrawnError();
+  }
+  if (code === "23514" && constraint === "configurations_generation_valid") {
+    return configurationGenerationRangeError();
   }
   if (code === "23505") {
     const nameConflict =
@@ -2919,15 +2926,8 @@ export class PostgresPlatformState implements PlatformStateStore {
       findConfiguration,
       createConfiguration: async (configuration) => {
         await this.requireInitialized(context);
-        // The memory adapter's rule, checked before the INSERT: a fractional generation would
-        // otherwise fail PostgreSQL's bigint cast with a raw 22P02 instead of this refusal.
-        if (
-          configuration.kind !== "agent" ||
-          !Number.isSafeInteger(configuration.generation) ||
-          configuration.generation <= 0
-        ) {
-          throw new ScopeViolationError("The Configuration kind or generation is invalid.");
-        }
+        // Refuse fractional generations before PostgreSQL's bigint cast can raise 22P02.
+        assertConfigurationMetadata(configuration);
         const namespace = await namespaces.lockNamespace(configuration.namespaceId);
         if (
           namespace === undefined ||

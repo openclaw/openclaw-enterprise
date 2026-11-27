@@ -663,6 +663,36 @@ export async function verifyPlatformStateTransactions(
     );
   });
 
+  const max = Number.MAX_SAFE_INTEGER;
+  const atLimit = { ...configuration, id: identifier("cfg"), generation: max };
+  await store.transact(async ({ configurations }) => {
+    await configurations.createConfiguration({ ...atLimit, generation: max - 1 });
+    assert.deepEqual(
+      await configurations.advanceConfigurationGeneration(namespace.id, atLimit.id, max - 1),
+      atLimit,
+    );
+    assert.equal(
+      await configurations.advanceConfigurationGeneration(namespace.id, atLimit.id, max - 1),
+      undefined,
+    );
+    assert.equal(
+      await configurations.advanceConfigurationGeneration(namespace.id, identifier("cfg"), max),
+      undefined,
+    );
+  });
+  await assert.rejects(
+    store.transact(({ configurations }) =>
+      configurations.advanceConfigurationGeneration(namespace.id, atLimit.id, max),
+    ),
+    {
+      name: "ScopeViolationError",
+      message: "The Configuration generation exceeds its supported range.",
+    },
+  );
+  await store.read(async ({ configurations }) => {
+    assert.deepEqual(await configurations.findConfiguration(namespace.id, atLimit.id), atLimit);
+  });
+
   // A failed transaction cannot publish a generation that was only advanced speculatively.
   await assert.rejects(
     store.transact(async (transaction) => {

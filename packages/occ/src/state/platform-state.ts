@@ -148,6 +148,10 @@ import {
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
 } from "../errors.ts";
+import {
+  assertConfigurationMetadata,
+  configurationGenerationRangeError,
+} from "./configuration-generation.ts";
 import { CREDENTIAL_WITHDRAWAL_TARGET, credentialWithdrawalWorkKey } from "../controller-work.ts";
 import type { ControllerWork } from "../controller-work.ts";
 
@@ -2239,13 +2243,7 @@ function repositories(
     },
     createConfiguration: async (configuration) => {
       assertInitialized(snapshot);
-      if (
-        configuration.kind !== "agent" ||
-        !Number.isSafeInteger(configuration.generation) ||
-        configuration.generation <= 0
-      ) {
-        throw new ScopeViolationError("The Configuration kind or generation is invalid.");
-      }
+      assertConfigurationMetadata(configuration);
       const namespace = await namespaces.lockNamespace(configuration.namespaceId);
       if (
         namespace === undefined ||
@@ -2295,7 +2293,7 @@ function repositories(
         return undefined;
       }
       if (current.generation === Number.MAX_SAFE_INTEGER) {
-        throw new ScopeViolationError("The Configuration generation exceeds its supported range.");
+        throw configurationGenerationRangeError();
       }
       const secretBindings =
         nextSecretBindings === undefined
