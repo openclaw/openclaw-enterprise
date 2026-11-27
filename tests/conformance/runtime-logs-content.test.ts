@@ -111,7 +111,13 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
       suffix;
     const elapsed = redactionCpuMs(input, budgetMs);
     assert.ok(elapsed < budgetMs, `printed usernames took ${elapsed.toFixed(0)} ms of CPU`);
-    assert.equal(redactArgvCredentials(input), input);
+    const retained = redactArgvCredentials(input);
+    if (unit.includes("-P ordinary")) {
+      const protectedPrefix = prefix + unit.slice(0, unit.indexOf("ordinary")) + "[redacted:argv]";
+      assert.ok(retained.startsWith(protectedPrefix), "the original inner mask was lost");
+    } else {
+      assert.equal(retained, input);
+    }
   }
   // Ordinary words and unknown options must advance once too, whether or not a
   // genuine credential follows their quoted flag-looking text.
@@ -474,7 +480,7 @@ test("argv masking resumes after unmasked printed-separator usernames", () => {
       String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
       String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
     ],
-    ['curl --user "alice -p ordinary" --silent', 'curl --user "alice -p ordinary" --silent'],
+    ['curl --user "alice -p ordinary" --silent', 'curl --user "alice -p [redacted:argv] --silent'],
     [
       String.raw`sqlcmd -U alice\t-S\tlocalhost -d sample`,
       String.raw`sqlcmd -U alice\t-S\tlocalhost -d sample`,
@@ -490,36 +496,59 @@ test("argv masking resumes after unmasked printed-separator usernames", () => {
   }
 });
 
-test("argv masking resumes only outside the original username quotes", () => {
+test("argv masking retains raw-token masks inside uncredentialed username quotes", () => {
   const password = `inert${randomString(12, "abcdef")}`;
-  const unchanged = [
-    String.raw`sqlcmd -U 'prefix msg="sqlcmd -P ordinary words"' -S localhost`,
-    String.raw`curl --user "alice\t-p ordinary" --silent`,
-    String.raw`sqlcmd -U "alice\t-P\tordinary" -S localhost`,
-    String.raw`sqlcmd --user="alice smith\t-P ordinary" -S localhost`,
-    String.raw`sqlcmd -U"alice smith\t-P ordinary" -S localhost`,
-    String.raw`sqlcmd -U 'alice\t-P ordinary' -S localhost`,
-    String.raw`sqlcmd -U "alice\"\t-P ordinary" -S localhost`,
-    String.raw`sqlcmd -U "alice smith"\\t-P\\tordinary -S localhost`,
+  const cases: [string, string][] = [
+    [
+      String.raw`sqlcmd -U 'prefix msg="sqlcmd -P ordinary words"' -S localhost`,
+      String.raw`sqlcmd -U 'prefix msg="sqlcmd -P [redacted:argv] words"' -S localhost`,
+    ],
+    [
+      String.raw`curl --user "alice\t-p ordinary" --silent`,
+      String.raw`curl --user "alice\t-p [redacted:argv] --silent`,
+    ],
+    [
+      String.raw`sqlcmd -U "alice\t-P\tordinary" -S localhost`,
+      String.raw`sqlcmd -U "alice\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd --user="alice smith\t-P ordinary" -S localhost`,
+      String.raw`sqlcmd --user="alice smith\t-P [redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U"alice smith\t-P ordinary" -S localhost`,
+      String.raw`sqlcmd -U"alice smith\t-P [redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U 'alice\t-P ordinary' -S localhost`,
+      String.raw`sqlcmd -U 'alice\t-P [redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U "alice\"\t-P ordinary" -S localhost`,
+      String.raw`sqlcmd -U "alice\"\t-P [redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U "alice smith"\\t-P\\tordinary -S localhost`,
+      String.raw`sqlcmd -U "alice smith"\\t-P[redacted:argv] -S localhost`,
+    ],
   ];
-  const cases: [string, string][] = unchanged.map((input) => [input, input]);
-  // The same inner flag-looking text stays readable when a real password flag follows
-  // the closing quote and adjacent quoted/unquoted segments of the username.
+  // The raw scan still reaches the inner flag. Its complete value can overlap
+  // the later real credential; neither protected interval may be shortened.
   for (const flag of ["-U ", "--user=", "-U"]) {
     const username = String.raw`"alice smith\t-P ordinary"suffix' more'`;
     cases.push([
       String.raw`sqlcmd ${flag}${username}\t-P\t"${password} tail" -S localhost`,
-      String.raw`sqlcmd ${flag}${username}\t-P\t[redacted:argv] -S localhost`,
+      String.raw`sqlcmd ${flag}"alice smith\t-P [redacted:argv] -S localhost`,
     ]);
   }
   cases.push(
     [
       String.raw`curl --user "alice\t-p ordinary"\t-p\t"${password} tail" --silent`,
-      String.raw`curl --user "alice\t-p ordinary"\t-p\t[redacted:argv] --silent`,
+      String.raw`curl --user "alice\t-p [redacted:argv] --silent`,
     ],
     [
       String.raw`sqlcmd -U "alice\"\t-P ordinary"\t-P\t${password} -S localhost`,
-      String.raw`sqlcmd -U "alice\"\t-P ordinary"\t-P\t[redacted:argv] -S localhost`,
+      String.raw`sqlcmd -U "alice\"\t-P [redacted:argv] -S localhost`,
     ],
   );
   for (const [input, expected] of cases) {
@@ -536,7 +565,7 @@ test("argv masking preserves conservative masks of ambiguous quoted text", () =>
   const first = `first${randomString(8, "abcdef")}`;
   const last = `last${randomString(8, "abcdef")}`;
   const ordinary = String.raw`"bob -P ordinary"`;
-  const readable = ["-U ", "--user=", "-U"].map(
+  const following = ["-U ", "--user=", "-U"].map(
     (flag) => String.raw`sqlcmd ${flag}"alice smith"\t${ordinary}`,
   );
   const ambiguous = [
@@ -552,12 +581,13 @@ test("argv masking preserves conservative masks of ambiguous quoted text", () =>
     String.raw`sqlcmd --password= ${ordinary}`,
   ];
   const cases: [string, string][] = [];
-  for (const prefix of readable) {
+  for (const prefix of following) {
+    const protectedPrefix = prefix.slice(0, prefix.indexOf("ordinary")) + "[redacted:argv]";
     cases.push(
-      [`${prefix} -S localhost`, `${prefix} -S localhost`],
+      [`${prefix} -S localhost`, `${protectedPrefix} -S localhost`],
       [
         String.raw`${prefix}\t-P\t"${first} ${last}" -S localhost`,
-        String.raw`${prefix}\t-P\t[redacted:argv] -S localhost`,
+        `${protectedPrefix} -S localhost`,
       ],
     );
   }
@@ -584,6 +614,827 @@ test("argv masking preserves conservative masks of ambiguous quoted text", () =>
     assert.equal(record.message, expected, input);
     for (const half of [first, last]) {
       assert.equal(record.message.includes(half), false, "a credential half survived");
+    }
+  }
+});
+
+function legacyTransitionCases(first: string, last: string): [string, string][] {
+  const cases: [string, string][] = [];
+  const clients = [
+    ["sqlcmd", "-U", "-P"],
+    ["sqlcmd", "--user", "-P"],
+    ["curl", "-u", "-p"],
+    ["curl", "--user", "-p"],
+    ["curl", "--proxy-user", "-p"],
+    ["curl", "-U", "-p"],
+    ["smbclient", "-U", "-p"],
+    ["lftp", "-u", "-p"],
+  ] as const;
+  for (const [client, userFlag, secretFlag] of clients) {
+    for (const form of [" ", "=", ...(userFlag.length === 2 ? [""] : [])]) {
+      for (const quote of ['"', "'"]) {
+        const prefix = `${client} ${userFlag}${form}${quote}alice ${secretFlag} `;
+        cases.push([
+          `${prefix}${first}${quote} ${secretFlag} ${last} --verbose`,
+          `${prefix}[redacted:argv] ${secretFlag} [redacted:argv] --verbose`,
+        ]);
+      }
+    }
+  }
+  // An enclosing quote is literal inside the recovered value's own opposite
+  // quoted segment, including after an unquoted prefix.
+  for (const prefix of ["", "prefix"]) {
+    cases.push(
+      [
+        `sqlcmd -U 'alice -P${prefix}"${first}'part ${last}" -S localhost`,
+        "sqlcmd -U 'alice -P[redacted:argv] -S localhost",
+      ],
+      [
+        `sqlcmd -U "alice -P${prefix}'${first}"part ${last}' -S localhost`,
+        'sqlcmd -U "alice -P[redacted:argv] -S localhost',
+      ],
+    );
+  }
+  // A bare prefix followed by the enclosing quote can also begin the value's
+  // own quoted segment. Its concatenated suffix must not consume later options.
+  for (const following of ["-S localhost", '--format="daily report" --verbose']) {
+    cases.push(
+      [
+        `sqlcmd -U 'alice -P${first}Lead'head'middle"chunk ${last}" ${following}`,
+        `sqlcmd -U 'alice -P[redacted:argv] ${following}`,
+      ],
+      [
+        `sqlcmd -U "alice -P${first}Lead"head"middle'chunk ${last}' ${following}`,
+        `sqlcmd -U "alice -P[redacted:argv] ${following}`,
+      ],
+    );
+  }
+  // A real enclosing close can concatenate an opposite-quoted suffix. Its
+  // literal enclosing delimiters and protected space still belong to the value.
+  // Keep balanced EOF distinct from an unterminated quote, and pair the hard
+  // suffix with versions that remove either the space or the literal delimiter.
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const join of ["", " "]) {
+      for (const prefix of [
+        `sqlcmd -U ${outer}alice -P${join}`,
+        `sh -c -u ${outer}exec sqlcmd -P${join}`,
+      ]) {
+        for (const suffix of [
+          `${outer}${inner}${outer} ${last}${outer}${inner}`,
+          `${outer}${inner}${outer}${last}${outer}${inner}`,
+          `${outer}${inner} ${last}${inner}`,
+        ]) {
+          for (const following of ["", " -- --verbose", ' --format="daily report" --verbose']) {
+            cases.push([
+              `${prefix}${first}${suffix}${following}`,
+              `${prefix}[redacted:argv]${following}`,
+            ]);
+          }
+        }
+      }
+    }
+  }
+  cases.push(
+    // The raw scan alone only masks the first word of these main-only matches.
+    [
+      `sqlcmd -U 'alice -P"${first} ${last}"' -S localhost`,
+      "sqlcmd -U 'alice -P[redacted:argv] -S localhost",
+    ],
+    [
+      `curl --user "alice -p'${first} ${last}'" --silent`,
+      'curl --user "alice -p[redacted:argv] --silent',
+    ],
+    [
+      String.raw`sqlcmd -U "alice -P ${first}\ ${last}" -S localhost`,
+      'sqlcmd -U "alice -P [redacted:argv] -S localhost',
+    ],
+    // The original separate-value mask can extend beyond the complete-value end.
+    [`tool --password "${first} ${last}"suffix --verbose`, "tool --password [redacted:argv]"],
+    [
+      `tool --password="${first} ${last}"suffix --verbose`,
+      "tool --password=[redacted:argv] --verbose",
+    ],
+    // Either argv traversal can erase a key used by the other's final text pass.
+    [
+      `sqlcmd -U "alice -P password = ${last}" -S localhost`,
+      'sqlcmd -U "alice -P [redacted:argv] = [redacted:argv]" -S localhost',
+    ],
+    [
+      `sqlcmd -P"${first} password" = ${last} -S localhost`,
+      "sqlcmd -P[redacted:argv] = [redacted:argv] -S localhost",
+    ],
+    // The public head sees an immutable Vault predecessor; preserve its extra masks.
+    [
+      `sqlcmd -P /secret/vault login ${first} -S localhost`,
+      "sqlcmd -P [redacted:argv] login [redacted:argv] -S [redacted:argv]",
+    ],
+  );
+  return cases;
+}
+
+test("argv masking preserves both legacy traversals and final text-rule floors", () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  for (const [input, expected] of legacyTransitionCases(first, last)) {
+    const argv = redactArgvCredentials(input);
+    assert.equal(argv, expected, input);
+    assert.equal(redactRuntimeLogText(argv), expected, input);
+    for (const part of [first, last]) {
+      assert.equal(argv.includes(part), false, "a credential part survived");
+    }
+    const { records } = sanitize(gatewayStream, [input, gatewayJson(input)]);
+    assert.equal(records.length, 2);
+    for (const record of records) {
+      assert.ok(record.type === "line");
+      assert.equal(record.message, expected, input);
+    }
+  }
+});
+
+test("balanced quoted suffixes do not turn ordinary sqlcmd options into credentials", () => {
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const join of ["", " "]) {
+      for (const prefix of [
+        `sqlcmd -U ${outer}alice -Q${join}`,
+        `sh -c -u ${outer}exec sqlcmd -Q${join}`,
+      ]) {
+        const input = `${prefix}ordinaryFirst${outer}${inner}${outer} ordinaryLast${outer}${inner} --format="daily report" --verbose`;
+        assert.equal(redactArgvCredentials(input), input);
+        assert.equal(redactRuntimeLogText(redactArgvCredentials(input)), input);
+        const { records } = sanitize(gatewayStream, [input, gatewayJson(input)]);
+        assert.equal(records.length, 2);
+        for (const record of records) {
+          assert.ok(record.type === "line");
+          assert.equal(record.message, input);
+        }
+      }
+    }
+  }
+});
+
+function sourceMappedBoundaryCases(first: string, last: string) {
+  const cases: {
+    input: string;
+    hidden: string[];
+    kept: string[];
+    expected?: string;
+    keepMessageSuffix?: boolean;
+    keepInMessage?: string[];
+    processed?: { hidden: string[]; kept: string[] };
+  }[] = [];
+  const literal = (value: string, quote: string) =>
+    quote === "'"
+      ? `'${value.replaceAll("'", "'\\''")}'`
+      : `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const join of ["", " "]) {
+      const suffix = literal(` ${last}`, outer);
+      const prefixes = [
+        `sh -c -u ${outer}exec sqlcmd -P${join}${first}${outer}${literal(suffix, inner)}`,
+        `sh -c -u ${outer}exec sqlcmd -P${join}${outer}${literal(first + suffix, inner)}`,
+        `sqlcmd -U ${outer}reader -P${join}${first}${outer}${literal(`chunk${outer} ${last}`, inner)}`,
+        `sqlcmd -U ${outer}reader -P${join}${outer}${literal(`${first}chunk${outer} ${last}`, inner)}`,
+        `sqlcmd -U ${outer}reader -P${join}${first}${outer}${literal(`chunk${outer}${last}`, inner)}`,
+        `sqlcmd -U ${outer}reader -P${join}${first}${outer}${literal(`chunk${outer}`, inner)}\\ ${last}`,
+      ];
+      for (const command of ["sh -c -u", "sqlcmd -U"]) {
+        const context = command === "sh -c -u" ? "exec sqlcmd" : "reader";
+        const option = `--format=${outer}daily report${outer} --verbose`;
+        const input = `${command} ${outer}${context} -P${join}${outer}${literal(first, inner)} -- ${option}`;
+        const suffix = ` report${outer} --verbose`;
+        const start = input.indexOf("-P") + 2;
+        const end = input.indexOf(suffix);
+        cases.push({
+          input,
+          hidden: [first],
+          // An admitted closing quote starts a complete local value. Its
+          // overlap with the following option is protected; the source-disjoint
+          // suffix must remain contiguous at its original position.
+          kept: [join === "" ? suffix : "--verbose"],
+          ...(join === ""
+            ? { expected: input.slice(0, start) + "[redacted:argv]" + input.slice(end) }
+            : {}),
+        });
+      }
+      for (const prefix of prefixes) {
+        // An unrelated later unfinished word cannot change the completed carrier.
+        for (const later of ["", " ''", ' "ordinary words"', " '", ' "unfinished']) {
+          cases.push({
+            input: `${prefix} -- --verbose${later}`,
+            hidden: [first, last],
+            kept: ["--verbose"],
+          });
+        }
+      }
+    }
+  }
+  // The local quote already protects the enclosing close. The later option
+  // overlaps this independently complete value; retain only its disjoint tail.
+  const overlaps = [
+    `sqlcmd -U 'reader -Pprefix"${first}'\\" --format=${last}" report"`,
+    `sqlcmd -U 'reader -P'${first} --format=${last}' report'`,
+    `sh -c -u 'exec sqlcmd -P"${first}'\\" -- --format="${last} report"`,
+  ];
+  for (const input of overlaps) {
+    cases.push({ input, hidden: [first, last], kept: [" report"] });
+  }
+  for (const input of [
+    `sqlcmd -U 'reader -Pprefix"${first}"' --format=${last}" report"`,
+    `sqlcmd -U 'reader -P${first}' --format=${last}' report'`,
+    `sh -c -u 'exec sqlcmd -P"${first}"' -- --format="${last} report"`,
+  ]) {
+    cases.push({ input, hidden: [first], kept: [last, " report"] });
+  }
+  // Empty same-delimiter pieces do not change a directly admitted carrier.
+  // Pair each password with the unrecognized -Q spelling, both quote orders,
+  // and a source-disjoint later option or malformed field.
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const join of ["", " "]) {
+      for (const flag of ["-P", "-Q"]) {
+        for (const later of ["", " -S localhost", " -S localhost note='unfinished"]) {
+          const kept = later === "" ? [] : ["-S localhost"];
+          for (const ending of [
+            `${outer}${outer} ${last}${outer}`,
+            `${outer}${inner} ${last}${inner}`,
+            `${outer}${outer}${inner}x y${inner} ${last}${outer}`,
+            `${outer}${outer}${inner}x y${inner}${outer}${outer} ${last}${outer}`,
+          ]) {
+            const input = `sqlcmd -U ${outer}reader ${flag}${join}${first}${ending}${later}`;
+            cases.push(
+              flag === "-P"
+                ? { input, hidden: [first, last], kept }
+                : { input, hidden: [], kept: [first, last, ...kept], expected: input },
+            );
+          }
+        }
+        // Both public scanner admissions must survive an earlier username mask.
+        // Removing the username's split gives the equivalent legacy admission.
+        for (const username of [`${outer}alice:x${outer}suffix`, "alice:xsuffix"]) {
+          for (const later of ["", " -- --verbose", " -- --verbose note='unfinished"]) {
+            const input = `sh -c ${outer}exec sqlcmd -U ${username} ${flag}${join}${first}${outer}${literal(`${outer} ${last}${outer}`, inner)}${later}`;
+            const kept = later === "" ? [] : ["--verbose"];
+            // The legacy username floor can already cover the first -Q tag.
+            // At double-quoted EOF the published encoded floor also owns the
+            // message suffix. Require only source-disjoint surviving context.
+            cases.push(
+              flag === "-P"
+                ? {
+                    input,
+                    hidden: [first, last],
+                    kept,
+                    keepMessageSuffix: outer !== '"' || later !== "",
+                  }
+                : { input, hidden: [], kept: [last, ...kept] },
+            );
+          }
+        }
+      }
+    }
+    // A separator in a source-disjoint filename cannot qualify the preceding
+    // username. The real password and inner -S controls keep the same boundary.
+    for (const [client, flag, separator] of [
+      ["curl", "-u ", ":"],
+      ["curl", "-u", ":"],
+      ["curl", "--user=", ":"],
+      ["smbclient", "--user=", "%"],
+      ["lftp", "-u ", ","],
+    ] as const) {
+      for (const piece of ["", `${outer}${outer}`]) {
+        for (const filenameSeparator of [separator, "."]) {
+          const input = `sh -c ${outer}exec ${client} ${flag}alice${piece} --output log${filenameSeparator}daily${outer} --verbose`;
+          cases.push({ input, hidden: [], kept: ["--output", "--verbose"], expected: input });
+        }
+        const input = `sh -c ${outer}exec ${client} ${flag}alice${separator}${first}${piece} --output log${separator}daily${outer} --verbose`;
+        cases.push({ input, hidden: [first], kept: ["--output", "--verbose"] });
+      }
+    }
+    for (const piece of ["", `${outer}${outer}`]) {
+      cases.push({
+        input: `sh -c ${outer}exec sqlcmd -P${first}${piece} -S localhost${outer} --verbose`,
+        hidden: [first],
+        kept: ["-S localhost", "--verbose"],
+      });
+    }
+  }
+  // Equivalent literal spellings keep a projected credential complete across
+  // printed escapes, while a separately delimited option retains its source.
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const join of ["", " "]) {
+      for (const flag of ["-P", "-Q"]) {
+        for (const gap of ["n", String.raw`\n`, "u0009", String.raw`\u0009`]) {
+          const input = `sh -c ${outer}exec sqlcmd ${flag}${join}${first}${outer}${inner}${outer} X${inner}${gap}${inner}${last}${outer}${inner} --verbose`;
+          cases.push(
+            flag === "-P"
+              ? { input, hidden: [first, last], kept: ["--verbose"] }
+              : { input, hidden: [], kept: [first, last, "--verbose"], expected: input },
+          );
+        }
+      }
+      for (const option of [
+        "-S",
+        `${inner}-S${inner}`,
+        `${inner}-${inner}S`,
+        `${inner}${inner}-S`,
+        String.raw`\-S`,
+        `${inner}--host${inner}`,
+      ]) {
+        for (const piece of ["", `${outer}${outer}`]) {
+          cases.push({
+            input: `sh -c ${outer}exec sqlcmd -P${join}${first}${piece} ${option} localhost${outer} --verbose`,
+            hidden: [first],
+            kept: [`${option} localhost`, "--verbose"],
+          });
+        }
+      }
+    }
+    for (const [client, flag, separator] of [
+      ["curl", "-u ", ":"],
+      ["smbclient", "--user=", "%"],
+      ["lftp", "-u ", ","],
+    ] as const) {
+      const option = `${inner}--output=report${separator}${last}${inner}`;
+      for (const own of ["alice", `alice${separator}${first}`]) {
+        const input = `sh -c ${outer}exec ${client} ${flag}${own}${outer}${outer} ${option}${outer} --verbose`;
+        cases.push({
+          input,
+          hidden: own === "alice" ? [] : [first],
+          kept: [option, "--verbose"],
+          ...(own === "alice" ? { expected: input } : {}),
+        });
+      }
+    }
+  }
+  // Removing outer syntax in an admitted flag/value gap does not consume an
+  // inner argument. The next literal word supplies the value; its quoted or
+  // escaped leading dash differs from a missing value followed by a bare option.
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const position of ["flag", "value"]) {
+      for (const piece of ["", outer + outer]) {
+        const join = (flag: string, value: string) =>
+          position === "flag" ? `${flag}${piece} ${value}` : `${flag} ${piece}${value}`;
+        const valueEdgeFloor = position === "value" && piece !== "";
+        for (const flag of ["-P", "-Q"]) {
+          for (const value of [
+            `${inner}${first} ${last}${inner}`,
+            `${inner}-${first} ${last}${inner}`,
+            `\\-${first}`,
+          ]) {
+            const input = `sh -c ${outer}exec sqlcmd ${join(flag, value)} -S localhost${outer} --verbose`;
+            cases.push({
+              input,
+              hidden: flag === "-P" ? [first, ...(value.includes(last) ? [last] : [])] : [],
+              // The legacy floor already owns an option after a local word
+              // beginning at the removed value-edge quote. Keep its disjoint tail.
+              kept: [
+                ...(valueEdgeFloor && flag === "-P" ? [] : ["-S localhost"]),
+                "--verbose",
+                ...(flag === "-Q" ? [first] : []),
+              ],
+              ...(flag === "-Q" ? { expected: input } : {}),
+            });
+          }
+        }
+        for (const value of [`${inner}${inner}`, "-S", "[redacted:argv]"]) {
+          const input = `sh -c ${outer}exec sqlcmd ${join("-P", value)} -L localhost${outer} --verbose`;
+          cases.push({
+            input,
+            hidden: [],
+            kept: [...(valueEdgeFloor ? [] : ["-L localhost"]), "--verbose"],
+          });
+        }
+        const emptyEquals = `sh -c ${outer}exec sqlcmd -P=${piece} ordinary -S localhost${outer} --verbose`;
+        cases.push({
+          input: emptyEquals,
+          hidden: [],
+          kept: ["ordinary", "-S localhost", "--verbose"],
+        });
+        const path = `sh -c ${outer}exec mysql ${join("-p", `/work/${first}`)} -S localhost${outer} --verbose`;
+        const pathKept = ["--verbose"];
+        if (piece === "") {
+          pathKept.unshift(first, "-S localhost");
+        } else if (position === "flag") {
+          pathKept.unshift("-S localhost");
+        }
+        cases.push({ input: path, hidden: [], kept: pathKept });
+      }
+    }
+    // A longer projected reading and a shorter complete local reading can
+    // both end before a genuine option. Neither needs the optional carrier tail.
+    for (const option of ["-S", `${outer}-S${outer}`]) {
+      const prefix = `exec sqlcmd -P${first}`;
+      const suffix = `${outer} ${last}${outer} ${option} localhost`;
+      const base = `sh -c ${inner}${prefix}${suffix}${inner} --verbose`;
+      const split = `sh -c ${outer}${prefix}${outer}${inner}${suffix}${inner} --verbose`;
+      for (const input of [base, split]) {
+        cases.push({
+          input,
+          hidden: [first, last],
+          kept: [`${option} localhost`, "--verbose"],
+          // This encoded spelling already has an overlapping public-head mask.
+          ...(outer === '"' && input === split ? { keepInMessage: ["--verbose"] } : {}),
+        });
+      }
+    }
+  }
+  // A zero-emission attachment belongs to the already observed short flag.
+  // A distinct empty operand or equals assignment consumes its own slot.
+  for (const [client, flag, username] of [
+    ["sqlcmd", "-P", ""],
+    ["redis-cli", "-a", ""],
+    ["mysql", "-p", ""],
+    ["curl", "-u", "reader:"],
+    ["smbclient", "-U", "reader%"],
+    ["lftp", "-u", "reader,"],
+  ] as const) {
+    for (const [outer, inner] of [
+      ["'", '"'],
+      ['"', "'"],
+    ] as const) {
+      const value = `${inner}${username}${first} ${last}${inner}`;
+      for (const suffix of [
+        "",
+        outer + outer,
+        (outer + outer).repeat(3),
+        outer + outer + inner + inner,
+      ]) {
+        cases.push({
+          input: `exec ${client} ${flag}${suffix} ${value} --display local`,
+          hidden: [first, last],
+          kept: ["--display local"],
+        });
+      }
+      for (const suffix of [inner + inner, (inner + inner).repeat(3), outer + outer]) {
+        cases.push({
+          input: `sh -c ${outer}exec ${client} ${flag}${suffix} ${value} --display local${outer} --outer`,
+          hidden: [first, last],
+          kept: ["--display local", "--outer"],
+        });
+      }
+      for (const segment of [
+        `${flag} ${outer}${outer} ${value}`,
+        `${flag}${outer}${outer} ${inner}${inner} ${value}`,
+        `${flag}= ${value}`,
+        `${flag}=${outer}${outer} ${value}`,
+        `${flag}${outer}${outer}= ${value}`,
+        `${flag}${outer}${outer}${username}${first} ${last}`,
+      ]) {
+        cases.push({
+          input: `exec ${client} ${segment} --display local`,
+          hidden: [],
+          kept: [last, "--display local"],
+        });
+      }
+      for (const suffix of [outer + outer, (outer + outer).repeat(2)]) {
+        cases.push({
+          input: `exec ${client} ${flag}${suffix} --display local`,
+          hidden: [],
+          kept: ["--display local"],
+        });
+        const unknown = `exec ${client} -Q${suffix} ${value} --display local`;
+        cases.push({
+          input: unknown,
+          hidden: [],
+          kept: [first, last, "--display local"],
+          expected: unknown,
+        });
+      }
+      const guarded = `sh -c ${outer}exec ${client} ${flag}${outer}${outer} --display${outer} ${value} --outer`;
+      cases.push({
+        input: guarded,
+        hidden: [],
+        kept: [first, last, "--display", "--outer"],
+      });
+    }
+  }
+  for (const quote of ["'", '"']) {
+    for (const path of [
+      `/${first}/${last}`,
+      `~/${first}/${last}`,
+      `./${first}/${last}`,
+      `../${first}/${last}`,
+    ]) {
+      cases.push({
+        input: `exec mkdir -p${quote}${quote} ${quote}${path}${quote} --display local`,
+        hidden: [],
+        kept: [first, last, "--display local"],
+      });
+    }
+    cases.push({
+      input: `exec sqlcmd -P${quote}${quote} [redacted:argv] ${quote}${first} ${last}${quote} --display local`,
+      hidden: [],
+      kept: [first, last, "--display local"],
+    });
+    const wrong = `exec sqlcmd-wrapper -P${quote}${quote} ${quote}${first} ${last}${quote} --display local`;
+    cases.push({
+      input: wrong,
+      hidden: [],
+      kept: [first, last, "--display local"],
+      expected: wrong,
+    });
+  }
+  // A later separate option bounds only the optional carrier continuation.
+  // The lookalike inside the credential stays protected, including after
+  // a carrier split, an intervening host, or a genuine empty argument.
+  for (const [client, flag, username] of [
+    ["sqlcmd", "-P", ""],
+    ["curl", "-u", "reader:"],
+    ["smbclient", "-U", "reader%"],
+    ["lftp", "-u", "reader,"],
+  ] as const) {
+    for (const [outer, inner] of [
+      ["'", '"'],
+      ['"', "'"],
+    ] as const) {
+      for (const protectedOption of [false, true]) {
+        const value = protectedOption
+          ? `${inner}${username}${first} --inside ${last}${inner}`
+          : `${username}${first}`;
+        for (const piece of ["", outer + outer]) {
+          for (const middle of ["", "host.invalid ", `${inner}${inner} `]) {
+            for (const option of ["--display", `${inner}--display${inner}`]) {
+              cases.push({
+                input: `sh -c ${outer}exec ${client} ${flag}${value}${piece} ${middle}${option} local${outer} --outer`,
+                hidden: protectedOption ? [first, last, "--inside"] : [first],
+                kept: [`${option} local`, "--outer"],
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  // A projected value can finish inside a larger complete word. Only a
+  // separately delimited later option bounds the optional carrier coverage.
+  for (const [outer, inner] of [
+    ["'", '"'],
+    ['"', "'"],
+  ] as const) {
+    for (const split of ["", outer + outer]) {
+      for (const middle of ["", "host.invalid ", inner + inner + " "]) {
+        for (const option of ["--display", inner + "--display" + inner]) {
+          cases.push({
+            input: `sh -c ${outer}wrapper ${inner}exec sqlcmd -P${first}${split} --inside ${last}${inner} ${middle}${option} local${outer} --outer`,
+            hidden: [first],
+            kept: [`${option} local`, "--outer"],
+          });
+        }
+      }
+    }
+  }
+  // Empty source pieces around '=' do not assign the next positional word.
+  // A fourth emitted unit proves a nonempty assignment and retains its mask.
+  const nextFirst = `cedar${first.slice(5)}`;
+  const nextLast = `willow${last.slice(4)}`;
+  for (const [client, flag] of [
+    ["sqlcmd", "-P"],
+    ["redis-cli", "-a"],
+    ["mysql", "-p"],
+  ] as const) {
+    for (const [outer, inner] of [
+      ["'", '"'],
+      ['"', "'"],
+    ] as const) {
+      for (const [spelling, assigned] of [
+        [flag + "=", []],
+        [flag + outer + outer + "=", []],
+        [flag + "=" + outer + outer, []],
+        [flag + outer + outer + "=" + inner + inner, []],
+        [flag + outer.repeat(8) + "=" + inner + inner + outer + outer, []],
+        [flag + outer + outer + "=" + first, [first]],
+        [flag + "=" + outer + outer + first, [first]],
+        [flag + outer + outer + "=" + inner + first + " " + last + inner, [first, last]],
+        [flag + outer + outer + "==" + first, [first]],
+      ] as const) {
+        cases.push({
+          input: `sh -c ${outer}exec ${client} ${spelling} ${inner}${nextFirst} ${nextLast}${inner} --display local${outer} --outer`,
+          hidden: [...assigned],
+          kept: [
+            ...(assigned.length === 0 ? [nextFirst, nextLast] : []),
+            "--display local",
+            "--outer",
+          ],
+        });
+      }
+    }
+  }
+  const plain = cases.slice();
+  for (const field of ["msg", "message"]) {
+    for (const row of plain) {
+      cases.push({
+        ...row,
+        input: `level=info ${field}=${JSON.stringify(row.input)} event=ready`,
+        kept: [
+          ...(row.keepInMessage ?? row.kept).map((part) => JSON.stringify(part).slice(1, -1)),
+          ...(row.keepMessageSuffix === false ? [] : ["event=ready"]),
+        ],
+        ...(row.expected === undefined
+          ? {}
+          : { expected: `level=info ${field}=${JSON.stringify(row.expected)} event=ready` }),
+      });
+    }
+  }
+  // A raw client supplies policy only to the admission that originated in
+  // this field. The decoded view supplies that username's own separator.
+  for (const [client, wrongClient, flag, separator] of [
+    ["smbclient", "lftp", "-U", "%"],
+    ["smbclient", "lftp", "--user", "%"],
+    ["lftp", "smbclient", "-u", ","],
+  ] as const) {
+    for (const join of flag.startsWith("--") ? [" ", "="] : [" ", "", "="]) {
+      for (const [outer, inner] of [
+        ["'", '"'],
+        ['"', "'"],
+      ] as const) {
+        for (const field of ["msg", "message"]) {
+          for (const mode of ["password", "wrong-client", "filename-only"]) {
+            const own =
+              mode === "filename-only" ? "alice smith" : `alice smith${separator}${first} ${last}`;
+            const prefix = `${client} ${flag}${join}alice`;
+            const option =
+              mode === "filename-only" ? `--output=report${separator}daily` : "--output";
+            const suffix = `${outer}${own.slice(5)}${outer} ${option} localhost`;
+            const base = `sh -c ${inner}${prefix}${suffix}${inner} --verbose`;
+            const split = `sh -c ${outer}${prefix}${outer}${inner}${suffix}${inner} --verbose`;
+            for (const plain of [base, split]) {
+              const disjointOption = outer !== '"' || plain === base || mode === "wrong-client";
+              const leading = mode === "wrong-client" ? wrongClient : client;
+              const input = `${leading} ${field}=${JSON.stringify(plain)} event=ready`;
+              cases.push({
+                input,
+                hidden: mode === "password" ? [first, last] : [],
+                kept: [
+                  ...(disjointOption ? [JSON.stringify(`${option} localhost`).slice(1, -1)] : []),
+                  "--verbose",
+                  "event=ready",
+                ],
+                ...(mode !== "password" && disjointOption ? { expected: input } : {}),
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  // Policy from a raw client remains attached to its own field admission.
+  // A separator in a disjoint filename never qualifies a username operand.
+  for (const [client, wrong, flag, separator] of [
+    ["sqlcmd", "sqlcmd-wrapper", "-P", ""],
+    ["smbclient", "lftp", "-U", "%"],
+    ["lftp", "smbclient", "-u", ","],
+  ] as const) {
+    for (const quote of ["'", '"']) {
+      for (const field of ["msg", "message"]) {
+        for (const mode of ["password", "wrong-client", "filename-only"]) {
+          const own =
+            mode === "filename-only"
+              ? "reader ordinary"
+              : `reader ordinary${separator}${first} ${last}`;
+          const leading = mode === "wrong-client" ? wrong : client;
+          const operand = `launch ${flag}${quote}${quote} ${quote}${own}${quote} --file=report${separator}daily --end`;
+          const input = `${leading} ${field}=${JSON.stringify(operand)} event=ready`;
+          cases.push({
+            input,
+            hidden: mode === "password" ? [first, last] : [],
+            kept: [
+              ...(mode === "wrong-client" ? [first, last] : []),
+              `--file=report${separator}daily`,
+              "--end",
+              "event=ready",
+            ],
+          });
+        }
+      }
+    }
+  }
+  // A shorter once-decoded field reading never replaces its independently
+  // complete raw reading. Also retain the opposite length order and a public
+  // cursor that reaches the flag without a preceding username.
+  for (const [client, flag] of [
+    ["sqlcmd", "-P"],
+    ["redis-cli", "-a"],
+    ["mysql", "-p"],
+  ] as const) {
+    for (const placement of ["inside", "outside"] as const) {
+      for (const field of ["msg", "message", "note"]) {
+        const leader = placement === "inside" ? "level=info" : client;
+        const command = placement === "inside" ? `run ${client}` : "run";
+        for (const prefix of ["-U 'reader ", ""]) {
+          const body = `${command} ${prefix}${flag}${first}\\' ${last}\\' --display local`;
+          cases.push({
+            input: `${leader} ${field}=${JSON.stringify(body)} event=ready`,
+            hidden: [first, last],
+            kept: ["--display local", "event=ready"],
+          });
+        }
+        if (field !== "note") {
+          const body = `${command} ${flag}"${first} ${last}" --display local`;
+          cases.push({
+            input: `${leader} ${field}=${JSON.stringify(body)} event=ready`,
+            hidden: [first, last],
+            kept: ["--display local", "event=ready"],
+          });
+        }
+      }
+    }
+  }
+  // A physical continuation emits no raw word. Stripping changes its LF to
+  // a space, which makes a different, present operand. Keep those assertions
+  // separate; only the actual processed-input obligations reach consumers.
+  const continuation = "\\" + "\n";
+  for (const [client, flag, user] of [
+    ["sqlcmd", "-P", ""],
+    ["redis-cli", "-a", ""],
+    ["mysql", "--password", ""],
+    ["curl", "-u", "reader:"],
+    ["smbclient", "-U", "reader%"],
+    ["lftp", "-u", "reader,"],
+  ] as const) {
+    for (const carrier of [false, true]) {
+      for (const [gap, presentEmpty] of [
+        ["", false],
+        [continuation + " ", false],
+        [(continuation + " ").repeat(3), false],
+        ['"" ', true],
+        [continuation + ' "" ', true],
+      ] as const) {
+        const command = `exec ${client} ${flag} ${gap}"${user}${first} ${last}" --display local`;
+        const input = carrier ? `sh -c '${command}' --outer` : command;
+        const kept = ["--display local", ...(carrier ? ["--outer"] : [])];
+        cases.push({
+          input,
+          hidden: presentEmpty ? [] : [first, last],
+          kept: [...(presentEmpty ? [first, last] : []), ...kept],
+          ...(input.includes("\n") ? { processed: { hidden: [], kept } } : {}),
+        });
+      }
+      if (carrier) {
+        cases.push({
+          input: `sh -c 'exec ${client} ${flag} ${continuation} --display' "${user}${first} ${last}" --outer`,
+          hidden: [],
+          kept: [first, last, "--display", "--outer"],
+          processed: { hidden: [], kept: ["--display", "--outer"] },
+        });
+      }
+    }
+  }
+  return cases;
+}
+
+test("complete source-mapped credentials survive equivalent spelling and later malformed fields", () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  for (const { input, hidden, kept, expected, processed } of sourceMappedBoundaryCases(
+    first,
+    last,
+  )) {
+    const argv = redactArgvCredentials(input);
+    const clean = redactRuntimeLogText(redactArgvCredentials(stripRuntimeLogControls(input)));
+    for (const row of [
+      { text: argv, hidden, kept },
+      { text: clean, ...(processed ?? { hidden, kept }) },
+    ]) {
+      const { text } = row;
+      for (const part of row.hidden) {
+        assert.equal(text.includes(part), false, "a complete credential part survived");
+      }
+      for (const part of row.kept) {
+        assert.ok(text.includes(part), "disjoint log context disappeared");
+      }
+      if (expected !== undefined) {
+        assert.equal(text, expected, "source-position overlap changed");
+      }
+    }
+    const { records } = sanitize(gatewayStream, [input, gatewayJson(input)]);
+    assert.equal(records.length, 2);
+    for (const record of records) {
+      assert.ok(record.type === "line");
+      for (const part of processed?.hidden ?? hidden) {
+        assert.equal(record.message.includes(part), false);
+      }
+      for (const part of processed?.kept ?? kept) {
+        assert.ok(record.message.includes(part));
+      }
+      if (expected !== undefined) {
+        assert.equal(record.message, expected);
+      }
     }
   }
 });
@@ -626,7 +1477,7 @@ function conservativeMessageCases(first: string, last: string): [string, string]
     cases.push(
       [
         encode(`run sqlcmd --title="bob -P ordinary" -P "${first} ${last}" -S localhost`),
-        `${prefix}run sqlcmd --title=\\"bob -P [redacted:argv] -P [redacted:argv] -S localhost" event=ready`,
+        `${prefix}run sqlcmd --title=\\"bob -P [redacted:argv] -S localhost" event=ready`,
       ],
       [
         encode('run sqlcmd --title="bob -P ordinary" -S localhost'),
@@ -699,11 +1550,11 @@ test("Controller log pages and downloads mask quoted and printed-separator crede
     ],
     [
       String.raw`sqlcmd -U "alice\t-P ordinary"\t-P\t"${first} ${last}" -S localhost`,
-      String.raw`sqlcmd -U "alice\t-P ordinary"\t-P\t[redacted:argv] -S localhost`,
+      String.raw`sqlcmd -U "alice\t-P [redacted:argv] -S localhost`,
     ],
     [
       String.raw`curl --user "alice\t-p ordinary" --silent`,
-      String.raw`curl --user "alice\t-p ordinary" --silent`,
+      String.raw`curl --user "alice\t-p [redacted:argv] --silent`,
     ],
     ['mysql --host="read replica" --port=3306', 'mysql --host="read replica" --port=3306'],
     [
@@ -711,19 +1562,20 @@ test("Controller log pages and downloads mask quoted and printed-separator crede
       String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
     ],
   ] satisfies [string, string][];
-  // The second quoted word is ordinary argv text. Its inner -P must not consume
-  // the first half of the genuine value and leave the second half in either response.
+  // Main already masks the inner -P in this second quoted word. Preserve that
+  // mask and the complete later credential in both Controller responses.
   for (const flag of ["-U ", "--user=", "-U"]) {
     const prefix = String.raw`sqlcmd ${flag}"alice smith"\t"bob -P ordinary"`;
+    const protectedPrefix = prefix.slice(0, prefix.indexOf("ordinary")) + "[redacted:argv]";
     cases.push(
-      [`${prefix} -S localhost`, `${prefix} -S localhost`],
+      [`${prefix} -S localhost`, `${protectedPrefix} -S localhost`],
       [
         String.raw`${prefix}\t-P\t"${first} ${last}" -S localhost`,
-        String.raw`${prefix}\t-P\t[redacted:argv] -S localhost`,
+        `${protectedPrefix} -S localhost`,
       ],
     );
   }
-  cases.push(...conservativeMessageCases(first, last));
+  cases.push(...conservativeMessageCases(first, last), ...legacyTransitionCases(first, last));
   const overLimit = 'sqlcmd -P "' + first + " ".repeat(9 * 1024) + last + '" -S localhost';
   // The existing fixture selects the production Controller route and serializers.
   // Only the Compute Driver's returned log lines are controlled by this test.
@@ -760,6 +1612,49 @@ test("Controller log pages and downloads mask quoted and printed-separator crede
   assert.equal(lines.length, transports.length, download.text);
   for (const [index, { expected }] of transports.entries()) {
     assert.ok(lines[index]?.endsWith(expected), `download lacks ${expected}`);
+  }
+});
+
+test("Controller responses retain source-mapped credential boundaries", async () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  const rows = sourceMappedBoundaryCases(first, last).flatMap((row) => [
+    { ...row, ...row.processed, raw: row.input },
+    { ...row, ...row.processed, raw: gatewayJson(row.input) },
+  ]);
+  // Exercise every row through the real page and download consumer without
+  // exceeding one response's line limit or one fixture's request rate limit.
+  for (let offset = 0; offset < rows.length; offset += 400) {
+    const route = await logsRoute();
+    const batch = rows.slice(offset, offset + 400);
+    route.state.lines = batch.map(({ raw }, index) => ({
+      time: `2026-09-30T12:00:00.${String(index).padStart(9, "0")}Z`,
+      raw,
+    }));
+    const page = await route.read({ tailLines: 1000 });
+    assert.equal(page.status, 200, page.text);
+    assert.ok(Check(AgentRuntimeLogsResponse, page.body));
+    assert.equal(page.body.data.records.length, batch.length);
+    const download = await route.read({ download: true, tailLines: 1000 });
+    assert.equal(download.status, 200, download.text);
+    const lines = download.text.trimEnd().split("\n").slice(1);
+    assert.equal(lines.length, batch.length);
+    for (const [index, row] of batch.entries()) {
+      const record: RuntimeLogRecord | undefined = page.body.data.records[index];
+      assert.ok(record?.type === "line");
+      if (row.expected !== undefined) {
+        assert.equal(record.message, row.expected);
+        assert.ok(lines[index]!.endsWith(row.expected), "download source-position overlap changed");
+      }
+      for (const text of [record.message, lines[index]!]) {
+        for (const part of row.hidden) {
+          assert.equal(text.includes(part), false);
+        }
+        for (const part of row.kept) {
+          assert.ok(text.includes(part));
+        }
+      }
+    }
   }
 });
 

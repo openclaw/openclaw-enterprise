@@ -702,8 +702,8 @@ function hasTextEdits(value: string): boolean {
 }
 
 /** One logfmt string layer, retaining printed gaps rather than emitting controls. */
-function messageSpans(value: string): Span[] {
-  const spans: Span[] = [];
+function supportedMessages(value: string) {
+  const fields: { text: string; boundaries: number[] }[] = [];
   const printedEscape = new RegExp(ESCAPE, "y");
   let at = 0;
   let boundary = true;
@@ -734,9 +734,7 @@ function messageSpans(value: string): Span[] {
         }
         boundaries.push(cursor);
       }
-      for (const span of argvSpans(decoded.join(""), true)) {
-        spans.push({ start: boundaries[span.start]!, end: boundaries[span.end]! });
-      }
+      fields.push({ text: decoded.join(""), boundaries });
       at = cursor < value.length ? cursor + 1 : value.length;
       boundary = false;
       continue;
@@ -775,32 +773,184 @@ function messageSpans(value: string): Span[] {
     }
     at += 1;
   }
+  return fields;
+}
+
+function messageSpans(fields: ReturnType<typeof supportedMessages>): Span[] {
+  const spans: Span[] = [];
+  for (const field of fields) {
+    for (const span of argvSpans(field.text, true)) {
+      spans.push({ start: field.boundaries[span.start]!, end: field.boundaries[span.end]! });
+    }
+  }
   return spans;
 }
 
-/** Keep the published argv and ordered text masks as a source-position floor. */
-export function redactArgvCredentials(value: string): string {
-  const published = argvSpans(value, false);
-  const merged = mergeSpans(mergeSpans(published, argvSpans(value, true)), messageSpans(value));
+type AdmissionForm = "separate" | "short" | "equals" | "positional";
+interface ArgvAdmission {
+  readonly span: Span;
+  readonly flag?: string | undefined;
+  readonly flagStart: number;
+  readonly flagEnd: number;
+  readonly form: AdmissionForm;
+  readonly separators: string;
+  readonly conditional: boolean;
+  readonly runsOn: boolean;
+  readonly joined: boolean;
+  readonly admitted: boolean;
+}
+interface AdmissionReading {
+  /** Complete independent values; a competing reading cannot shorten these. */
+  readonly mandatory: readonly Span[];
+  /** Only this admission's eligible operand can supply its separator. */
+  readonly own: readonly Span[];
+  /** Established incomplete-input handling in this reading's coordinate space. */
+  readonly fallback: readonly Span[];
+  /** Conservative carrier coverage, bounded without clipping a complete value. */
+  readonly optional: readonly Span[];
+}
+type FieldRecovery = (item: ArgvAdmission) => AdmissionReading | undefined;
+
+/** Observe the actual recognition branch without steering either public cursor. */
+function publicScan(value: string, quoteAware: boolean, context: ArgvContext) {
+  const admissions: ArgvAdmission[] = [];
+  const exact = argvSpans(value, quoteAware, context, (item) => admissions.push(item));
+  return { exact, admissions };
+}
+
+function completeAdmissions(
+  admissions: readonly ArgvAdmission[],
+  context: ArgvContext,
+  recover?: readonly (FieldRecovery | undefined)[],
+): Span[] {
+  // A lifted or relocated operand need not follow scanner admission order.
+  // Bucket all completion ranges in the destination coordinate space.
+  let ends: Uint32Array | undefined;
+  const add = (spans: readonly Span[]) => {
+    for (const span of spans) {
+      if (span.end > span.start) {
+        ends ??= new Uint32Array(context.length + 1);
+        ends[span.start] = Math.max(ends[span.start]!, span.end);
+      }
+    }
+  };
+  for (const item of admissions) {
+    const field = recover?.[item.span.start]?.(item);
+    const local = context.readAdmission(item);
+    let admitted = item.admitted || (item.conditional && item.runsOn);
+    if (!admitted && item.conditional) {
+      admitted = [...local.own, ...(field?.own ?? [])].some((own) =>
+        context.containsSeparator(item.separators, own.start, own.end),
+      );
+    }
+    if (admitted) {
+      add(local.mandatory);
+      if (field !== undefined) {
+        add(field.mandatory);
+      }
+      // The containing field owns only its discretionary coverage. An empty
+      // field result is meaningful and must not fall back to the wrapper.
+      const coverage = field ?? local;
+      add(coverage.fallback);
+      add(coverage.optional);
+    }
+  }
+  const spans: Span[] = [];
+  if (ends !== undefined) {
+    for (let start = 0; start < ends.length; start += 1) {
+      if (ends[start]! > start) {
+        spans.push({ start, end: ends[start]! });
+      }
+    }
+  }
+  return mergeSpans([], spans);
+}
+
+/** Once-decoded starts carry their original policy into only the containing field. */
+function messageRecovery(value: string, fields: ReturnType<typeof supportedMessages>) {
+  const at = new Array<FieldRecovery | undefined>(value.length);
+  const spans: Span[] = [];
+  for (const field of fields) {
+    const context = argvContext(field.text);
+    const raw = publicScan(field.text, false, context);
+    const quoted = publicScan(field.text, true, context);
+    const first = field.boundaries[0]!;
+    const last = field.boundaries[field.boundaries.length - 1]!;
+    const indices = new Uint32Array(last - first + 1);
+    for (let index = 0; index + 1 < field.boundaries.length; index += 1) {
+      indices.fill(index, field.boundaries[index]! - first, field.boundaries[index + 1]! - first);
+    }
+    indices[last - first] = field.text.length;
+    const lift = (span: Span): Span => ({
+      start: field.boundaries[span.start]!,
+      end: field.boundaries[span.end]!,
+    });
+    const map = (offset: number) => indices[Math.max(0, Math.min(last - first, offset - first))]!;
+    const recover: FieldRecovery = (item) => {
+      if (
+        item.flagStart < first ||
+        item.flagEnd > last ||
+        item.span.start < first ||
+        item.span.start >= last
+      ) {
+        return undefined;
+      }
+      const reading = context.readAdmission({
+        ...item,
+        span: { start: map(item.span.start), end: map(item.span.end) },
+        flagStart: map(item.flagStart),
+        flagEnd: map(item.flagEnd),
+      });
+      return {
+        mandatory: reading.mandatory.map(lift),
+        own: reading.own.map(lift),
+        fallback: reading.fallback.map(lift),
+        optional: reading.optional.map(lift),
+      };
+    };
+    at.fill(recover, first, last);
+    const legacy = legacyArgvSpans(context);
+    spans.push(
+      ...mergeSpans(
+        legacy.complete,
+        mergeSpans(
+          completeAdmissions(raw.admissions, context),
+          completeAdmissions(quoted.admissions, context),
+        ),
+      ).map(lift),
+    );
+  }
+  return { at, spans: mergeSpans([], spans) };
+}
+
+interface ArgvResult {
+  readonly text: string;
+  readonly mapped?: MappedText;
+}
+const sameSpans = (left: readonly Span[], right: readonly Span[]): boolean =>
+  left.length === right.length &&
+  left.every((span, index) => span.start === right[index]!.start && span.end === right[index]!.end);
+
+/** The complete-value redactor's actual return, including its text-rule fallback. */
+function publishedArgv(
+  value: string,
+  published: readonly Span[],
+  merged: readonly Span[],
+): ArgvResult {
   const output = renderEdits(value, argvEdits(merged));
-  if (
-    merged.length === published.length &&
-    merged.every(
-      (span, index) => span.start === published[index]!.start && span.end === published[index]!.end,
-    )
-  ) {
-    return output;
+  if (sameSpans(merged, published)) {
+    return { text: output };
   }
 
   if (!hasTextEdits(renderEdits(value, argvEdits(published)))) {
-    return output;
+    return { text: output };
   }
   const source = sourceText(value);
   const suppressed = new Uint8Array(value.length);
   const oldText = mappedTextRules(mappedEdits(source, argvEdits(published)), suppressed);
   const newText = mappedTextRules(mappedEdits(source, argvEdits(merged)));
   if (!newText.origins.some((origin) => origin >= 0 && suppressed[origin] === 1)) {
-    return output;
+    return { text: output };
   }
 
   // An added argv mask can erase a text-rule key. Overlay it on the already protected
@@ -831,7 +981,26 @@ export function redactArgvCredentials(value: string): string {
     }
   }
   finish(oldText.text.length);
-  return renderEdits(oldText.text, argvEdits(overlays));
+  const mapped = mappedEdits(oldText, argvEdits(overlays));
+  return { text: mapped.text, mapped };
+}
+
+/** Replace surviving source units only; existing generated markers stay intact. */
+function overlayOrigins(value: MappedText, suppressed: Uint8Array): MappedText {
+  const spans: Span[] = [];
+  let start = -1;
+  for (let at = 0; at <= value.text.length; at += 1) {
+    const origin = value.origins[at] ?? -1;
+    if (origin >= 0 && suppressed[origin] === 1) {
+      if (start === -1) {
+        start = at;
+      }
+    } else if (start !== -1) {
+      spans.push({ start, end: at });
+      start = -1;
+    }
+  }
+  return mappedEdits(value, argvEdits(spans));
 }
 
 /**
@@ -841,9 +1010,405 @@ export function redactArgvCredentials(value: string): string {
  * `vault login`, and client-specific forms: `redis-cli -a`, `sqlcmd -P`,
  * `smbclient -U user%pass` and `lftp -u user,pass`.
  * Input is one command line or log message. Recognized values run to unescaped
- * whitespace outside quotes. Each inspected argument is consumed once.
+ * whitespace outside quotes. Independent traversals preserve both legacy argv and final text masks.
  */
-function argvSpans(value: string, quoteAware: boolean): Span[] {
+export function redactArgvCredentials(value: string): string {
+  const context = argvContext(value);
+  const raw = publicScan(value, false, context);
+  const quoted = publicScan(value, true, context);
+  const published = raw.exact;
+  const fields = supportedMessages(value);
+  const recovery = messageRecovery(value, fields);
+  const headSpans = mergeSpans(mergeSpans(published, quoted.exact), messageSpans(fields));
+  const legacy = legacyArgvSpans(context, recovery.at);
+  const publicComplete = mergeSpans(
+    completeAdmissions(raw.admissions, context, recovery.at),
+    completeAdmissions(quoted.admissions, context, recovery.at),
+  );
+  const merged = mergeSpans(
+    headSpans,
+    mergeSpans(
+      legacy.exact,
+      mergeSpans(publicComplete, mergeSpans(legacy.complete, recovery.spans)),
+    ),
+  );
+  const head = publishedArgv(value, published, headSpans);
+  if (sameSpans(legacy.exact, published) && sameSpans(merged, headSpans)) {
+    return head.text;
+  }
+
+  let source: MappedText | undefined;
+  const original = () => (source ??= sourceText(value));
+  // On the published fallback path the return already includes ordered text masks.
+  // Overlay on its provenance rather than replacing it with the raw span union.
+  let candidateMapped: MappedText | undefined;
+  let output: string;
+  if (head.mapped !== undefined) {
+    const added = new Uint8Array(value.length);
+    for (const span of merged) {
+      added.fill(1, span.start, span.end);
+    }
+    candidateMapped = overlayOrigins(head.mapped, added);
+    output = candidateMapped.text;
+  } else {
+    output = renderEdits(value, argvEdits(merged));
+  }
+  const mainOutput = renderEdits(value, argvEdits(legacy.exact));
+  if (!hasTextEdits(mainOutput) && !hasTextEdits(head.text)) {
+    return output;
+  }
+
+  const suppressed = new Uint8Array(value.length);
+  mappedTextRules(mappedEdits(original(), argvEdits(legacy.exact), suppressed), suppressed);
+  const headFinal = mappedTextRules(head.mapped ?? mappedEdits(original(), argvEdits(headSpans)));
+  const headCopied = new Uint8Array(value.length);
+  for (const origin of headFinal.origins) {
+    if (origin >= 0) {
+      headCopied[origin] = 1;
+    }
+  }
+  for (let at = 0; at < value.length; at += 1) {
+    if (headCopied[at] === 0) {
+      suppressed[at] = 1;
+    }
+  }
+  const candidateFinal = mappedTextRules(
+    candidateMapped ?? mappedEdits(original(), argvEdits(merged)),
+  );
+  if (!candidateFinal.origins.some((origin) => origin >= 0 && suppressed[origin] === 1)) {
+    return output;
+  }
+  // A new argv span can erase a key used by either baseline's ordered text rules.
+  // Remove just the newly exposed copied units from the already protected final text.
+  return overlayOrigins(candidateFinal, suppressed).text;
+}
+
+interface ArgumentBounds {
+  readonly ends: Uint32Array;
+  readonly complete: Uint8Array;
+  readonly first: Uint8Array;
+  readonly present: Uint8Array;
+}
+
+/** Fixed-state literal argument parser; every suffix is resolved once. */
+function argumentBounds(value: string): ArgumentBounds {
+  const ends = new Uint32Array(value.length + 2);
+  ends.fill(value.length, value.length);
+  const complete = new Uint8Array(value.length + 2);
+  complete.fill(1, value.length);
+  // 0 is an empty word, 1 a literal leading dash, and 2 any other unit.
+  const first = new Uint8Array(value.length + 2);
+  const present = new Uint8Array(value.length + 2);
+  let singleFirst = 0;
+  let doubleFirst = 0;
+  let doubleAfterFirst = 0;
+  const kind = (character: string) => (character === "-" ? 1 : 2);
+  let singleEnd = value.length;
+  let singleComplete = 0;
+  let doubleEnd = value.length;
+  let doubleComplete = 0;
+  let doubleAfterEnd = value.length;
+  let doubleAfterComplete = 0;
+  for (let at = value.length - 1; at >= 0; at -= 1) {
+    const character = value[at]!;
+    const next = value[at + 1];
+    const nextEnd = ends[at + 1]!;
+    const nextComplete = complete[at + 1]!;
+    const nextFirst = first[at + 1]!;
+    const escaped = character === "\\" && next !== undefined;
+    let end = nextEnd;
+    let closed = nextComplete;
+    let leading = kind(character);
+    if (escaped) {
+      leading = next === "\n" ? first[at + 2]! : kind(next);
+      end = ends[at + 2]!;
+      closed = complete[at + 2]!;
+    } else if (/\s/.test(character)) {
+      end = at;
+      closed = 1;
+      leading = 0;
+    } else if (character === "'") {
+      end = singleEnd;
+      closed = singleComplete;
+      leading = singleFirst;
+    } else if (character === '"') {
+      end = doubleEnd;
+      closed = doubleComplete;
+      leading = doubleFirst;
+    }
+    ends[at] = end;
+    complete[at] = closed;
+    first[at] = leading;
+    if (escaped && next === "\n") {
+      present[at] = present[at + 2]!;
+    } else if (!/\s/.test(character)) {
+      present[at] = 1;
+    }
+    singleFirst = character === "'" ? nextFirst : kind(character);
+    if (character === "'") {
+      singleEnd = nextEnd;
+      singleComplete = nextComplete;
+    }
+    let double = doubleEnd;
+    let doubleClosed = doubleComplete;
+    let doubleLeading = kind(character);
+    if (
+      escaped &&
+      (next === '"' || next === "\\" || next === "$" || next === "`" || next === "\n")
+    ) {
+      double = doubleAfterEnd;
+      doubleClosed = doubleAfterComplete;
+      doubleLeading = next === "\n" ? doubleAfterFirst : kind(next);
+    } else if (character === '"') {
+      double = nextEnd;
+      doubleClosed = nextComplete;
+      doubleLeading = nextFirst;
+    }
+    doubleAfterFirst = doubleFirst;
+    doubleFirst = doubleLeading;
+    doubleAfterEnd = doubleEnd;
+    doubleAfterComplete = doubleComplete;
+    doubleEnd = double;
+    doubleComplete = doubleClosed;
+  }
+  return { ends, complete, first, present };
+}
+
+interface LiteralBoundary extends Span {
+  readonly complete: boolean;
+  readonly emitted: number;
+  readonly prefix: string;
+  readonly firstOffset: number;
+  readonly secondOffset: number;
+}
+
+const MAX_FLAG_LENGTH = Math.max(
+  ...[...ARGV_SECRET_FLAGS, ...ARGV_USERINFO_FLAGS].map((flag) => flag.length),
+  ...[...ARGV_CLIENT_CREDENTIALS.values()].flatMap((client) =>
+    [...client.secret, ...Object.keys(client.userinfo)].map((flag) => flag.length),
+  ),
+);
+
+/** Index word identity and later option boundaries without recognizing flags. */
+function literalBoundaries(value: string, bounds: ArgumentBounds) {
+  const at = new Array<LiteralBoundary | undefined>(value.length + 1);
+  const nextWord = new Uint32Array(value.length + 1);
+  nextWord.fill(value.length);
+  const nextOption = new Int32Array(value.length + 1);
+  nextOption.fill(-1);
+  let cursor = 0;
+  while (cursor < value.length) {
+    if (/\s/.test(value[cursor]!)) {
+      cursor += 1;
+      continue;
+    }
+    const start = cursor;
+    const end = bounds.ends[start]!;
+    if (bounds.present[start] === 0) {
+      cursor = end;
+      continue;
+    }
+    let quote: string | undefined;
+    let emitted = 0;
+    let prefix = "";
+    let firstOffset = -1;
+    let secondOffset = -1;
+    // One unit beyond flag-plus-equals distinguishes an empty assignment from
+    // a real payload, even after arbitrarily many empty quote pieces.
+    while (cursor < end && emitted < MAX_FLAG_LENGTH + 2) {
+      const character = value[cursor]!;
+      const next = value[cursor + 1];
+      if (character === quote) {
+        quote = undefined;
+        cursor += 1;
+        continue;
+      }
+      if (quote === undefined && (character === "'" || character === '"')) {
+        quote = character;
+        cursor += 1;
+        continue;
+      }
+      const escaped =
+        character === "\\" &&
+        quote !== "'" &&
+        next !== undefined &&
+        (quote === undefined ||
+          next === '"' ||
+          next === "\\" ||
+          next === "$" ||
+          next === "`" ||
+          next === "\n");
+      if (!escaped || next !== "\n") {
+        if (emitted === 0) {
+          firstOffset = cursor;
+        } else if (emitted === 1) {
+          secondOffset = cursor;
+        }
+        emitted += 1;
+        if (emitted <= MAX_FLAG_LENGTH + 1) {
+          prefix += escaped ? next : character;
+        }
+      }
+      cursor += escaped ? 2 : 1;
+    }
+    const word: LiteralBoundary = {
+      start,
+      end,
+      complete: bounds.complete[start] !== 0,
+      emitted,
+      prefix,
+      firstOffset,
+      secondOffset,
+    };
+    at.fill(word, start, end);
+    nextWord[start] = start;
+    cursor = end;
+  }
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    if (nextWord[index] !== index) {
+      nextWord[index] = nextWord[index + 1]!;
+    }
+    // A gap is certified only in this reading's actual lexical state.
+    if (at[index] !== undefined || !/\s/.test(value[index]!)) {
+      continue;
+    }
+    const next = at[nextWord[index]!];
+    if (next?.complete) {
+      nextOption[index] = bounds.first[next.start] === 1 ? index : nextOption[next.end]!;
+    }
+  }
+  return { at, nextWord, nextOption };
+}
+
+function laterOptionBoundary(structure: ReturnType<typeof literalBoundaries>, end: number): number {
+  const containing = structure.at[end];
+  return structure.nextOption[
+    containing?.complete && containing.start < end ? containing.end : end
+  ]!;
+}
+
+interface LiteralWord {
+  readonly start: number;
+  readonly end: number;
+  readonly complete: boolean;
+  readonly starts: readonly number[];
+  readonly text: string;
+  bounds?: ArgumentBounds;
+  boundaries?: ReturnType<typeof literalBoundaries>;
+}
+
+const wordBounds = (word: LiteralWord) => (word.bounds ??= argumentBounds(word.text));
+
+const wordBoundaries = (word: LiteralWord) =>
+  (word.boundaries ??= literalBoundaries(word.text, wordBounds(word)));
+
+/** Remove only actual literal quote syntax, retaining a map to original units. */
+function literalWordIndex(value: string) {
+  const at = new Array<LiteralWord | undefined>(value.length);
+  const positions = new Uint32Array(value.length + 1);
+  const nextClose = new Int32Array(value.length + 1);
+  nextClose.fill(-1);
+  const shielded = new Uint8Array(value.length + 2);
+  const singleShielded = new Uint8Array(value.length + 2);
+  const doubleShielded = new Uint8Array(value.length + 2);
+  let cursor = 0;
+  while (cursor < value.length) {
+    if (/\s/.test(value[cursor]!)) {
+      cursor += 1;
+      continue;
+    }
+    const start = cursor;
+    const contents: string[] = [];
+    const starts: number[] = [];
+    const closes: number[] = [];
+    let quote: string | undefined;
+    while (cursor < value.length) {
+      const character = value[cursor]!;
+      const next = value[cursor + 1];
+      positions[cursor] = contents.length;
+      if (quote === undefined && /\s/.test(character)) {
+        break;
+      }
+      if (character === quote) {
+        closes.push(cursor);
+        quote = undefined;
+        cursor += 1;
+      } else if (quote === undefined && (character === "'" || character === '"')) {
+        quote = character;
+        cursor += 1;
+      } else if (
+        character === "\\" &&
+        quote !== "'" &&
+        next !== undefined &&
+        (quote === undefined ||
+          next === '"' ||
+          next === "\\" ||
+          next === "$" ||
+          next === "`" ||
+          next === "\n")
+      ) {
+        positions[cursor + 1] = contents.length;
+        if (next !== "\n") {
+          starts.push(cursor);
+          contents.push(next);
+        }
+        cursor += 2;
+      } else {
+        starts.push(cursor);
+        contents.push(character);
+        cursor += 1;
+      }
+    }
+    positions[cursor] = contents.length;
+    const text = contents.join("");
+    const word: LiteralWord = {
+      start,
+      end: cursor,
+      complete: quote === undefined,
+      starts,
+      text,
+    };
+    let closeAt = closes.length - 1;
+    let close = -1;
+    for (let index = cursor - 1; index >= start; index -= 1) {
+      if (closes[closeAt] === index) {
+        close = index;
+        closeAt -= 1;
+      }
+      nextClose[index] = close;
+      at[index] = word;
+      const character = value[index]!;
+      const next = value[index + 1];
+      if (index === close) {
+        singleShielded[index] = 1;
+        doubleShielded[index] = 1;
+        continue;
+      }
+      const escaped = character === "\\" && next !== undefined;
+      if (escaped) {
+        shielded[index] = close === index + 1 ? 1 : shielded[index + 2]!;
+      } else if (character === "'") {
+        shielded[index] = singleShielded[index + 1]!;
+      } else if (character === '"') {
+        shielded[index] = doubleShielded[index + 1]!;
+      } else if (!/\s/.test(character)) {
+        shielded[index] = shielded[index + 1]!;
+      }
+      singleShielded[index] = character === "'" ? shielded[index + 1]! : singleShielded[index + 1]!;
+      doubleShielded[index] = character === '"' ? shielded[index + 1]! : doubleShielded[index + 1]!;
+      if (
+        escaped &&
+        (next === '"' || next === "\\" || next === "$" || next === "`" || next === "\n")
+      ) {
+        doubleShielded[index] = close === index + 1 ? 1 : doubleShielded[index + 2]!;
+      }
+    }
+  }
+  return { at, positions, nextClose, shielded };
+}
+
+/** Shared token positions, bounded policy and cached ends for each traversal. */
+function argvContext(value: string) {
   const parts = value.split(ARGV_SEPARATOR);
   const tokens: number[] = [];
   const tokenStarts: number[] = [];
@@ -882,71 +1447,301 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
       }
     }
   }
-  // A user flag's value is a credential when it joins a user and a password.
-  // Argument starts only move forward. Cache each next separator so overlapping
-  // username-only spans cannot repeatedly search the same suffix.
-  const nextSeparator = new Map<string, number>();
-  const containsSeparator = (separator: string, start: number, end: number): boolean => {
-    let next = nextSeparator.get(separator);
-    if (next === undefined || (next !== -1 && next < start)) {
-      next = value.indexOf(separator, start);
-      nextSeparator.set(separator, next);
-    }
-    return next !== -1 && next < end;
-  };
-  const carriesPassword = (flag: string, start: number, end: number): boolean =>
-    containsSeparator(":", start, end) ||
-    [...(clientSeparators.get(flag) ?? "")].some((separator) =>
-      containsSeparator(separator, start, end),
-    );
-  let vaultLogin = false;
-  let previousVault = false;
-  const spans: Span[] = [];
-  // Resolve each possible argument start in one backwards pass. The quoted states need
-  // only their next two positions; only unquoted starts are queried. This keeps rescans
-  // after printed separators linear, including nested flag-looking username text.
-  let argumentEnds: Uint32Array | undefined;
-  const argument = (at: number, offset = 0) => {
-    const start = tokenStarts[at]! + offset;
-    if (argumentEnds === undefined) {
-      argumentEnds = new Uint32Array(value.length + 2);
-      argumentEnds[value.length] = value.length;
-      argumentEnds[value.length + 1] = value.length;
-      let singleNext = value.length;
-      let doubleNext = value.length;
-      let doubleAfterNext = value.length;
-      for (let cursor = value.length - 1; cursor >= 0; cursor -= 1) {
-        const character = value[cursor]!;
-        const next = value[cursor + 1];
-        const unquotedNext = argumentEnds[cursor + 1]!;
-        const escaped = character === "\\" && next !== undefined;
-        let end = unquotedNext;
-        if (escaped) {
-          end = argumentEnds[cursor + 2]!;
-        } else if (/\s/.test(character)) {
-          end = cursor;
-        } else if (character === "'") {
-          end = singleNext;
-        } else if (character === '"') {
-          end = doubleNext;
+  // Each query is independent: a mapped field or overlapping admission can move
+  // backwards. Fixed separator prefix counts keep all three policies linear.
+  const separatorCounts = new Map<string, Uint32Array>();
+  const containsSeparator = (separators: string, start: number, end: number): boolean => {
+    for (const separator of separators) {
+      let counts = separatorCounts.get(separator);
+      if (counts === undefined) {
+        counts = new Uint32Array(value.length + 1);
+        for (let at = 0; at < value.length; at += 1) {
+          counts[at + 1] = counts[at]! + (value[at] === separator ? 1 : 0);
         }
-        argumentEnds[cursor] = end;
-        singleNext = character === "'" ? unquotedNext : singleNext;
-        let double = doubleNext;
-        if (
-          escaped &&
-          (next === '"' || next === "\\" || next === "$" || next === "`" || next === "\n")
-        ) {
-          double = doubleAfterNext;
-        } else if (character === '"') {
-          double = unquotedNext;
-        }
-        doubleAfterNext = doubleNext;
-        doubleNext = double;
+        separatorCounts.set(separator, counts);
+      }
+      if (counts[end]! > counts[start]!) {
+        return true;
       }
     }
-    const end = argumentEnds[start]!;
-    return { start, end };
+    return false;
+  };
+  const passwordTest =
+    () =>
+    (flag: string, start: number, end: number): boolean =>
+      containsSeparator(":" + (clientSeparators.get(flag) ?? ""), start, end);
+  const admission = (
+    flagAt: number,
+    valueAt: number,
+    offset: number,
+    flag: string | undefined,
+    form: AdmissionForm,
+    conditional: boolean,
+    admitted: boolean,
+  ): ArgvAdmission => ({
+    span: argument(valueAt, offset),
+    flag,
+    flagStart: tokenStarts[flagAt]!,
+    flagEnd: tokenStarts[flagAt]! + (flag?.length ?? 0),
+    form,
+    separators: ":" + (flag === undefined ? "" : (clientSeparators.get(flag) ?? "")),
+    conditional,
+    runsOn: (form === "short" || form === "equals") && wordEnd[flagAt] !== flagAt,
+    joined: form === "separate" && wordEnd[flagAt] !== flagAt,
+    admitted,
+  });
+  // Baseline traversals use the original local token grammar. Recovered starts
+  // additionally use the enclosing literal word's independently established end.
+  let bounds: ReturnType<typeof argumentBounds> | undefined;
+  let words: ReturnType<typeof literalWordIndex> | undefined;
+  let directBoundaries: ReturnType<typeof literalBoundaries> | undefined;
+  const printedBoundaries = new Set<number>();
+  let nextPrintedBoundary: Uint32Array | undefined;
+  const recordPrintedBoundary = (start: number) => {
+    printedBoundaries.add(start);
+    nextPrintedBoundary = undefined;
+  };
+  const printedBoundaryAfter = (start: number): number => {
+    if (printedBoundaries.size === 0) {
+      return value.length;
+    }
+    if (nextPrintedBoundary === undefined) {
+      nextPrintedBoundary = new Uint32Array(value.length + 1);
+      let next = value.length;
+      for (let at = value.length; at >= 0; at -= 1) {
+        if (printedBoundaries.has(at)) {
+          next = at;
+        }
+        nextPrintedBoundary[at] = next;
+      }
+    }
+    return nextPrintedBoundary[start]!;
+  };
+  const argument = (at: number, offset = 0) => {
+    const start = tokenStarts[at]! + offset;
+    bounds ??= argumentBounds(value);
+    return { start, end: bounds.ends[start]! };
+  };
+  const hasCarrierSyntax = value.includes("'") || value.includes('"') || value.includes("\\");
+  const readAdmission = (item: ArgvAdmission): AdmissionReading => {
+    const start = item.span.start;
+    bounds ??= argumentBounds(value);
+    const localEnd = bounds.ends[start]!;
+    const local = { start, end: localEnd };
+    const onlyLocal = (): AdmissionReading => ({
+      mandatory: bounds!.complete[start] !== 0 ? [local] : [],
+      own: [local],
+      fallback: bounds!.complete[start] === 0 ? [local] : [],
+      optional: [],
+    });
+    if (!hasCarrierSyntax) {
+      return onlyLocal();
+    }
+    words ??= literalWordIndex(value);
+    const word = words.at[start];
+    if (word === undefined || !word.complete) {
+      return onlyLocal();
+    }
+    // Only admitted words need a second literal reading. Unrelated words keep
+    // their source positions without allocating another suffix parser.
+    const projectedBounds = wordBounds(word);
+    let projectedStart = words.positions[start]!;
+    let relocated = false;
+    // Removed carrier quotes can leave the admitted anchor on a gap. Verify
+    // that the same observed flag ends at that gap; never search for a flag.
+    if (
+      (/\s/.test(word.text[projectedStart] ?? "") ||
+        (projectedBounds.complete[projectedStart] !== 0 &&
+          projectedBounds.present[projectedStart] === 0)) &&
+      (item.form === "separate" || item.form === "short") &&
+      item.flag !== undefined &&
+      words.at[item.flagStart] === word
+    ) {
+      const flagStart = words.positions[item.flagStart]!;
+      const flagEnd = words.positions[item.flagEnd]!;
+      const structure = wordBoundaries(word);
+      const observed = structure.at[flagStart];
+      if (
+        observed?.complete &&
+        observed.emitted === item.flag.length &&
+        observed.firstOffset === flagStart &&
+        observed.secondOffset === flagStart + 1 &&
+        flagEnd === flagStart + item.flag.length &&
+        word.text.startsWith(item.flag, flagStart) &&
+        observed.end <= projectedStart &&
+        structure.nextWord[observed.end]! >= projectedStart
+      ) {
+        projectedStart = structure.nextWord[observed.end]!;
+        relocated = true;
+      }
+    }
+    const separate = item.form === "separate" || (item.form === "short" && relocated);
+    const projectedEnd = projectedBounds.ends[projectedStart]!;
+    const hasValue = projectedBounds.present[projectedStart] !== 0;
+    const eligible =
+      hasValue &&
+      (!separate ||
+        ((!word.text.startsWith("-", projectedStart) || item.joined) &&
+          !word.text.startsWith(MARK, projectedStart) &&
+          (item.flag !== "-p" ||
+            !PATH_VALUE.test(word.text.slice(projectedStart, projectedStart + 3)))));
+    const projectedComplete = eligible && projectedBounds.complete[projectedStart] !== 0;
+    const liftedStart = relocated ? (word.starts[projectedStart] ?? word.end) : start;
+    const liftedEnd = word.starts[projectedEnd] ?? word.end;
+    const carrierEnd = Math.min(
+      word.end,
+      printedBoundaryAfter(projectedComplete ? liftedEnd : start),
+    );
+    const close = words.nextClose[start]!;
+    const localComplete = bounds.complete[start] !== 0;
+    const independentLocal = localEnd <= word.end || close === start || words.shielded[start] !== 0;
+    const mandatory: Span[] = [];
+    const own: Span[] = [];
+    const fallback: Span[] = [];
+    const optional: Span[] = [];
+    if (localComplete && independentLocal) {
+      own.push(local);
+      mandatory.push(local);
+    }
+    if (projectedComplete) {
+      if (!localComplete || !independentLocal || liftedStart !== start || liftedEnd !== localEnd) {
+        own.push({ start: liftedStart, end: liftedEnd });
+      }
+      mandatory.push({ start: liftedStart, end: liftedEnd });
+    }
+    // Missing, excluded and explicitly empty values consume no later operand.
+    // Original exact masks and independent local readings still stand.
+    let emptyAssignment = false;
+    if (item.flag !== undefined && words.at[item.flagStart] === word) {
+      const flagStart = words.positions[item.flagStart]!;
+      const flagEnd = words.positions[item.flagEnd]!;
+      const observed = wordBoundaries(word).at[flagStart];
+      emptyAssignment =
+        observed?.complete === true &&
+        observed.emitted === item.flag.length + 1 &&
+        observed.prefix === item.flag + "=" &&
+        observed.firstOffset === flagStart &&
+        observed.secondOffset === flagStart + 1 &&
+        flagEnd === flagStart + item.flag.length &&
+        word.text.startsWith(item.flag, flagStart);
+    }
+    const extendCarrier =
+      eligible && !emptyAssignment && projectedBounds.first[projectedStart] !== 0;
+    if (!projectedComplete && extendCarrier && close >= start && close <= localEnd) {
+      fallback.push({ start, end: carrierEnd });
+    }
+    const optionBoundary = projectedComplete
+      ? laterOptionBoundary(wordBoundaries(word), projectedEnd)
+      : -1;
+    const optionalEnd =
+      optionBoundary < 0 ? carrierEnd : Math.min(carrierEnd, word.starts[optionBoundary]!);
+    // Only optional continuation stops at a proven next option. Every complete
+    // local/projected interval above stays mandatory even when their ends differ.
+    if (
+      extendCarrier &&
+      close >= start &&
+      (close <= localEnd || (projectedComplete && close <= liftedEnd)) &&
+      close + 1 < carrierEnd
+    ) {
+      optional.push({ start, end: optionalEnd });
+    }
+    if (mandatory.length === 0 && fallback.length === 0 && optional.length === 0 && eligible) {
+      fallback.push(local);
+    }
+    // An absent separate word, or a short attachment that emits nothing, can
+    // select a successor only when this same flag owns the complete word at
+    // this level. Present empty operands and equals assignments consume slots.
+    if (
+      ((item.form === "short" && item.flag?.length === 2 && item.flagEnd === start) ||
+        (item.form === "separate" &&
+          bounds.complete[start] !== 0 &&
+          bounds.present[start] === 0)) &&
+      item.flag !== undefined &&
+      value.startsWith(item.flag, item.flagStart)
+    ) {
+      const flagWord = words.at[item.flagStart];
+      if (flagWord?.complete) {
+        let nextStart = -1;
+        let nextEnd = -1;
+        let nextComplete = false;
+        let nextPrefix = "";
+        let direct = false;
+        if (
+          flagWord.text === item.flag &&
+          flagWord.starts[0] === item.flagStart &&
+          flagWord.starts[item.flag.length - 1] === item.flagEnd - 1
+        ) {
+          directBoundaries ??= literalBoundaries(value, bounds);
+          const successor = directBoundaries.at[directBoundaries.nextWord[flagWord.end]!];
+          if (successor !== undefined) {
+            nextStart = successor.start;
+            nextEnd = successor.end;
+            nextComplete = successor.complete;
+            nextPrefix = successor.prefix;
+            direct = true;
+          }
+        } else {
+          const flagStart = words.positions[item.flagStart]!;
+          const flagEnd = words.positions[item.flagEnd]!;
+          const structure = wordBoundaries(flagWord);
+          const observed = structure.at[flagStart];
+          if (
+            observed?.complete &&
+            observed.emitted === item.flag.length &&
+            observed.firstOffset === flagStart &&
+            observed.secondOffset === flagStart + 1 &&
+            flagEnd === flagStart + item.flag.length &&
+            flagWord.text.startsWith(item.flag, flagStart)
+          ) {
+            const successor = structure.at[structure.nextWord[observed.end]!];
+            if (successor !== undefined) {
+              nextStart = successor.start;
+              nextEnd = successor.end;
+              nextComplete = successor.complete;
+              nextPrefix = successor.prefix;
+            }
+          }
+        }
+        const spelling = direct ? value : flagWord.text;
+        if (
+          nextStart >= 0 &&
+          (!spelling.startsWith("-", nextStart) || item.joined) &&
+          !spelling.startsWith(MARK, nextStart) &&
+          (item.flag !== "-p" || !PATH_VALUE.test(nextPrefix))
+        ) {
+          const selected = {
+            start: direct ? nextStart : (flagWord.starts[nextStart] ?? flagWord.end),
+            end: direct ? nextEnd : (flagWord.starts[nextEnd] ?? flagWord.end),
+          };
+          if (nextComplete) {
+            own.push(selected);
+            mandatory.push(selected);
+          } else {
+            fallback.push(selected);
+          }
+          let extraEnd = selected.end;
+          if (!direct && wordBounds(flagWord).first[nextStart] !== 0) {
+            const limit = Math.min(
+              flagWord.end,
+              printedBoundaryAfter(nextComplete ? selected.end : start),
+            );
+            const gap = nextComplete ? laterOptionBoundary(wordBoundaries(flagWord), nextEnd) : -1;
+            const optional = gap < 0 ? limit : Math.min(limit, flagWord.starts[gap]!);
+            if (
+              close >= start &&
+              (close <= localEnd || (nextComplete && close <= selected.end)) &&
+              close + 1 < limit
+            ) {
+              extraEnd = Math.max(extraEnd, optional);
+            }
+          }
+          if (extraEnd > selected.end) {
+            optional.push({ start: selected.start, end: extraEnd });
+          }
+        }
+      }
+    }
+    return { mandatory, own, fallback, optional };
   };
   const lastToken = (at: number, end: number) => {
     let last = at;
@@ -955,6 +1750,149 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
     }
     return last;
   };
+  return {
+    length: value.length,
+    parts,
+    tokens,
+    tokenStarts,
+    wordEnd,
+    mysql,
+    clientSecrets,
+    clientSeparators,
+    passwordTest,
+    argument,
+    admission,
+    readAdmission,
+    containsSeparator,
+    recordPrintedBoundary,
+    lastToken,
+  };
+}
+type ArgvContext = ReturnType<typeof argvContext>;
+
+/**
+ * Reproduce the original raw-token cursor, including mutation-visible Vault state.
+ * Complete-value additions never move that cursor: neither end dominates the other.
+ */
+function legacyArgvSpans(context: ArgvContext, recover?: readonly (FieldRecovery | undefined)[]) {
+  const { tokens, tokenStarts, wordEnd, mysql, clientSecrets, clientSeparators } = context;
+  const parts = context.parts.slice();
+  const exact: Span[] = [];
+  const admissions: ArgvAdmission[] = [];
+  const carriesPassword = (flag: string, text: string): boolean =>
+    text.includes(":") ||
+    [...(clientSeparators.get(flag) ?? "")].some((separator) => text.includes(separator));
+  const tokenEnd = (at: number) => tokenStarts[at]! + context.parts[tokens[at]!]!.length;
+  const replaceThrough = (at: number, end: number, prefix = ""): number => {
+    exact.push({ start: tokenStarts[at]! + prefix.length, end: tokenEnd(end) });
+    parts[tokens[at]!] = prefix + mark("argv");
+    for (let index = tokens[at]! + 1; index <= tokens[end]!; index += 1) {
+      parts[index] = "";
+    }
+    return end;
+  };
+  const maskFrom = (at: number): number => {
+    const first = parts[tokens[at]!]!;
+    const quote = first[0] === '"' || first[0] === "'" ? first[0] : undefined;
+    let end = at;
+    if (quote !== undefined && !(first.length > 1 && first.endsWith(quote))) {
+      while (end + 1 < tokens.length) {
+        end += 1;
+        if (parts[tokens[end]!]!.endsWith(quote)) {
+          break;
+        }
+      }
+    }
+    return replaceThrough(at, wordEnd[end]!);
+  };
+  let vaultLogin = false;
+  for (let at = 0; at < tokens.length; at += 1) {
+    const token = parts[tokens[at]!]!;
+    if (token.startsWith(MARK)) {
+      continue;
+    }
+    if (!token.startsWith("-")) {
+      if (vaultLogin && !token.includes("=")) {
+        admissions.push(context.admission(at, at, 0, undefined, "positional", false, true));
+        at = maskFrom(at);
+      } else if (token === "login" && at > 0 && basename(parts[tokens[at - 1]!]!) === "vault") {
+        vaultLogin = true;
+      }
+      continue;
+    }
+    const equals = token.indexOf("=");
+    const flag = equals === -1 ? token : token.slice(0, equals);
+    const attached = equals === -1 ? undefined : token.slice(equals + 1);
+    const secret = ARGV_SECRET_FLAGS.has(flag) || clientSecrets.has(flag);
+    const userinfo = ARGV_USERINFO_FLAGS.has(flag) || clientSeparators.has(flag);
+    if (secret || userinfo) {
+      if (attached !== undefined) {
+        if (attached.length > 0 && !attached.startsWith(MARK)) {
+          const admitted = secret || carriesPassword(flag, attached) || wordEnd[at] !== at;
+          admissions.push(
+            context.admission(at, at, equals + 1, flag, "equals", userinfo, admitted),
+          );
+          if (admitted) {
+            at = replaceThrough(at, wordEnd[at]!, flag + "=");
+          }
+        }
+        continue;
+      }
+      const next = at + 1 < tokens.length ? parts[tokens[at + 1]!]! : undefined;
+      if (
+        next === undefined ||
+        (next.startsWith("-") && wordEnd[at] === at) ||
+        next.startsWith(MARK) ||
+        (flag === "-p" && PATH_VALUE.test(next))
+      ) {
+        continue;
+      }
+      const admitted = secret || carriesPassword(flag, next);
+      admissions.push(context.admission(at, at + 1, 0, flag, "separate", userinfo, admitted));
+      if (admitted) {
+        at = maskFrom(at + 1);
+      }
+      continue;
+    }
+    if (token.length > 2 && token[1] !== "-") {
+      const short = token.slice(0, 2);
+      const rest = token.slice(2);
+      const runsOn = wordEnd[at] !== at;
+      const secret =
+        (short === "-p" && (mysql || runsOn || !/^[a-z]+$/.test(rest))) || clientSecrets.has(short);
+      if (secret || short === "-u" || short === "-U") {
+        const admitted = secret || runsOn || carriesPassword(short, rest);
+        admissions.push(context.admission(at, at, 2, short, "short", !secret, admitted));
+        if (admitted) {
+          at = replaceThrough(at, wordEnd[at]!, short);
+        }
+      }
+    }
+  }
+  return { exact, complete: completeAdmissions(admissions, context, recover) };
+}
+
+function argvSpans(
+  value: string,
+  quoteAware: boolean,
+  context = argvContext(value),
+  observe?: (item: ArgvAdmission) => void,
+): Span[] {
+  const {
+    parts,
+    tokens,
+    tokenStarts,
+    wordEnd,
+    mysql,
+    clientSecrets,
+    clientSeparators,
+    argument,
+    lastToken,
+  } = context;
+  const carriesPassword = context.passwordTest();
+  let vaultLogin = false;
+  let previousVault = false;
+  const spans: Span[] = [];
   const printedEscape = new RegExp(ESCAPE, "y");
   const resumeUnmasked = (at: number, start: number) => {
     // Every unmasked argument uses the same eligibility rule, including ordinary words
@@ -970,6 +1908,7 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
       if (character === "\\" && quote === undefined) {
         printedEscape.lastIndex = cursor;
         if (printedEscape.test(value)) {
+          context.recordPrintedBoundary(cursor);
           return lastToken(at, printedEscape.lastIndex);
         }
       }
@@ -1007,6 +1946,7 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
     if (!token.startsWith("-")) {
       if (vaultLogin && !token.includes("=")) {
         const span = argument(at, offset);
+        observe?.(context.admission(at, at, offset, undefined, "positional", false, true));
         spans.push(span);
         at = lastToken(at, span.end);
       } else {
@@ -1032,7 +1972,10 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
         // the later parts may hold the password.
         if (attached.length > 0 && !attached.startsWith(MARK)) {
           const span = argument(at, offset + equals + 1);
-          if (secret || carriesPassword(flag, span.start, span.end) || wordEnd[at] !== at) {
+          const admitted =
+            secret || carriesPassword(flag, span.start, span.end) || wordEnd[at] !== at;
+          observe?.(context.admission(at, at, equals + 1, flag, "equals", userinfo, admitted));
+          if (admitted) {
             spans.push(span);
             at = lastToken(at, span.end);
           } else {
@@ -1057,7 +2000,9 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
         continue;
       }
       const span = argument(at + 1);
-      if (secret || carriesPassword(flag, span.start, span.end)) {
+      const admitted = secret || carriesPassword(flag, span.start, span.end);
+      observe?.(context.admission(at, at + 1, 0, flag, "separate", userinfo, admitted));
+      if (admitted) {
         spans.push(span);
         at = lastToken(at + 1, span.end);
       } else {
@@ -1074,7 +2019,9 @@ function argvSpans(value: string, quoteAware: boolean): Span[] {
         (short === "-p" && (mysql || runsOn || !/^[a-z]+$/.test(rest))) || clientSecrets.has(short);
       if (shortSecret || short === "-u" || short === "-U") {
         const span = argument(at, offset + 2);
-        if (shortSecret || runsOn || carriesPassword(short, span.start, span.end)) {
+        const admitted = shortSecret || runsOn || carriesPassword(short, span.start, span.end);
+        observe?.(context.admission(at, at, 2, short, "short", !shortSecret, admitted));
+        if (admitted) {
           spans.push(span);
           at = lastToken(at, span.end);
         } else {
