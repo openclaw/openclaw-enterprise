@@ -2559,7 +2559,9 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   assert.equal(await search.evaluate((node) => document.activeElement === node), true);
 
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
-  await dialog.getByText("Choose Done, then edit Plugin selections JSON.", { exact: true }).waitFor();
+  await dialog
+    .getByText("Choose Done, then edit Plugin selections JSON.", { exact: true })
+    .waitFor();
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
 
   // Catalog availability, unlike selection state, does not depend on the draft.

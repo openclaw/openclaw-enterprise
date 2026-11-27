@@ -1212,10 +1212,13 @@ export function createPluginFields({
     searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Search plugins";
     search.placeholder = searchLabel.textContent;
     if (configuredOnly && !reloadRequired) {
-      statusText =
-        count === null
-          ? (catalog?.message ?? "")
-          : `${count} configured plugin${count === 1 ? "" : "s"}`;
+      if (count !== null) {
+        statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
+      } else if (catalog?.access || catalog?.status === "error" || catalog?.canLoad === false) {
+        statusText = catalog.message ?? "";
+      } else {
+        statusText = "Choose Done, then edit Plugin selections JSON.";
+      }
     }
     setText(status, statusText);
     describeCatalogControls();
