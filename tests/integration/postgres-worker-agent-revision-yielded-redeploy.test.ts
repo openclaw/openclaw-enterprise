@@ -7,7 +7,6 @@ import type {
   AgentRevision,
   ComputeDriver,
   IAMDriver,
-  RevisionHarnessDescriptor,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import {
@@ -24,7 +23,6 @@ import {
   workPasses,
 } from "../helpers/postgres-worker-revision-queue.ts";
 import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
-import type { WorkResultRow } from "../helpers/postgres-worker-revision-scenarios.ts";
 import {
   assertWorkEnds,
   denyDeploy,
@@ -42,17 +40,8 @@ import {
 
 const fixtures = createWorkerRevisionFixtures(import.meta.url);
 type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;
-type WorkIdentity = { id: string; idempotencyKey: string };
-type WorkRow = { state: string; claim_token: string | null; attempt_count: number };
-type Fixture = Omit<
-  RawFixture,
-  "compute" | "start" | "revision" | "work" | "workResult" | "requestStop" | "activePointer"
-> & {
-  work: (candidate: WorkIdentity, expected: string, timeoutMs?: number) => Promise<WorkRow>;
-  workResult: (
-    candidate: Pick<WorkIdentity, "idempotencyKey">,
-  ) => Promise<QueryResult<WorkResultRow>>;
-  requestStop: (owner: Pick<Agent, "id">) => Promise<WorkIdentity>;
+type WorkIdentity = Awaited<ReturnType<RawFixture["requestStop"]>>;
+type Fixture = Omit<RawFixture, "compute" | "start" | "activePointer"> & {
   activePointer: (
     owner: Pick<Agent, "id">,
   ) => Promise<QueryResult<{ active_revision_id: string | null }>>;
@@ -66,11 +55,6 @@ type Fixture = Omit<
         ) => NonNullable<ControllerWorkerOptions["drivers"]> | undefined;
       },
   ) => ReturnType<RawFixture["start"]>;
-  revision: (
-    owner: Agent,
-    number: number,
-    options?: { harness?: RevisionHarnessDescriptor; workAge?: string },
-  ) => Promise<AgentRevision & WorkIdentity>;
 };
 const setup = fixtures.setup as (
   context: TestContext,

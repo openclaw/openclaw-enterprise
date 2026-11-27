@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after, type TestContext, type TestOptions } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { QueryResult } from "pg";
 import type {
   Agent,
   AgentRevision,
@@ -56,8 +55,7 @@ import {
 
 const fixtures = createWorkerRevisionFixtures(import.meta.url);
 type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;
-type WorkIdentity = { id: string; idempotencyKey: string };
-type WorkRow = { state: string; claim_token: string | null; attempt_count: number };
+type WorkIdentity = Awaited<ReturnType<RawFixture["requestStop"]>>;
 type CleanupWorkRow = {
   agent_id: string | null;
   revision_id: string | null;
@@ -78,27 +76,7 @@ function auditDetails(value: unknown): Readonly<Record<string, unknown>> {
 type IncompleteCredentialCompute = Omit<ComputeDriver, "provisionAgentRuntimeCredentials"> & {
   provisionAgentRuntimeCredentials: () => Promise<void>;
 };
-type Fixture = Omit<
-  RawFixture,
-  | "compute"
-  | "start"
-  | "revision"
-  | "namespace"
-  | "admitInitialRevision"
-  | "work"
-  | "workResult"
-  | "requestStop"
-  | "advanceMaintenance"
-> & {
-  namespace: Namespace;
-  work: (candidate: WorkIdentity, expected: string, timeoutMs?: number) => Promise<WorkRow>;
-  workResult: (
-    candidate: Pick<WorkIdentity, "idempotencyKey">,
-  ) => Promise<QueryResult<{ reason_code: string | null; result_data: unknown }>>;
-  requestStop: (owner: Pick<Agent, "id">) => Promise<WorkIdentity>;
-  advanceMaintenance: (
-    candidate: Pick<AgentRevision, "id">,
-  ) => Promise<QueryResult<{ idempotency_key: string; actor_id: string; attempt_count: number }>>;
+type Fixture = Omit<RawFixture, "compute" | "start" | "admitInitialRevision"> & {
   admitInitialRevision: (...args: Parameters<RawFixture["admitInitialRevision"]>) => Promise<{
     owner: Agent;
     candidate: AgentRevision & WorkIdentity;
@@ -113,11 +91,6 @@ type Fixture = Omit<
         ) => NonNullable<ControllerWorkerOptions["drivers"]> | undefined;
       },
   ) => ReturnType<RawFixture["start"]>;
-  revision: (
-    owner: Agent,
-    number: number,
-    options?: { actorId?: string; repositoryCredentials?: AgentRevision["repositoryCredentials"] },
-  ) => Promise<AgentRevision & WorkIdentity>;
 };
 type SetupOptions = NonNullable<Parameters<typeof fixtures.setup>[1]> &
   Pick<ControllerWorkerOptions, "metrics"> & {
