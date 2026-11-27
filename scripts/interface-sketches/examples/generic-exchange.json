@@ -53,7 +53,7 @@
       "y": 125,
       "w": 205,
       "h": 56,
-      "lines": ["Credential Service", "Reuse or prepare a token"],
+      "lines": ["CredentialService", "Reuse or prepare a token"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"

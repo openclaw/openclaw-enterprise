@@ -27,7 +27,7 @@ export default {
     },
     {
       id: "token",
-      title: "Credential Service",
+      title: "CredentialService",
       detail: "Reuse or prepare a token",
       group: "api",
       pin: [250, 45, 205, 56],
