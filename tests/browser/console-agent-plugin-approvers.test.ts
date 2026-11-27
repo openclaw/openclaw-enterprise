@@ -23,6 +23,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import {
+  accessibleDescription,
   apiRequests,
   createSlackSourceConsoleFixture,
   detailUrl,
@@ -2963,10 +2964,17 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const pluginDialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await pluginDialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await pluginDialog.locator(`[data-plugin-id="${pluginId}"] .plugin-list-item`).click();
-  await pluginDialog.getByLabel(`${pluginId} plugin approvers mode`).selectOption("none");
+  const pluginMode = pluginDialog.getByLabel(`${pluginId} plugin approvers mode`);
+  await pluginMode.selectOption("none");
+  assert.equal(await accessibleDescription(pluginMode), "No Slack user can approve.");
   const toolRow = pluginDialog.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
   await toolRow.locator("summary").click();
-  await toolRow.getByLabel(`${toolId} tool approvers mode`).selectOption("chosen");
+  const toolMode = toolRow.getByLabel(`${toolId} tool approvers mode`);
+  await toolMode.selectOption("chosen");
+  assert.equal(
+    await accessibleDescription(toolMode),
+    "Select people to replace the inherited approvers.",
+  );
   const toolPeople = toolRow.getByRole("combobox", {
     name: `${toolId} tool approvers people`,
     exact: true,
@@ -2975,6 +2983,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await toolPeople.fill("UTEST123");
   await toolRow.getByText("Slack directory lookup is unavailable.").waitFor();
   await toolPeople.press("Enter");
+  assert.equal(await accessibleDescription(toolMode), "1 Slack approver selected.");
   await pluginDialog.getByRole("button", { name: "Done", exact: true }).click();
   const savedApprovers = page.waitForResponse(
     (response) =>
