@@ -143,6 +143,17 @@ export function run(
 
 type Operation<T> = () => T | PromiseLike<T>;
 
+const channelProxyDeployments = [
+  ["channel-proxy-initial-deploy-a", "channel-proxy-initial-deploy"],
+  ["channel-proxy-initial-deploy-b", "channel-proxy-initial-deploy"],
+  ["channel-proxy-move-deploy-a", "channel-proxy-move-deploy"],
+  ["channel-proxy-clear-deploy-a", "channel-proxy-clear-deploy"],
+  ["channel-proxy-tls-control-deploy-a", "channel-proxy-tls-control-deploy"],
+] as const;
+const channelProxyDeploymentStages = ["submit", "wait", "verify"] as const;
+type ChannelProxyDeployment = (typeof channelProxyDeployments)[number][0];
+type ChannelProxyDeploymentStage = (typeof channelProxyDeploymentStages)[number];
+
 type Phase =
   | "local-setup"
   | "install-reader"
@@ -166,7 +177,8 @@ type Phase =
   | "channel-proxy-initial-deploy"
   | "channel-proxy-move-deploy"
   | "channel-proxy-clear-deploy"
-  | "channel-proxy-tls-control-deploy";
+  | "channel-proxy-tls-control-deploy"
+  | `${ChannelProxyDeployment}-${ChannelProxyDeploymentStage}`;
 
 interface TimingRow {
   name: string | undefined;
@@ -179,6 +191,16 @@ interface TimingRow {
 
 export type Step = <T>(name: string, operation: Operation<T>) => Promise<T>;
 export type SmokeStep = <T>(phase: Phase, operation: Operation<T>) => Promise<T>;
+
+export interface ChannelProxyDeploymentTiming {
+  smokeStep: SmokeStep;
+  context: ChannelProxyDeployment;
+}
+
+export function channelProxyDeploymentStep(timing?: ChannelProxyDeploymentTiming) {
+  return <T>(stage: ChannelProxyDeploymentStage, operation: () => Promise<T>) =>
+    timing ? timing.smokeStep(`${timing.context}-${stage}`, operation) : operation();
+}
 
 export async function waitForChannelProxyReadiness(
   envoyTrust: Promise<unknown>,
@@ -235,6 +257,13 @@ export function createStepRecorder(now = () => performance.now()) {
     ["channel-proxy-clear-deploy", "controlled-channel-proxy"],
     ["channel-proxy-tls-control-deploy", "controlled-channel-proxy"],
   ]);
+  for (const [deployment, parent] of channelProxyDeployments) {
+    for (const stage of channelProxyDeploymentStages) {
+      const phase = `${deployment}-${stage}` as const;
+      phases.set(phase, phase);
+      parents.set(phase, parent);
+    }
+  }
 
   async function step<T>(
     name: string | undefined,

@@ -295,6 +295,7 @@ test("Harness migrates older workspace node state with the node's environment be
     },
   );
   assert.equal(doctor.env.OPENCLAW_STATE_DIR, nodeState);
+  assert.equal(doctor.env.OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF, "1");
   assert.equal(doctor.env.OPENAI_API_KEY, undefined);
   assert.equal(codex.env.OPENAI_API_KEY, "sk-fixture-harness-model-credential");
   assert.ok(outcome.errors.some((line) => /"phase":"state-migration","outcome":"ok"/.test(line)));

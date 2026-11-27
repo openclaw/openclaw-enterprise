@@ -30,6 +30,30 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
     --attempt "${PRIVATE_FRESH_ATTEMPT:?}"
   ```
 
+- For the read-only public Repository metadata case, use two public repositories
+  in the same prepared Installation and add `/usr/bin/curl` and `api.github.com:443`
+  to the Sandbox network ceiling. Use the same model Source, OpenShell, and GitHub App
+  inputs with the write and TCP inputs omitted. Run the named case directly:
+
+  ```sh
+  OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_PUBLIC_METADATA_REAL=1 \
+    node --test --test-name-pattern='Dedicated Codex Agent reads public metadata only for its selected Repository' \
+    tests/integration/openshell-token-service-git-agent-real.test.ts
+  ```
+
+- Run [`openshell-token-service-openclaw-git-agent`](../../scripts/ci/test-suites/openshell-token-service-openclaw-git-agent.json) on a disposable service-mode Installation. Pin the Gateway image for the Dedicated OpenClaw worker. Enroll a static OpenAI model Source and a finite Git Source in the same Namespace. Set `SHARED_GIT_SOURCE_ID` to a Source that covers both private repositories, and grant the test identity permission to operate it. The test selects one repository for the Agent, checks a model turn, and runs Git for both repositories through the paired OpenClaw worker. Inspect the native allow and denial for that revision. Use the prefixed variables in the manifest.
+
+- Run [`openshell-token-service-pull-request-agent`](../../scripts/ci/test-suites/openshell-token-service-pull-request-agent.json) once per Dedicated Harness on an approved disposable Installation and GitHub repository. Use the inspected runtime image for the selected Harness. Set the prefixed `PR_HARNESS` to `codex` with a ready Codex OAuth Source or `openclaw` with a ready static OpenAI Source. For Codex also set the prefixed `MODEL_BINARY` and `MODEL_HOST` from the native Git lane.
+
+  Enroll a ready shared Git Source for both approved private repositories with `contents: write` and `pull_requests: write`. Use `ALLOWED_REPOSITORY_REF` for the exact disposable write target and `DENIED_REPOSITORY_REF` for its Read-only sibling in this lane. Supply the GitHub observer input directory as `PR_OBSERVER_APP_INPUT_DIR`. Its private `registry.json` must identify only the disposable repository, and its `private-key.pem` stays on the test host.
+
+  The observer creates one throwaway branch and file change. The Agent receives only a request to open a draft PR with the specified title, body, head and base. The test checks a fresh allowed OpenShell request and the exact PR and link on GitHub. It stops the Agent, closes the owned PR, and removes the branch after verifying its commit.
+
+  ```sh
+  node scripts/ci/run-tests.ts run openshell-token-service-pull-request-agent --lifecycle complete \
+    --attempt "${PRIVATE_FRESH_ATTEMPT:?}"
+  ```
+
 - Run [`openshell-token-service-pat-agent`](../../scripts/ci/test-suites/openshell-token-service-pat-agent.json) against an active Dedicated Codex Agent bound to a ready `codex-pat` Source. With its Agent and Namespace IDs, a loopback OCC URL and an authorized service key, the test checks the model reply and a new allowed HTTPS request in that revision’s Supervisor log.
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
 - [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).

@@ -102,6 +102,42 @@ function serverStartupArguments(fixture: string, image: string): string[] {
   ];
 }
 
+async function assertPackagedRouteCompilers(image: string): Promise<void> {
+  const probe = String.raw`
+    import { defaultPrecompiledRouteCompilers } from "./apps/controller/src/http/route-compilers.ts";
+    import { createRouteGenerationApp } from "./apps/controller/src/route-generation-app.ts";
+
+    const app = createRouteGenerationApp();
+    try {
+      await app.ready();
+      process.stdout.write(String(defaultPrecompiledRouteCompilers()?.hits ?? 0));
+    } finally {
+      await app.close();
+    }
+  `;
+  const { stdout } = await runDocker(
+    [
+      "run",
+      "--rm",
+      "--init",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      image,
+      "--input-type=module",
+      "--eval",
+      probe,
+    ],
+    { timeout: 60_000 * imageSmokeTimeoutMultiplier },
+  );
+  assert.ok(
+    Number(stdout) > 0,
+    "Expected the controller to use the image's precompiled route compilers.",
+  );
+}
+
 export function registerProductionImageControllerStartupCases({
   productionFixture,
 }: ControllerStartupCases): void {
@@ -118,6 +154,9 @@ export function registerProductionImageControllerStartupCases({
       });
       assertPersistenceBoundary(output, "startup-error");
       assertNoPackagingFailure(output);
+
+      // The unavailable database stops startup before Fastify uses the packaged compilers.
+      await assertPackagedRouteCompilers(image);
     },
   );
 

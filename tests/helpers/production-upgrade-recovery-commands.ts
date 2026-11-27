@@ -1926,6 +1926,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const id = args[args.length - 1];
         out({
           id,
+          namespaceId: fileArg("--namespace"),
           kind: "agent",
           values: optionalField(state.configurationValues, String(id)) ?? {},
         });

@@ -18,6 +18,7 @@ import {
   jsonObjectDiagnostic,
   revealStatus,
   setHidden,
+  setText,
   setUnavailable,
   statusBlock,
   validateFields,
@@ -126,6 +127,7 @@ interface PluginEditorOptions {
   onSaved(savedAgent: Readonly<Record<string, unknown>>): void;
   onReload(): void;
   savedNotice?: string;
+  cancelAnnouncement(status: Element): void;
   /** Why the permission answer refuses a save (Agent update, or its source grants). */
   saveDenied?: Promise<string | undefined> | null;
   /** Updates only the explanation while the save remains refused. */
@@ -207,6 +209,7 @@ export function renderAgentPlugins(
     onSaved,
     onReload,
     savedNotice = "",
+    cancelAnnouncement,
     saveDenied = null,
     followSaveReason,
   }: PluginEditorOptions,
@@ -279,9 +282,9 @@ export function renderAgentPlugins(
   const apiKeyNotice = statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null });
   sourceNotice.hidden = true;
   apiKeyNotice.hidden = !apiKeyAuth();
-  const getSlackBotSecretId = () => {
+  const getSlackBotSourceId = () => {
     const source = snapshot.secretBindings?.SLACK_BOT_TOKEN?.source;
-    return source?.kind === "secret" && source.namespaceId === context.namespaceId
+    return source?.kind === "credential_source" && source.namespaceId === context.namespaceId
       ? source.id
       : null;
   };
@@ -470,25 +473,23 @@ export function renderAgentPlugins(
       createSlackApproverField({
         context,
         agentId: agent.id,
-        getSecretId: getSlackBotSecretId,
+        getSourceId: getSlackBotSourceId,
         ...options,
       }),
   });
+  const feedback = element("p", { className: "hint", role: "status" });
   // Refusals read as errors, as on Configuration saves, not in the muted status (finding 1864).
-  // Declared before the approver field, whose edits clear it.
   const saveError = statusBlock("danger", null, null);
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
     agentId: agent.id,
-    getSecretId: getSlackBotSecretId,
+    getSourceId: getSlackBotSourceId,
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
-      saveError.textContent = "";
-      updateState();
+      onEdit();
     },
-    inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     allowInherit: true,
     lazyNames: true,
   });
@@ -498,7 +499,6 @@ export function renderAgentPlugins(
     discovery.fields.section.querySelector(".plugin-json"),
   );
   const pendingApprovers = element("div", { hidden: true });
-  const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const save = button("Save plugin selections", () => void savePlugins(), {
     tone: "primary",
@@ -568,7 +568,7 @@ export function renderAgentPlugins(
     );
   }
 
-  function updateState() {
+  function updateState({ showUnsaved = false } = {}) {
     const dirty = input.value !== initialText || approversChanged();
     renderPendingApprovers();
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
@@ -584,7 +584,9 @@ export function renderAgentPlugins(
       feedback.textContent = "Plugin selections changed. Reload this Agent before saving again.";
     } else if (!dirty && !pending) {
       // A caller who may not save reads the selections; nothing addresses an editor.
-      feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
+      setText(feedback, updateDenied ? "" : "No plugin changes to save.");
+    } else if (showUnsaved && !saveUnavailable) {
+      setText(feedback, "Unsaved plugin changes.");
     }
     describeControls();
   }
@@ -597,11 +599,15 @@ export function renderAgentPlugins(
     setUnavailable(discard, discardUnavailable, feedback);
   }
 
+  function onEdit() {
+    cancelAnnouncement(feedback);
+    saveError.textContent = "";
+    updateState({ showUnsaved: true });
+  }
+
   input.addEventListener("input", () => {
     input.setCustomValidity("");
-    feedback.textContent = "";
-    saveError.textContent = "";
-    updateState();
+    onEdit();
   });
 
   async function savePlugins() {
@@ -738,7 +744,7 @@ export function renderAgentPlugins(
     }
   }
 
-  updateState();
+  updateState({ showUnsaved: true });
   if (savedNotice) {
     feedback.textContent = savedNotice;
     describeControls();

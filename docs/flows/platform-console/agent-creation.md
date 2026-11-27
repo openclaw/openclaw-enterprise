@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-25
-last_updated_session: authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc
+updated: 2026-11-26
+last_updated_session: authoring-run/d31dceff-ccfa-45ce-87c9-dd7496e7e787
 ---
 
 # Console Agent creation
@@ -75,11 +75,11 @@ a ready model CredentialSource reference for [credential-scoped Codex discovery]
 Console does not send a Secret or raw token for discovery. Pagination is upstream;
 filtering is local. Credential, provider, and Harness changes invalidate pending reads.
 
-Fields for model Namespace Secrets, people search, and Slack tokens use the shared
+Fields for model Namespace Secrets use the shared
 [Secret picker](agent-editing.md#4-render-draft-revision-or-channels). When a field first opens,
 `renderCreateAgent` reads `GET /namespaces/:namespaceId/permissions/secrets`: the readable
 Secrets the caller may not `operate`, reported only to a caller with Namespace read and Agent
-`create`. Agent create, Configuration create and the people search refuse such a Secret, so each
+`create`. Agent create and Configuration create refuse such a Secret, so each
 field lists it disabled with its reason and never stages it; the Preset's **Use existing Secret**
 list does the same, and **Use Preset** refuses it. A permission reread, a refused create or an
 inline Secret create reads the answer again. A failed read keeps the last answer, or marks
@@ -192,7 +192,7 @@ binding receives Configuration create's `400`. Preflight writes nothing; Secret 
 and `operate` checks stay with the actual writes. `list.mts:channelBindingRefusal` shows
 the channel refusal, and the same one from
 provisioning, only under the Configuration JSON;
-the Slack drawer requires both token Secrets while Slack is enabled. It then posts
+the Slack drawer requires ready static app and bot Credential Sources while Slack is enabled. For additional native Slack references, `createSlackCredentialBindingFields` derives names from the unsaved Configuration and stages their Source bindings before validation. Console submits values and canonical bindings together. Directory and approver discovery use the selected bot `sourceId`; save and lookup check exact Source `operate`. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
 Console checks the returned Secret name and Namespace, the Configuration values and bindings

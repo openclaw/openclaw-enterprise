@@ -23,6 +23,7 @@ import { assertApiError } from "../helpers/api-error.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { requireLogRecord } from "../helpers/json-lines.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   referenceFormRefusal,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
@@ -35,6 +36,7 @@ import {
   bootstrapInstallation as bootstrap,
   checkedInjectedBody,
   createReadyNamespace,
+  enrollStaticSource,
   slackValidationConfiguration,
 } from "./occ-api-injected-fixture.ts";
 import type { ConfigurationDriver, Controller, Reply } from "./occ-api-plugin-policy-support.ts";
@@ -98,7 +100,7 @@ export function provisioningRequestBody(
     executionMode: "dedicated",
     configuration: {
       kind: "agent",
-      values: { agents: { defaults: { model: "codex/gpt-6-astra" } } },
+      values: createHarnessConfiguration("codex", "gpt-6-astra"),
       secretBindings: {
         TOOL_API_KEY: { source: exactSecretRef(namespaceId, secrets.toolApiKey.id) },
       },
@@ -143,7 +145,7 @@ export function invalidInlinePlans(
         },
       }),
       message:
-        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
+        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required; body /configuration/secretBindings/TOOL_API_KEY/source has an unsupported value.",
     },
     {
       description: "request-local Harness Secret source",
@@ -539,6 +541,17 @@ export async function verifyInlineProvisioningRecovery(state: InlineProvisioning
   const openClawDriver = new OCCPluginDriver();
   fixture.controller.registerDriver(openClawDriver);
   fixture.controller.selectDriver("plugin", openClawDriver.id);
+  const sandbox = {
+    id: "provisioning-openclaw-sandbox",
+    capability: "sandbox" as const,
+    implementation: "test-native-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"] as const,
+    async provisionHarness() {},
+    async cleanup() {},
+  };
+  fixture.controller.registerDriver(sandbox);
+  fixture.controller.selectDriver("sandbox", sandbox.id);
   const deniedTools = requestBody({
     plugins: { [diffsPluginId]: pluginPolicy() },
   });
@@ -661,8 +674,18 @@ export async function createSlackValidationFixture(controller: Controller, names
     const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
     return checkedInjectedBody(result, 201, SecretResponse).data;
   };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
+  const { source: app } = await enrollStaticSource(
+    controller,
+    namespace.id,
+    "app",
+    "xapp-synthetic-app",
+  );
+  const { source: bot } = await enrollStaticSource(
+    controller,
+    namespace.id,
+    "bot",
+    "xoxb-synthetic-bot",
+  );
   const model = await makeSecret("model", "synthetic-model");
   const secrets = { modelApiKey: model, toolApiKey: model };
   return {
@@ -688,7 +711,7 @@ export async function createSlackValidationFixture(controller: Controller, names
     },
     async createAgent(name: string, configurationId: string) {
       const result = await controller.request("POST", `${base}/agents`, {
-        body: { name, configurationId },
+        body: { name, configurationId, executionMode: "dedicated" },
       });
       return checkedInjectedBody(result, 201, AgentResponse).data;
     },

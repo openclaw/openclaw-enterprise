@@ -193,7 +193,7 @@ The platform preserves:
   requires independent exact authorization. Cross-Namespace sharing, historical
   value snapshots, and automatic rotation are unsupported. Dedicated Codex may
   instead receive its bound account's directly projected token and forced
-  workspace; its separate gateway receives neither model credential.
+  workspace. The separate Gateway receives no credential through `harnessAuth`; a caller can independently authorize a supported static Source for Gateway startup.
 - **Selected model inference:** one Installation-selected `InferenceDriver`
   invokes only the exact approved external-provider or local model target. A
   denied or unavailable target never falls back to another model or source.

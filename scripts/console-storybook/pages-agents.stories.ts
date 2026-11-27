@@ -8,7 +8,7 @@ export const DeploymentFailurePhone = story("agentsDeploymentFailed", {
   frameWidth: "390px",
   frameHeight: "844px",
 });
-export const RowNavigation = story("agentsRowNavigation");
+export const RowNavigation = story("agentsRowNavigation", { openInNewTab: true });
 export const NamespaceFocusDuringRefresh = {
   ...story("agentsNamespaceFocusDuringRefresh"),
   name: "Namespace focus during list refresh",

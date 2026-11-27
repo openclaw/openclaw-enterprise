@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import { probeChannelConnect } from "../helpers/channel-egress-probe.ts";
+import { setEnvironment } from "../helpers/environment.ts";
 import {
   canRetrySkippedBackendTurn,
   codexTurnTrace,
@@ -158,6 +162,104 @@ function fakeKubectl({
   };
   return { kubectl, calls };
 }
+
+test("a Gateway CONNECT probe reports fixed progress and requires a successful exec", async (t) => {
+  const proxy = createServer();
+  const headerMatched: boolean[] = [];
+  proxy.on("connect", (request, socket) => {
+    headerMatched.push(request.headers["x-probe-test"] === syntheticSecret);
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  t.after(() => new Promise<void>((resolve) => proxy.close(() => resolve())));
+  const address = proxy.address();
+  assert.ok(address && typeof address !== "string");
+
+  const temp = await temporaryDirectory(t, "oce-connect-diagnostic-");
+  const calls = join(temp, "calls");
+  const kubectl = await writeCommand(
+    temp,
+    "kubectl",
+    `const { spawn } = require('node:child_process');
+const secret = ${JSON.stringify(syntheticSecret)};
+const args = process.argv.slice(2);
+const mode = args[args.indexOf('exec') + 2];
+// Record only whether the header was present, and still exercise the requested failure.
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, mode + (args.some(arg => arg.includes(secret)) ? ' header-in-argv' : '') + '\\n');
+if (mode === 'before-entry') {
+  process.stdout.write(secret);
+  process.stderr.write(secret);
+  process.exitCode = 1;
+} else {
+  const child = spawn(process.execPath, args.slice(args.indexOf('--') + 2), {
+    stdio: [mode === 'incomplete-input' ? 'ignore' : 'inherit', 'pipe', 'inherit'],
+  });
+  let output = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+    if (mode === 'incomplete-input') child.kill();
+  });
+  child.on('close', (code) => {
+    // Simulate an exec stream ending immediately before or after its JSON result.
+    if (mode === 'lost-result' || mode === 'after-result') {
+      const resultStart = output.indexOf('{');
+      process.stdout.write(mode === 'lost-result' ? output.slice(0, Math.max(0, resultStart)) : output);
+      process.stderr.write(secret);
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(mode === 'malformed'
+        ? output.replace('{"status":403,"tlsVerified":false}', secret)
+        : output);
+      process.exitCode = code ?? 1;
+    }
+  });
+}`,
+    { interpreter: process.execPath },
+  );
+  setEnvironment(t, {
+    OCC_KUBECTL_BIN: kubectl,
+    OCC_TEST_KUBERNETES_KUBECONFIG: join(temp, "unused-kubeconfig"),
+    OCC_TEST_KUBERNETES_CONTEXT: "probe-test",
+  });
+  const connect = (mode: string) =>
+    probeChannelConnect("test", mode, `http://127.0.0.1:${address.port}`, "refused.example", {
+      headers: { "x-probe-test": syntheticSecret },
+    });
+
+  for (const [mode, expected] of [
+    ["before-entry", /exit 1\).*no entry marker, no result marker/],
+    ["incomplete-input", /exit 1\).*probe started, no result marker/],
+    ["lost-result", /exit 1\).*request submitted locally, no result marker/],
+    ["after-result", /exit 1\).*request submitted locally, result marker received/],
+    [
+      "malformed",
+      /returned an invalid result \(request submitted locally, result marker received\)/,
+    ],
+  ] as const) {
+    await t.test(mode, async () => {
+      await assert.rejects(connect(mode), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.ok(expected.test(error.message), "missing the expected probe progress");
+        assert.equal(error.stack?.includes(syntheticSecret.slice(0, 10)), false);
+        assert.equal(error.message.includes("403"), false);
+        return true;
+      });
+    });
+  }
+
+  assert.deepEqual(await connect("successful-exec"), { status: 403, tlsVerified: false });
+  assert.deepEqual(headerMatched, [true, true, true, true]);
+  assert.deepEqual(await commandCalls(calls), [
+    "before-entry",
+    "incomplete-input",
+    "lost-result",
+    "after-result",
+    "malformed",
+    "successful-exec",
+  ]);
+});
 
 test("running hook diagnostics keep logs when Kubernetes has no start time", async () => {
   const pod = {

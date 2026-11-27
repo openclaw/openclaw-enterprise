@@ -42,10 +42,10 @@ index df822cb4f20..7cb46354c1e 100644
  
  Release a prepared suspension after thaw or when the host operation is
 diff --git a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
-index 16ba157838e..d68a416fb25 100644
+index 625543aa774..6d813c9cf30 100644
 --- a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
 +++ b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
-@@ -1067,7 +1067,7 @@ var External = [
+@@ -1069,7 +1069,7 @@ var External = [
      /(^source$|^app$)/u,
      /(^wsPath$)/u,
      /(^released$)/u,
@@ -54,7 +54,7 @@ index 16ba157838e..d68a416fb25 100644
      /(^degraded$|^degradedSinceMs$|^reasons$|^intervalMs$|^delayP99Ms$|^delayMaxMs$|^utilization$|^cpuCoreRatio$|^cpuBreakdown$)/u,
      /(^mainThreadCoreRatio$|^workerCoreRatio$|^otherThreadsCoreRatio$|^hostUtilization$|^hostCpuCount$)/u,
      /(^rssBytes$|^heapUsedBytes$|^heapTotalBytes$|^externalBytes$|^arrayBuffersBytes$)/u,
-@@ -1574,7 +1574,7 @@ var External = [
+@@ -1595,7 +1595,7 @@ var External = [
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$)/u,
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$)/u,
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$|^fallbackExhaustedFailure$)/u,
@@ -63,7 +63,7 @@ index 16ba157838e..d68a416fb25 100644
      /(^status$|^reason$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
      /(^kind$|^count$|^message$)/u,
      /(^phase$|^count$)/u,
-@@ -1585,7 +1585,7 @@ var External = [
+@@ -1606,7 +1606,7 @@ var External = [
      /(^status$|^ownerId$|^phase$|^expiresAtMs$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
      /(^status$|^ownerId$|^expiresAtMs$|^writeCustody$)/u,
      /(^suspensionId$)/u,
@@ -72,35 +72,35 @@ index 16ba157838e..d68a416fb25 100644
      /(^pid$|^processInstanceId$)/u,
      /(^type$|^id$|^method$|^params$|^traceparent$|^expectedProfileId$)/u,
      /(^nodeId$)/u,
-@@ -9443,6 +9443,9 @@ var External = [
+@@ -9521,6 +9521,9 @@ var External = [
      (value.processInstanceId === void 0 ||
        !("processInstanceId" in value) ||
-       check_63(value.processInstanceId)) &&
+       check_65(value.processInstanceId)) &&
 +    (value.deferredStopHandoff === void 0 ||
 +      !("deferredStopHandoff" in value) ||
-+      check_330(value.deferredStopHandoff)) &&
-     check_1379(value.uptimeMs) &&
-     check_1379(value.cpuCount) &&
-     (value.cpuModel === void 0 || !("cpuModel" in value) || check_276(value.cpuModel)) &&
-@@ -18842,7 +18845,10 @@ var External = [
++      check_331(value.deferredStopHandoff)) &&
+     check_1389(value.uptimeMs) &&
+     check_1389(value.cpuCount) &&
+     (value.cpuModel === void 0 || !("cpuModel" in value) || check_277(value.cpuModel)) &&
+@@ -19160,7 +19163,10 @@ var External = [
      (value.terminalPolicy === void 0 ||
        !("terminalPolicy" in value) ||
-       check_2799(value.terminalPolicy)) &&
--    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)),
-+    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)) &&
+       check_2845(value.terminalPolicy)) &&
+-    (value.drain === void 0 || !("drain" in value) || check_64(value.drain)),
++    (value.drain === void 0 || !("drain" in value) || check_64(value.drain)) &&
 +    (value.completionDeadlineMs === void 0 ||
 +      !("completionDeadlineMs" in value) ||
-+      check_192(value.completionDeadlineMs)),
-   check_2799 = (value) => check_2800(value) || check_2801(value),
-   check_2800 = (value) => typeof value == "string" && value === "preserve",
-   check_2801 = (value) => typeof value == "string" && value === "terminate",
-@@ -19047,6 +19053,7 @@ var External = [
++      check_193(value.completionDeadlineMs)),
+   check_2845 = (value) => check_2846(value) || check_2847(value),
+   check_2846 = (value) => typeof value == "string" && value === "preserve",
+   check_2847 = (value) => typeof value == "string" && value === "terminate",
+@@ -19365,6 +19371,7 @@ var External = [
      ) &&
-     check_561(value.suspensionId) &&
-     (value.commit === void 0 || !("commit" in value) || check_330(value.commit)) &&
-+    (value.deferExit === void 0 || !("deferExit" in value) || check_330(value.deferExit)) &&
-     check_2843(value.target),
-   check_2843 = (value) =>
+     check_562(value.suspensionId) &&
+     (value.commit === void 0 || !("commit" in value) || check_331(value.commit)) &&
++    (value.deferExit === void 0 || !("deferExit" in value) || check_331(value.deferExit)) &&
+     check_2889(value.target),
+   check_2889 = (value) =>
      typeof value == "object" &&
 diff --git a/packages/gateway-protocol/src/gateway-suspend.test.ts b/packages/gateway-protocol/src/gateway-suspend.test.ts
 index 175a7256a1d..0ab89da0504 100644
@@ -352,10 +352,10 @@ index 00000000000..14b92157fb1
 +  };
 +}
 diff --git a/src/cli/gateway-cli/run-loop.ts b/src/cli/gateway-cli/run-loop.ts
-index 73564de5032..b544ace49fc 100644
+index 1ed07c3144b..b2e03d419f5 100644
 --- a/src/cli/gateway-cli/run-loop.ts
 +++ b/src/cli/gateway-cli/run-loop.ts
-@@ -22,6 +22,7 @@ import { createGatewayHostLifecycle } from "./host-lifecycle.js";
+@@ -23,6 +23,7 @@ import { createGatewayHostLifecycle } from "./host-lifecycle.js";
  import { installGatewayHostLifeline } from "./host-lifeline.js";
  import { createGatewayRunCleanup } from "./run-loop-cleanup.js";
  import * as loopExit from "./run-loop-exit.js";
@@ -363,7 +363,7 @@ index 73564de5032..b544ace49fc 100644
  import {
    isUpdateProcessRestartReason,
    registerGatewayRunInstallationReplacement,
-@@ -68,6 +69,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+@@ -69,6 +70,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
      restartDecision,
      startupBudget,
    } = initial;
@@ -371,7 +371,7 @@ index 73564de5032..b544ace49fc 100644
    let lock = initial.lock;
    const cleanup = createGatewayRunCleanup(
      params.ownsProcessLifecycle,
-@@ -862,14 +864,15 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+@@ -866,14 +868,15 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
      startupFailedWithoutServerHandle = false;
      runAcceptedRequest(request);
    };
@@ -389,7 +389,7 @@ index 73564de5032..b544ace49fc 100644
      if (terminalExitCode !== undefined || (hostExitRequested && action !== "stop")) {
        return;
      }
-@@ -1006,7 +1009,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+@@ -1008,7 +1011,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
        return;
      }
      runAcceptedRequest(acceptedRequest);
@@ -398,7 +398,7 @@ index 73564de5032..b544ace49fc 100644
  
    const signals = createGatewayRunSignals({
      lifecycle: eagerLifecycleRuntime,
-@@ -1076,16 +1079,10 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+@@ -1079,16 +1082,10 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
          break;
        }
        const iterationHost = createGatewayHostLifecycle({
@@ -497,10 +497,10 @@ index b7c309b0bc9..37889cbbc7e 100644
          f.bootId = "replacement-boot";
        }
 diff --git a/src/cli/update-cli/update-command-service-drain.ts b/src/cli/update-cli/update-command-service-drain.ts
-index f6720f7c006..743f431f9ad 100644
+index 1ba1290a57b..dbf86bc755c 100644
 --- a/src/cli/update-cli/update-command-service-drain.ts
 +++ b/src/cli/update-cli/update-command-service-drain.ts
-@@ -80,6 +80,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -81,6 +81,7 @@ export async function withGatewayMaintenanceDrain<T>(
            "gateway.suspend.handoff",
            { suspensionId, target: processTarget, commit: true },
            beforeCommit,
@@ -508,7 +508,7 @@ index f6720f7c006..743f431f9ad 100644
          );
          assertResidentCurrent();
          if (
-@@ -179,6 +180,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -222,6 +223,7 @@ export async function withGatewayMaintenanceDrain<T>(
      method: string,
      args?: unknown,
      beforeDispatch?: () => void,
@@ -516,7 +516,7 @@ index f6720f7c006..743f431f9ad 100644
    ): Promise<R> => {
      assertResidentCurrent();
      if (params.control) {
-@@ -205,8 +207,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -248,8 +250,7 @@ export async function withGatewayMaintenanceDrain<T>(
        localPortOverride: port,
        ignoreEnvUrlOverride: true,
        tlsFingerprint: target.tlsFingerprint,
@@ -527,10 +527,10 @@ index f6720f7c006..743f431f9ad 100644
          observedBootId = hello.server.bootId;
        },
 diff --git a/src/gateway/server-methods.suspension-admission.test.ts b/src/gateway/server-methods.suspension-admission.test.ts
-index 931f2ed43ef..4e610aeff03 100644
+index 413fb7e5d4c..bd6b3bbac7d 100644
 --- a/src/gateway/server-methods.suspension-admission.test.ts
 +++ b/src/gateway/server-methods.suspension-admission.test.ts
-@@ -657,10 +657,11 @@ describe("gateway request suspension admission", () => {
+@@ -649,10 +649,11 @@ describe("gateway request suspension admission", () => {
        ["suspend-proof.write", "operator.write", undefined],
        ["suspend-proof.read", "operator.read", 1_000],
        ["agent.identity.get", "operator.read", 60_000],
@@ -875,10 +875,10 @@ index 732be36aa48..eebf8315d0d 100644
    const getStartup = createStartupChecker(
      { ...startupCheckerDeps, gatewayBootId: bootId },
 diff --git a/src/gateway/test-helpers.e2e.ts b/src/gateway/test-helpers.e2e.ts
-index d86a05ebc86..d878bc354e6 100644
+index 31eaf863180..b17e5283971 100644
 --- a/src/gateway/test-helpers.e2e.ts
 +++ b/src/gateway/test-helpers.e2e.ts
-@@ -315,6 +315,7 @@ export async function startGatewayWithClient(
+@@ -316,6 +316,7 @@ export async function startGatewayWithClient(
      onEvent?: (evt: { event?: string; payload?: unknown }) => void;
      beforeConnect?: (server: GatewayServer) => void | Promise<void>;
      sidecarStartup?: GatewayServerOptions["sidecarStartup"];
@@ -886,7 +886,7 @@ index d86a05ebc86..d878bc354e6 100644
      hotReloadRecovery?: GatewayServerOptions["hotReloadRecovery"];
      channelAutostartSuppression?: GatewayServerOptions["channelAutostartSuppression"];
      tryRecoverChannelAutostartSuppression?: GatewayServerOptions["tryRecoverChannelAutostartSuppression"];
-@@ -348,6 +349,7 @@ export async function startGatewayWithClient(
+@@ -349,6 +350,7 @@ export async function startGatewayWithClient(
          auth: params.auth ?? { mode: "token", token: params.token },
          controlUiEnabled: false,
          sidecarStartup: params.sidecarStartup,

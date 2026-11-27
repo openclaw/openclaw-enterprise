@@ -200,8 +200,6 @@ export function renderCredentialClients(
           (client.kind === "oauth2" &&
             (result.kind !== "oauth2" ||
               result.issuer !== client.issuer ||
-              result.tokenUrl !== client.tokenUrl ||
-              result.revocationUrl !== client.revocationUrl ||
               result.clientId !== client.clientId ||
               result.tokenEndpointAuthMethod !== client.tokenEndpointAuthMethod))
         ) {

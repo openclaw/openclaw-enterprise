@@ -6,7 +6,6 @@ import {
   type AuditEvent,
   type Permission,
   type ResourceKind,
-  type SecretBinding,
 } from "../../packages/contracts/src/index.ts";
 
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -35,7 +34,6 @@ import {
   newPage,
   nonAuthWriteRequests,
   recordLayoutShifts,
-  selectSecret,
   shortId,
   stopAgentButton,
   takeLayoutShifts,
@@ -88,7 +86,7 @@ import {
   NEW_VERSIONS_READ,
   PLUGINS_READ_ONLY,
 } from "../helpers/refusal-access.ts";
-import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { restrict } from "../helpers/iam-grants.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
@@ -96,7 +94,6 @@ type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type NamespaceFixture = Awaited<ReturnType<ConsoleFixture["createNamespace"]>>;
 type AgentFixture = Awaited<ReturnType<ConsoleFixture["createAgent"]>>;
 type RevisionFixture = Awaited<ReturnType<ConsoleFixture["deployAgent"]>>;
-type SecretFixture = Awaited<ReturnType<ConsoleFixture["createSecret"]>>;
 type Requests = ReturnType<typeof apiRequests>;
 type DeploymentError = NonNullable<ReturnType<typeof persistedDeploymentError>>;
 
@@ -124,12 +121,6 @@ async function expectConfirmationAgentId(dialog: Locator, agentId: string) {
     1,
     `expected one "${label}" in the dialog description`,
   );
-}
-
-function lookupSecretId(body: unknown): string {
-  assert.ok(typeof body === "object" && body !== null && "secretId" in body);
-  assert.ok(typeof body.secretId === "string");
-  return body.secretId;
 }
 
 function identifiedResource(value: unknown) {
@@ -285,6 +276,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 1440, height: 900 });
   let cleanup: { status: string; nextAttemptAt: string | null } = {
     status: "queued",
     nextAttemptAt: "2026-09-30T12:00:00.000Z",
@@ -310,7 +302,23 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   // The failure's card says nothing of the cleanup, so the details it would fold stay open and
   // show it without the reader opening them, even when the record lands after the page showed.
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  const notice = page.getByText("Deployment resource cleanup needs attention.", { exact: true });
+  await notice.waitFor();
+
+  // Opening Deployment hides the cleanup notice above the tabs.
+  const tab = page.getByRole("tab", { name: "Deployment", exact: true });
+  await tab.evaluate((node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  assert.ok(await page.evaluate(() => globalThis.window.scrollY > 0));
+  const tabTop = () => tab.evaluate((node) => node.getBoundingClientRect().top);
+  const before = await tabTop();
   const activity = await expectDeploymentOutcome(page, "Failed", { folded: false });
+  await notice.waitFor({ state: "hidden" });
+  assert.equal(await tab.getAttribute("aria-selected"), "true");
+  assert.equal(await hasFocus(tab), true);
+  assert.ok(
+    Math.abs((await tabTop()) - before) <= 1,
+    "Deployment tab stays in place when the cleanup shortcut is hidden",
+  );
 
   // The same retire cleanup also covers repository credential resources, so the
   // status names the version's cleanup rather than bootstrap resources.
@@ -330,10 +338,36 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
       "Revision cleanup started. This version's resources have not been confirmed removed; the controller will retry.",
     )
     .waitFor();
+  // A reader focused on the warning can still open that deployment after cleanup completes.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await notice.waitFor();
+  const shortcut = page
+    .locator(".agent-deployment-attention")
+    .getByRole("link", { name: "View deployment", exact: true });
+  const summaryLink = page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByRole("link", { name: "v1", exact: true });
+  await shortcut.focus();
+  assert.equal(await hasFocus(shortcut), true);
+  const destination = await shortcut.getAttribute("href");
+  assert.ok(destination);
+  assert.equal(await summaryLink.getAttribute("href"), destination);
+
   cleanup = { status: "succeeded", nextAttemptAt: null };
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await shortcut.waitFor({ state: "hidden" });
+  assert.equal(
+    await hasFocus(summaryLink),
+    true,
+    "Focus follows the same deployment when the cleanup shortcut disappears",
+  );
+
+  await page.keyboard.press("Enter");
+  await page.getByRole("tabpanel", { name: "Deployment", exact: true }).waitFor();
+  await page.waitForURL(new URL(destination, page.url()).href);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), revision.id);
   await status.getByText("Revision cleanup completed for this version.").waitFor();
-  await expectDeploymentOutcome(page, "Failed", { folded: false });
+  await expectDeploymentOutcome(page, "Failed", { folded: false, reveal: false });
 });
 
 // A pending deployment is reread every few seconds and its summary usually stays the same.
@@ -1849,455 +1883,6 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
         : route.fallback(),
   );
   await openCredentialsAfterRevoke(again);
-});
-
-// Finding 2919, bound Slack Secrets. An administrator's console reads each bound Slack Secret's
-// grant from the same two lists. A revoke that lands while that read is in flight was refused,
-// and audited, twice; reading one list at a time costs one refusal and sends no bindings read.
-test("A bound Slack Secret grant read after a revoke is refused and audited once", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked Slack grants");
-  const secretBindings: Record<string, SecretBinding> = {};
-  for (const token of ["app", "bot"] as const) {
-    const secret = await fixture.createSecret(
-      namespace.id,
-      `Revoked Slack ${token} token`,
-      `hidden-${token}-token`,
-    );
-    secretBindings[`SLACK_${token.toUpperCase()}_TOKEN`] = {
-      source: secret.ref,
-      delivery: { type: "env" },
-    };
-  }
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Slack grants Agent",
-    nativeValues("slack-grants", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated", secretBindings },
-  );
-  const account = await fixture.createNamespaceMember("revoked-slack", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  // The browser holds both policy reads, so the API answers them only after the revoke.
-  const iam = `${fixture.origin}/namespaces/${namespace.id}/iam`;
-  const roles = await holdRequests(t, page, `${iam}/roles`, { once: true });
-  const bindings = await holdRequests(t, page, `${iam}/access-bindings`, { once: true });
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "channels")),
-    account.credentials,
-  );
-  await roles.requested;
-  revoke();
-  roles.release();
-  bindings.release();
-  await waitForIdleFetches(page);
-  // Only the grant read's IAM denials count: the bound Secrets' metadata reads, sent alongside
-  // it on the same page load, are a separate case (finding 2920).
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink, /^openclaw\.iam\./).map(
-      ({ action }: AuditEvent) => action,
-    ),
-    ["openclaw.iam.roles.list"],
-  );
-  assert.deepEqual(iamReads(requests), ["GET /iam/roles"]);
-});
-
-// Findings 2938 and 2939. An Installation administrator's Agent page confirms her administration
-// when it loads. Its dedicated Agent binds a harness Secret and two Slack token Secrets, and its
-// Slack channel names a channel and a person. She opens Channels, or Edit Slack, later.
-const SLACK_TARGETS = {
-  enabled: true,
-  mode: "socket",
-  appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-  botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-  dmPolicy: "allowlist",
-  groupPolicy: "allowlist",
-  allowFrom: ["U123"],
-  channels: { C123: { requireMention: true } },
-};
-
-async function slackAdministratorPage(t: TestContext, name: string, tab: string) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
-  const harness = await fixture.createSecret(namespace.id, `${name} model key`, "hidden-model");
-  const secretBindings: Record<string, SecretBinding> = {};
-  const secrets: Partial<Record<"app" | "bot", SecretFixture>> = {};
-  for (const token of ["app", "bot"] as const) {
-    const secret = await fixture.createSecret(
-      namespace.id,
-      `${name} Slack ${token} token`,
-      `hidden-${token}-token`,
-    );
-    secrets[token] = secret;
-    secretBindings[`SLACK_${token.toUpperCase()}_TOKEN`] = {
-      source: secret.ref,
-      delivery: { type: "env" },
-    };
-  }
-  const agent = await fixture.createAgent(
-    namespace.id,
-    `${name} Agent`,
-    nativeValues("slack-reads", { harnessId: "codex", channels: { slack: SLACK_TARGETS } }),
-    {
-      executionMode: "dedicated",
-      secretBindings,
-      harnessAuth: { method: "api_key", source: harness.ref },
-    },
-  );
-  const account = await fixture.createNamespaceMember(
-    name.toLowerCase().replaceAll(" ", "-"),
-    namespace.id,
-    AGENT_READ,
-  );
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", tab)),
-    account.credentials,
-  );
-  await waitForIdleFetches(page);
-  // The page load's probe confirmed administration, so the console sends administrator reads.
-  assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
-  assert.ok(secrets.app);
-  assert.ok(secrets.bot);
-  return {
-    fixture,
-    namespace,
-    page,
-    requests,
-    revoke,
-    secrets: { app: secrets.app, bot: secrets.bot },
-  };
-}
-
-// Bound Secret metadata reads by ID, and Slack name lookups, among `requests`.
-const secretReads = (requests: Requests) =>
-  requests.filter(({ method, path }) => method === "GET" && /\/secrets\/[^/?]+$/.test(path));
-const nameLookups = (requests: Requests) =>
-  requests.filter(({ path }) => path.endsWith("/channel-directory/lookup"));
-// The fixture has no Slack workspace: a lookup the API allows fails at Slack. Tests that need an
-// allowed lookup to succeed simulate only this provider answer.
-const SLACK_DIRECTORY = {
-  status: 200,
-  contentType: "application/json",
-  body: JSON.stringify({
-    data: {
-      workspaceId: "TTEST123",
-      workspaceName: "Test workspace",
-      candidates: [
-        { id: "C123", name: "release-room" },
-        { id: "U123", name: "alex", displayName: "Alex" },
-      ],
-      complete: true,
-    },
-    meta: { requestId: "req_test_slack_directory" },
-  }),
-};
-
-// Finding 2938. Revoked before her first Channels open, the Slack card read both bound Slack
-// Secrets by ID at once, and the API refused and audited both reads. They go one at a time: the
-// first refusal settles "not an administrator", the second is refused unsent, and both take the
-// member path, which shows each Secret's name as unavailable.
-test("A first Channels open after a revoke reads one bound Secret, audited once", async (t) => {
-  const { fixture, page, requests, revoke } = await slackAdministratorPage(
-    t,
-    "Revoked channels",
-    "configuration",
-  );
-  revoke();
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
-  await page.getByText(BOUND_SECRET_UNLISTED, { exact: true }).nth(1).waitFor();
-  await waitForIdleFetches(page);
-  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.secrets.read"]);
-  assert.equal(secretReads(requests.slice(sent)).length, 1);
-});
-
-// Finding 2938, an allowed administrator who leaves while the first of the Slack card's Secret
-// reads is in flight: the second read waits for it, and is not sent once the page is gone.
-test("Leaving Channels during its first Secret read sends no later Secret read", async (t) => {
-  const { fixture, namespace, page, requests } = await slackAdministratorPage(
-    t,
-    "Leaving channels",
-    "configuration",
-  );
-  const held = await holdRequests(
-    t,
-    page,
-    (address) => new RegExp(`^/namespaces/${namespace.id}/secrets/[^/]+$`).test(address.pathname),
-    { once: true },
-  );
-  const sent = requests.length;
-  await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await held.requested;
-  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
-  await page.waitForURL(/\/console\/agents\?/);
-  held.release();
-  await waitForIdleFetches(page);
-  assert.equal(secretReads(requests.slice(sent)).length, 1);
-  assert.equal(authorizationDenials(fixture.auditSink).length, 0);
-});
-
-// Finding 2939. A Slack name lookup needs Secret operate on the bot token Secret, which she held
-// only through administration. Revoked after Channels loaded, Edit Slack's fields looked their
-// names up at once, and the API refused and audited each lookup. They go one at a time: the
-// first refusal answers the other field unsent, and both fields show its reason.
-test("Edit Slack after a revoke looks Slack names up once, audited once", async (t) => {
-  const { fixture, page, requests, revoke } = await slackAdministratorPage(
-    t,
-    "Revoked lookup",
-    "channels",
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
-  await waitForIdleFetches(page);
-  revoke();
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
-  await drawer.waitFor();
-  // The API names the grant the lookup needs; each field shows that refusal.
-  const refused = drawer.getByText(
-    /^Slack lookup was refused: .* Saved selections are retained\.$/,
-  );
-  await refused.nth(1).waitFor();
-  await waitForIdleFetches(page);
-  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.channel_directory.lookup"]);
-  assert.equal(nameLookups(requests.slice(sent)).length, 1);
-  const reasons = await refused.allTextContents();
-  assert.equal(reasons.length, 2);
-  assert.equal(reasons[0], reasons[1]);
-});
-
-// Finding 2939, an allowed administrator who leaves while the first of Edit Slack's name lookups
-// is in flight: the second lookup waits for it, and is not sent once the page is gone.
-test("Leaving Edit Slack during its first name lookup sends no later lookup", async (t) => {
-  const { fixture, namespace, page, requests } = await slackAdministratorPage(
-    t,
-    "Leaving lookup",
-    "channels",
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
-  await waitForIdleFetches(page);
-  // In-app navigation, so the page that sent the lookup is left without a reload. The open
-  // drawer blocks the navigation links: Forward leaves it.
-  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
-  await page.waitForURL(/\/console\/agents\?/);
-  await waitForIdleFetches(page);
-  await page.goBack();
-  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
-  await waitForIdleFetches(page);
-  const held = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
-    { once: true },
-  );
-  const sent = requests.length;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  await held.requested;
-  await page.goForward();
-  await page.waitForURL(/\/console\/agents\?/);
-  held.release();
-  await waitForIdleFetches(page);
-  assert.equal(nameLookups(requests.slice(sent)).length, 1);
-});
-
-// Finding 2938. A Restriction refuses an administrator one bound Secret, not her administration:
-// the refusal asks the permission answer, which confirms it, so the Slack card's next Secret read
-// is still sent and shows its name. One refused read does not hold back the reads after it.
-test("A Restriction on one bound Secret still reads the Slack card's other Secret", async (t) => {
-  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
-    t,
-    "Restricted channels",
-    "configuration",
-  );
-  restrict(fixture.policy, "read", "secret", {
-    namespaceId: namespace.id,
-    resourceId: secrets.app.id,
-  });
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
-  await page.getByRole("link", { name: secrets.bot.name, exact: true }).first().waitFor();
-  await waitForIdleFetches(page);
-  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.secrets.read"]);
-  assert.equal(secretReads(requests.slice(sent)).length, 2);
-});
-
-// Finding 2939. A lookup refusal answers only the waiting lookups for its own Secret. Operate on
-// the bound bot token Secret is restricted; while its first lookup is in flight she picks another
-// bot token Secret, whose lookups queue behind it. They are still sent once the refusal settles.
-test("A lookup refusal for one Slack Secret does not answer another Secret's lookups", async (t) => {
-  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
-    t,
-    "Other lookup",
-    "channels",
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
-  await waitForIdleFetches(page);
-  const other = await fixture.createSecret(
-    namespace.id,
-    "Other lookup spare bot token",
-    "hidden-spare-token",
-  );
-  const restriction = restrict(fixture.policy, "operate", "secret", {
-    namespaceId: namespace.id,
-    resourceId: secrets.bot.id,
-  });
-  const held = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
-    { once: true },
-  );
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
-  await drawer.waitFor();
-  await held.requested;
-  await selectSecret(drawer, "Slack bot token", other);
-  held.release();
-  await waitForIdleFetches(page);
-  const lookups = nameLookups(requests.slice(sent));
-  assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === secrets.bot.id).length, 1);
-  assert.ok(lookups.some(({ body }) => lookupSecretId(body) === other.id));
-  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.channel_directory.lookup"]);
-  // Once no lookup waits, the refusal is forgotten: picking the bound Secret again asks again.
-  liftRestriction(fixture.policy, restriction);
-  await selectSecret(drawer, "Slack bot token", secrets.bot);
-  await waitForIdleFetches(page);
-  const again = nameLookups(requests.slice(sent)).filter(
-    ({ body }) => lookupSecretId(body) === secrets.bot.id,
-  );
-  assert.ok(again.length > 1, `the bound Secret was looked up again (${again.length})`);
-});
-
-// Findings 2938 and 2939, an allowed administrator: only the first of a view's lookups waits
-// alone. While Edit Slack's first lookup is in flight she picks another bot token Secret, so three
-// lookups wait behind it. Once the first succeeds, all three are sent at once, not one per round
-// trip: each is held until all three are in flight, which one at a time never are.
-test("Edit Slack sends its waiting lookups at once after the first succeeds", async (t) => {
-  const { fixture, namespace, page, requests } = await slackAdministratorPage(
-    t,
-    "Concurrent lookup",
-    "channels",
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
-  await waitForIdleFetches(page);
-  const other = await fixture.createSecret(
-    namespace.id,
-    "Concurrent lookup spare bot token",
-    "hidden-spare-token",
-  );
-  const lookupUrl = `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`;
-  let inFlight = 0;
-  let mostInFlight = 0;
-  let arrived = 0;
-  const { promise: waiting, resolve: allArrived } = Promise.withResolvers<void>();
-  t.after(() => allArrived());
-  // Registered before the hold, so it receives the lookups after the held first one.
-  await page.route(lookupUrl, async (route) => {
-    inFlight += 1;
-    arrived += 1;
-    mostInFlight = Math.max(mostInFlight, inFlight);
-    if (arrived === 3) {
-      allArrived();
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      waiting,
-      new Promise((resolve) => {
-        timer = setTimeout(resolve, 2_000);
-      }),
-    ]);
-    clearTimeout(timer);
-    inFlight -= 1;
-    await route.fulfill(SLACK_DIRECTORY).catch(() => {});
-  });
-  const held = await holdRequests(t, page, lookupUrl, { once: true, fulfill: SLACK_DIRECTORY });
-  const sent = requests.length;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
-  await drawer.waitFor();
-  await held.requested;
-  await selectSecret(drawer, "Slack bot token", other);
-  // Nothing has answered yet, so the other lookups wait for the first.
-  assert.equal(nameLookups(requests.slice(sent)).length, 1);
-  held.release();
-  await waitForIdleFetches(page);
-  assert.equal(nameLookups(requests.slice(sent)).length, 4);
-  assert.equal(mostInFlight, 3);
-});
-
-// Findings 2938 and 2939. Only a success sends the waiting lookups at once, and only until none
-// is pending. Edit Slack's lookups succeed, then she picks another bot token Secret, whose first
-// lookup goes alone again. While it is in flight she picks the bound Secret back, and operate on
-// both Secrets is restricted. Each Secret's first lookup is refused; that refusal answers its own
-// Secret's other lookup unsent and does not release the next Secret's: two denials in all.
-test("Each Slack Secret's first lookup waits alone after a refusal", async (t) => {
-  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
-    t,
-    "Alone lookup",
-    "channels",
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
-  await waitForIdleFetches(page);
-  const other = await fixture.createSecret(
-    namespace.id,
-    "Alone lookup spare bot token",
-    "hidden-spare-token",
-  );
-  const lookupUrl = `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`;
-  let simulate = true;
-  await page.route(lookupUrl, (route) =>
-    simulate ? route.fulfill(SLACK_DIRECTORY) : route.fallback(),
-  );
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
-  await drawer.waitFor();
-  await drawer.getByText("Slack workspace: Test workspace", { exact: true }).waitFor();
-  await waitForIdleFetches(page);
-  simulate = false;
-  const held = await holdRequests(t, page, lookupUrl, { once: true });
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  await selectSecret(drawer, "Slack bot token", other);
-  await held.requested;
-  await selectSecret(drawer, "Slack bot token", secrets.bot);
-  for (const secret of [other, secrets.bot]) {
-    restrict(fixture.policy, "operate", "secret", {
-      namespaceId: namespace.id,
-      resourceId: secret.id,
-    });
-  }
-  held.release();
-  await waitForIdleFetches(page);
-  const lookups = nameLookups(requests.slice(sent));
-  assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === other.id).length, 1);
-  assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === secrets.bot.id).length, 1);
-  assert.deepEqual(deniedActionsSince(fixture, audited), [
-    "openclaw.channel_directory.lookup",
-    "openclaw.channel_directory.lookup",
-  ]);
 });
 
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission

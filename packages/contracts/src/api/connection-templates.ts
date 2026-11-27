@@ -131,8 +131,6 @@ const createCredentialClient = Type.Object(
     kind: Type.Literal("oauth2"),
     ...oauthRegistration,
     issuer: HttpsUrl,
-    tokenUrl: HttpsUrl,
-    revocationUrl: Type.Optional(HttpsUrl),
     clientSecret: Type.Optional(ClientSecret),
   },
   strict,
@@ -177,8 +175,6 @@ export const OAuthClientSchema = Type.Object(
     kind: Type.Literal("oauth2"),
     ...oauthRegistration,
     issuer: HttpsUrl,
-    tokenUrl: HttpsUrl,
-    revocationUrl: Type.Optional(HttpsUrl),
     id: CredentialClientId,
     createdAt: Type.String(),
   },
@@ -210,6 +206,16 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     authorizationParameters: Parameters,
     mcp: Type.Optional(Type.Object({ serverUrl: HttpsUrl, resource: HttpsUrl }, strict)),
     observed: Type.Optional(Observed),
+    issuerVerification: Type.Optional(
+      Type.Object(
+        { tokenEndpointAuthMethods: Type.Array(AuthMethod) },
+        {
+          ...strict,
+          description:
+            "Present only after issuer metadata verifies this version's OAuth endpoints.",
+        },
+      ),
+    ),
   },
   { $id: "OAuthConnectionTemplateVersion", title: "OAuth connection template version", ...strict },
 );

@@ -67,7 +67,7 @@ Each Agent explicitly selects one Harness execution topology:
   only Codex receives the exact Agent's projected identity. The current
   direct-credential exception also delivers either its bound Secret-backed model
   API key or its bound account-owned access token to Codex.
-  The gateway never assumes that identity or receives the model credential.
+  The Gateway never assumes that identity and receives no credential through the Harness binding. A separate authorized Gateway binding can explicitly reuse a supported static Source.
 
 The [model-credential boundary](safeguards.md#secret-access) distinguishes these
 current delivery exceptions from target mediation outside Harness execution.
@@ -106,8 +106,7 @@ applies even when both targets share a cluster. Detailed file ownership and
 transfer mechanisms remain outside this placement design.
 
 Canonical configuration, policy and credentials belong to trusted control-plane
-storage. Dedicated Gateways consume admitted channel credentials and their own
-password there. Compute delivers only the execution material for that version to the
+storage. Dedicated Gateways consume admitted channel credentials, their own password, and explicitly selected supported static Sources through Compute-owned startup delivery. Compute delivers only the execution material for that version to the
 data plane: selected model authorization, app-server transport, node enrollment
 and execution configuration. Harnesses cannot write canonical CP sources, routes
 or version selection. Current raw model-token delivery and bearer app-server

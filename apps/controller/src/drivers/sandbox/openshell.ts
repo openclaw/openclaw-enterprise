@@ -4045,7 +4045,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             loginMode: "api_key",
             command: [
               ...RUNTIME_WRAPPER_COMMAND,
-              ...nodeProgramArguments(stagedHarnessSupervisor(launchSpec.command)),
+              ...nodeProgramArguments(
+                stagedHarnessSupervisor(
+                  launchSpec.command,
+                  !codex && stagedRepository
+                    ? repositoryPolicy!.grants.map(({ repository }) => repository)
+                    : undefined,
+                ),
+              ),
             ],
           },
         },
@@ -4847,6 +4854,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           environment: {
             HOME: this.harnessHome,
             OPENCLAW_STATE_DIR: `${this.harnessHome}/.openclaw`,
+            OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: "1",
             OPENCLAW_WORKSPACE_DIR: this.workspaceInitializationPath(context),
             OPENCLAW_EXECUTABLE: "/app/openclaw.mjs",
           },

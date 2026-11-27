@@ -4,7 +4,6 @@ import type {
   Configuration,
   ConfigurationDriver,
   ProvisionAgentBody,
-  SecretWire,
 } from "@openclaw-enterprise/contracts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -19,6 +18,7 @@ import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import type { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
+import type { ProvisioningSecrets } from "./postgres-agent-provisioning-setup.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof createProvisioningFixture>>;
@@ -33,11 +33,6 @@ type ResendFixture = Pick<
   | "startWorker"
   | "stopWorker"
 >;
-type ProvisioningSecrets = Record<
-  "modelKey" | "slackBotToken" | "slackSigningSecret" | "externalServiceToken",
-  SecretWire
->;
-
 interface ResendDependencies {
   createFixture: (
     context: TestContext,

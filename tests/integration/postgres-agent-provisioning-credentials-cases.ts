@@ -150,7 +150,7 @@ export function registerCredentialCases() {
         agents: 0,
         configurations: 0,
         revisions: 0,
-        secrets: 4,
+        secrets: 2,
         source_grants: 0,
       });
     },

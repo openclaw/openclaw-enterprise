@@ -20,13 +20,26 @@ startup configuration; Source creation does not change that configuration.
 
 ## Discover, create, and reuse a Source
 
-Open **Pages/Credentials → Credentials**. The single **Credentials** tab shows readable
-static, OAuth, and protected Proxy Source metadata alongside Namespace Secrets. Confirm that
-the page does not show OAuth consent, Proxy configuration, or credential values.
-In **Create a Credential Source**, choose an OpenAI or Codex PAT model purpose, or
-an available static Bearer Template. Enter a dummy value and select **Create Source**.
-Confirm that the Source appears in the inventory and its value is not returned.
-A Template Source cannot serve as model authentication or be admitted directly to an Agent.
+Open **Pages/Credentials → Credentials**. The **Credentials** inventory shows readable static, OAuth, and protected Proxy Source metadata.
+Until all consumer workflows support Sources, the page also retains Namespace Secret controls.
+Confirm that the inventory does not show Proxy configuration or credential values.
+Open **Create Credential Source** with the keyboard. If you Tab to **Cancel** while templates load,
+focus should stay on **Cancel** when the form appears. Press Enter to close the dialog.
+If you leave focus on the heading, **Preset or Connection Template** should receive focus instead. The
+Credentials browser test delays the response so it can check Cancel even when the
+preview loads too quickly.
+
+In **Create a Credential Source**, choose **OpenAI API key**, **Codex PAT**, **Static credential**,
+or an approved static Connection Template. The static choices show **Source name** and
+**Credential value**. Enter a dummy value and select **Create Source**. Confirm that the
+Source appears in the inventory and its value is not returned. A Template Source cannot
+serve as model authentication or be admitted directly to an Agent.
+
+Open **Create with Codex OAuth** and confirm that the static fields are absent and
+**Sign in with OAuth** is available. Open **Create with an OAuth Template** and confirm
+that **Credential Client** lists compatible Clients and **Continue to sign in** is available.
+**OAuth Template without a compatible Client** cannot start consent. These stories simulate
+the UI; they do not complete provider consent or establish custody.
 **Created Source without exact read access** confirms creation without adding the Source to the readable inventory.
 **Source created but inventory access denied** confirms creation, clears stale rows, and shows the denied Namespace read operation.
 
@@ -50,7 +63,7 @@ fixed destination. This story does not deploy the draft.
 Inspect these list and failure stories:
 
 - **Pages/Credentials → No readable Credential Sources** shows an empty Source inventory.
-- **Credential Sources loading** keeps Namespace Secrets available while the Source read waits.
+- **Credential Sources loading** keeps Namespace Secret controls available while the Source collection waits.
 - **Pages/Create Agent → Existing Source list loading**, **Retry an unavailable Source list**,
   and **No eligible model Credential Source** show pending, retry, and missing-choice states.
 - **Pages/Credentials → Credential Source inventory denied** and **Credential Source

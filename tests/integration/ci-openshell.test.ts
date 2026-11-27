@@ -1105,20 +1105,64 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     createOpenShellKubernetesFixture(localProbeOptions);
   const commandOutput = "item/commandExecution/outputDelta";
   const commandApproval = "item/commandExecution/requestApproval";
+  const itemId = "original";
+  const nonce = "probe-command";
 
-  for (const event of [
+  type LateParams = { itemId: string; command?: string; item?: { id: string; command?: string } };
+  type LateMessage =
+    | { method: typeof commandOutput; params: LateParams & { delta: string } }
+    | { method: typeof commandApproval; params: LateParams & { delta?: never } };
+
+  function lateEvent(
+    label: string,
+    method: LateMessage["method"],
+    privacy: "retain IDs" | "omit IDs",
+    params: LateParams,
+  ) {
+    const message: LateMessage =
+      method === commandOutput
+        ? { method, params: { ...params, delta: "partial output" } }
+        : { method, params };
+    return { label, ...message, omitIdentities: privacy === "omit IDs" };
+  }
+
+  for (const scenario of [
     "late result",
     "orphan output before turn ends",
     "in-progress completion before turn ends",
     "blank command type before turn ends",
-    "orphan output after turn ends",
-    "conflicting output IDs for pending command",
-    "conflicting output IDs for settled command",
-    "output contradicts pending command",
-    "output contradicts settled command",
-    "approval notification after turn ends",
-    "conflicting approval command after turn ends",
-    "conflicting approval IDs and command",
+    lateEvent("orphan output after turn ends", commandOutput, "retain IDs", { itemId: "orphan" }),
+    lateEvent("conflicting output IDs for pending command", commandOutput, "retain IDs", {
+      itemId,
+      item: { id: "orphan" },
+    }),
+    lateEvent("conflicting output IDs for settled command", commandOutput, "retain IDs", {
+      itemId: "extra",
+      item: { id: "orphan" },
+    }),
+    lateEvent("output contradicts pending command", commandOutput, "omit IDs", {
+      itemId,
+      command: nonce,
+      item: { id: itemId, command: "setup" },
+    }),
+    lateEvent("output contradicts settled command", commandOutput, "omit IDs", {
+      itemId: "extra",
+      command: "setup",
+      item: { id: "extra", command: nonce },
+    }),
+    lateEvent("approval notification after turn ends", commandApproval, "retain IDs", {
+      itemId: "orphan",
+    }),
+    lateEvent("conflicting approval command after turn ends", commandApproval, "omit IDs", {
+      itemId,
+      command: "setup",
+      item: { id: itemId, command: nonce },
+    }),
+    lateEvent("conflicting approval IDs and command", commandApproval, "retain IDs", {
+      itemId,
+      command: nonce,
+      item: { id: "orphan", command: nonce },
+    }),
     "blank command type after turn ends",
     "untyped item without a command after turn ends",
     "start without thread ID after turn ends",
@@ -1137,69 +1181,16 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   ] as const) {
     const threadId = "probe-thread";
     const turnId = "probe-turn";
-    const nonce = "probe-command";
+    const expectsLateRefusal = typeof scenario !== "string";
+    const event = expectsLateRefusal ? scenario.label : scenario;
     const unexpected = event !== "late result" && event !== "expiry" && event !== "close";
-    const contradictoryCompletion = event === "in-progress completion before turn ends";
-    const blankCommandType = event === "blank command type before turn ends";
+    const contradictoryCompletion = scenario === "in-progress completion before turn ends";
+    const blankCommandType = scenario === "blank command type before turn ends";
     const malformedEarlyCommand = contradictoryCompletion || blankCommandType;
-    type LateEvidence = {
-      method: typeof commandOutput | typeof commandApproval;
-      omitIdentities?: boolean;
-      params: {
-        itemId: string;
-        delta?: string;
-        command?: string;
-        item?: { id: string; command?: string };
-      };
-    };
-    const lateEvidenceByEvent: Partial<Record<typeof event, LateEvidence>> = {
-      "orphan output after turn ends": {
-        method: commandOutput,
-        params: { itemId: "orphan", delta: "partial output" },
-      },
-      "conflicting output IDs for pending command": {
-        method: commandOutput,
-        params: { itemId: "original", item: { id: "orphan" }, delta: "partial output" },
-      },
-      "conflicting output IDs for settled command": {
-        method: commandOutput,
-        params: { itemId: "extra", item: { id: "orphan" }, delta: "partial output" },
-      },
-      "output contradicts pending command": {
-        method: commandOutput,
-        omitIdentities: true,
-        params: {
-          itemId: "original",
-          command: nonce,
-          item: { id: "original", command: "setup" },
-          delta: "partial output",
-        },
-      },
-      "output contradicts settled command": {
-        method: commandOutput,
-        omitIdentities: true,
-        params: {
-          itemId: "extra",
-          command: "setup",
-          item: { id: "extra", command: nonce },
-          delta: "partial output",
-        },
-      },
-      "approval notification after turn ends": {
-        method: commandApproval,
-        params: { itemId: "orphan" },
-      },
-      "conflicting approval command after turn ends": {
-        method: commandApproval,
-        omitIdentities: true,
-        params: { itemId: "original", command: "setup", item: { id: "original", command: nonce } },
-      },
-      "conflicting approval IDs and command": {
-        method: commandApproval,
-        params: { itemId: "original", command: nonce, item: { id: "orphan", command: nonce } },
-      },
-    };
-    const evidence = lateEvidenceByEvent[event];
+    const unboundStart = scenario === "start without thread ID";
+    const unboundCompletion =
+      scenario === "foreign completion before turn ends" ||
+      scenario === "completion without turn ID";
     let peerTurns = 0;
     peer.once("connection", (socket, stream) => {
       socket.on("message", (data) => {
@@ -1230,7 +1221,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         stream.cork();
         send({ id, result: { turn } });
         const item = {
-          id: "original",
+          id: itemId,
           type: blankCommandType ? " " : "commandExecution",
           command: unexpected && !malformedEarlyCommand ? "setup" : nonce,
           status: "inProgress",
@@ -1245,35 +1236,29 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         } else if (event === "late result") {
           orphanOutput("other-turn");
         }
+        const sendStart = (params: { threadId?: string; turnId: string; item: object }) =>
+          send({ method: "item/started", params });
         if (event !== "orphan output before turn ends") {
-          send({ method: "item/started", params: { threadId, turnId, item } });
+          sendStart({ threadId, turnId, item });
         }
         const extra = { ...item, id: "extra", command: "setup" };
-        const unbound: Partial<
-          Record<typeof event, { turnId?: string | undefined; threadId?: string | undefined }>
-        > = {
-          "foreign completion before turn ends": { turnId: "other-turn" },
-          "completion without turn ID": { turnId: undefined },
-          "start without thread ID": { threadId: undefined },
-        };
-        const unboundScope = unbound[event];
-        if (unboundScope) {
-          // Even with the probe nonce, this event cannot establish what our command did.
-          const started = event === "start without thread ID";
-          const status = started ? {} : { status: "failed", exitCode: 77 };
+        // Even with the probe nonce, an unbound event cannot establish what our command did.
+        if (unboundStart) {
+          sendStart({ turnId, item: { ...extra, command: nonce } });
+        } else if (unboundCompletion) {
           send({
-            method: started ? "item/started" : "item/completed",
+            method: "item/completed",
             params: {
               threadId,
-              turnId,
-              ...unboundScope,
-              item: { ...extra, ...status, command: nonce },
+              turnId: scenario === "foreign completion before turn ends" ? "other-turn" : undefined,
+              item: { ...extra, status: "failed", exitCode: 77, command: nonce },
             },
           });
         }
-        const settleExtra = event === "late result" || evidence?.params.itemId === extra.id;
+        const settleExtra =
+          event === "late result" || (expectsLateRefusal && scenario.params.itemId === extra.id);
         if (event === "duplicate completion" || settleExtra) {
-          send({ method: "item/started", params: { threadId, turnId, item: extra } });
+          sendStart({ threadId, turnId, item: extra });
         }
         if (settleExtra) {
           send({
@@ -1293,10 +1278,10 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           params: { threadId, turn: { ...turn, status: "completed", error: null } },
         });
         stream.uncork();
-        if (event === "orphan output before turn ends" || malformedEarlyCommand) {
+        if (scenario === "orphan output before turn ends" || malformedEarlyCommand) {
           return;
         }
-        const setupSucceeded = unexpected && !unboundScope;
+        const setupSucceeded = unexpected && !unboundStart && !unboundCompletion;
         const terminal = {
           ...item,
           status: setupSucceeded ? "completed" : "failed",
@@ -1308,18 +1293,12 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
             item: Omit<typeof terminal, "exitCode"> & { exitCode: number | null };
           },
         ) => send({ method: "item/completed", params: completion });
-        if (event === "late result") {
+        if (scenario === "late result") {
           // Neither an unrelated completion nor output from the command is its terminal.
           completed({ ...params, turnId: "other-turn", item: { ...terminal, exitCode: 31 } });
           completed({ ...params, threadId: "other-thread", item: { ...terminal, exitCode: 32 } });
-          send({
-            method: "item/started",
-            params: { threadId: "other-thread", turnId, item: extra },
-          });
-          send({
-            method: "item/started",
-            params: { threadId, turnId: "other-turn", item: { ...extra, type: " " } },
-          });
+          sendStart({ threadId: "other-thread", turnId, item: extra });
+          sendStart({ threadId, turnId: "other-turn", item: { ...extra, type: " " } });
           send({
             method: "item/completed",
             params: { threadId, turnId, item: { id: "reasoning", type: "reasoning" } },
@@ -1355,63 +1334,68 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
             assert.deepEqual(result, { decision: "decline" });
             completed(params);
           });
-        } else if (evidence !== undefined) {
-          // The successful setup completion alone would allow another probe attempt.
-          send({ method: evidence.method, params: { threadId, turnId, ...evidence.params } });
-          completed(params);
-        } else if (
-          event === "blank command type after turn ends" ||
-          event === "untyped item without a command after turn ends"
-        ) {
-          const malformed =
-            event === "blank command type after turn ends"
-              ? { ...extra, type: " ", command: nonce }
-              : { id: extra.id, type: " " };
-          send({ method: "item/started", params: { threadId, turnId, item: malformed } });
-          completed(params);
-        } else if (event === "start without thread ID after turn ends") {
-          send({
-            method: "item/started",
-            params: { turnId, item: { ...extra, command: nonce } },
-          });
-          completed(params);
-        } else if (event === "completion with blank turn ID after turn ends") {
-          completed({
-            ...params,
-            turnId: " ",
-            item: { ...terminal, id: extra.id, command: nonce },
-          });
-          completed(params);
-        } else if (event === "close") {
-          socket.close();
-        } else if (unboundScope) {
-          completed(params);
-        } else if (unexpected) {
-          // If the client loses evidence of the probe, the later successful setup
-          // completion would make observeSandboxProbe eligible to request turn two.
-          const other = { ...terminal, command: nonce, id: "second" };
-          if (event === "another start" || event === "duplicate start") {
-            const started =
-              event === "duplicate start" ? item : { ...item, command: nonce, id: other.id };
-            send({ method: "item/started", params: { ...params, item: started } });
-          } else {
-            const changes: Partial<
-              Record<typeof event, { id?: string; command?: string; exitCode?: null | number }>
-            > = {
-              "conflicting command": { command: nonce },
-              "incomplete result": { exitCode: null },
-              "untracked completion": other,
-              "duplicate completion": { id: extra.id },
-            };
-            const changed = changes[event];
-            if (event === "duplicate completion") {
-              completed({ ...params, item: { ...terminal, id: extra.id } });
-            }
-            completed({ ...params, item: { ...terminal, ...changed } });
-          }
-          completed(params);
+          return;
         }
-        // In the expiry case no more messages arrive; the client owns the deadline.
+        if (scenario === "expiry") {
+          // No more messages arrive; the client owns the deadline.
+          return;
+        }
+        if (scenario === "close") {
+          return socket.close();
+        }
+
+        if (unboundStart || unboundCompletion) {
+          // The unbound evidence was already sent before turn/completed.
+          return completed(params);
+        }
+        // Send the selected evidence first. A successful setup completion alone would
+        // make observeSandboxProbe eligible to request another turn.
+        if (expectsLateRefusal) {
+          send({ method: scenario.method, params: { threadId, turnId, ...scenario.params } });
+        } else {
+          switch (scenario) {
+            case "blank command type after turn ends":
+              sendStart({ threadId, turnId, item: { ...extra, type: " ", command: nonce } });
+              break;
+            case "untyped item without a command after turn ends":
+              sendStart({ threadId, turnId, item: { id: extra.id, type: " " } });
+              break;
+            case "start without thread ID after turn ends":
+              sendStart({ turnId, item: { ...extra, command: nonce } });
+              break;
+            case "completion with blank turn ID after turn ends":
+              completed({
+                ...params,
+                turnId: " ",
+                item: { ...terminal, id: extra.id, command: nonce },
+              });
+              break;
+            case "another start":
+              sendStart({ ...params, item: { ...item, command: nonce, id: "second" } });
+              break;
+            case "duplicate start":
+              sendStart({ ...params, item });
+              break;
+            case "conflicting command":
+              completed({ ...params, item: { ...terminal, command: nonce } });
+              break;
+            case "incomplete result":
+              completed({ ...params, item: { ...terminal, exitCode: null } });
+              break;
+            case "untracked completion":
+              completed({ ...params, item: { ...terminal, command: nonce, id: "second" } });
+              break;
+            case "duplicate completion": {
+              const duplicate = { ...params, item: { ...terminal, id: extra.id } };
+              completed(duplicate);
+              completed(duplicate);
+              break;
+            }
+            default:
+              assert.fail(`Unhandled probe scenario: ${scenario satisfies never}`);
+          }
+        }
+        completed(params);
       });
     });
 
@@ -1452,14 +1436,15 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           } else {
             assert.equal(completionIndex, -1, event);
           }
-        } else if (evidence !== undefined) {
-          const retained = result.items.filter(({ method }) => method === evidence.method);
-          const { itemId, item } = evidence.params;
-          const identities = evidence.omitIdentities
+        } else if (expectsLateRefusal) {
+          const { params, omitIdentities } = scenario;
+          const retained = result.items.filter(({ method }) => method === scenario.method);
+          const { item } = params;
+          const identities = omitIdentities
             ? {}
-            : { itemId, ...(item && { item: { id: item.id } }) };
+            : { itemId: params.itemId, ...(item && { item: { id: item.id } }) };
           identityOnly = isDeepStrictEqual(retained, [
-            { method: evidence.method, params: { threadId, turnId, ...identities } },
+            { method: scenario.method, params: { threadId, turnId, ...identities } },
           ]);
         }
         return result;
@@ -1481,10 +1466,10 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         { message: /^OpenShell probe outcome is unknown; not sending another turn\. Attempt 1:/ },
         event,
       );
-    } else if (evidence !== undefined) {
+    } else if (expectsLateRefusal) {
       const error = await probeFailure(probe);
       const lateEvidence = new RegExp(
-        `^OpenShell probe outcome is unknown;.*turn/completed completed.*${evidence.method}.*item/completed commandExecution status=completed exitCode=0`,
+        `^OpenShell probe outcome is unknown;.*turn/completed completed.*${scenario.method}.*item/completed commandExecution status=completed exitCode=0`,
       );
       assert.ok(
         lateEvidence.test(error.message),

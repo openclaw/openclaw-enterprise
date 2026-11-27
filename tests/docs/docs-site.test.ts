@@ -59,19 +59,19 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
-  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
   const quickstart = "snippets/openshell-quickstart";
-  const guides = [
-    ["deploy/local-setup", "configure-installation"],
-    ["integrations/codex-plugins", "inspect-linear-transcript"],
-  ] as const;
-  for (const [guide, script] of guides) {
-    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
-    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
-    if (guide === "deploy/local-setup") {
-      assert.ok(html.includes(`install -m 600 docs/${quickstart}/${script}.mts`));
-    }
-  }
+  const published = join(root, "dist/docs");
+  const localSetup = await readFile(
+    join(published, "guides/deploy/local-setup/index.html"),
+    "utf8",
+  );
+  assert.ok(localSetup.includes(`install -m 600 docs/${quickstart}/configure-installation.mts`));
+  const codexPlugins = await readFile(
+    join(published, "guides/integrations/codex-plugins/index.html"),
+    "utf8",
+  );
+  assert.ok(codexPlugins.includes(`href="/${quickstart}/inspect-linear-transcript.mjs"`));
+  // Preserve executable JavaScript downloads at their bookmarked URLs.
   for (const script of [
     "configure-installation",
     "inspect-linear-transcript",
@@ -84,7 +84,6 @@ test("docs build renders every authored page and preserves repository ownership"
     assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
   }
   const quickstartAssets = "assets/openshell-quickstart";
-  const published = join(root, "dist/docs");
   for (const script of ["chat", "verify-github-installation"]) {
     const asset = join(published, quickstartAssets, script + ".mjs");
     execFileSync(process.execPath, ["--check", asset], { encoding: "utf8" });
@@ -97,9 +96,14 @@ test("docs build renders every authored page and preserves repository ownership"
   // Existing enrollment bookmarks must lead to the guide for Source-backed Git access.
   assert.ok(
     enrollment.includes(
-      'href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',
+      'rel="canonical" href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',
     ),
   );
+  const repositoryFlow = await readFile(
+    join(published, "flows/agent-repository-credentials/index.html"),
+    "utf8",
+  );
+  assert.ok(repositoryFlow.includes(`href="/${quickstartAssets}/verify-github-installation.mjs"`));
 
   // Run the shipped staging command from both trees. The published shell must copy
   // the historical download and use the same staged filename when sending a turn.

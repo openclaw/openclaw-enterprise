@@ -55,7 +55,13 @@ export const LongVersionHistory = story("longVersionHistory");
 export const RetainedHarnessHistory = story("retainedHarnessHistory");
 export const RetainedHarnessWithoutOverrides = story("retainedHarnessWithoutOverrides");
 export const FirstDeployment = story("draftAutomaticCredentials");
-export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
+export const ConfigurationEditor = {
+  ...story("configurationEditor", {
+    openInNewTab: true,
+    instructions: "Open the preview in its own tab to check keyboard focus in a long draft.",
+  }),
+  name: "Edit Configuration",
+};
 export const ConfigurationSaveRefused = story("configurationSaveRefused");
 export const ConfigurationSaveUnconfirmed = story("configurationSaveUnconfirmed");
 export const GatewayPasswordAccess = story("gatewayPasswordAccess");
@@ -93,6 +99,7 @@ export const SlackMcpAccountRecovery = {
 export const SlackMcpBoundAgentDiscovery = story("slackMcpBoundAgentDiscovery");
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
 export const PluginAccountConsent = story("pluginAccountConsent");
+export const PluginAccountConsentMultipleClients = story("pluginAccountConsentMultipleClients");
 export const PluginAccountConsentNoClients = story("pluginAccountConsentNoClients");
 export const PluginAccountConsentClientsLoading = story("pluginAccountConsentClientsLoading");
 export const PluginAccountConsentClientsFailed = story("pluginAccountConsentClientsFailed");
@@ -100,6 +107,7 @@ export const PluginAccountConsentStartFailed = story("pluginAccountConsentStartF
 export const PluginAccountConsentStartDelayed = story("pluginAccountConsentStartDelayed");
 export const PluginAccountTemplateNeedsClient = story("pluginAccountTemplateNeedsClient");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
+export const PluginsSearchWhileLoading = story("pluginsSearchWhileLoading");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
 export const DraftSourcesOperateDenied = story("draftSourcesOperateDenied");
@@ -115,6 +123,7 @@ export const PluginApproversDirectoryUnavailable501 = story(
   "pluginApproversDirectoryUnavailable501",
 );
 export const PluginsAdmitted = story("pluginsAdmitted");
+export const NativeSlackSigningBinding = story("nativeSlackSigningBinding");
 export const InvalidConfiguration = {
   ...story("invalidConfiguration"),
   name: "Invalid Configuration JSON",
@@ -185,6 +194,9 @@ export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDepl
 export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
 export const DeploymentFailedCodexPolicy = story("deploymentFailedCodexPolicy");
 export const DeploymentFailedCodexRequirementsSize = story("deploymentFailedCodexRequirementsSize");
+export const DeploymentFailedGatewayCredentialDelivery = story(
+  "deploymentFailedGatewayCredentialDelivery",
+);
 export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",

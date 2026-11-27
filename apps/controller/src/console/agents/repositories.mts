@@ -8,7 +8,7 @@ import type {
 import { resourceActionIcon } from "../resource-actions.mjs";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { element, button, field, setStatusTone } from "../dom.mjs";
+import { element, button, field, setStatusTone, setText } from "../dom.mjs";
 import {
   AGENT_CREATE_DENIED,
   askAdministratorTo,
@@ -278,6 +278,12 @@ export function createRepositoryFields(
     autocomplete: "off",
     placeholder: "Search by repository or owner…",
     "aria-controls": "repository-results",
+  });
+  const searchAction = element("span", { className: "repository-identity" });
+  const searchField = field({
+    label: "Find a repository",
+    control: search,
+    help: searchAction,
   });
   const results = element("div", { id: "repository-results" });
   const discovery = element("div", { className: "repository-discovery" });
@@ -696,7 +702,7 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Read-only Git permits clone and fetch. Read/write Git also permits push. Neither option grants GitHub REST or pull request access."
+      ? "Read-only Git allows cloning and fetching. Read/write Git also allows pushing. Opening pull requests requires Read/write Git, pull request write permission from the GitHub App and Credential Source, and repository policy approval. The Agent must be able to read every repository in the Source. Repository policy can allow public metadata reads for selected repositories without credentials. Pull request creation is the only authenticated GitHub REST operation this policy can grant."
       : "After deploying with access profiles, you need a new Agent to switch to Per-repository access.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
@@ -826,9 +832,7 @@ export function createRepositoryFields(
         renderResults();
         return;
       }
-      results
-        .querySelector<HTMLInputElement>('input[type="checkbox"]:not(:checked):not(:disabled)')
-        ?.click();
+      nextSearchChoice()?.click();
     }
   });
   discovery.addEventListener("keydown", (event) => {
@@ -840,6 +844,22 @@ export function createRepositoryFields(
     searchState.dismissed = true;
     renderResults();
   });
+  function nextSearchChoice() {
+    return results.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]:not(:checked):not(:disabled)',
+    );
+  }
+  function describeSearchAction() {
+    if (search.disabled || state.discovery !== "ready") {
+      setText(searchAction, "");
+    } else if (searchState.dismissed) {
+      setText(searchAction, "Press Enter to show results");
+    } else {
+      const name = nextSearchChoice()?.dataset.searchName;
+      const summary = state.selected.size ? `${state.selected.size} selected` : "";
+      setText(searchAction, name ? `Enter selects ${name}` : summary);
+    }
+  }
   function renderResults() {
     results.hidden = searchState.dismissed;
     const { small, query, matches, count, page, visible } = repositoryResults(
@@ -849,6 +869,7 @@ export function createRepositoryFields(
     );
     results.replaceChildren();
     if (state.discovery !== "ready" || !state.options.length) {
+      describeSearchAction();
       return;
     }
     const searchSummary = matches.length
@@ -875,7 +896,9 @@ export function createRepositoryFields(
     const list = element("ul", { className: "repository-results-list" });
     for (const entry of visible) {
       const selected = state.selected.has(entry.repositoryRef);
-      const displayName = searchCase(entry.displayName);
+      const scopedName = scoped() && githubLimit(entry)?.repository;
+      const name = scopedName || entry.displayName || entry.repositoryRef;
+      const displayName = searchCase(name);
       const reference = searchCase(entry.repositoryRef);
       const showReference =
         reference !== displayName && reference !== displayName.split("/").at(-1);
@@ -883,12 +906,11 @@ export function createRepositoryFields(
       const checkbox = element("input", {
         type: "checkbox",
         "data-repository-ref": entry.repositoryRef,
+        "data-search-name": showReference ? `${name} (${entry.repositoryRef})` : name,
         checked: selected,
         disabled:
           !editable() ||
-          (!selected &&
-            (state.selected.size >= MAX_SELECTED ||
-              (scoped() && !githubName(entry.repositoryRef)))),
+          (!selected && (state.selected.size >= MAX_SELECTED || (scoped() && !scopedName))),
       });
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
@@ -905,12 +927,8 @@ export function createRepositoryFields(
         element(
           "span",
           { className: "repository-identity" },
-          element(
-            "strong",
-            {},
-            scoped() ? (githubName(entry.repositoryRef) ?? entry.displayName) : entry.displayName,
-          ),
-          scoped() && !githubName(entry.repositoryRef)
+          element("strong", {}, name),
+          scoped() && !scopedName
             ? element("span", { className: "hint" }, "Requires profile access")
             : null,
           repositoryDescription(entry.description),
@@ -1003,6 +1021,7 @@ export function createRepositoryFields(
         "16 repositories selected. Deselect one to select another.",
       ),
     );
+    describeSearchAction();
   }
   function renderCards() {
     announcements.querySelector("button")?.remove();
@@ -1264,10 +1283,7 @@ export function createRepositoryFields(
     }
     const needsSearch = state.options.length > 5;
     if (!results.isConnected || needsSearch !== search.isConnected) {
-      discovery.replaceChildren(
-        ...(needsSearch ? [element("label", { for: search.id }, "Find a repository"), search] : []),
-        results,
-      );
+      discovery.replaceChildren(...(needsSearch ? [searchField] : []), results);
     }
     if (!discovery.isConnected) {
       choices.replaceChildren(discovery);
@@ -1288,6 +1304,7 @@ export function createRepositoryFields(
       if (limit) {
         limit.hidden = state.selected.size < MAX_SELECTED;
       }
+      describeSearchAction();
     } else {
       renderResults();
     }
