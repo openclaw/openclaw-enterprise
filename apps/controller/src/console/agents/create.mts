@@ -30,6 +30,7 @@ import {
   field as formField,
   fieldError,
   jsonObjectDiagnostic,
+  followEditorError,
   setFieldError,
   setHidden,
   setStatusTone,
@@ -750,8 +751,6 @@ async function finishProvisioningAttempt({
 // The warning can wrap onto more lines than the default scroll padding allows.
 // Measure the mounted bar so native focus scrolling clears it, including after Back.
 const createActionsSelector = "#create-agent-form ~ .form-actions";
-// The existing action-bar observer also sees when its form leaves the page without a blur.
-const createErrorTracking = new WeakMap<Element, AbortController>();
 let actionSize: ResizeObserver | undefined;
 function observeCreateActions(actions = document.querySelector(createActionsSelector)) {
   if (!actions) {
@@ -761,7 +760,6 @@ function observeCreateActions(actions = document.querySelector(createActionsSele
     for (const { target } of entries) {
       if (!target.isConnected) {
         observer.unobserve(target);
-        createErrorTracking.get(target)?.abort();
         if (!document.querySelector(createActionsSelector)) {
           document.documentElement.style.removeProperty("--create-actions-height");
         }
@@ -2714,7 +2712,11 @@ function renderAgentForm(
     if (reportInvalid && input === configuration) {
       configurationError.show(diagnostic.message);
       focusConfiguration(diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined);
-      followVisibleError();
+      followEditorError(configuration, {
+        actions,
+        beforeResize: updateConfigurationActionHeight,
+        isCurrent: () => context.isCurrent(),
+      });
     } else if (reportInvalid) {
       const details = input.closest("details");
       if (details) {
@@ -2727,12 +2729,13 @@ function renderAgentForm(
   }
   // Size the editor before the user selects text. Shrinking it when the error appears
   // can hide the selection at the bottom of a long draft.
-  configuration.addEventListener("focus", () => {
+  configuration.addEventListener("focus", updateConfigurationActionHeight);
+  function updateConfigurationActionHeight() {
     configuration.style.setProperty(
       "--create-editor-actions-height",
       `${Math.ceil(actions.getBoundingClientRect().height)}px`,
     );
-  });
+  }
   // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
   function focusConfiguration(offset?: number) {
     const details = configuration.closest("details");
@@ -2747,118 +2750,15 @@ function renderAgentForm(
     if (error.hidden) {
       return;
     }
-
-    // Show the message above the sticky actions without scrolling the repair line out of view.
-    const shift = errorScroll(configuration.getBoundingClientRect().top);
-    if (shift !== undefined && shift > 0) {
-      window.scrollBy(0, shift);
-    }
-  }
-  // Round toward visibility. If both edges cannot fit, leave the user's position alone.
-  function nearestShift(top: number, bottom: number) {
-    const up = Math.floor(top);
-    const down = Math.ceil(bottom);
-    return down <= up ? Math.max(down, Math.min(up, 0)) : undefined;
-  }
-  function errorScroll(top: number) {
+    // Reveal the message above the sticky actions if the editor can stay in view.
     const limit = Math.min(
       document.documentElement.clientHeight,
       actions.getBoundingClientRect().top,
     );
-    return nearestShift(top, configurationError.node.getBoundingClientRect().bottom - limit);
-  }
-  function followVisibleError() {
-    createErrorTracking.get(actions)?.abort();
-    const { outlineWidth, outlineOffset } = getComputedStyle(configuration);
-    const outset = Math.max(0, Number.parseFloat(outlineWidth) + Number.parseFloat(outlineOffset));
-    if (document.activeElement !== configuration) {
-      return;
+    const shift = Math.ceil(error.getBoundingClientRect().bottom - limit);
+    if (shift > 0 && shift <= configuration.getBoundingClientRect().top) {
+      window.scrollBy(0, shift);
     }
-
-    const tracking = new AbortController();
-    createErrorTracking.set(actions, tracking);
-    const { signal } = tracking;
-    const stop = () => tracking.abort();
-    let y = window.scrollY;
-    let { clientWidth, clientHeight } = document.documentElement;
-    const error = configurationError.node;
-    const message = error.textContent;
-    const { selectionStart, selectionEnd, selectionDirection } = configuration;
-    const editor: HTMLTextAreaElement & {
-      createValueRange?(
-        start: number,
-        end: number,
-      ): Pick<Range, "getBoundingClientRect"> & { disconnect?(): void };
-    } = configuration;
-    const range = editor.createValueRange?.(selectionStart, selectionEnd);
-    signal.addEventListener("abort", () => range?.disconnect?.(), { once: true });
-    function selectionScroll(rect: DOMRectReadOnly | undefined) {
-      if (rect && rect.height > 0) {
-        const edge = editor.getBoundingClientRect().top + editor.clientTop;
-        return nearestShift(rect.top - edge, rect.bottom - edge - editor.clientHeight);
-      }
-      return undefined;
-    }
-    // The selected line and message can both be visible even when the editor starts above the window.
-    const editorTop = () => editor.getBoundingClientRect().top - outset;
-    const selection = range?.getBoundingClientRect();
-    const selectionWasVisible = selectionScroll(selection) === 0;
-    const repairTop = selection && selectionWasVisible ? selection.top : editorTop();
-    if (errorScroll(repairTop) !== 0) {
-      stop();
-      return;
-    }
-    for (const event of ["blur", "input", "pointerdown", "wheel"]) {
-      editor.addEventListener(event, stop, { signal, passive: true });
-    }
-    function stopIfScrolled() {
-      if (window.scrollY !== y) {
-        stop();
-      }
-    }
-    window.addEventListener("scroll", stopIfScrolled, { signal });
-    function onResize() {
-      if (
-        window.scrollY !== y ||
-        !context.isCurrent() ||
-        document.activeElement !== editor ||
-        error.hidden ||
-        error.textContent !== message ||
-        editor.selectionStart !== selectionStart ||
-        editor.selectionEnd !== selectionEnd ||
-        editor.selectionDirection !== selectionDirection
-      ) {
-        stop();
-        return;
-      }
-      const viewport = document.documentElement;
-      if (clientWidth === viewport.clientWidth && clientHeight === viewport.clientHeight) {
-        return;
-      }
-      ({ clientWidth, clientHeight } = viewport);
-      // The action bar can wrap onto another line at the new width.
-      configuration.style.setProperty(
-        "--create-editor-actions-height",
-        `${Math.ceil(actions.getBoundingClientRect().height)}px`,
-      );
-      const line = selectionWasVisible ? range?.getBoundingClientRect() : undefined;
-      const innerShift = selectionScroll(line);
-      // When the whole editor cannot fit, keep the selected line and the message together.
-      const shift =
-        errorScroll(editorTop()) ??
-        (line && innerShift !== undefined ? errorScroll(line.top - innerShift) : undefined);
-      if (shift === undefined) {
-        return;
-      }
-      if (innerShift) {
-        editor.scrollBy({ top: innerShift, behavior: "instant" });
-      }
-      if (shift) {
-        window.scrollBy({ top: shift, behavior: "instant" });
-        y = window.scrollY;
-      }
-    }
-    window.addEventListener("resize", onResize, { signal });
   }
   function hasEnabledChannel(values: Record<string, unknown>) {
     const channels = values.channels;

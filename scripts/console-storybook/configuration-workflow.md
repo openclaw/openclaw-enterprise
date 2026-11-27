@@ -96,6 +96,16 @@ value so its opening quote is past column 100. Replace that quote with
 to save. The caret and the instruction to use a straight quote should both
 be visible. Without clicking, press Delete and type `"` to repair the draft.
 
+Repeat the syntax error in a wide window. While the caret is at the typo,
+shrink the window before typing. Check that the caret line and the full error
+stay visible when both fit. The editor should keep focus and the rest of the
+draft should stay unchanged. Scroll away deliberately and resize again. The
+page should stay where you scrolled. Move focus elsewhere and resize once
+more. Focus should stay where you put it.
+
+Repeat this resize check in **Pages → Agent detail → Plugin selections JSON error**.
+Enter a typo in **Plugin selections JSON** and press **Save plugin selections**.
+
 ## Correct an out-of-range Configuration number
 
 Open **Pages → Agent detail → Invalid Configuration JSON**
