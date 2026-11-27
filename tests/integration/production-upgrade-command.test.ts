@@ -23,6 +23,8 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const command = join(repository, "scripts/upgrade-production");
+const runtimeImage = "registry.example/runtime@sha256:" + "b".repeat(64);
+const runtimeEditWarning = /For each dedicated Codex Harness, pause workspace writes/;
 
 function kubeconfigFor(context: string, selected: Record<string, string | boolean> = {}) {
   return {
@@ -74,10 +76,14 @@ async function fixture(t: TestContext) {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function selectCheckout(f: Fixture) {
+async function selectCheckout(f: Fixture, runtime?: string) {
   const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" });
   assert.equal(git.status, 0);
-  const selected = { ...f.input, sourceRevision: git.stdout.trim() };
+  const selected = {
+    ...f.input,
+    sourceRevision: git.stdout.trim(),
+    images: runtime === undefined ? f.input.images : { ...f.input.images, runtime },
+  };
   await writeFile(f.profile, JSON.stringify(selected));
   return selected;
 }
@@ -620,6 +626,7 @@ test("apply requires approval of the current target before reserving private evi
   assert.match(plan.stdout, /interrupts the OCC API and Worker even when no migration is pending/);
   assert.doesNotMatch(plan.stdout, /separate migration pause/);
   assert.doesNotMatch(plan.stdout, /Qualify a recovery controller before maintenance/);
+  assert.doesNotMatch(plan.stdout, runtimeEditWarning);
   assert.ok(plan.stdout.includes(profile.images.controller));
   assert.ok(plan.stdout.includes(`Kubeconfig: ${join(f.directory, profile.kubeconfig)}`));
   assert.ok(
@@ -724,9 +731,39 @@ test("apply requires approval of the current target before reserving private evi
   }
 });
 
+test("runtime plan and apply warn about edits on the outgoing Gateway before approval", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f, runtimeImage);
+  const plan = run("plan", f);
+  assert.equal(plan.status, 0, plan.stderr);
+  const declined = run("apply", f, [], {
+    confirmation: "no\n",
+    automaticEvidence: true,
+    env: { OCC_URL: "http://127.0.0.1:9" },
+  });
+  assert.equal(declined.status, 1, declined.stdout + declined.stderr);
+  const prompt = declined.stdout.indexOf("Type yes to continue:");
+  assert.ok(prompt > 0, declined.stdout);
+  for (const preview of [plan.stdout, declined.stdout.slice(0, prompt)]) {
+    assert.match(preview, /The Gateway Pod may hold the only copy of an edit/);
+    assert.match(preview, runtimeEditWarning);
+    assert.match(
+      preview,
+      /Compare each edited file on the persistent volume with an independent copy/,
+    );
+    assert.match(preview, /pause the upgrade and keep the original Gateway Pod running/);
+  }
+  assert.match(declined.stdout, /Apply cancelled; no command dispatched/);
+  assert.deepEqual((await readdir(f.directory)).sort(), [
+    "kubeconfig",
+    "operator.json",
+    "rendered",
+  ]);
+});
+
 test("resume warns about Installation writes before approval even if the local files already match", async (t) => {
   const f = await fixture(t);
-  await selectCheckout(f);
+  await selectCheckout(f, runtimeImage);
   const values = JSON.stringify({ installation: { secretName: "occ-staged" } });
   const installation = JSON.stringify({
     drivers: {
@@ -786,6 +823,11 @@ test("resume warns about Installation writes before approval even if the local f
   assert.match(beforeApproval, /write the recorded local Installation/);
   assert.match(beforeApproval, /replace the live mutable Installation Secret/);
   assert.match(beforeApproval, /switch to the recorded immutable Secret/);
+  assert.match(beforeApproval, runtimeEditWarning);
+  assert.match(
+    beforeApproval,
+    /If the original Pod is gone, reconcile any unverified edits before resuming/,
+  );
   assert.match(declined.stdout, /Resume cancelled; no command dispatched/);
   assert.doesNotMatch(declined.stdout + declined.stderr, /OCC_URL must use HTTPS/);
 
@@ -804,7 +846,7 @@ test("resume warns about Installation writes before approval even if the local f
 
 test("migration apply requires approval of the original run before native dispatch", async (t) => {
   const f = await fixture(t);
-  await selectCheckout(f);
+  await selectCheckout(f, runtimeImage);
   await mkdir(f.evidence, { mode: 0o700 });
   const handoff = join(f.evidence, "database-migration-handoff.json");
   const handoffBytes = JSON.stringify({ api: { uid: "api" }, worker: { uid: "worker" } });
@@ -816,6 +858,7 @@ test("migration apply requires approval of the original run before native dispat
   const unapproved = run("migration-apply", f, [], { env: nativeExit });
   assert.equal(unapproved.status, 2, unapproved.stdout + unapproved.stderr);
   assert.match(unapproved.stderr, /--auto-approve/);
+  assert.doesNotMatch(unapproved.stdout, runtimeEditWarning);
 
   // A PTY exercises the real approval gate. A dispatched invocation reaches
   // the native URL guard before any Kubernetes request.
