@@ -40,6 +40,35 @@ const feedbackClass = (page: Page) =>
       node.className === "status" ? node.getAttribute("data-tone") : node.className,
     );
 
+function jsonErrorVisibility(node: HTMLTextAreaElement, actionsSelector?: string) {
+  let visibleBottom = window.innerHeight;
+  if (actionsSelector) {
+    const actions = document.querySelector(actionsSelector);
+    if (!actions) {
+      throw new Error(`Missing sticky actions: ${actionsSelector}`);
+    }
+    visibleBottom = Math.min(visibleBottom, actions.getBoundingClientRect().top);
+  }
+  const { paddingTop, lineHeight } = getComputedStyle(node);
+  const clientTop = node.getBoundingClientRect().top + node.clientTop;
+  const firstLineTop = clientTop + Number.parseFloat(paddingTop) - node.scrollTop;
+  const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
+  const diagnostic = document.getElementById("configuration-json-error")!.getBoundingClientRect();
+  return {
+    selection: [node.selectionStart, node.selectionEnd],
+    firstLineVisible:
+      node.scrollTop === 0 &&
+      firstLineTop >= Math.max(0, clientTop) &&
+      firstLineBottom <= Math.min(visibleBottom, clientTop + node.clientHeight),
+    diagnosticVisible:
+      diagnostic.height > 0 &&
+      diagnostic.top >= 0 &&
+      diagnostic.bottom <= visibleBottom &&
+      diagnostic.left >= 0 &&
+      diagnostic.right <= document.documentElement.clientWidth,
+  };
+}
+
 async function openEditor(
   page: Page,
   fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
@@ -120,28 +149,7 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
     assert.equal(await json.inputValue(), syntaxDraft);
     assert.equal(patches, 0);
 
-    const visible = await json.evaluate((node: HTMLTextAreaElement) => {
-      const { paddingTop, lineHeight } = getComputedStyle(node);
-      const clientTop = node.getBoundingClientRect().top + node.clientTop;
-      const firstLineTop = clientTop + Number.parseFloat(paddingTop) - node.scrollTop;
-      const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
-      const diagnostic = document
-        .getElementById("configuration-json-error")!
-        .getBoundingClientRect();
-      return {
-        selection: [node.selectionStart, node.selectionEnd],
-        firstLineVisible:
-          node.scrollTop === 0 &&
-          firstLineTop >= Math.max(0, clientTop) &&
-          firstLineBottom <= Math.min(window.innerHeight, clientTop + node.clientHeight),
-        diagnosticVisible:
-          diagnostic.height > 0 &&
-          diagnostic.top >= 0 &&
-          diagnostic.bottom <= window.innerHeight &&
-          diagnostic.left >= 0 &&
-          diagnostic.right <= document.documentElement.clientWidth,
-      };
-    });
+    const visible = await json.evaluate(jsonErrorVisibility);
     assert.deepEqual(
       visible,
       { selection: [1, 1], firstLineVisible: true, diagnosticVisible: true },
@@ -346,15 +354,32 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   // Submit from the end of the draft. The very next key should repair the earlier typo.
   const misplacedComma = template.replace(/^\s*\{/, "$&,");
   assert.notEqual(misplacedComma, template);
-  await json.fill(misplacedComma);
-  await json.press("Control+End");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).press("Enter");
-  assert.equal(await focusedId(page), "configuration-json");
-  assert.equal(await json.inputValue(), misplacedComma);
-  await page.keyboard.press("Delete");
-  assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
-  assert.equal(await jsonError.isHidden(), true);
-  assert.equal(await page.getByLabel("Agent name").inputValue(), "JSON feedback Agent");
+  const commaOffset = misplacedComma.indexOf(",");
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport);
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
+    await page.setViewportSize(viewport);
+    await json.fill(misplacedComma);
+    await json.press("Control+End");
+    await create.press("Enter");
+    await jsonError
+      .getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.", { exact: true })
+      .waitFor();
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal(await json.inputValue(), misplacedComma);
+    const visible = await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions");
+    assert.deepEqual(
+      visible,
+      { selection: [commaOffset, commaOffset], firstLineVisible: true, diagnosticVisible: true },
+      `Create Agent shows the caret line and full diagnostic above its actions at ${viewport.width}×${viewport.height}`,
+    );
+    await page.keyboard.press("Delete");
+    assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
+    assert.equal(await jsonError.isHidden(), true);
+    assert.equal(await page.getByLabel("Agent name").inputValue(), "JSON feedback Agent");
+  }
+  await page.setViewportSize(originalViewport);
 
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).

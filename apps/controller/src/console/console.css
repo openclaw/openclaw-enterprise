@@ -4767,7 +4767,14 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 /* Keyboard focus scrolls a control into view above that row, not under it. Two rows of buttons
    fit on a phone. */
 html:has(#create-agent-form) {
-  scroll-padding-bottom: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
+  --create-actions-space: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
+  scroll-padding-bottom: var(--create-actions-space);
+}
+@media (max-height: 36rem) {
+  .launch-advanced #configuration-json {
+    /* Leave room for a wrapped syntax diagnostic above the sticky actions. */
+    height: max(5lh, calc(100dvh - var(--create-actions-space) - 3lh));
+  }
 }
 .repository-customize .repository-option {
   margin-top: var(--space-4);
