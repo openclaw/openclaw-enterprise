@@ -2684,7 +2684,7 @@ function renderAgentForm(
     }
     if (reportInvalid && input === configuration) {
       configurationError.show(diagnostic.message);
-      focusConfiguration();
+      focusConfiguration(diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined);
     } else if (reportInvalid) {
       const details = input.closest("details");
       if (details) {
@@ -2696,12 +2696,30 @@ function renderAgentForm(
     return undefined;
   }
   // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
-  function focusConfiguration() {
+  function focusConfiguration(offset?: number) {
     const details = configuration.closest("details");
     if (details) {
       details.open = true;
     }
+    if (offset !== undefined) {
+      configuration.setSelectionRange(offset, offset);
+    }
     configuration.focus();
+    if (offset === undefined) {
+      return;
+    }
+
+    // Show the message above the sticky actions without scrolling the repair line out of view.
+    const visibleBottom = Math.min(
+      document.documentElement.clientHeight,
+      actions.getBoundingClientRect().top,
+    );
+    const overlap = Math.ceil(
+      configurationError.node.getBoundingClientRect().bottom - visibleBottom,
+    );
+    if (overlap > 0 && configuration.getBoundingClientRect().top >= overlap) {
+      window.scrollBy(0, overlap);
+    }
   }
   function hasEnabledChannel(values: Record<string, unknown>) {
     const channels = values.channels;
