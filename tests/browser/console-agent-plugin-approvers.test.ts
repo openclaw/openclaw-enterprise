@@ -2460,7 +2460,7 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
     }
     const { createPluginFields } = module;
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
-    const beta = { id: "beta", name: "Beta", tools: [] };
+    const beta = { id: "beta", name: "Beta", available: false, tools: [] };
     const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
     const input = globalThis.document.createElement("textarea");
     input.id = "plugin-live-selections";
@@ -2515,6 +2515,12 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.evaluate(() => globalThis.showPluginPage2());
   await dialog.getByText("Page 2 · 2 plugins", { exact: true }).waitFor();
   assert.deepEqual(await liveWrites(), ["Page 2 · 2 plugins"]);
+  const alphaRow = pluginRow(dialog, "alpha");
+  const card = pluginCard(dialog, "alpha");
+  assert.equal(await alphaRow.locator(".badge").textContent(), "Not selected");
+  const add = card.getByRole("button", { name: "Add Alpha", exact: true });
+  await add.waitFor();
+
   const invalid =
     "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.";
   await page.evaluate(() => globalThis.showPluginPage2("["));
@@ -2527,6 +2533,19 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   });
   await page.evaluate(() => globalThis.showPluginPage2("["));
   assert.deepEqual(await liveWrites(), []);
+
+  // Alpha can still be browsed, but neither view knows whether it is selected.
+  await card.getByRole("heading", { name: "Alpha" }).waitFor();
+  await alphaRow.waitFor();
+  assert.equal(await alphaRow.locator(".badge").count(), 0);
+  assert.equal(await card.locator(".plugin-detail-header .badge").count(), 0);
+  assert.equal(await add.count(), 0);
+  // Catalog availability, unlike selection state, does not depend on the draft.
+  const beta = pluginRow(dialog, "beta");
+  assert.equal(await beta.locator(".badge").textContent(), "Unavailable");
+  await beta.click();
+  const betaCard = pluginCard(dialog, "beta");
+  assert.equal(await betaCard.locator(".plugin-detail-header .badge").textContent(), "Unavailable");
 });
 
 test("Create Agent searches approvers with a search-only Slack Source", async (t) => {
@@ -3646,8 +3665,28 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
     assert.equal(await input.isVisible(), true);
     assert.equal(agentRequests().length, before);
   }
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const done = dialog.getByRole("button", { name: "Done", exact: true });
+  const configured = dialog.getByRole("button", { name: "Configured plugins", exact: true });
+  const status = dialog.locator(".plugin-browser-status [role=status]");
+  const counts = page.locator(".plugin-fields > p.hint");
+  const empty = dialog.getByText("No plugins configured. Choose Available plugins to add one.");
+
+  await input.fill("{}");
+  assert.match(await counts.innerText(), /^0 plugins configured\./);
+  await configure.click();
+  await configured.click();
+  await empty.waitFor();
+  assert.equal(await status.textContent(), "0 configured plugins");
+  await done.click();
+
   await input.fill(bad);
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  assert.equal(
+    await counts.textContent(),
+    "Fix Plugin selections JSON to see which plugins are configured.",
+  );
+  await configure.click();
+  await configured.click();
   await dialog
     .getByText(
       "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.",
@@ -3656,7 +3695,18 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
     .waitFor();
   assert.equal(await input.inputValue(), bad);
   assert.equal(await dialog.evaluate((node) => node.contains(document.activeElement)), true);
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.doesNotMatch((await status.textContent()) ?? "", /\b\d+ configured plugins?\b/);
+  assert.equal(await empty.count(), 0);
+  await done.click();
+
+  // Repair to a disabled selection: disabled is still configured.
+  await input.fill(JSON.stringify({ [id]: { enabled: false } }));
+  assert.match(await counts.innerText(), /^1 plugin configured\./);
+  await configure.click();
+  await configured.click();
+  await pluginRow(dialog, id).getByText("Disabled", { exact: true }).waitFor();
+  assert.equal(await status.textContent(), "1 configured plugin");
+  await done.click();
   assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, initial);
 
   // Valid JSON with an ill-typed policy still belongs to the real Driver's refusal path.
