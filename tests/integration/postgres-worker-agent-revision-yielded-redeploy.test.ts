@@ -240,6 +240,27 @@ function workPasses<T extends WorkerEvent>(events: readonly T[], work: { idempot
   );
 }
 
+async function persistedPredecessorStoppingAtMs(
+  fixture: Fixture,
+  owner: Agent,
+  predecessor: WorkIdentity,
+  candidate: WorkIdentity,
+): Promise<number> {
+  const { rows } = await fixture.observerPool.query<{ stopping_at_ms: number | null }>(
+    `SELECT floor(extract(epoch FROM (predecessor_replacement->>'stoppingAt')::timestamptz)
+                * 1000)::double precision AS stopping_at_ms
+     FROM occ.agents
+     WHERE namespace_id = $1 AND id = $2
+       AND predecessor_replacement->>'predecessorRevisionId' = $3
+       AND predecessor_replacement->>'candidateRevisionId' = $4
+       AND predecessor_replacement->>'phase' = 'stopping'`,
+    [owner.namespaceId, owner.id, predecessor.id, candidate.id],
+  );
+  const stoppingAtMs = required(required(rows[0]).stopping_at_ms);
+  assert.ok(Number.isSafeInteger(stoppingAtMs) && stoppingAtMs > 0);
+  return stoppingAtMs;
+}
+
 /**
  * An exclusive Agent whose first revision serves, another Agent's deployment that keeps Work due,
  * and a redeploy whose first pass yields its predecessor stop. `drainMs` is the first revision's
@@ -289,18 +310,22 @@ revisionTest(
     const { owner, driver, events, first, busy, replacement, yielded, requestedAt } =
       await yieldedRedeploy(fixture, "drain-predecessor", { drainMs: 6_000 });
     assert.equal(yielded.outcome, "pending");
+    const stoppingAtMs = await persistedPredecessorStoppingAtMs(fixture, owner, first, replacement);
+    const firstPasses = await completedPasses(events, first);
+    assert.ok(firstPasses.every((pass) => !Object.hasOwn(pass, "predecessorStoppingAtMs")));
     // Deployment status says what the replacement waits for.
     const waiting = await fixture.deploymentStatus(owner, replacement);
     assert.equal(waiting.progress?.lastAttempt?.code, "PREDECESSOR_STOP_YIELDED");
     // The other Agent's deployment runs while the replacement waits for the drain.
-    await waitFor(
+    const otherPass = await waitFor(
       "another Agent's pass while the replacement is deferred",
       async () =>
-        events.some(
+        events.find(
           ({ event, workId, at }) =>
             event === "worker.completed" && workId === busy.idempotencyKey && at > yielded.at,
-        ) || undefined,
+        ),
     );
+    assert.equal(Object.hasOwn(otherPass, "predecessorStoppingAtMs"), false);
     const done = await fixture.work(replacement, "succeeded", 30_000);
     // Bounded by the drain, not by full waits of its own; yields refund their attempt.
     assert.ok(Date.now() - requestedAt < 6_000 + 20_000, `${Date.now() - requestedAt} ms`);
@@ -316,12 +341,17 @@ revisionTest(
     assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
     const passes = await completedPasses(events, replacement);
     assert.ok(passes.every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
-    // The yields are throttled like a stopped Agent's, and the completion carries their count.
+    // Both lines report the original committed stop timestamp, even though the second pass resumes
+    // the drain. The yields are throttled and the completion carries their count.
     assert.deepEqual(
-      passes.map(({ code, stopYields }) => [code, stopYields]),
+      passes.map(({ code, stopYields, predecessorStoppingAtMs }) => [
+        code,
+        stopYields,
+        predecessorStoppingAtMs,
+      ]),
       [
-        ["PREDECESSOR_STOP_YIELDED", 1],
-        ["REVISION_ACTIVATED", driver.yields()],
+        ["PREDECESSOR_STOP_YIELDED", 1, stoppingAtMs],
+        ["REVISION_ACTIVATED", driver.yields(), stoppingAtMs],
       ],
     );
   },
@@ -595,6 +625,12 @@ for (const refused of [false, true]) {
       );
       // The worker dies during the deployment's last (only) attempt; its claim expires.
       await fixture.stop();
+      const stoppingAtMs = await persistedPredecessorStoppingAtMs(
+        fixture,
+        owner,
+        first,
+        replacement,
+      );
       await fixture.observerPool.query(
         `UPDATE occ.controller_work
          SET state = 'claimed', attempt_count = 1,
@@ -617,12 +653,19 @@ for (const refused of [false, true]) {
       if (refused) {
         await denyDeploy(fixture, owner);
       }
-      await fixture.start(driver.compute);
+      const events: WorkerEvent[] = [];
+      await fixture.start(driver.compute, {
+        emit: (event) => events.push(checkedWorkerEvent(event)),
+      });
       if (refused) {
         await assertWorkEnds(fixture, replacement, "failed_permanent", "AUTHORIZATION_DENIED");
       } else {
         await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_ACTIVATED");
       }
+      // A fresh Worker has no deployment timing cache. Its terminal line still reports the time
+      // that the prior Worker committed, including when it resumes the stop to finish a refusal.
+      const passes = await completedPasses(events, replacement, refused ? "permanent" : "success");
+      assert.equal(required(passes.at(-1)).predecessorStoppingAtMs, stoppingAtMs);
       // Hard invariant: the predecessor's Harness stopped once, before anything prepared the
       // replacement, and no Harness is left without its Gateway.
       assert.deepEqual(driver.overlaps, []);
