@@ -53,44 +53,61 @@ interface Rule {
 
 const mark = (name: string) => `${MARK}${name}]`;
 
-function redactUrl(url: string): string {
-  let rest = url;
-  let fragment = "";
-  const hash = rest.indexOf("#");
-  if (hash !== -1) {
-    fragment = `#${mark("fragment")}`;
-    rest = rest.slice(0, hash);
+interface Span {
+  readonly start: number;
+  readonly end: number;
+}
+interface TextEdit extends Span {
+  readonly text: string;
+}
+interface TextRule {
+  readonly pattern: RegExp;
+  readonly edits: (match: string, ...groups: string[]) => readonly TextEdit[];
+  readonly applies?: (text: string) => boolean;
+}
+const edit = (start: number, end: number, name: string): TextEdit => ({
+  start,
+  end,
+  text: mark(name),
+});
+const whole = (value: string, name: string): readonly TextEdit[] => [edit(0, value.length, name)];
+function renderEdits(value: string, edits: readonly TextEdit[]): string {
+  const output: string[] = [];
+  let copied = 0;
+  for (const item of edits) {
+    output.push(value.slice(copied, item.start), item.text);
+    copied = item.end;
   }
-  const question = rest.indexOf("?");
-  if (question === -1) {
-    return rest + fragment;
-  }
-  const base = rest.slice(0, question);
-  const query = rest
-    .slice(question + 1)
-    .split("&")
-    .map((pair) => {
-      if (pair.length === 0) {
-        return pair;
-      }
-      const equals = pair.indexOf("=");
-      // A bare query token can itself be a credential; keep only well-formed key names.
-      if (equals === -1) {
-        return mark("query");
-      }
-      const key = pair.slice(0, equals);
-      return /^[A-Za-z0-9_.[\]-]{1,64}$/.test(key) ? `${key}=${mark("query")}` : mark("query");
-    })
-    .join("&");
-  return `${base}?${query}${fragment}`;
+  return edits.length === 0 ? value : output.join("") + value.slice(copied);
 }
 
-/**
- * Redacts the query of the first request path in a token. A path starts with `/` at the
- * token start or after `(` or `=`, runs without `?` or `#`, and is followed by `?`.
- * Single pass: every `?`/`#` ends the candidates that precede it.
- */
-function redactPathQuery(token: string): string {
+function urlEdits(url: string, offset = 0): TextEdit[] {
+  const edits: TextEdit[] = [];
+  const hash = url.indexOf("#");
+  const end = hash === -1 ? url.length : hash;
+  const question = url.indexOf("?");
+  if (question !== -1 && question < end) {
+    let start = question + 1;
+    while (start < end) {
+      const amp = url.indexOf("&", start);
+      const stop = amp === -1 || amp > end ? end : amp;
+      if (stop > start) {
+        const pair = url.slice(start, stop);
+        const equals = pair.indexOf("=");
+        const valid = equals !== -1 && /^[A-Za-z0-9_.[\]-]{1,64}$/.test(pair.slice(0, equals));
+        edits.push(edit(offset + start + (valid ? equals + 1 : 0), offset + stop, "query"));
+      }
+      start = stop + 1;
+    }
+  }
+  if (hash !== -1) {
+    edits.push(edit(offset + hash + 1, offset + url.length, "fragment"));
+  }
+  return edits;
+}
+
+/** Each question mark or fragment ends the path candidates before it. */
+function pathQueryEdits(token: string): readonly TextEdit[] {
   let position = 0;
   for (;;) {
     let stop = position;
@@ -98,7 +115,7 @@ function redactPathQuery(token: string): string {
       stop += 1;
     }
     if (stop === token.length) {
-      return token;
+      return [];
     }
     if (token[stop] === "?") {
       for (let index = position; index < stop; index += 1) {
@@ -106,7 +123,7 @@ function redactPathQuery(token: string): string {
           token[index] === "/" &&
           (index === 0 || token[index - 1] === "(" || token[index - 1] === "=")
         ) {
-          return token.slice(0, index) + redactUrl(token.slice(index));
+          return urlEdits(token.slice(index), index);
         }
       }
     }
@@ -151,22 +168,22 @@ function hasLongRun(text: string): boolean {
  * shows text that was masked. `escape` is undefined when the run has no such letters, or
  * when the run after them is under 40 characters.
  */
-function maskLongRun(
+function longRunEdits(
   match: string,
   escape: string | undefined,
   run: string,
   tokenShaped: (value: string) => boolean,
-): string {
+): readonly TextEdit[] {
   if (tokenShaped(run)) {
-    return `${escape ?? ""}${mark("long-token")}`;
+    return [edit(escape?.length ?? 0, match.length, "long-token")];
   }
-  return escape !== undefined && tokenShaped(match) ? mark("long-token") : match;
+  return escape !== undefined && tokenShaped(match) ? whole(match, "long-token") : [];
 }
 
-const RULES: readonly Rule[] = [
+const RULES: readonly TextRule[] = [
   {
     pattern: /-----BEGIN [A-Z0-9 ]{0,64}-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,64}-----|$)/g,
-    replace: () => mark("pem"),
+    edits: (value) => whole(value, "pem"),
   },
   {
     // Header values, including inside `-H '...'` and `--header "..."` arguments, JSON,
@@ -175,7 +192,9 @@ const RULES: readonly Rule[] = [
       `${START}(${HEADER_NAMES})(${QUOTE}${GAP}*${ASSIGN}${GAP}*${QUOTE})${notRedacted}[^"'\\r\\n]+`,
       "gi",
     ),
-    replace: (_match, name, separator) => `${name}${separator}${mark("header")}`,
+    edits: (value, name, separator) => [
+      edit(name.length + separator.length, value.length, "header"),
+    ],
   },
   {
     // `Bearer <token>` and `bearer token <token>` outside a header, whatever the token's
@@ -184,7 +203,8 @@ const RULES: readonly Rule[] = [
       `${START}(bearer${GAP}+(?:token${GAP}+)?)${notRedacted}([A-Za-z0-9._~+/-]{8,}=*)`,
       "gi",
     ),
-    replace: (match, prefix, value) => (/[0-9]/.test(value) ? `${prefix}${mark("bearer")}` : match),
+    edits: (match, prefix, value) =>
+      /[0-9]/.test(value) ? [edit(prefix.length, match.length, "bearer")] : [],
   },
   {
     // `Basic <base64 of user:password>` outside a header. Only a value that decodes to a
@@ -193,20 +213,20 @@ const RULES: readonly Rule[] = [
       `${START}(basic${GAP}+)${notRedacted}([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])`,
       "gi",
     ),
-    replace: (match, prefix, value) =>
+    edits: (match, prefix, value) =>
       Buffer.from(value, "base64").toString("latin1").includes(":")
-        ? `${prefix}${mark("basic")}`
-        : match,
+        ? [edit(prefix.length, match.length, "basic")]
+        : [],
   },
   {
     // netrc lines: `machine <host> login <user> password <secret>`.
     pattern: /\b(login\s+\S{1,512}\s+password\s+)(?!\[redacted:)\S+/gi,
-    replace: (_match, prefix) => `${prefix}${mark("netrc")}`,
+    edits: (value, prefix) => [edit(prefix.length, value.length, "netrc")],
   },
   {
     // `eyJ<4+>.<4+>.<sig>` starting at a word boundary. The regex only takes each maximal
     // run of the JWT alphabet plus `.` once (the lookahead/backreference pair is atomic);
-    // `maskJwts` then finds the tokens inside the run in linear time. A plain
+    // `jwtEdits` then finds the tokens inside the run in linear time. A plain
     // `\beyJ[A-Za-z0-9_-]{4,}\.` backtracks quadratically on runs such as `-eyJa-eyJa-...`,
     // where `\b` holds before every `eyJ` and `-` is inside the segment alphabet.
     // The letters of a literal escape right before `eyJ` (`\neyJ...`) stay outside the run.
@@ -214,15 +234,15 @@ const RULES: readonly Rule[] = [
       `(?<![A-Za-z0-9_.-])(?:(?<=\\\\)(${ESCAPE_LETTERS})(?=eyJ))?(?=([A-Za-z0-9_.-]{11,}))\\2`,
       "g",
     ),
-    replace: (_match, escape: string | undefined, run: string) =>
-      `${escape ?? ""}${run.includes("eyJ") ? maskJwts(run) : run}`,
+    edits: (_match, escape: string | undefined, run: string) =>
+      run.includes("eyJ") ? jwtEdits(run, escape?.length ?? 0) : [],
     // The replacement keeps every run without `eyJ`.
     applies: (text) => text.includes("eyJ"),
   },
   {
     // URL userinfo: `scheme://user:password@host` and `scheme://token@host`.
     pattern: /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s@"'<>]+@/gi,
-    replace: (_match, scheme) => `${scheme}${mark("userinfo")}@`,
+    edits: (value, scheme) => [edit(scheme.length, value.length - 1, "userinfo")],
     applies: (text) => text.includes("://"),
   },
   {
@@ -230,35 +250,35 @@ const RULES: readonly Rule[] = [
       `${START}(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_|[sr]k_(?:live|test)_)[A-Za-z0-9_-]{8,}`,
       "g",
     ),
-    replace: () => mark("token"),
+    edits: (value) => whole(value, "token"),
   },
   {
     // Hugging Face access tokens. The length floor keeps identifiers such as
     // `hf_hub_download` readable.
     pattern: new RegExp(`${START}hf_[A-Za-z0-9]{30,}`, "g"),
-    replace: () => mark("token"),
+    edits: (value) => whole(value, "token"),
   },
   {
     pattern: new RegExp(`${START}(?:AKIA|ASIA)[0-9A-Z]{16}\\b`, "g"),
-    replace: () => mark("aws-key"),
+    edits: (value) => whole(value, "aws-key"),
   },
   {
     pattern: new RegExp(`${START}AIza[0-9A-Za-z_-]{30,}`, "g"),
-    replace: () => mark("google-key"),
+    edits: (value) => whole(value, "google-key"),
   },
   {
     // Every query value and fragment of absolute URLs.
     pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'<>]+/gi,
-    replace: (match) => redactUrl(match),
+    edits: (value) => urlEdits(value),
     applies: (text) => text.includes("://"),
   },
   {
     // Request paths with a query string, as in `GET /hooks?token=...`. The regex only
     // selects whole whitespace- or quote-delimited tokens that contain `?` (the lookbehind
-    // anchors each attempt at a token start), and `redactPathQuery` scans the token once,
+    // anchors each attempt at a token start), and `pathQueryEdits` scans the token once,
     // so runs such as `=/=/=/...` stay linear.
     pattern: /(?<![^\s"'])[^\s"']*\?[^\s"']*/g,
-    replace: (token) => redactPathQuery(token),
+    edits: (value) => pathQueryEdits(value),
     applies: (text) => text.includes("?"),
   },
   {
@@ -267,7 +287,9 @@ const RULES: readonly Rule[] = [
       `("${SECRET_KEY}"\\s*:\\s*)${notRedacted}("(?:[^"\\\\]|\\\\.)*"|[^\\s,}\\]]+)`,
       "gi",
     ),
-    replace: (_match, key) => `${key}"${mark("key-value")}"`,
+    edits: (value, key) => [
+      { start: key.length, end: value.length, text: `"${mark("key-value")}"` },
+    ],
   },
   {
     // `--password value`, `--token=value`.
@@ -275,7 +297,9 @@ const RULES: readonly Rule[] = [
       `(?:(?<![A-Za-z0-9_.-])|(?<=${ESCAPE}))(--${SECRET_KEY})(${GAP}+|=)(?!${GAP})(?!-)${notRedacted}("[^"]*"|'[^']*'|\\S+)`,
       "gi",
     ),
-    replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
+    edits: (value, key, separator) => [
+      edit(key.length + separator.length, value.length, "key-value"),
+    ],
   },
   {
     // `password=value`, `token: value`, and keys whose closing quote comes before the
@@ -286,7 +310,9 @@ const RULES: readonly Rule[] = [
       `(${SECRET_KEY_TAIL})(${QUOTE}${GAP}*${ASSIGN}${GAP}*)(?!${GAP})(?!${QUOTE}\\[redacted:)("[^"]*"|'[^']*'|\\\\"[^"]*"|[^\\s,;&"']+)`,
       "gi",
     ),
-    replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
+    edits: (value, key, separator) => [
+      edit(key.length + separator.length, value.length, "key-value"),
+    ],
   },
   {
     // Upper-case environment assignments of a key: `MY_SERVICE_KEY=value`.
@@ -294,7 +320,9 @@ const RULES: readonly Rule[] = [
       `${START}([A-Z][A-Z0-9_]{0,63}_KEY)(${GAP}*=${GAP}*)(?!${GAP})${notRedacted}("[^"]*"|'[^']*'|[^\\s,;&"']+)`,
       "g",
     ),
-    replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
+    edits: (value, key, separator) => [
+      edit(key.length + separator.length, value.length, "key-value"),
+    ],
   },
   {
     // Hex and standard base64 runs of 40 or more characters. Slash-separated lowercase
@@ -303,14 +331,14 @@ const RULES: readonly Rule[] = [
     // takes the rest of its run), so the lookbehind changes no match; it only stops
     // the scan from re-reading up to 40 characters at every position inside a run.
     // The letters of a literal escape that starts a run (`\n<hex>`) are kept apart and
-    // tested without the rest; see `maskLongRun`.
+    // tested without the rest; see `longRunEdits`.
     pattern: new RegExp(
       `(?<![A-Za-z0-9+/])((?<=\\\\)${ESCAPE_LETTERS})?([A-Za-z0-9+/]{40,}={0,2})`,
       "g",
     ),
     applies: hasLongRun,
-    replace: (match, escape, run) =>
-      maskLongRun(
+    edits: (match, escape, run) =>
+      longRunEdits(
         match,
         escape,
         run,
@@ -322,8 +350,8 @@ const RULES: readonly Rule[] = [
     // The lookbehind changes no match, as in the rule above.
     pattern: new RegExp(`(?<![A-Za-z0-9_-])((?<=\\\\)${ESCAPE_LETTERS})?([A-Za-z0-9_-]{40,})`, "g"),
     applies: hasLongRun,
-    replace: (match, escape, run) =>
-      maskLongRun(
+    edits: (match, escape, run) =>
+      longRunEdits(
         match,
         escape,
         run,
@@ -340,15 +368,14 @@ const isJwtSegmentChar = (char: string) => /[A-Za-z0-9_-]/.test(char);
  * a token starts at the run start or after `-` or `.` (the run's only non-word characters).
  * Each dot-separated segment is measured once, so the scan is linear in the run length.
  */
-function maskJwts(run: string): string {
+function jwtEdits(run: string, offset: number): readonly TextEdit[] {
   // segmentEnd[i]: index of the first `.` at or after i, or run.length.
   const segmentEnd = new Array<number>(run.length + 1);
   segmentEnd[run.length] = run.length;
   for (let index = run.length - 1; index >= 0; index -= 1) {
     segmentEnd[index] = run[index] === "." ? index : segmentEnd[index + 1]!;
   }
-  let output = "";
-  let copied = 0;
+  const edits: TextEdit[] = [];
   let index = 0;
   while (index < run.length) {
     const start = run.indexOf("eyJ", index);
@@ -366,14 +393,13 @@ function maskJwts(run: string): string {
       payloadEnd < run.length
     ) {
       const end = segmentEnd[payloadEnd + 1]!;
-      output += `${run.slice(copied, start)}${mark("jwt")}`;
-      copied = end;
+      edits.push(edit(offset + start, offset + end, "jwt"));
       index = end;
     } else {
       index = start + 1;
     }
   }
-  return copied === 0 ? run : `${output}${run.slice(copied)}`;
+  return edits;
 }
 
 /** Masks credential-shaped substrings. Input is a single log line or field value. */
@@ -383,9 +409,8 @@ export function redactRuntimeLogText(value: string): string {
     if (rule.applies !== undefined && !rule.applies(text)) {
       continue;
     }
-    text = text.replace(
-      rule.pattern,
-      rule.replace as (substring: string, ...args: string[]) => string,
+    text = text.replace(rule.pattern, (match, ...groups: string[]) =>
+      renderEdits(match, rule.edits(match, ...groups)),
     );
   }
   return text;
@@ -426,7 +451,10 @@ function maskPemEnd(text: string): string {
  */
 export function maskPemBlockLines(
   lines: readonly (string | undefined)[],
-  context?: { open: boolean | undefined; readonly canClose?: readonly boolean[] | undefined },
+  context?: {
+    open: boolean | undefined;
+    readonly canClose?: readonly boolean[] | undefined;
+  },
 ): ReadonlyMap<number, string> {
   const masked = new Map<number, string>();
   let open = context?.open;
@@ -509,7 +537,10 @@ const ARGV_USERINFO_FLAGS: ReadonlySet<string> = new Set(["-u", "--user", "--pro
 // Each entry lists the secret flags and the extra user/password separators it accepts.
 const ARGV_CLIENT_CREDENTIALS: ReadonlyMap<
   string,
-  { readonly secret: readonly string[]; readonly userinfo: Readonly<Record<string, string>> }
+  {
+    readonly secret: readonly string[];
+    readonly userinfo: Readonly<Record<string, string>>;
+  }
 > = new Map([
   // `redis-cli -a PASSWORD`.
   ["redis-cli", { secret: ["-a"], userinfo: {} }],
@@ -553,6 +584,256 @@ function basename(token: string): string {
   return slash === -1 ? token : token.slice(slash + 1);
 }
 
+/** Merge two ordered streams without sorting workload-controlled intervals. */
+function mergeSpans(left: readonly Span[], right: readonly Span[]): Span[] {
+  const output: Span[] = [];
+  let l = 0;
+  let r = 0;
+  while (l < left.length || r < right.length) {
+    const next =
+      r === right.length || (l < left.length && left[l]!.start <= right[r]!.start)
+        ? left[l++]!
+        : right[r++]!;
+    const previous = output[output.length - 1];
+    if (previous !== undefined && next.start < previous.end) {
+      output[output.length - 1] = {
+        start: previous.start,
+        end: Math.max(previous.end, next.end),
+      };
+    } else {
+      output.push(next);
+    }
+  }
+  return output;
+}
+const argvEdits = (spans: readonly Span[]): TextEdit[] =>
+  spans.map(({ start, end }) => edit(start, end, "argv"));
+
+/** Copied UTF-16 units keep their source index; replacement units have no origin. */
+interface MappedText {
+  readonly text: string;
+  readonly origins: readonly number[];
+  readonly starts: readonly number[];
+  readonly ends: readonly number[];
+}
+function sourceText(text: string): MappedText {
+  const origins = Array.from({ length: text.length }, (_, index) => index);
+  return {
+    text,
+    origins,
+    starts: origins,
+    ends: origins.map((index) => index + 1),
+  };
+}
+function mappedEdits(
+  value: MappedText,
+  edits: readonly TextEdit[],
+  suppressed?: Uint8Array,
+): MappedText {
+  if (edits.length === 0) {
+    return value;
+  }
+  const origins: number[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let copied = 0;
+  const copy = (end: number) => {
+    for (; copied < end; copied += 1) {
+      origins.push(value.origins[copied]!);
+      starts.push(value.starts[copied]!);
+      ends.push(value.ends[copied]!);
+    }
+  };
+  for (const item of edits) {
+    copy(item.start);
+    const start = value.starts[item.start] ?? value.ends[item.start - 1] ?? 0;
+    const end = item.end > item.start ? value.ends[item.end - 1]! : start;
+    for (; copied < item.end; copied += 1) {
+      const origin = value.origins[copied]!;
+      if (suppressed !== undefined && origin >= 0) {
+        suppressed[origin] = 1;
+      }
+    }
+    for (let index = 0; index < item.text.length; index += 1) {
+      origins.push(-1);
+      starts.push(start);
+      ends.push(end);
+    }
+  }
+  copy(value.text.length);
+  return { text: renderEdits(value.text, edits), origins, starts, ends };
+}
+function mappedTextRules(value: MappedText, suppressed?: Uint8Array): MappedText {
+  let output = value;
+  for (const rule of RULES) {
+    if (rule.applies !== undefined && !rule.applies(output.text)) {
+      continue;
+    }
+    const edits: TextEdit[] = [];
+    for (const match of output.text.matchAll(rule.pattern)) {
+      for (const item of rule.edits(match[0], ...match.slice(1))) {
+        edits.push({
+          ...item,
+          start: match.index + item.start,
+          end: match.index + item.end,
+        });
+      }
+    }
+    output = mappedEdits(output, edits, suppressed);
+  }
+  return output;
+}
+
+// Until the first edit, every rule sees the same string. This avoids source-map
+// allocation on lines where only argv recognition changes, without guessing whether
+// marker-shaped input was copied or replaced.
+function hasTextEdits(value: string): boolean {
+  for (const rule of RULES) {
+    if (rule.applies !== undefined && !rule.applies(value)) {
+      continue;
+    }
+    for (const match of value.matchAll(rule.pattern)) {
+      if (rule.edits(match[0], ...match.slice(1)).length > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** One logfmt string layer, retaining printed gaps rather than emitting controls. */
+function messageSpans(value: string): Span[] {
+  const spans: Span[] = [];
+  const printedEscape = new RegExp(ESCAPE, "y");
+  let at = 0;
+  let boundary = true;
+  let quote: string | undefined;
+  while (at < value.length) {
+    let fieldLength = 0;
+    if (quote === undefined && boundary) {
+      if (value.startsWith('msg="', at)) {
+        fieldLength = 5;
+      } else if (value.startsWith('message="', at)) {
+        fieldLength = 9;
+      }
+    }
+    if (fieldLength > 0) {
+      const boundaries = [at + fieldLength];
+      const decoded: string[] = [];
+      let cursor = at + fieldLength;
+      while (cursor < value.length && value[cursor] !== '"') {
+        const character = value[cursor]!;
+        const next = value[cursor + 1];
+        if (character === "\\" && next !== undefined && (next === "\\" || next === '"')) {
+          decoded.push(next);
+          cursor += 2;
+        } else {
+          // Keep unknown escapes, including printed whitespace, as source units.
+          decoded.push(character);
+          cursor += 1;
+        }
+        boundaries.push(cursor);
+      }
+      for (const span of argvSpans(decoded.join(""), true)) {
+        spans.push({ start: boundaries[span.start]!, end: boundaries[span.end]! });
+      }
+      at = cursor < value.length ? cursor + 1 : value.length;
+      boundary = false;
+      continue;
+    }
+    const character = value[at]!;
+    const next = value[at + 1];
+    if (quote === undefined && /\s/.test(character)) {
+      boundary = true;
+    } else if (
+      character === "\\" &&
+      quote !== "'" &&
+      next !== undefined &&
+      (quote === undefined ||
+        next === '"' ||
+        next === "\\" ||
+        next === "$" ||
+        next === "`" ||
+        next === "\n")
+    ) {
+      printedEscape.lastIndex = at;
+      if (quote === undefined && printedEscape.test(value)) {
+        at = printedEscape.lastIndex;
+        boundary = true;
+      } else {
+        at += 2;
+        boundary = false;
+      }
+      continue;
+    } else {
+      if (character === quote) {
+        quote = undefined;
+      } else if (quote === undefined && (character === '"' || character === "'")) {
+        quote = character;
+      }
+      boundary = false;
+    }
+    at += 1;
+  }
+  return spans;
+}
+
+/** Keep the published argv and ordered text masks as a source-position floor. */
+export function redactArgvCredentials(value: string): string {
+  const published = argvSpans(value, false);
+  const merged = mergeSpans(mergeSpans(published, argvSpans(value, true)), messageSpans(value));
+  const output = renderEdits(value, argvEdits(merged));
+  if (
+    merged.length === published.length &&
+    merged.every(
+      (span, index) => span.start === published[index]!.start && span.end === published[index]!.end,
+    )
+  ) {
+    return output;
+  }
+
+  if (!hasTextEdits(renderEdits(value, argvEdits(published)))) {
+    return output;
+  }
+  const source = sourceText(value);
+  const suppressed = new Uint8Array(value.length);
+  const oldText = mappedTextRules(mappedEdits(source, argvEdits(published)), suppressed);
+  const newText = mappedTextRules(mappedEdits(source, argvEdits(merged)));
+  if (!newText.origins.some((origin) => origin >= 0 && suppressed[origin] === 1)) {
+    return output;
+  }
+
+  // An added argv mask can erase a text-rule key. Overlay it on the already protected
+  // published result, using replacement provenance rather than marker-shaped input.
+  const overlays: Span[] = [];
+  let spanAt = 0;
+  let runStart = -1;
+  let hasCopied = false;
+  const finish = (end: number) => {
+    if (runStart !== -1 && hasCopied) {
+      overlays.push({ start: runStart, end });
+    }
+    runStart = -1;
+    hasCopied = false;
+  };
+  for (let index = 0; index < oldText.text.length; index += 1) {
+    while (spanAt < merged.length && merged[spanAt]!.end <= oldText.starts[index]!) {
+      spanAt += 1;
+    }
+    const span = merged[spanAt];
+    if (span !== undefined && span.start < oldText.ends[index]!) {
+      if (runStart === -1) {
+        runStart = index;
+      }
+      hasCopied ||= oldText.origins[index]! >= 0;
+    } else {
+      finish(index);
+    }
+  }
+  finish(oldText.text.length);
+  return renderEdits(oldText.text, argvEdits(overlays));
+}
+
 /**
  * Masks credentials passed as command-line arguments: `-u user:pass`, `-p pass`,
  * `-pPASS` (MySQL clients, or any attached value that is not a lowercase word such as
@@ -562,7 +843,7 @@ function basename(token: string): string {
  * Input is one command line or log message. Recognized values run to unescaped
  * whitespace outside quotes. Each inspected argument is consumed once.
  */
-export function redactArgvCredentials(value: string): string {
+function argvSpans(value: string, quoteAware: boolean): Span[] {
   const parts = value.split(ARGV_SEPARATOR);
   const tokens: number[] = [];
   const tokenStarts: number[] = [];
@@ -602,24 +883,96 @@ export function redactArgvCredentials(value: string): string {
     }
   }
   // A user flag's value is a credential when it joins a user and a password.
-  const carriesPassword = (flag: string, value: string): boolean =>
-    value.includes(":") ||
-    [...(clientSeparators.get(flag) ?? "")].some((separator) => value.includes(separator));
+  // Argument starts only move forward. Cache each next separator so overlapping
+  // username-only spans cannot repeatedly search the same suffix.
+  const nextSeparator = new Map<string, number>();
+  const containsSeparator = (separator: string, start: number, end: number): boolean => {
+    let next = nextSeparator.get(separator);
+    if (next === undefined || (next !== -1 && next < start)) {
+      next = value.indexOf(separator, start);
+      nextSeparator.set(separator, next);
+    }
+    return next !== -1 && next < end;
+  };
+  const carriesPassword = (flag: string, start: number, end: number): boolean =>
+    containsSeparator(":", start, end) ||
+    [...(clientSeparators.get(flag) ?? "")].some((separator) =>
+      containsSeparator(separator, start, end),
+    );
   let vaultLogin = false;
-  // Most lines carry no argv credential; they are returned as they came, not rejoined.
-  const output: string[] = [];
-  let copied = 0;
-  const masked = mark("argv");
-  // Scan the original characters, including gaps inside quotes and escaped whitespace.
-  // Backslashes are literal in single quotes; inside double quotes they escape only
-  // shell-special characters. An unmatched quote consumes the remaining input.
+  let previousVault = false;
+  const spans: Span[] = [];
+  // Resolve each possible argument start in one backwards pass. The quoted states need
+  // only their next two positions; only unquoted starts are queried. This keeps rescans
+  // after printed separators linear, including nested flag-looking username text.
+  let argumentEnds: Uint32Array | undefined;
   const argument = (at: number, offset = 0) => {
     const start = tokenStarts[at]! + offset;
-    let end = start;
+    if (argumentEnds === undefined) {
+      argumentEnds = new Uint32Array(value.length + 2);
+      argumentEnds[value.length] = value.length;
+      argumentEnds[value.length + 1] = value.length;
+      let singleNext = value.length;
+      let doubleNext = value.length;
+      let doubleAfterNext = value.length;
+      for (let cursor = value.length - 1; cursor >= 0; cursor -= 1) {
+        const character = value[cursor]!;
+        const next = value[cursor + 1];
+        const unquotedNext = argumentEnds[cursor + 1]!;
+        const escaped = character === "\\" && next !== undefined;
+        let end = unquotedNext;
+        if (escaped) {
+          end = argumentEnds[cursor + 2]!;
+        } else if (/\s/.test(character)) {
+          end = cursor;
+        } else if (character === "'") {
+          end = singleNext;
+        } else if (character === '"') {
+          end = doubleNext;
+        }
+        argumentEnds[cursor] = end;
+        singleNext = character === "'" ? unquotedNext : singleNext;
+        let double = doubleNext;
+        if (
+          escaped &&
+          (next === '"' || next === "\\" || next === "$" || next === "`" || next === "\n")
+        ) {
+          double = doubleAfterNext;
+        } else if (character === '"') {
+          double = unquotedNext;
+        }
+        doubleAfterNext = doubleNext;
+        doubleNext = double;
+      }
+    }
+    const end = argumentEnds[start]!;
+    return { start, end };
+  };
+  const lastToken = (at: number, end: number) => {
+    let last = at;
+    while (last + 1 < tokens.length && tokenStarts[last + 1]! < end) {
+      last += 1;
+    }
+    return last;
+  };
+  const printedEscape = new RegExp(ESCAPE, "y");
+  const resumeUnmasked = (at: number, start: number) => {
+    // Every unmasked argument uses the same eligibility rule, including ordinary words
+    // and unknown options reached after a printed separator. Each forward walk stops
+    // where the next iteration can begin; a masked value still owns its whole span.
     let quote: string | undefined;
-    while (end < value.length) {
-      const character = value[end]!;
-      const next = value[end + 1];
+    for (let cursor = start; cursor < value.length; cursor += 1) {
+      const character = value[cursor]!;
+      const next = value[cursor + 1];
+      if (quote === undefined && /\s/.test(character)) {
+        return lastToken(at, cursor);
+      }
+      if (character === "\\" && quote === undefined) {
+        printedEscape.lastIndex = cursor;
+        if (printedEscape.test(value)) {
+          return lastToken(at, printedEscape.lastIndex);
+        }
+      }
       if (
         character === "\\" &&
         quote !== "'" &&
@@ -631,41 +984,40 @@ export function redactArgvCredentials(value: string): string {
           next === "`" ||
           next === "\n")
       ) {
-        end += 2;
-        continue;
-      }
-      if (quote === undefined && /\s/.test(character)) {
-        break;
-      }
-      if (character === quote) {
+        cursor += 1;
+      } else if (character === quote) {
         quote = undefined;
       } else if (quote === undefined && (character === '"' || character === "'")) {
         quote = character;
       }
-      end += 1;
     }
-    let last = at;
-    while (last + 1 < tokens.length && tokenStarts[last + 1]! < end) {
-      last += 1;
-    }
-    return { start, end, last };
+    return lastToken(at, value.length);
   };
-  const replaceThrough = (at: number, end: number, replacement: string) => {
-    output.push(value.slice(copied, tokenStarts[at]!), replacement);
-    copied = end;
-  };
+  const resume = (at: number, start: number) => (quoteAware ? resumeUnmasked(at, start) : at);
   for (let at = 0; at < tokens.length; at += 1) {
     const token = parts[tokens[at]!]!;
+    const offset = 0;
+    const start = tokenStarts[at]! + offset;
+    const followsVault = previousVault;
+    previousVault = false;
     if (token.startsWith(MARK)) {
+      at = resume(at, start);
       continue;
     }
     if (!token.startsWith("-")) {
       if (vaultLogin && !token.includes("=")) {
-        const span = argument(at);
-        replaceThrough(at, span.end, masked);
-        at = span.last;
-      } else if (token === "login" && at > 0 && basename(parts[tokens[at - 1]!]!) === "vault") {
-        vaultLogin = true;
+        const span = argument(at, offset);
+        spans.push(span);
+        at = lastToken(at, span.end);
+      } else {
+        if (
+          token === "login" &&
+          (quoteAware ? followsVault : at > 0 && basename(parts[tokens[at - 1]!]!) === "vault")
+        ) {
+          vaultLogin = true;
+        }
+        previousVault = basename(token) === "vault";
+        at = resume(at, start);
       }
       continue;
     }
@@ -679,15 +1031,15 @@ export function redactArgvCredentials(value: string): string {
         // An attached value that runs on through a quote or escape is masked whole:
         // the later parts may hold the password.
         if (attached.length > 0 && !attached.startsWith(MARK)) {
-          const span = argument(at, equals + 1);
-          if (
-            secret ||
-            carriesPassword(flag, value.slice(span.start, span.end)) ||
-            wordEnd[at] !== at
-          ) {
-            replaceThrough(at, span.end, `${flag}=${masked}`);
+          const span = argument(at, offset + equals + 1);
+          if (secret || carriesPassword(flag, span.start, span.end) || wordEnd[at] !== at) {
+            spans.push(span);
+            at = lastToken(at, span.end);
+          } else {
+            at = quoteAware ? resumeUnmasked(at, span.start) : lastToken(at, span.end);
           }
-          at = span.last;
+        } else {
+          at = resume(at, start);
         }
         continue;
       }
@@ -701,15 +1053,16 @@ export function redactArgvCredentials(value: string): string {
         next.startsWith(MARK) ||
         (flag === "-p" && PATH_VALUE.test(next))
       ) {
+        at = resume(at, start);
         continue;
       }
       const span = argument(at + 1);
-      if (secret || carriesPassword(flag, value.slice(span.start, span.end))) {
-        replaceThrough(at + 1, span.end, masked);
+      if (secret || carriesPassword(flag, span.start, span.end)) {
+        spans.push(span);
+        at = lastToken(at + 1, span.end);
+      } else {
+        at = quoteAware ? resumeUnmasked(at + 1, span.start) : lastToken(at + 1, span.end);
       }
-      // Even a username-only value is consumed, so nested flag-looking text cannot
-      // cause repeated scans of the same quoted argument.
-      at = span.last;
       continue;
     }
     // Attached short forms: `-pPASSWORD`, `-ualice:pw`, `-Ualice%pw`, `-aPASSWORD`.
@@ -720,15 +1073,19 @@ export function redactArgvCredentials(value: string): string {
       const shortSecret =
         (short === "-p" && (mysql || runsOn || !/^[a-z]+$/.test(rest))) || clientSecrets.has(short);
       if (shortSecret || short === "-u" || short === "-U") {
-        const span = argument(at, 2);
-        if (shortSecret || runsOn || carriesPassword(short, value.slice(span.start, span.end))) {
-          replaceThrough(at, span.end, `${short}${masked}`);
+        const span = argument(at, offset + 2);
+        if (shortSecret || runsOn || carriesPassword(short, span.start, span.end)) {
+          spans.push(span);
+          at = lastToken(at, span.end);
+        } else {
+          at = quoteAware ? resumeUnmasked(at, span.start) : lastToken(at, span.end);
         }
-        at = span.last;
+        continue;
       }
     }
+    at = resume(at, start);
   }
-  return output.length === 0 ? value : output.join("") + value.slice(copied);
+  return spans;
 }
 
 // Standard scheduler and kubelet Event shapes that name cluster objects: the node a Pod

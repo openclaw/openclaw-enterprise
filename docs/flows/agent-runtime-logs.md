@@ -144,7 +144,7 @@ matching-time text stays suppressed; the page advancing time reports
 16 hashes. Byte cuts preserve counts for complete frontiers.
 It emits `stream_replaced`, `window_exceeded`, `cursor_expired` or `truncated` gaps.
 Only `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk` produces `SanitizedRuntimeLogRecord`.
-`runtime-logs/redact.ts:redactArgvCredentials` masks complete recognized credential arguments.
+`runtime-logs/redact.ts:redactArgvCredentials` fully masks recognized credential arguments.
 `page-budget.ts` caps serialized pages, signed cursors and HTTP envelopes at 512 KiB.
 Oversized pages return a fitting, not necessarily maximal, prefix without new I/O or audits.
 Fetched masking/withholding persist; delivered rows advance state.

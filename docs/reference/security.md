@@ -258,7 +258,7 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   Codex protocol traffic, payload keys such as `prompt` and `content`, and
   pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes best-effort pattern redaction.
   Recognized command-line credential arguments are masked through quoted, escaped and
-  concatenated segments; following ordinary options remain readable.
+  concatenated segments; ordinary text outside masked spans remains readable.
   The `content` class has no producer. A failed Codex login or model
   check keeps only its `failureClass` (`network`, `tls`, `http_401_403`,
   `http_5xx`, `http_other`, `timeout`, `empty` or `unknown`), never Codex's error output.

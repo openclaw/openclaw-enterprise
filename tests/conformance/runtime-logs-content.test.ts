@@ -5,6 +5,7 @@ import test from "node:test";
 import { Check } from "typebox/value";
 
 import {
+  AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   type RuntimeLogLevel,
   type RuntimeLogRecord,
@@ -18,7 +19,7 @@ import {
 } from "../../packages/occ/src/runtime-logs/redact.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { cpuTimeMs } from "../helpers/cpu-time.ts";
-import { logsRoute } from "../helpers/runtime-logs-content.ts";
+import { gatewayJson, logsRoute } from "../helpers/runtime-logs-content.ts";
 import { registerRuntimeLogCursorCases } from "./runtime-logs-cursor-cases.ts";
 import {
   agentStream,
@@ -94,11 +95,77 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
     `duplicate clients took ${usernameOnlyElapsed.toFixed(0)} ms of CPU`,
   );
   assert.equal(redactArgvCredentials(usernameOnly), usernameOnly);
+  // Printed separators can expose another user flag in the same unmasked span. A
+  // separator in a later real word must not make every earlier suffix scan it again.
+  for (const unit of [
+    String.raw`alice\t-U\t`,
+    String.raw`-U"alice smith"\t`,
+    String.raw`"alice\t-P ordinary"\t-U\t`,
+    String.raw`"alice smith\t-P ordinary"suffix' more'\t-U\t`,
+  ]) {
+    const prefix = "sqlcmd -U ";
+    const suffix = "alice ordinary:value";
+    const input =
+      prefix +
+      unit.repeat(Math.floor((32 * 1024 - prefix.length - suffix.length) / unit.length)) +
+      suffix;
+    const elapsed = redactionCpuMs(input, budgetMs);
+    assert.ok(elapsed < budgetMs, `printed usernames took ${elapsed.toFixed(0)} ms of CPU`);
+    assert.equal(redactArgvCredentials(input), input);
+  }
+  // Ordinary words and unknown options must advance once too, whether or not a
+  // genuine credential follows their quoted flag-looking text.
+  for (const unit of [
+    String.raw`"bob -P ordinary"\t`,
+    String.raw`--title="bob -P ordinary"\t`,
+    String.raw`one\ttwo\t"bob -P ordinary"suffix' more'\t`,
+  ]) {
+    const prefix = "sqlcmd ";
+    const tail = ' -P "inertFirst inertLast" -S localhost';
+    const count = Math.floor((32 * 1024 - prefix.length - tail.length) / unit.length);
+    const ordinary = prefix + unit.repeat(count);
+    // The published free-text scan already masks these ambiguous inner flags. Keep
+    // that exact conservative output, and independently require the real tail hidden.
+    const protectedOrdinary =
+      prefix +
+      unit.slice(0, unit.indexOf("ordinary")) +
+      "[redacted:argv]" +
+      " -P [redacted:argv]".repeat(count - 1);
+    for (const [input, expected] of [
+      [ordinary, protectedOrdinary],
+      [ordinary + tail, protectedOrdinary + " -S localhost"],
+    ] satisfies [string, string][]) {
+      const elapsed = redactionCpuMs(input, budgetMs);
+      assert.ok(elapsed < budgetMs, `ordinary arguments took ${elapsed.toFixed(0)} ms of CPU`);
+      assert.equal(redactArgvCredentials(input), expected);
+      assert.equal(redactArgvCredentials(input).includes("inertFirst"), false);
+      assert.equal(redactArgvCredentials(input).includes("inertLast"), false);
+    }
+  }
+  // Decoding many disjoint fields and protecting interactions with later text rules
+  // must remain bounded by the original 32 KiB line size.
+  for (const length of [8, 16, 32].map((kib) => kib * 1024)) {
+    for (const unit of [
+      "msg=" + JSON.stringify('sqlcmd -P "inertFirst inertLast" -S localhost') + " ",
+      String.raw`sqlcmd -U alice\t-P\tpassword = inertValue -S localhost `,
+      "message=" + JSON.stringify('sqlcmd --title="bob -P ordinary"') + " ",
+    ]) {
+      const input = unit.repeat(Math.floor(length / unit.length));
+      const elapsed = redactionCpuMs(input, budgetMs);
+      assert.ok(elapsed < budgetMs, `mapped fields took ${elapsed.toFixed(0)} ms of CPU`);
+      const retained = redactRuntimeLogText(redactArgvCredentials(input));
+      for (const half of ["inertFirst", "inertLast", "inertValue"]) {
+        assert.equal(retained.includes(half), false);
+      }
+    }
+  }
   // A whole page of such messages stays well inside one request's budget.
   const page = Array.from({ length: 50 }, () =>
     JSON.stringify({ level: "info", message: "a-".repeat(15 * 1024) }),
   );
-  const elapsed = cpuTimeMs(() => sanitize(gatewayStream, page), { budgetMs: 50 * budgetMs });
+  const elapsed = cpuTimeMs(() => sanitize(gatewayStream, page), {
+    budgetMs: 50 * budgetMs,
+  });
   assert.ok(elapsed < 50 * budgetMs, `50 hostile lines took ${elapsed.toFixed(0)} ms of CPU`);
 });
 
@@ -374,6 +441,328 @@ test("argv masking keeps quoted attached credentials whole", () => {
   }
 });
 
+test("argv masking resumes after unmasked printed-separator usernames", () => {
+  const password = `inert${randomString(12, "abcdef")}`;
+  const gaps = ["\\n", "\\t", "\\r", "\\f", "\\v", "\\u0009", "\\u000A", "\\x0a", "\\x0D"];
+  const cases: [string, string][] = gaps.map((gap) => [
+    `sqlcmd -U alice${gap}-P${gap}${password} -S localhost`,
+    `sqlcmd -U alice${gap}-P${gap}[redacted:argv] -S localhost`,
+  ]);
+  cases.push(
+    [
+      String.raw`sqlcmd -U "alice smith"\t-P\t"${password} tail" -S localhost`,
+      String.raw`sqlcmd -U "alice smith"\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd --user="alice smith"\t-P\t${password} -S localhost`,
+      String.raw`sqlcmd --user="alice smith"\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U"alice smith"\t-P\t${password} -S localhost`,
+      String.raw`sqlcmd -U"alice smith"\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`bcp -U alice\t-P\t${password}\nrest -S localhost`,
+      String.raw`bcp -U alice\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`redis-cli --user alice\t-a\t${password} ping`,
+      String.raw`redis-cli --user alice\t-a\t[redacted:argv] ping`,
+    ],
+    // Client-specific flags remain ordinary text without the exact client name.
+    [
+      String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
+      String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
+    ],
+    ['curl --user "alice -p ordinary" --silent', 'curl --user "alice -p ordinary" --silent'],
+    [
+      String.raw`sqlcmd -U alice\t-S\tlocalhost -d sample`,
+      String.raw`sqlcmd -U alice\t-S\tlocalhost -d sample`,
+    ],
+  );
+  for (const [input, expected] of cases) {
+    assert.equal(redactArgvCredentials(input), expected, input);
+    const { records } = sanitize(gatewayStream, [gatewayJson(input)]);
+    assert.equal(records.length, 1);
+    const record = records[0];
+    assert.ok(record?.type === "line");
+    assert.equal(record.message, expected, input);
+  }
+});
+
+test("argv masking resumes only outside the original username quotes", () => {
+  const password = `inert${randomString(12, "abcdef")}`;
+  const unchanged = [
+    String.raw`sqlcmd -U 'prefix msg="sqlcmd -P ordinary words"' -S localhost`,
+    String.raw`curl --user "alice\t-p ordinary" --silent`,
+    String.raw`sqlcmd -U "alice\t-P\tordinary" -S localhost`,
+    String.raw`sqlcmd --user="alice smith\t-P ordinary" -S localhost`,
+    String.raw`sqlcmd -U"alice smith\t-P ordinary" -S localhost`,
+    String.raw`sqlcmd -U 'alice\t-P ordinary' -S localhost`,
+    String.raw`sqlcmd -U "alice\"\t-P ordinary" -S localhost`,
+    String.raw`sqlcmd -U "alice smith"\\t-P\\tordinary -S localhost`,
+  ];
+  const cases: [string, string][] = unchanged.map((input) => [input, input]);
+  // The same inner flag-looking text stays readable when a real password flag follows
+  // the closing quote and adjacent quoted/unquoted segments of the username.
+  for (const flag of ["-U ", "--user=", "-U"]) {
+    const username = String.raw`"alice smith\t-P ordinary"suffix' more'`;
+    cases.push([
+      String.raw`sqlcmd ${flag}${username}\t-P\t"${password} tail" -S localhost`,
+      String.raw`sqlcmd ${flag}${username}\t-P\t[redacted:argv] -S localhost`,
+    ]);
+  }
+  cases.push(
+    [
+      String.raw`curl --user "alice\t-p ordinary"\t-p\t"${password} tail" --silent`,
+      String.raw`curl --user "alice\t-p ordinary"\t-p\t[redacted:argv] --silent`,
+    ],
+    [
+      String.raw`sqlcmd -U "alice\"\t-P ordinary"\t-P\t${password} -S localhost`,
+      String.raw`sqlcmd -U "alice\"\t-P ordinary"\t-P\t[redacted:argv] -S localhost`,
+    ],
+  );
+  for (const [input, expected] of cases) {
+    assert.equal(redactArgvCredentials(input), expected, input);
+    const { records } = sanitize(gatewayStream, [gatewayJson(input)]);
+    assert.equal(records.length, 1);
+    const record = records[0];
+    assert.ok(record?.type === "line");
+    assert.equal(record.message, expected, input);
+  }
+});
+
+test("argv masking preserves conservative masks of ambiguous quoted text", () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  const ordinary = String.raw`"bob -P ordinary"`;
+  const readable = ["-U ", "--user=", "-U"].map(
+    (flag) => String.raw`sqlcmd ${flag}"alice smith"\t${ordinary}`,
+  );
+  const ambiguous = [
+    String.raw`sqlcmd ${ordinary}`,
+    String.raw`sqlcmd --title=${ordinary}`,
+    String.raw`sqlcmd -x${ordinary}`,
+    String.raw`sqlcmd one\ttwo\t${ordinary}suffix' more'`,
+    String.raw`sqlcmd escaped\ word${ordinary}`,
+    String.raw`sqlcmd [redacted:key-value]${ordinary}`,
+    String.raw`sqlcmd --password=[redacted:key-value]${ordinary}`,
+    String.raw`sqlcmd --password --title=${ordinary}`,
+    String.raw`sqlcmd -p /work/${ordinary}`,
+    String.raw`sqlcmd --password= ${ordinary}`,
+  ];
+  const cases: [string, string][] = [];
+  for (const prefix of readable) {
+    cases.push(
+      [`${prefix} -S localhost`, `${prefix} -S localhost`],
+      [
+        String.raw`${prefix}\t-P\t"${first} ${last}" -S localhost`,
+        String.raw`${prefix}\t-P\t[redacted:argv] -S localhost`,
+      ],
+    );
+  }
+  for (const prefix of ambiguous) {
+    // These exact negatives already lost the inner apparent value in the published
+    // sanitizer. Redisplaying it is not a compatibility requirement.
+    const protectedPrefix = prefix.slice(0, prefix.indexOf("ordinary")) + "[redacted:argv]";
+    cases.push(
+      [`${prefix} -S localhost`, protectedPrefix],
+      [
+        String.raw`${prefix}\t-P\t"${first} ${last}" -S localhost`,
+        prefix.startsWith("sqlcmd --password= ")
+          ? "sqlcmd --password= [redacted:key-value] -S localhost"
+          : protectedPrefix + " -S localhost",
+      ],
+    );
+  }
+  for (const [input, expected] of cases) {
+    assert.equal(redactArgvCredentials(input), expected, input);
+    const { records } = sanitize(gatewayStream, [gatewayJson(input)]);
+    assert.equal(records.length, 1);
+    const record = records[0];
+    assert.ok(record?.type === "line");
+    assert.equal(record.message, expected, input);
+    for (const half of [first, last]) {
+      assert.equal(record.message.includes(half), false, "a credential half survived");
+    }
+  }
+});
+
+function conservativeMessageCases(first: string, last: string): [string, string][] {
+  const cases: [string, string][] = [
+    [
+      `ERROR "run sqlcmd -P ${first} -S localhost"`,
+      'ERROR "run sqlcmd -P [redacted:argv] -S localhost"',
+    ],
+    [`echo "run curl -u alice:${last} --silent"`, 'echo "run curl -u [redacted:argv] --silent"'],
+    [
+      `NOTICE 'run sqlcmd -P ${first} -S localhost'`,
+      "NOTICE 'run sqlcmd -P [redacted:argv] -S localhost'",
+    ],
+    ['ERROR "ordinary daily report"', 'ERROR "ordinary daily report"'],
+    [
+      String.raw`sqlcmd -U alice\t-P\tpassword = ${last} -S localhost`,
+      String.raw`sqlcmd -U alice\t-P\t[redacted:argv] = [redacted:key-value] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U alice\t-P\tlabel = visible -S localhost`,
+      String.raw`sqlcmd -U alice\t-P\t[redacted:argv] = visible -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U alice\t-P\tpassword = [redacted:key-value] -S localhost`,
+      String.raw`sqlcmd -U alice\t-P\t[redacted:argv] = [redacted:key-value] -S localhost`,
+    ],
+  ];
+  for (const field of ["msg", "message"]) {
+    const encode = (command: string) =>
+      `level=info ${field}=${JSON.stringify(command)} event=ready`;
+    const prefix = `level=info ${field}="`;
+    for (const client of ["sqlcmd", "/usr/bin/sqlcmd"]) {
+      cases.push([
+        encode(`${client} -P "${first} ${last}" -S localhost`),
+        `${prefix}${client} -P [redacted:argv] -S localhost" event=ready`,
+      ]);
+    }
+    cases.push(
+      [
+        encode(`run sqlcmd --title="bob -P ordinary" -P "${first} ${last}" -S localhost`),
+        `${prefix}run sqlcmd --title=\\"bob -P [redacted:argv] -P [redacted:argv] -S localhost" event=ready`,
+      ],
+      [
+        encode('run sqlcmd --title="bob -P ordinary" -S localhost'),
+        `${prefix}run sqlcmd --title=\\"bob -P [redacted:argv] -S localhost" event=ready`,
+      ],
+      [
+        encode('sqlcmd --title="daily report" -S localhost'),
+        encode('sqlcmd --title="daily report" -S localhost'),
+      ],
+      [
+        encode(`sqlcmd-wrapper -P "ordinary words" -S localhost`),
+        encode(`sqlcmd-wrapper -P "ordinary words" -S localhost`),
+      ],
+      [
+        encode(String.raw`sqlcmd -U alice\t-P\t"${first}\t${last}"suffix -S localhost`),
+        `${prefix}sqlcmd -U alice${String.raw`\\t-P\\t`}[redacted:argv] -S localhost" event=ready`,
+      ],
+      [
+        encode(`sqlcmd -P '${first} ${last}' -S localhost`),
+        `${prefix}sqlcmd -P [redacted:argv] -S localhost" event=ready`,
+      ],
+      [
+        encode(String.raw`sqlcmd -P "${first}\" ${last}" -S localhost`),
+        `${prefix}sqlcmd -P [redacted:argv] -S localhost" event=ready`,
+      ],
+      [
+        encode(String.raw`sqlcmd -P "${first}\\" -S localhost`),
+        `${prefix}sqlcmd -P [redacted:argv] -S localhost" event=ready`,
+      ],
+      [`level=info ${field}="sqlcmd -P \\"${first} ${last}`, `${prefix}sqlcmd -P [redacted:argv]`],
+    );
+  }
+  return cases;
+}
+
+test("argv masking retains quoted commands and once-decoded message credentials", () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  for (const [input, expected] of conservativeMessageCases(first, last)) {
+    const retained = redactRuntimeLogText(redactArgvCredentials(stripRuntimeLogControls(input)));
+    assert.equal(retained, expected, input);
+    for (const half of [first, last]) {
+      assert.equal(retained.includes(half), false, "a credential half survived");
+    }
+    const { records } = sanitize(gatewayStream, [input, gatewayJson(input)]);
+    assert.equal(records.length, 2);
+    for (const record of records) {
+      assert.ok(record.type === "line");
+      assert.equal(record.message, expected, input);
+    }
+  }
+});
+
+test("Controller log pages and downloads mask quoted and printed-separator credentials", async () => {
+  const first = `first${randomString(8, "abcdef")}`;
+  const last = `last${randomString(8, "abcdef")}`;
+  const password = `inert${randomString(12, "abcdef")}`;
+  const cases = [
+    [
+      `mysql -p"${first} ${last}"suffix --host localhost`,
+      "mysql -p[redacted:argv] --host localhost",
+    ],
+    [
+      String.raw`sqlcmd -U alice\t-P\t${password} -S localhost`,
+      String.raw`sqlcmd -U alice\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U "alice smith"\t-P\t"${first} ${last}" -S localhost`,
+      String.raw`sqlcmd -U "alice smith"\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`sqlcmd -U "alice\t-P ordinary"\t-P\t"${first} ${last}" -S localhost`,
+      String.raw`sqlcmd -U "alice\t-P ordinary"\t-P\t[redacted:argv] -S localhost`,
+    ],
+    [
+      String.raw`curl --user "alice\t-p ordinary" --silent`,
+      String.raw`curl --user "alice\t-p ordinary" --silent`,
+    ],
+    ['mysql --host="read replica" --port=3306', 'mysql --host="read replica" --port=3306'],
+    [
+      String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
+      String.raw`sqlcmd-wrapper -U alice\t-P\tvisible -S localhost`,
+    ],
+  ] satisfies [string, string][];
+  // The second quoted word is ordinary argv text. Its inner -P must not consume
+  // the first half of the genuine value and leave the second half in either response.
+  for (const flag of ["-U ", "--user=", "-U"]) {
+    const prefix = String.raw`sqlcmd ${flag}"alice smith"\t"bob -P ordinary"`;
+    cases.push(
+      [`${prefix} -S localhost`, `${prefix} -S localhost`],
+      [
+        String.raw`${prefix}\t-P\t"${first} ${last}" -S localhost`,
+        String.raw`${prefix}\t-P\t[redacted:argv] -S localhost`,
+      ],
+    );
+  }
+  cases.push(...conservativeMessageCases(first, last));
+  const overLimit = 'sqlcmd -P "' + first + " ".repeat(9 * 1024) + last + '" -S localhost';
+  // The existing fixture selects the production Controller route and serializers.
+  // Only the Compute Driver's returned log lines are controlled by this test.
+  const route = await logsRoute();
+  const transports = cases.flatMap(([message, expected]) => [
+    { raw: message, expected },
+    { raw: gatewayJson(message), expected },
+  ]);
+  // Plain text above 4 KiB is withheld by classification. The real Gateway JSON
+  // path admits this message and must redact before its 8 KiB output limit.
+  transports.push({
+    raw: gatewayJson(overLimit),
+    expected: "sqlcmd -P [redacted:argv] -S localhost",
+  });
+  route.state.lines = transports.map(({ raw }, index) => ({
+    time: `2026-09-30T12:00:00.${String(index).padStart(9, "0")}Z`,
+    raw,
+  }));
+  const page = await route.read({ tailLines: 1000 });
+  assert.equal(page.status, 200, page.text);
+  const { body } = page;
+  assert.ok(Check(AgentRuntimeLogsResponse, body), "expected a runtime log response");
+  assert.deepEqual(
+    body.data.records.map((record) => (record.type === "line" ? record.message : undefined)),
+    transports.map(({ expected }) => expected),
+  );
+  const download = await route.read({ download: true, tailLines: 1000 });
+  assert.equal(download.status, 200, download.text);
+  for (const value of [first, last, password]) {
+    assert.equal(page.text.includes(value), false, "a credential reached the log page");
+    assert.equal(download.text.includes(value), false, "a credential reached the log download");
+  }
+  const lines = download.text.trimEnd().split("\n").slice(1);
+  assert.equal(lines.length, transports.length, download.text);
+  for (const [index, { expected }] of transports.entries()) {
+    assert.ok(lines[index]?.endsWith(expected), `download lacks ${expected}`);
+  }
+});
+
 test("Event messages hide node names, image references and Secret names", async () => {
   const node = `ip-10-0-${randomInt(255)}-${randomInt(255)}.example.invalid`;
   const image = `registry.example.com/team-${randomString(8).toLowerCase()}/gateway:1.2.3`;
@@ -502,7 +891,13 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
     records.map((record) => {
       assert.ok(record.type === "line");
       const { kind, level, message, subsystem, fields } = record;
-      return { kind, level, message, subsystem, ...(fields === undefined ? {} : { fields }) };
+      return {
+        kind,
+        level,
+        message,
+        subsystem,
+        ...(fields === undefined ? {} : { fields }),
+      };
     }),
     [
       codex("info", "turn started", "codex_core::tasks", {
@@ -535,7 +930,11 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
 registerRuntimeLogCursorCases();
 
 test("known node-host plain-text lines carry a level so a level floor can drop them", () => {
-  const stream: RuntimeLogStream = { source: "agent", pod: "agent-0", container: "agent" };
+  const stream: RuntimeLogStream = {
+    source: "agent",
+    pod: "agent-0",
+    container: "agent",
+  };
   const { records } = sanitizeRuntimeLogChunk({
     stream,
     truncated: false,
