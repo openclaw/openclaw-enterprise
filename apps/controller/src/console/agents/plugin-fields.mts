@@ -1122,6 +1122,7 @@ export function createPluginFields({
     const focusedPlugin = active?.closest<HTMLElement>(".plugin-card")?.dataset.plugin;
     const focusedTool = active?.closest<HTMLElement>("[data-tool]")?.dataset.tool;
     const focusedHeading = active?.matches(".plugin-detail h3");
+    const focusedBack = active?.matches(".plugin-back");
     const values = selections();
     const catalogLoading = !configuredOnly && catalog?.status === "loading";
     const reloadRequired = catalog?.reloadRequired === true;
@@ -1755,8 +1756,8 @@ export function createPluginFields({
       } else {
         focusedCatalogControl.focus();
       }
-    } else if (focusedHeading && focusedPlugin === tabState().activeId) {
-      detail.querySelector("h3")?.focus();
+    } else if ((focusedHeading || focusedBack) && focusedPlugin === tabState().activeId) {
+      detail.querySelector<HTMLElement>(focusedBack ? ".plugin-back" : "h3")?.focus();
     } else if (focused) {
       // Detail refreshes replace focused controls; keep the search caret in place.
       const control = [...detail.querySelectorAll<HTMLElement>("[aria-label]")].find(
