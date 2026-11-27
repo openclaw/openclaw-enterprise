@@ -12,29 +12,37 @@ author: HerbertHuerto
 
 ## Summary
 
-Let a credential owner authorize another Namespace to use a managed model
-CredentialSource without copying its OAuth refresh token or repeating provider
-consent. OpenClaw Control Plane (OCC) keeps one authoritative Source and one
-renewal lifecycle. A recipient-local Source reference fits the existing Agent
-selection workflow. Delegation is explicit, revocable, and limited to one
-Installation. Placement on the same worker grants no credential access.
+Let a credential owner grant one Agent in another Namespace access to an
+existing model CredentialSource. Both Namespaces must belong to the same owner
+and trust domain. Keep one Source, one OAuth renewal owner, and one source-side
+grant per recipient Agent. Do not create a recipient-local Source or copy a
+refresh token. Worker placement grants no access.
 
-## Motivation
+## Motivation and current code
 
-A provisioning service creates separate customer Namespaces and Agents. The
-operator pays for model access and wants each authorized Agent to receive it
-automatically. Today, [model Source bindings](../../docs/reference/credential-sources.md#bind-a-source-to-an-agent)
-reuse a Source within its Namespace. Admission resolves both the caller's grant
-and the Source against the Agent's Namespace in
-[Harness authentication](../../packages/occ/src/harness-auth.ts) and
-[Agent credential access](../../packages/occ/src/agent-credential-access.ts).
-An authorized source ID from another Namespace is therefore insufficient.
+An owner runs Agents in separate Namespaces and wants to reuse an existing
+model authorization without another provider login. This proposal covers those
+owner-operated Agents, not sharing a subscription between unrelated customers.
+Provider permission to use a credential this way is a separate prerequisite;
+this RFC does not establish that permission.
 
-[Shared model configuration](0028-shared-model-provider.md) and
-[reusable model providers](0034-reusable-model-providers/index.md) address
-endpoint selection, not cross-Namespace credential authority. This proposal
-extends [Credential Design 1.0](20261124-credential-design-1-0/index.md) at that
-boundary; it does not replace its custody or request enforcement.
+An IAM policy change alone cannot enable this in the current code:
+
+- [Agent credential access](../../packages/occ/src/agent-credential-access.ts)
+  authorizes and locks each Source in the Agent's exact Namespace.
+- [Agent bindings](../../packages/contracts/src/index.ts) carry only `sourceId`;
+  they cannot select an explicitly authorized Source in another Namespace.
+- [TokenService resolution](../../packages/contracts/src/drivers/token-service/index.ts)
+  receives a canonical Source reference, not a recipient Agent or grant. The
+  [OCC Driver](../../apps/controller/src/drivers/token-service/occ.ts) resolves
+  that Source's private storage and OAuth account. It cannot check a recipient
+  grant that the caller does not provide.
+
+Keep those boundaries until the connected path below exists. Do not remove an
+exact-Namespace check or rewrite a stored Source's Namespace to bypass it.
+[Credential Design 1.0](20261124-credential-design-1-0/index.md) still owns custody
+and delivery; [shared provider configuration](0028-shared-model-provider.md)
+does not confer credential authority.
 
 ## Goals and non-goals
 
@@ -53,24 +61,30 @@ does not enlarge a provider grant or establish permission to resell access.
 
 ### Ownership and caller workflow
 
-Extend CredentialSource with a recipient-local **delegated model Source**. It
-contains no credential and refers to one original, supported model Source and
-one durable delegation. Do not register it as another TokenService credential.
-Delegated Sources cannot be delegated again or retargeted to another original.
+Store the authoritative grant with the original Source. It names exactly one
+recipient Namespace, Agent identity, and generation. A recipient selects the
+canonical Source through an explicit cross-Namespace reference. There is no
+second Source registration, local alias, or transitive delegation.
 
-An operator or provisioning service creates the delegation with explicit
-authority on both sides: a new `credential_source:delegate` permission on the
-original Source, and `credential_source:create` in the recipient Namespace.
-Existing `operate` permission alone must not permit delegation. A provider's
-credential owner or Installation policy can still prohibit sharing.
+Creation requires `credential_source:delegate` on the original Source and
+recipient Agent administration authority. Existing `operate` grants alone do
+not permit delegation. The owner must explicitly designate both Namespaces as
+one owner-operated trust domain. Namespace names, shared infrastructure, or an
+administrator who can manage unrelated tenants are not proof of common ownership.
+The current Namespace model has no owner field; implementation must add an
+authoritative owner-policy check through IAM, not infer ownership from names.
+Unsupported IAM implementations deny cross-Namespace delegation.
 
-The recipient's normal Agent workflow selects its local Source ID in both
-`harnessAuth` and `credentialSources`. Agent creation and deployment require
-the existing recipient-local caller and Agent `operate` grants. OCC also checks
-the original Source, the active delegation, and the approved model request
-policy. Neither customer access nor a new Namespace implies these grants.
-An authorized provisioner can establish them as part of its normal workflow;
-no wildcard grant to future Namespaces or worker nodes is added.
+Normal Agent creation and deployment still require recipient-local permissions.
+OCC checks the grant and exact Agent identity during admission and deployment.
+TokenService checks the active grant again whenever it issues an access token
+for a recipient, including refresh delivery and retry. Cached authorization is
+not sufficient. Unknown, revoked, stale, or unavailable authority fails closed.
+
+Provisioning may create an exact grant only under an owner-approved policy for
+that same trust domain. Buying a subscription or creating a Namespace does not
+establish that policy. Sharing a model authorization across independent SaaS
+customers is outside this RFC and is not automatically enabled.
 
 ### Architecture
 
@@ -88,29 +102,30 @@ config:
     rankSpacing: 32
 ---
 flowchart TB
-  subgraph Owner["Source Namespace"]
+  subgraph Owner["Source Namespace: same owner"]
     Source["<b>Original model Source</b><br/>One consent and refresh owner"]
+    Grant["<b>Exact Agent grant</b><br/>Authority stays at Source"]
   end
   OCC["<b>OCC admission</b><br/>Check both authorities"]
-  subgraph Recipient["Recipient Namespace"]
-    Local["<b>Delegated model Source</b><br/>No credential material"]
-    Agent["<b>Agent</b><br/>Exact local Source grant"]
+  subgraph Recipient["Recipient Namespace: same owner"]
+    Agent["<b>Agent</b><br/>Canonical Source reference"]
   end
   Proxy["<b>Credential Proxy</b><br/>Existing request restrictions"]
-  Source -.->|authorize delegation| OCC
-  OCC -.->|create local reference| Local
-  Local -.->|select and admit| Agent
+  Source -.->|store exact grant| Grant
+  Grant -.->|check on every issuance| OCC
+  OCC -.->|admit exact recipient| Agent
   Source -.->|deliver current access credential| Proxy
   Proxy -.->|serve admitted Agent| Agent
   classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px,stroke-dasharray:4 4
-  class Source,OCC,Local,Agent,Proxy pending
+  class Source,OCC,Grant,Agent,Proxy pending
 ```
 
 ### Renewal, denial, and cleanup
 
 TokenService retains the original Source identity. Credential Proxy tracks each
 admitted recipient binding against that identity. Refresh commits once, then
-updates all still-authorized delivery copies. A failed recipient delivery is
+updates all still-authorized access-token delivery copies. Only TokenService
+refreshes OAuth; recipients never receive the refresh token. A failed recipient delivery is
 retried without another consent, credential registration, or refresh-token copy.
 The recipient cannot rotate, replace, disconnect, or delete the original.
 
@@ -124,7 +139,7 @@ Proxy confirms withdrawal. Do not claim cancellation of an in-flight provider
 request or stronger confinement than the selected delivery path provides.
 
 The original owner can revoke one delegation; the recipient can withdraw one
-Agent or remove its local Source without affecting other recipients. Source and
+Agent without affecting other recipients. Source and
 Namespace deletion account for incoming and outgoing delegations. Original
 Source deletion retains existing conflict and cleanup semantics across all
 recipients rather than leaving orphaned references. Missing authority or an
@@ -137,63 +152,80 @@ The following interfaces are proposed, not existing API operations.
 
 ### APIs
 
-- `POST /namespaces/:namespaceId/credential-sources/:sourceId/delegations`
-  accepts a recipient Namespace ID, local display name, and idempotency key.
-  It returns the delegation and recipient-local Source IDs, never credentials.
-  Replays adopt the same result; a changed body under the same key conflicts.
-- Owner-scoped list and exact revoke operations expose nonsecret delegation
-  status. Revocation returns a durable pending/complete cleanup result.
-- Recipient Source list/read and native Agent selection include eligible local
-  references. They disclose no original account details without source-side read
-  authority. Existing Source update/rotation APIs reject credential writes to
-  delegated references; deletion withdraws local use, not the original grant.
+- An owner-scoped Source grant operation accepts the exact recipient Namespace
+  and Agent, approved owner-policy identity, and idempotency key. Replays return
+  the same grant; a changed body conflicts. It returns no credentials.
+- Owner-scoped exact read/revoke operations expose generation and cleanup status.
+  A recipient may withdraw its own binding, not alter or redelegate the Source.
+- Agent Source selection accepts an explicit canonical cross-Namespace reference
+  only with its exact grant. Existing local `sourceId` selection is unchanged.
 
 ### IAM
 
-Add explicit `credential_source:delegate` on an original Source. Creation also
-requires recipient Namespace Source-create authority. Keep existing exact
-recipient Source and Agent permissions for use. Source owners can revoke their
-delegations without recipient administration rights. IAM implementations that
-cannot represent this authority must refuse the feature, not substitute broad
-Installation or Namespace membership.
+Add `credential_source:delegate` and an authoritative same-owner policy check.
+Grant creation requires both source-side delegation and exact recipient Agent
+administration. Keep existing permissions for Agent use. The original owner can
+revoke without recipient administration. No host, namespace-name, wildcard, or
+transitive grant is implied. Owner policy must distinguish owner-operated
+Namespaces from separate customer trust domains even under one administrator.
 
 ### Database entities
 
-Add delegation state with original and recipient Namespace/Source identities,
-creator, idempotency key/body digest, generation, denial, and cleanup status.
-Persist the local Source reference and reverse indexes for rotation and
-retirement. Atomically create the reference, delegation, and audit event.
-Concurrent creation, revocation, Source deletion, and revision activation must
-serialize against the same authoritative records. A revoked generation cannot
-become valid through replay or a recreated Namespace with the same name.
+Persist source-side grants with canonical Source, recipient Namespace and Agent
+identities, owner-policy identity, creator, idempotency digest, generation,
+denial, and cleanup state. Store no credential material or duplicate Source.
+Create the grant and audit record atomically. Serialize grant changes, Source
+and Namespace deletion, admission, and activation; a revoked generation cannot
+become valid after replay or recreation under the same display name.
 
 ### Driver contracts
 
-TokenService continues to resolve and refresh the canonical Source, not the
-recipient-local reference. Review Credential Proxy delivery and withdrawal
-contracts for the distinction between credential owner and recipient Agent,
-including fan-out receipts. Extend IAM contracts for explicit delegation.
-Drivers must declare support before use; this RFC does not assume that accepting
-the current interface establishes cross-Namespace qualification. No Compute
-placement or provider endpoint-authority expansion is proposed.
+Extend TokenService recipient issuance with the exact Agent/grant context;
+canonical internal refresh keeps one Source identity and does not grant access.
+Every delivery and retry must recheck the source-side grant. Credential Proxy
+must distinguish the canonical Source from recipient deliveries and report
+withdrawal per grant. IAM must provide owner-policy enforcement. Drivers declare
+support explicitly; accepting today's interfaces does not qualify a Driver.
+Compute placement and provider endpoint authority do not expand.
+
+## Revocation, quota, and audit limits
+
+Revocation denies new issuance immediately and invalidates grant caches. Clear
+recipient proxy credential caches and withdraw existing deliveries; report
+cleanup pending until confirmed. An already issued access token may remain
+usable until expiry. State the actual maximum token lifetime and cache TTL for
+each qualified Driver; do not promise provider-side immediate revocation or
+cancel an in-flight request without proof.
+
+One account shares quota across recipients. Enforce owner-configured recipient
+limits before enabling a grant; if the selected delivery path cannot enforce
+those limits, reject it. The provider may see only one account: OCE must audit
+the Source, grant generation, recipient Agent, admission, issuance, request
+attribution, and denial without token values. Use the selected Proxy's existing
+request restrictions; do not claim general model mediation is implemented.
 
 ## Simplifications
 
-Putting every customer in one Namespace removes this change but does not retain
-the required customer boundary. Repeated OAuth grants retain current behavior
-but require human consent during otherwise automatic provisioning. Copying
-refresh tokens introduces competing renewal owners. A separate model broker
-duplicates existing credential delivery. Local references reuse Agent selection
-and the existing TokenService/Proxy lifecycle without another top-level resource.
+The minimal design is a source-side policy: Agent X in Namespace Y may receive
+access tokens from Source S. It needs durable grants and recipient context in
+the existing workflow, not a new credential type, alias, or broker. An existing
+IAM AccessBinding alone is insufficient: admission performs exact-Namespace
+lookups and TokenService resolution has no recipient context today.
+
+One Namespace already supports reuse, but removes the requested Namespace
+boundary. Repeated consent adds a separate renewal registration. Copying refresh
+tokens creates competing renewal owners. Recipient-local aliases add lifecycle
+state without authority; omit them unless implementation proves they are needed.
 
 ## Acceptance Criteria
 
 - **AC-1 — Normal workflow:** With a real PostgreSQL store and qualified delivery
-  Drivers, an owner-authorized provisioner creates recipient references in two
-  Namespaces, then creates and deploys Agents through the normal API. Each
+  Drivers, an owner-authorized provisioner creates exact grants for Agents in two
+  same-owner Namespaces, then deploys them through the normal API. Each
   completes a model/tool/result turn using one original credential registration.
 - **AC-2 — Authority:** Requests lacking either creation permission fail before
-  any reference or credential delivery. Recipient users cannot enumerate private
+  any grant or credential delivery. Reject a separate customer trust domain,
+  including when one administrator controls both. Recipient users cannot read
   original account data, retarget, redelegate, rotate, or disconnect the original.
   An undelegated Namespace or another Agent receives no access by sharing a node.
 - **AC-3 — Refresh and recovery:** With a refresh-capable test issuer and real
@@ -207,21 +239,20 @@ and the existing TokenService/Proxy lifecycle without another top-level resource
 - **AC-5 — Retirement and compatibility:** Exercise Source and both Namespace
   deletion paths, repeated create/revoke, and unsupported Drivers. Verify no
   orphaned access, default denial, attributable audit, and unchanged normal
-  same-Namespace binding behavior.
+  same-Namespace binding behavior. Verify recipient quota enforcement and
+  request attribution, and measure the expiry/cache window after revocation.
 
 ## Delivery and verification
 
-Submit this contract proposal before implementation. Maintainer review must
-confirm Driver support and revocation guarantees. Implement through the normal
-Agent workflow, with PostgreSQL integration and qualified live Proxy/Harness
-proof mapped to AC-1 through AC-5. Add Console selection coverage if its behavior
-changes. No product implementation, provider consent, deployment, or runtime
-acceptance is included in this RFC-only PR.
+This remains an unimplemented proposal, not evidence that existing credentials
+can already cross Namespaces. Implement the grant through Agent selection,
+TokenService issuance, refresh delivery, withdrawal, and deletion together.
+PostgreSQL integration and qualified Proxy/Harness proof must satisfy AC-1
+through AC-5 before enabling it. No production change or provider permission is
+implied by this PR.
 
-## Open decisions
-
-Maintainers must confirm whether a local delegated Source or an explicit
-cross-Namespace binding best fits the resource model. Either design must retain
-one credential owner, bilateral creation authority, exact Agent permissions, and
-durable revocation. Provider eligibility and the supported Driver combinations
-must be explicit before enabling the feature.
+The first implementation decision is the IAM owner-policy contract: it must
+establish a common owner-operated trust domain without treating broad operator
+access as ownership. The existing Namespace resource has no ownership metadata.
+Confirm the qualifying Driver combination and real revocation/cache limits
+before enabling cross-Namespace issuance. Same-Namespace reuse stays unchanged.
