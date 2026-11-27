@@ -67,7 +67,8 @@ or transport makes a new grant: after a new version deploys, it allows one more 
 `draftPullLimit: none` opt-out applies only to [OpenShell Git](protected-openshell-git.md#use-the-admitted-repository).
 
 The Agent uses `oce-github pr-create --draft` with the head, base, title, optional
-explicit `--body` text and a fresh operation ID. The helper refuses `--body-file`;
+explicit `--body` text and a fresh operation ID. Compute does not load the
+`github-repository-rest` skill for this Agent. The helper refuses `--body-file`;
 the JSON request body must fit within 64 KiB. A broker refusal, such as a spent allowance or
 another head or base (`unsupported-request`), prints `Draft not created:` with the reason and
 states that GitHub did not receive the request. The helper prints `Draft not confirmed` only

@@ -253,9 +253,8 @@ Codex checks the named profile at thread start, resume, fork and turns.
 With PR authority, Compute loads `github-repository-rest` from
 `/usr/local/lib/oce/skills` and remaps `github` selections. Both Harnesses use the
 catalog. Codex calls `skills_read`. The binding supplies the placeholder.
-Dedicated Codex with a legacy Repository grant uses this skill with existing
-client and route limits. Prepared native Git does not load it; its Agent opens
-drafts with `oce-github pr-create`.
+Dedicated Codex with a legacy, non-prepared Repository grant uses this skill with existing
+client and route limits.
 
 Configuration routes canonical HTTPS hosts to the Gateway. The helper checks
 host, path, generation and deadline before returning a bearer.
