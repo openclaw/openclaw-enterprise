@@ -4,7 +4,8 @@ Run the local Kubernetes profile and the `./scripts/k3d` lanes on a Linux host
 that has Podman and no Docker, such as a RHEL or Fedora workstation.
 [Local Kubernetes development](local-kubernetes-development.md) states that
 native rootless Podman cannot start the profile. This page names the
-session-level cause of that limit and documents two working routes.
+session-level causes of that limit, documents a working rootful route, and
+lists the rootless prerequisites the helper checks.
 
 ## Select the engine
 
@@ -50,9 +51,13 @@ survives reboots; without the access grant an enabled socket stays root-only.
 
 ## Rootless prerequisites
 
-The rootless user socket starts the profile only when the host provides what
-k3s and the OCI runtime need. The helper checks each requirement before any
-cluster work and prints the exact remediation.
+The rootless user socket needs everything k3s and the OCI runtime require.
+The helper checks each requirement before any cluster work and prints the
+exact remediation. Completing the checks does not guarantee a rootless
+start: the reproduction behind
+[#918](https://github.com/openclaw/openclaw-enterprise/pull/918) still
+failed on `/dev/kmsg` after the socket and `cpuset` fixes. Treat rootless
+as best effort and prefer the rootful socket.
 
 1. **Socket mount.** k3d mounts the socket named by `DOCKER_SOCK` into its
    tools node. Without it, k3d mounts `/var/run/docker.sock`, which a rootless

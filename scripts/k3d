@@ -89,22 +89,35 @@ prompt_openai_api_key() {
 preflight_podman_engine() {
   [ "$(uname -s)" = "Linux" ] || return 0 # podman-machine runs a rootful VM
   socket_dir="$(dirname "$podman_socket")"
+  case "$podman_socket" in
+    /run/user/*) start_hint="systemctl --user start podman.socket" ;;
+    *) start_hint="sudo systemctl start podman.socket" ;;
+  esac
+  # A missing socket directory is the ordinary first-run state: the socket
+  # service creates it. Do not confuse it with denied access.
+  if [ ! -d "$socket_dir" ]; then
+    fail "the Podman socket directory $socket_dir is not present. Start the socket with:
+  $start_hint"
+  fi
   if [ ! -x "$socket_dir" ] || { [ -e "$podman_socket" ] && { [ ! -r "$podman_socket" ] || [ ! -w "$podman_socket" ]; }; }; then
     fail "the Podman socket $podman_socket is not accessible by $(id -un). Grant access once with:
   sudo setfacl -m u:$(id -un):x $socket_dir
   sudo setfacl -m u:$(id -un):rw $podman_socket"
   fi
   if [ ! -S "$podman_socket" ]; then
-    case "$podman_socket" in
-      /run/user/*) hint="systemctl --user start podman.socket" ;;
-      *) hint="sudo systemctl start podman.socket" ;;
-    esac
     fail "the Podman socket $podman_socket is not present. Start it with:
-  $hint"
+  $start_hint"
   fi
   if ! "$podman_bin" info >/dev/null 2>&1; then
     fail "the Podman socket $podman_socket is present but not answering. Verify the Podman service and retry."
   fi
+  # The k3d node containers exist only while demo and test build them; the
+  # lifecycle commands must keep working when a reboot removed the temporary
+  # rootless delegation.
+  case "${action:-}" in
+    demo | test) ;;
+    *) return 0 ;;
+  esac
   case "$podman_socket" in
     /run/user/*) ;;
     *) return 0 ;; # A rootful Podman daemon has root cgroups and privileges.

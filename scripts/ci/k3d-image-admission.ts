@@ -212,9 +212,10 @@ export async function selectNativeSourceImage(
       const diagnostic = typeof details?.stderr === "string" ? details.stderr.trim() : "";
       const stdout = typeof details?.stdout === "string" ? details.stdout.trim() : "";
       if (
+        details !== undefined &&
         !details.signal &&
         ["", "[]"].includes(stdout) &&
-        ((details?.exitCode === 1 &&
+        ((details.exitCode === 1 &&
           [
             `Error response from daemon: No such image: ${expected}`,
             `Error response from daemon: No such image: ${reference}`,
@@ -226,7 +227,7 @@ export async function selectNativeSourceImage(
           // and exits 125 where Docker exits 1. A local inspect never
           // contacts a registry, so this wording is only a miss; every other
           // failure keeps failing loudly below.
-          (details?.exitCode === 125 &&
+          (details.exitCode === 125 &&
             diagnostic.startsWith('Error: unable to inspect "') &&
             diagnostic.includes(reference) &&
             diagnostic.endsWith(": image not known")))
