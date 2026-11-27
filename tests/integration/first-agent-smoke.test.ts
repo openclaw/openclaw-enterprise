@@ -408,56 +408,91 @@ test("channel proxy waits for both signals in one poll and reports each first ob
   const base = "/namespaces/fixture/agents/agent";
   const deployment = `${base}/deployments/${revision}`;
   const context = "channel-proxy-move-deploy-a";
-  const samples = [
-    // The deployment and Agent reads may straddle a change of revision.
-    { status: "succeeded", active: "other" },
-    { status: "running", active: revision, code: "REVISION_INCOMPLETE" },
-    { status: "running", active: revision, code: "REVISION_INCOMPLETE" },
-    { status: "running", active: revision, code: "PRIVATE_UNRECOGNIZED_CODE" },
-    { status: "succeeded", active: revision },
-  ];
-  const reads: string[] = [];
-  // Let Node write its binary test results through the same stream.
-  const output = t.mock.method(process.stdout, "write");
-  let poll = 0;
-  await waitForDeployment(
-    {
-      namespaceId: "fixture",
-      api: async (method, path) => {
-        reads.push(`${method} ${path}`);
-        const sample = samples[poll];
-        assert.ok(sample, "unexpected extra poll");
-        if (path === deployment) {
-          return {
-            status: sample.status,
-            progress: sample.code
-              ? { lastAttempt: { code: sample.code, message: "private diagnostic" } }
-              : null,
-          };
-        }
-        assert.equal(path, base);
-        poll++;
-        return { activeRevisionId: sample.active };
-      },
+  const previous = "rev_00000000-0000-4000-8000-000000000002";
+  const incomplete = {
+    lastAttempt: {
+      at: "2026-03-02T07:00:00.000Z",
+      code: "REVISION_INCOMPLETE",
+      message: "private diagnostic sentinel",
     },
-    "agent",
-    revision,
-    "private label",
-    { ...virtualClock(), context },
-  );
-  output.mock.restore();
-  const lines = output.mock.calls
-    .map((call) => call.arguments[0])
-    .filter((chunk) => typeof chunk === "string");
-  assert.deepEqual(
-    reads,
-    samples.flatMap(() => [`GET ${deployment}`, `GET ${base}`]),
-  );
-  assert.deepEqual(lines, [
-    `[first-agent-smoke] ${context} wait observed deployment-succeeded elapsedMs=0\n`,
-    `[first-agent-smoke] ${context} wait observed active-revision elapsedMs=2000\n`,
-    `[first-agent-smoke] ${context} wait observed REVISION_INCOMPLETE elapsedMs=2000\n`,
-  ]);
+    nextAttemptAt: null,
+  };
+  const unschedulable = {
+    lastAttempt: {
+      at: "2026-03-02T06:59:58.000Z",
+      code: "REVISION_UNSCHEDULABLE",
+      message: "Waiting for capacity",
+    },
+    nextAttemptAt: null,
+  };
+  const cases = [
+    {
+      // The active pointer can advance while the work is still running.
+      samples: [
+        { status: "running", active: previous, progress: unschedulable },
+        { status: "running", active: previous, progress: incomplete },
+        { status: "running", active: revision, progress: incomplete },
+        { status: "succeeded", active: revision, progress: null },
+      ],
+      observations: [
+        "REVISION_INCOMPLETE elapsedMs=2000",
+        "active-revision elapsedMs=4000",
+        "deployment-succeeded elapsedMs=6000",
+      ],
+    },
+    {
+      // The first Agent snapshot predates activation, while the paired deployment read sees success.
+      samples: [
+        { status: "succeeded", active: previous, progress: null },
+        { status: "succeeded", active: revision, progress: null },
+      ],
+      observations: ["deployment-succeeded elapsedMs=0", "active-revision elapsedMs=2000"],
+    },
+  ];
+  for (const { samples, observations } of cases) {
+    const reads: string[] = [];
+    // Let Node write its binary test results through the same stream.
+    const output = t.mock.method(process.stdout, "write");
+    let poll = 0;
+    await waitForDeployment(
+      {
+        namespaceId: "fixture",
+        api: async (method, path) => {
+          reads.push(`${method} ${path}`);
+          const sample = samples[poll];
+          assert.ok(sample, "unexpected extra poll");
+          if (path === deployment) {
+            if (sample.status === "succeeded" && sample.active === previous) {
+              await drainTurn();
+              assert.equal(poll, 1, "the first Agent snapshot must precede deployment success");
+            }
+            return { status: sample.status, progress: sample.progress };
+          }
+          assert.equal(path, base);
+          poll++;
+          return { activeRevisionId: sample.active };
+        },
+      },
+      "agent",
+      revision,
+      "private label",
+      { ...virtualClock(), context },
+    );
+    output.mock.restore();
+    const lines = output.mock.calls
+      .map((call) => call.arguments[0])
+      .filter((chunk) => typeof chunk === "string");
+    assert.deepEqual(
+      reads,
+      samples.flatMap(() => [`GET ${deployment}`, `GET ${base}`]),
+    );
+    assert.deepEqual(
+      lines,
+      observations.map(
+        (observation) => `[first-agent-smoke] ${context} wait observed ${observation}\n`,
+      ),
+    );
+  }
 });
 
 test("channel proxy gateway timings report bounded intervals from the exact Ready Pod", async (t) => {
