@@ -103,9 +103,17 @@ Harness Pod by UID. The OpenShell variant identifies its Sandbox by `sandboxId`.
 Admission pins the Proxy registration, model Source, and approved routes.
 The Proxy prepares the endpoint and trust information before Compute starts
 Codex. It accepts the startup probe while Worker holds the preparing revision's
-claim and serves requests from the active revision. Withdrawal, abandonment,
-and retirement close the target to new requests. Stop and retirement drain
-existing requests before removing the target.
+claim and serves requests from the active revision while the Agent's desired
+runtime state is running. When Compute replaces a Pod, the replacement uses the
+same revision target with a token bound to its own UID and verified peer. It
+receives access only while the revision remains eligible.
+
+The Proxy refuses new requests as soon as OCC commits Stop's desired runtime
+state of `stopped` or records Source withdrawal. This applies to open
+connections. A later Deploy keeps the old revision fenced through OCC's
+existing `stopping` predecessor state. Abandonment and retirement end
+authorization for the revision. Stop and retirement drain requests already
+admitted, then remove the target.
 
 Preserve both no-Sandbox model profiles. The API-key profile can use Codex's
 provider auth command to present the Pod token. The existing imported
@@ -165,7 +173,7 @@ Hiding the Secret page while retaining its API would still leave duplicate crede
 ## Acceptance Criteria
 
 - **Authorization:** Admission denial creates no revision or unauthorized provider request. A later Worker denial discards resolved values, stops delivery, and cleans an abandoned revision copy.
-- **Standalone Pod identity:** Replay a valid token from a different Pod with the same ServiceAccount. The Proxy refuses it before resolving the Source or forwarding a request.
+- **Standalone Pod identity:** Replay a valid token from a different Pod with the same ServiceAccount. The Proxy refuses it before resolving the Source or forwarding a request. An eligible replacement Pod can use its own token. Verify denial after Stop or withdrawal, including for the old revision after a new Deploy.
 - **Real callers:** Register regular Agent workflow integration for PostgreSQL Worker/Compute, Gateway Slack startup, model Proxy admission, authenticated channel egress, repair, and Namespace teardown.
 - **Embedded model:** On Kubernetes, run an embedded OpenClaw turn using a directly delivered Source. Verify the runtime receives the expected credential input and uses its configured endpoint. Verify a managed redeploy picks up a replacement, Stop clears the old copy, and another Agent can still use the Source.
 - **Lifecycle:** Verify redeploy, revocation, Stop, retirement, abandonment, and Pod-before-Secret cleanup. Distinguish fixtures or process-environment proof from native provider use; live Slack messages require separate authorization.
