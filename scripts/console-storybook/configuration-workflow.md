@@ -127,6 +127,23 @@ Press Enter. The list should return with **Search plugins** focused. Open anothe
 plugin and move focus to **Done** while its tools load. Check that focus stays
 on **Done**.
 
+On a signed-in saved Agent with a working catalog, start at 1280 × 900. Set an
+unsaved enablement and approval override for an available tool. Check its
+**Overrides** badge and values, and leave another tool inheriting defaults. In
+the available plugin's details, enter a query in **Filter tools** that matches
+no tools. Choose **Done** and remove the final `}` from **Plugin selections
+JSON**. Reopen **Configure plugins** and return to the same plugin's details.
+The query should still be present and **Filter tools** should remain enabled.
+Focus the search field, select its text with the keyboard and press Backspace.
+The tool rows should return. Expand the same tool. Its name, ID when different,
+description and provider should remain available under **Details**. The policy
+is unknown while the draft is unreadable. The override and inheritance badges,
+enablement switch, approval and reviewer values, policy hints and controls must
+disappear. A tool genuinely marked **Unavailable** by the catalog must retain
+that status and its reason. Restore the final brace and check that the exact
+unsaved draft, override values and untouched tool's inheritance return. Repeat
+at 390 × 844 and leave the draft unsaved.
+
 ## Correct an out-of-range Configuration number
 
 Open **Pages → Agent detail → Invalid Configuration JSON**

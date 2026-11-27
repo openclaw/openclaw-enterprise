@@ -930,15 +930,79 @@ export function createPluginFields({
   }: {
     entry: CatalogEntry;
     tool: Tool;
-    selected: EditableSelection | undefined;
+    selected: EditableSelection | null | undefined;
     managed: ManagedTools | undefined;
     expanded: boolean;
     defaultReviewer: HTMLLabelElement | null;
     hasDefaultReviewers: boolean;
     hasToolReviewers: boolean;
   }) {
-    const savedPolicy = selected?.tools?.[tool.id] ?? {};
+    const savedPolicy = selected === null ? null : (selected?.tools?.[tool.id] ?? {});
     const managedEnabled = managed?.toolNames.includes(tool.id) ?? false;
+    let badgeText: string | null;
+    if (tool.available === false) {
+      badgeText = "Unavailable";
+    } else if (savedPolicy === null) {
+      badgeText = null;
+    } else if (Object.keys(savedPolicy).length) {
+      badgeText = "Overrides";
+    } else if (managed) {
+      badgeText = managedEnabled ? "Enabled" : "Disabled";
+    } else {
+      badgeText = "Inherits defaults";
+    }
+    const actions = element(
+      "span",
+      { className: "plugin-tool-actions" },
+      element(
+        "span",
+        { className: "button button--sm plugin-tool-policy-action" },
+        savedPolicy === null ? "Details" : "Tool policy",
+      ),
+    );
+    const row = element(
+      "fieldset",
+      {
+        className: "plugin-tool",
+        "data-tool": tool.id,
+        disabled: !selected?.enabled || (!managed && tool.available === false),
+      },
+      element("legend", {}, tool.name),
+      tool.description ? element("p", { className: "hint" }, tool.description) : null,
+      tool.available === false
+        ? element(
+            "p",
+            { className: "hint" },
+            tool.unavailableReason ?? "This tool is unavailable to this service account.",
+          )
+        : null,
+      tool.ownerId ? element("p", { className: "hint" }, `Provided by ${tool.ownerId}`) : null,
+    );
+    const toolDetails = element(
+      "details",
+      { className: "plugin-tool-row", "data-tool": tool.id },
+      element(
+        "summary",
+        {},
+        element(
+          "span",
+          { className: "plugin-tool-heading" },
+          element("strong", {}, tool.name),
+          badgeText === null ? null : element("span", { className: "badge" }, badgeText),
+        ),
+        tool.name === tool.id ? null : element("code", { className: "hint plugin-id" }, tool.id),
+        tool.description
+          ? element("span", { className: "hint plugin-tool-description" }, tool.description)
+          : null,
+        actions,
+      ),
+      row,
+    );
+    toolDetails.open = expanded;
+    if (savedPolicy === null) {
+      return toolDetails;
+    }
+
     const supportsHumanApproval =
       capabilities?.policyScopeByPlugin?.[entry.id] === "tool_human_approval";
     const policy: PluginToolPolicy = managed
@@ -989,26 +1053,10 @@ export function createPluginFields({
         ),
       );
     }
-    const row = element(
-      "fieldset",
-      {
-        className: "plugin-tool",
-        "data-tool": tool.id,
-        disabled: !selected || !selected.enabled || (!managed && tool.available === false),
-      },
-      element("legend", {}, tool.name),
-      tool.description ? element("p", { className: "hint" }, tool.description) : null,
-      tool.available === false
-        ? element(
-            "p",
-            { className: "hint" },
-            tool.unavailableReason ?? "This tool is unavailable to this service account.",
-          )
-        : null,
-      tool.ownerId ? element("p", { className: "hint" }, `Provided by ${tool.ownerId}`) : null,
-      fields.controls,
-      fields.hint,
-    );
+    row.append(fields.controls);
+    if (fields.hint) {
+      row.append(fields.hint);
+    }
     const toolApprovers =
       !managed && createApproverField && capabilities?.approvers?.tools === true
         ? createApproverField({
@@ -1043,46 +1091,7 @@ export function createPluginFields({
     );
     enabledOverride.addEventListener("click", (event) => event.stopPropagation());
     enabledOverride.addEventListener("change", () => writeTool("enabled", enabledOverride.checked));
-    let badgeText: string;
-    if (tool.available === false) {
-      badgeText = "Unavailable";
-    } else if (Object.keys(savedPolicy).length) {
-      badgeText = "Overrides";
-    } else if (managed) {
-      badgeText = managedEnabled ? "Enabled" : "Disabled";
-    } else {
-      badgeText = "Inherits defaults";
-    }
-    const toolDetails = element(
-      "details",
-      { className: "plugin-tool-row", "data-tool": tool.id },
-      element(
-        "summary",
-        {},
-        element(
-          "span",
-          { className: "plugin-tool-heading" },
-          element("strong", {}, tool.name),
-          element("span", { className: "badge" }, badgeText),
-        ),
-        tool.name === tool.id ? null : element("code", { className: "hint plugin-id" }, tool.id),
-        tool.description
-          ? element("span", { className: "hint plugin-tool-description" }, tool.description)
-          : null,
-        element(
-          "span",
-          { className: "plugin-tool-actions" },
-          element(
-            "span",
-            { className: "button button--sm plugin-tool-policy-action" },
-            "Tool policy",
-          ),
-          enabledOverride,
-        ),
-      ),
-      row,
-    );
-    toolDetails.open = expanded;
+    actions.append(enabledOverride);
     toolDetails.addEventListener("toggle", () => {
       if (toolDetails.open) {
         toolApprovers?.refreshNames?.();
@@ -1691,29 +1700,32 @@ export function createPluginFields({
           type: "search",
           "aria-label": "Filter tools",
           placeholder: "Filter tools",
+          "data-discovery": "true",
           value: tabState().toolQuery,
         });
         filter.addEventListener("input", () => {
           tabState().toolQuery = filter.value;
           filterTools();
         });
-        details.append(
-          element("h4", {}, `Tools (${tools.size})`),
-          element(
-            "p",
-            { className: "hint" },
-            managedTools
-              ? "Enable tools for this Agent and use Tool policy to configure approval."
-              : "A dash inherits plugin enablement. Use Tool policy to set approval overrides or restore inheritance.",
-          ),
-          element("div", { className: "form-field" }, filter),
-        );
+        details.append(element("h4", {}, `Tools (${tools.size})`));
+        if (values !== null) {
+          details.append(
+            element(
+              "p",
+              { className: "hint" },
+              managedTools
+                ? "Enable tools for this Agent and use Tool policy to configure approval."
+                : "A dash inherits plugin enablement. Use Tool policy to set approval overrides or restore inheritance.",
+            ),
+          );
+        }
+        details.append(element("div", { className: "form-field" }, filter));
       }
       for (const tool of tools.values()) {
         const toolDetails = createPluginToolRow({
           entry,
           tool,
-          selected,
+          selected: values === null ? null : selected,
           managed: managedTools,
           expanded: open.has(tool.id),
           defaultReviewer,
