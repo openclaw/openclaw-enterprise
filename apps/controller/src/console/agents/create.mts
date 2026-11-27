@@ -4141,6 +4141,18 @@ function renderAgentForm(
       ? { method: authMethod.value }
       : undefined;
   }
+  form.addEventListener("keydown", (event) => {
+    const { target } = event;
+    if (
+      event.key === "Enter" &&
+      target instanceof HTMLInputElement &&
+      target.form === form &&
+      (target.type === "radio" || target.type === "checkbox")
+    ) {
+      // Enter on a choice can activate the form's submit button.
+      event.preventDefault();
+    }
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     // A restored draft sets the name and files without an input event.

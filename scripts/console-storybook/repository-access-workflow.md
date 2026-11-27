@@ -101,6 +101,15 @@ field. Committing text must neither select a repository nor submit the form.
 These checks change the unsaved selection. They do not save the form, create an
 Agent, or grant runtime repository access.
 
+Reset the story. Choose **Service Accounts** under **Authentication method**
+and leave **Service account token Secret** empty. Enter `gpt-4.1` as the model ID.
+Under **Default repository access**, tab to **Contributor** and press Enter.
+Focus and selection stay on **Contributor**. Use the arrow keys to select
+**Read-only** and then **Contributor** again. Press Enter on **Customize access**
+to open it. Tab to **Create and manage issues** and press Enter. The checkbox
+stays checked and focused. Press Space to uncheck it. Press Enter on
+**Create Agent** and check that focus moves to the missing token field.
+
 ## First-deployment warning
 
 Open **GitHub repository access** under **Pages / Create Agent**
