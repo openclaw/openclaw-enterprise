@@ -890,6 +890,34 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
   await enablement.selectOption("false");
   await override.waitFor();
   const draft = await input.inputValue();
+  const filter = dialog.getByRole("searchbox", { name: "Filter tools", exact: true });
+  const toolTotal = dialog.getByRole("heading", { name: "Tools (1)", exact: true });
+  const noMatchesGuidance = "No matching tools. Change or clear the filter.";
+  const noMatches = dialog.getByRole("status").filter({ hasText: noMatchesGuidance });
+  const readsBeforeFilter = ui.reads();
+
+  await filter.click();
+  await page.keyboard.type("Alpha");
+  assert.equal(await filter.inputValue(), "Alpha");
+  await tool.waitFor();
+  await page.keyboard.press("z");
+  assert.equal(
+    await filter.evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+    "The filter keeps focus when the last tool disappears",
+  );
+  await tool.waitFor({ state: "hidden" });
+  assert.equal(await toolTotal.isVisible(), true);
+  assert.equal(await noMatches.count(), 1, "The tool filter exposes one no-match status");
+  assert.equal(await noMatches.isVisible(), true);
+  assert.equal(await noMatches.innerText(), noMatchesGuidance);
+  await page.keyboard.press("Backspace");
+  assert.equal(await filter.inputValue(), "Alpha");
+  await tool.waitFor();
+  await noMatches.waitFor({ state: "hidden" });
+  await page.keyboard.press("z");
+  await noMatches.waitFor();
+  assert.deepEqual(ui.reads(), readsBeforeFilter);
 
   // Repair guidance should preserve catalog browsing while the override is unreadable.
   await done.click();
@@ -898,7 +926,22 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
   assert.equal(await input.inputValue(), draft.slice(0, -1));
   await configure.click();
   await dialog.getByRole("alert").filter({ hasText: "Fix Plugin selections JSON" }).waitFor();
+  assert.equal(await filter.isEnabled(), true, "Tool search stays available during repair");
+  assert.equal(await filter.inputValue(), "Alphaz");
+  await tool.waitFor({ state: "hidden" });
+  assert.equal(await toolTotal.isVisible(), true);
+  await noMatches.waitFor();
+
+  const readsBeforeClear = ui.reads();
+  await filter.click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Backspace");
+  assert.equal(await filter.inputValue(), "");
   await tool.waitFor();
+  await noMatches.waitFor({ state: "hidden" });
+  assert.equal(await filter.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.deepEqual(ui.reads(), readsBeforeClear);
+
   assert.equal(
     await row.locator(".badge").count(),
     0,
@@ -909,14 +952,6 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
     await tool.click();
   }
   await row.getByText("Provided by app_hosted", { exact: true }).waitFor();
-
-  const filter = dialog.getByRole("searchbox", { name: "Filter tools", exact: true });
-  assert.equal(await filter.isEnabled(), true, "Tool search stays available during repair");
-  await filter.fill("no-such-fixture-tool");
-  await tool.waitFor({ state: "hidden" });
-  await filter.press("Control+a");
-  await page.keyboard.press("Backspace");
-  await tool.waitFor();
 
   await done.click();
   await input.press("Control+End");
@@ -3222,6 +3257,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
   await savedNotice.waitFor();
+  // The old editor announces the save before the replacement can accept the next edit.
+  await waitForEnabled(page.getByRole("button", { name: "Configure plugins", exact: true }));
   assert.equal(await defaultMode.locator("option:checked").textContent(), "Use OpenClaw routing");
   assert.equal(await accessibleDescription(defaultMode), "No default approver list is set.");
 
