@@ -872,6 +872,65 @@ test("Saved plugin catalog conflict revokes previously loaded Add authority", as
   assert.deepEqual(ui.reads(), [...reads, query, { pluginId: "remote-beta" }]);
 });
 
+test("Unreadable Plugin selections JSON keeps tool details without claiming inheritance", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  const { page, dialog } = ui;
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const input = page.getByLabel("Plugin selections JSON", { exact: true });
+  const done = ui.button("Done");
+  const tool = ui.tool("Original Alpha tool");
+  const row = dialog.locator('details[data-tool="app_hosted/search"]');
+  const enablement = row.getByLabel("Enable Original Alpha tool", { exact: true });
+  const override = row.getByText("Overrides", { exact: true });
+
+  await ui.loadDetails("Alpha");
+  await tool.waitFor();
+  await ui.button("Add Alpha").click();
+  await tool.click();
+  await enablement.selectOption("false");
+  await override.waitFor();
+  const draft = await input.inputValue();
+
+  // Repair guidance should preserve catalog browsing while the override is unreadable.
+  await done.click();
+  await input.press("Control+End");
+  await page.keyboard.press("Backspace");
+  assert.equal(await input.inputValue(), draft.slice(0, -1));
+  await configure.click();
+  await dialog.getByRole("alert").filter({ hasText: "Fix Plugin selections JSON" }).waitFor();
+  await tool.waitFor();
+  assert.equal(
+    await row.locator(".badge").count(),
+    0,
+    "Malformed Plugin JSON falsely shows inherited tool policy",
+  );
+  assert.equal(await row.locator("input, select, button").count(), 0);
+  if (!(await row.evaluate((node) => node.hasAttribute("open")))) {
+    await tool.click();
+  }
+  await row.getByText("Provided by app_hosted", { exact: true }).waitFor();
+
+  const filter = dialog.getByRole("searchbox", { name: "Filter tools", exact: true });
+  assert.equal(await filter.isEnabled(), true, "Tool search stays available during repair");
+  await filter.fill("no-such-fixture-tool");
+  await tool.waitFor({ state: "hidden" });
+  await filter.press("Control+a");
+  await page.keyboard.press("Backspace");
+  await tool.waitFor();
+
+  await done.click();
+  await input.press("Control+End");
+  await page.keyboard.insertText("}");
+  await configure.click();
+  await override.waitFor();
+  await enablement.waitFor();
+  assert.equal(await enablement.inputValue(), "false");
+  await done.click();
+  assert.equal(await input.inputValue(), draft);
+  await input.fill(conflictDraft);
+  await ui.checkDraft();
+});
+
 const googlePluginId = "occ-plugin:google@1.0.0";
 const slackPluginId = "occ-plugin:slack@1.0.0";
 const managedTool = "Controlled Slack tool";
