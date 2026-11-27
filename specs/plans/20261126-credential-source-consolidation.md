@@ -20,12 +20,11 @@ storage. Compute keeps its workload delivery copies.
    recipient. The [current draft](https://github.com/openclaw/openclaw-enterprise/pull/7486)
    includes the Envoy, prebound Preset, guided dedicated model, and Slack
    upgrade changes.
-2. **Qualify embedded model delivery.** Credential Proxy checks the admitted
-   embedded Pod and serves the pinned inference route. Compute gives the Pod a
-   placeholder and prevents direct provider access. Verify startup while the
-   revision is still a candidate, retirement, and withdrawal with a second
-   Agent using the same Source. Check the actual OpenClaw model stream and
-   refusal paths on enforcing Kubernetes.
+2. **Qualify embedded model delivery.** Worker resolves the admitted Sources.
+   Compute puts the values in the revision's Gateway Secret and starts the
+   testing-only embedded Pod with its normal credential inputs. Verify an
+   OpenClaw turn with its configured endpoint, update on managed redeploy,
+   and withdrawal and cleanup while a second Agent keeps using the Source.
 3. **Discard old records.** Retire revisions and settle queued work that use
    legacy bindings before dropping them. Check owner identity and confirm old
    material is absent before deleting its public record. A failed confirmation
