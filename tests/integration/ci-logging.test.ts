@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import {
+  createServer,
+  request,
+  type IncomingMessage,
+  type RequestListener,
+  type ServerResponse,
+} from "node:http";
 import {
   appendFile,
   mkdir,
+  mkdtemp,
   readFile,
   realpath,
   rename,
@@ -11,7 +20,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import test from "node:test";
+import { tmpdir } from "node:os";
+import test, { type TestContext } from "node:test";
+import {
+  createCiLoggingCustodyRelay,
+  type RelayEvent,
+  type RelayPlan,
+  type RelayRequest,
+} from "../helpers/ci-logging-custody-relay.ts";
 import {
   ciOtelBackendResourceKind,
   cleanupLogging,
@@ -32,6 +48,233 @@ const env = {
   OCC_CI_OTEL_BACKEND_BIND_ADDRESS: "127.0.0.1",
 };
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function relayFixture(
+  t: TestContext,
+  peerHandler: RequestListener,
+  plan: (request: RelayRequest) => Promise<RelayPlan> = async () => ({}),
+  requestTimeoutMs = 2_000,
+) {
+  const root = await mkdtemp(join(tmpdir(), "ci-relay-test-"));
+  const peer = createServer(peerHandler);
+  const events: RelayEvent[] = [];
+  const transport = createCiLoggingCustodyRelay({
+    socketPath: join(root, "peer.sock"),
+    requestTimeoutMs,
+    plan,
+    record: (event) => events.push(event),
+  });
+  const server = createServer(transport.handle);
+  t.after(async () => {
+    await transport.close();
+    for (const selected of [server, peer]) {
+      selected.closeAllConnections();
+      if (selected.listening) {
+        await new Promise<void>((resolve, reject) =>
+          selected.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  for (const [selected, path] of [
+    [peer, "peer.sock"],
+    [server, "relay.sock"],
+  ] as const) {
+    await new Promise<void>((resolve, reject) => {
+      selected.once("error", reject);
+      selected.listen(join(root, path), resolve);
+    });
+  }
+  const send = (method: string, path: string, headers: Record<string, string> = {}) =>
+    new Promise<IncomingMessage>((resolve, reject) => {
+      const outgoing = request(
+        {
+          socketPath: join(root, "relay.sock"),
+          method,
+          path,
+          headers,
+          agent: false,
+          signal: AbortSignal.timeout(3_000),
+        },
+        resolve,
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+  return { root, send, events, close: transport.close };
+}
+
+async function responseBody(response: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of response) {
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks).toString();
+}
+
+test(
+  "CI OTel relay forwards wait headers and body before a separate start completes",
+  { timeout: 5_000 },
+  async (t) => {
+    let wait: ServerResponse | undefined;
+    const privateMarker = "private-transport-marker";
+    const f = await relayFixture(t, (incoming, outgoing) => {
+      if (incoming.url?.includes("/wait?")) {
+        wait = outgoing;
+        outgoing.writeHead(200, {
+          "content-type": "text/plain",
+          "x-private-marker": privateMarker,
+        });
+        outgoing.flushHeaders();
+      } else {
+        assert.ok(incoming.url?.endsWith("/start"));
+        assert.ok(wait, "wait must be subscribed before start");
+        wait.write("started:");
+        outgoing.writeHead(204);
+        outgoing.end();
+      }
+    });
+    // A client cannot issue start until its wait subscription receives headers.
+    const waiting = await f.send(
+      "POST",
+      `/v1.53/containers/${privateMarker}/wait?condition=next-exit`,
+      { "x-private-marker": privateMarker },
+    );
+    assert.equal(waiting.statusCode, 200);
+    assert.equal(waiting.headers["x-private-marker"], privateMarker);
+    const firstChunk = once(waiting, "data");
+    const started = await f.send("POST", `/v1.53/containers/${privateMarker}/start`);
+    assert.equal(started.statusCode, 204);
+    await responseBody(started);
+    assert.equal(String((await firstChunk)[0]), "started:");
+    // End is still withheld here: forwarding only the headers is insufficient.
+    const remainder = responseBody(waiting);
+    assert.ok(wait);
+    wait.end("done");
+    assert.equal(await remainder, "done");
+    assert.ok(
+      f.events.some(
+        (event) => event.path === "/containers/{id}/wait" && event.phase === "headers-forwarded",
+      ),
+    );
+    assert.equal(JSON.stringify(f.events).includes(privateMarker), false);
+    assert.equal(JSON.stringify(f.events).includes("next-exit"), false);
+  },
+);
+
+test(
+  "CI OTel relay cancels upstream on downstream disconnect and drains shutdown",
+  { timeout: 5_000 },
+  async (t) => {
+    let closed = deferred<void>();
+    const f = await relayFixture(t, (_incoming, outgoing) => {
+      const selected = closed;
+      outgoing.once("close", () => selected.resolve());
+      outgoing.writeHead(200);
+      outgoing.flushHeaders();
+    });
+    const first = await f.send("POST", `/containers/${ownedId}/wait`);
+    first.destroy();
+    await closed.promise;
+    closed = deferred<void>();
+    const second = await f.send("POST", `/containers/${ownedId}/wait`);
+    const secondClosed = assert.rejects(responseBody(second), { code: "ECONNRESET" });
+    await f.close();
+    await Promise.all([closed.promise, secondClosed]);
+    assert.ok(f.events.some((event) => event.phase === "abort"));
+    assert.equal(f.events.filter((event) => event.phase === "end").length, 2);
+  },
+);
+
+test("CI OTel relay bounds an unfinished upstream response", { timeout: 5_000 }, async (t) => {
+  const closed = deferred<void>();
+  const f = await relayFixture(
+    t,
+    (_incoming, outgoing) => {
+      outgoing.once("close", () => closed.resolve());
+      outgoing.writeHead(200);
+      outgoing.flushHeaders();
+    },
+    async () => ({}),
+    150,
+  );
+  const response = await f.send("POST", `/containers/${ownedId}/wait`);
+  const disconnected = assert.rejects(responseBody(response), { code: "ECONNRESET" });
+  await Promise.all([closed.promise, disconnected]);
+  assert.ok(f.events.some((event) => event.phase === "abort"));
+});
+
+test(
+  "CI OTel relay retains finite create and remove gates before a lost response",
+  { timeout: 5_000 },
+  async (t) => {
+    let gate = { entered: deferred<void>(), release: deferred<void>() };
+    let drop = true;
+    let receiptRoot = "";
+    const f = await relayFixture(
+      t,
+      (incoming, outgoing) => {
+        if (incoming.method === "DELETE") {
+          outgoing.writeHead(204);
+          outgoing.end();
+        } else {
+          outgoing.writeHead(201, { "content-type": "application/json" });
+          outgoing.end(JSON.stringify({ Id: ownedId }));
+        }
+      },
+      async ({ method }) => ({
+        interceptResponse: async (status, body) => {
+          const receipt =
+            method === "DELETE"
+              ? { status }
+              : { status, id: (JSON.parse(body.toString()) as { Id: string }).Id };
+          await writeFile(join(receiptRoot, "receipt.json"), JSON.stringify(receipt), {
+            mode: 0o600,
+            flush: true,
+          });
+          if (drop) {
+            const selected = gate;
+            selected.entered.resolve();
+            await selected.release.promise;
+            return "drop";
+          }
+          return "forward";
+        },
+      }),
+    );
+    receiptRoot = f.root;
+    for (const [method, path, receipt] of [
+      ["POST", "/containers/create", { status: 201, id: ownedId }],
+      ["DELETE", `/containers/${ownedId}`, { status: 204 }],
+    ] as const) {
+      gate = { entered: deferred<void>(), release: deferred<void>() };
+      let headersObserved = false;
+      const pending = f.send(method, path).then((response) => {
+        headersObserved = true;
+        return response;
+      });
+      const lost = assert.rejects(pending, { code: "ECONNRESET" });
+      await gate.entered.promise;
+      assert.deepEqual(JSON.parse(await readFile(join(f.root, "receipt.json"), "utf8")), receipt);
+      assert.equal(headersObserved, false, "a custody gate must precede downstream headers");
+      gate.release.resolve();
+      await lost;
+    }
+    drop = false;
+    const forwarded = await f.send("POST", "/containers/create");
+    assert.equal(forwarded.statusCode, 201);
+    assert.deepEqual(JSON.parse(await responseBody(forwarded)), { Id: ownedId });
+  },
+);
+
 function custodyExecutor(
   delegate: (command: string, args: string[]) => Promise<{ stdout: string }> = async () => ({
     stdout: "",
@@ -42,13 +285,21 @@ function custodyExecutor(
   return async (command: string, input: string[]) => {
     const args = input[0] === "--context" || input[0] === "--host" ? input.slice(2) : input;
     if (command === "docker") {
-      if (args[0] === "context" && args[1] === "show") return { stdout: "test-context\n" };
-      if (args[0] === "context" && args[1] === "inspect")
+      if (args[0] === "context" && args[1] === "show") {
+        return { stdout: "test-context\n" };
+      }
+      if (args[0] === "context" && args[1] === "inspect") {
         return { stdout: JSON.stringify("unix:///test-docker.sock") };
-      if (args[0] === "info") return { stdout: engineId };
-      if (args[0] === "container" && args[1] === "ls") return { stdout: present ? ownedId : "" };
-      if (args[0] === "container" && args[1] === "inspect")
+      }
+      if (args[0] === "info") {
+        return { stdout: engineId };
+      }
+      if (args[0] === "container" && args[1] === "ls") {
+        return { stdout: present ? ownedId : "" };
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
         return { stdout: JSON.stringify([ownedId, collectorImage, nonce]) };
+      }
     }
     const result = await delegate(command, args);
     if (command === "docker" && args[0] === "run") {
@@ -63,7 +314,9 @@ function custodyExecutor(
       present = true;
       return { stdout: `${ownedId}\n` };
     }
-    if (command === "docker" && args[0] === "rm") present = false;
+    if (command === "docker" && args[0] === "rm") {
+      present = false;
+    }
     return result;
   };
 }
@@ -394,7 +647,9 @@ test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned",
   const calls: CommandCall[] = [];
   const execFile = custodyExecutor(async (command, args) => {
     calls.push([command, args]);
-    if (command === "kubectl") throw new Error("dead cluster");
+    if (command === "kubectl") {
+      throw new Error("dead cluster");
+    }
     return { stdout: "" };
   });
   const result = await prepared(root, execFile);
@@ -438,8 +693,12 @@ test("prepareLogging retains an unknown creation without removing a foreign name
   let resource: unknown;
   const removals: string[][] = [];
   const execFile = custodyExecutor(async (_command, args) => {
-    if (args[0] === "run") throw new Error("name conflict");
-    if (args[0] === "rm") removals.push(args);
+    if (args[0] === "run") {
+      throw new Error("name conflict");
+    }
+    if (args[0] === "rm") {
+      removals.push(args);
+    }
     return { stdout: "" };
   });
   await assert.rejects(
@@ -464,12 +723,16 @@ test("prepareLogging recovers a lost command result from its private container I
   const root = await fixture(t);
   const removals: string[][] = [];
   const command = custodyExecutor(async (_command, args) => {
-    if (args[0] === "rm") removals.push(args);
+    if (args[0] === "rm") {
+      removals.push(args);
+    }
     return { stdout: "" };
   });
   const execFile = async (program: string, args: string[]) => {
     const result = await command(program, args);
-    if (args.includes("run")) throw new Error("lost run response");
+    if (args.includes("run")) {
+      throw new Error("lost run response");
+    }
     return result;
   };
   await assert.rejects(prepared(root, execFile), /lost run response/);
@@ -661,11 +924,15 @@ test("cleanupLogging refuses a changed Docker engine before removal", async (t) 
   let changed = false;
   let removes = 0;
   const command = custodyExecutor(async (_program, args) => {
-    if (args[0] === "rm") removes += 1;
+    if (args[0] === "rm") {
+      removes += 1;
+    }
     return { stdout: "" };
   });
   const execFile = async (program: string, args: string[]) => {
-    if (changed && args.includes("info")) return { stdout: "replacement-engine" };
+    if (changed && args.includes("info")) {
+      return { stdout: "replacement-engine" };
+    }
     return command(program, args);
   };
   const result = await prepared(root, execFile);
@@ -684,7 +951,9 @@ test("cleanupLogging pins the recorded endpoint and refuses a retargeted context
     if (retargeted && args[0] === "context" && args[1] === "inspect") {
       return { stdout: JSON.stringify("unix:///foreign-docker.sock") };
     }
-    if (args.includes("rm")) removes.push(args);
+    if (args.includes("rm")) {
+      removes.push(args);
+    }
     return command(program, args);
   };
   const result = await prepared(root, execFile);

@@ -151,7 +151,9 @@ async function planCustody(
   engine: DockerEngine,
 ) {
   const directoryInfo = await lstat(directory, { bigint: true });
-  if (!directoryInfo.isDirectory()) throw new Error("Invalid OTel backend directory.");
+  if (!directoryInfo.isDirectory()) {
+    throw new Error("Invalid OTel backend directory.");
+  }
   const custody: Custody = {
     version: 1,
     containerName,
@@ -245,10 +247,14 @@ async function readContainerId(custody: Custody) {
   try {
     id = (await readFile(custody.cidPath, "utf8")).trim();
   } catch (error) {
-    if (record(error) && error.code === "ENOENT") return undefined;
+    if (record(error) && error.code === "ENOENT") {
+      return undefined;
+    }
     throw error;
   }
-  if (!fullId.test(id)) throw new Error("Invalid OTel backend container ID receipt.");
+  if (!fullId.test(id)) {
+    throw new Error("Invalid OTel backend container ID receipt.");
+  }
   return id;
 }
 
@@ -263,8 +269,12 @@ async function containerPresent(run: CommandExecutor, docker: string, id: string
     `id=${id}`,
   ]);
   const found = stdout.trim();
-  if (found === "") return false;
-  if (found !== id) throw new Error("Invalid OTel backend container identity response.");
+  if (found === "") {
+    return false;
+  }
+  if (found !== id) {
+    throw new Error("Invalid OTel backend container identity response.");
+  }
   return true;
 }
 
@@ -303,7 +313,9 @@ async function finishCreate(
   stdout: string,
 ) {
   const containerId = await readContainerId(custody);
-  if (!containerId || stdout.trim() !== containerId) unknownOutcome("create");
+  if (!containerId || stdout.trim() !== containerId) {
+    unknownOutcome("create");
+  }
   await verifyContainer(run, docker, custody, containerId);
   await writeReceipt({ custody, phase: "created", containerId });
   return containerId;
@@ -311,10 +323,14 @@ async function finishCreate(
 
 async function cleanupDirectory(custody: Custody) {
   const info = await lstat(custody.directory, { bigint: true }).catch((error: unknown) => {
-    if (record(error) && error.code === "ENOENT") return undefined;
+    if (record(error) && error.code === "ENOENT") {
+      return undefined;
+    }
     throw error;
   });
-  if (!info) return;
+  if (!info) {
+    return;
+  }
   if (
     !info.isDirectory() ||
     String(info.dev) !== custody.directoryIdentity.device ||
@@ -327,7 +343,9 @@ async function cleanupDirectory(custody: Custody) {
 }
 
 async function finishDirectoryCleanup(receipt: Receipt) {
-  if (receipt.directoryRemoved) return;
+  if (receipt.directoryRemoved) {
+    return;
+  }
   await cleanupDirectory(receipt.custody);
   await writeReceipt({ ...receipt, directoryRemoved: true });
 }
@@ -346,9 +364,13 @@ async function cleanupCustody(custody: Custody, execFile: CommandExecutor, docke
     await verifyDockerEngine(execFile, docker, custody.engine);
     const run = boundDocker(execFile, docker, custody.engine);
     const containerId = receipt.containerId ?? (await readContainerId(custody));
-    if (!containerId) unknownOutcome("create");
+    if (!containerId) {
+      unknownOutcome("create");
+    }
     if (await containerPresent(run, docker, containerId)) {
-      if (receipt.phase === "remove-intent") unknownOutcome("remove");
+      if (receipt.phase === "remove-intent") {
+        unknownOutcome("remove");
+      }
       await verifyContainer(run, docker, custody, containerId);
       await writeReceipt({ custody, phase: "remove-intent", containerId });
       // A failed command may already have removed the object. Reconcile only
@@ -356,9 +378,13 @@ async function cleanupCustody(custody: Custody, execFile: CommandExecutor, docke
       try {
         await run(docker, ["rm", "--force", containerId]);
       } catch {
-        if (await containerPresent(run, docker, containerId)) unknownOutcome("remove");
+        if (await containerPresent(run, docker, containerId)) {
+          unknownOutcome("remove");
+        }
       }
-      if (await containerPresent(run, docker, containerId)) unknownOutcome("remove");
+      if (await containerPresent(run, docker, containerId)) {
+        unknownOutcome("remove");
+      }
     }
     receipt = { custody, phase: "removed", containerId };
     await writeReceipt(receipt);
