@@ -149,6 +149,9 @@ Channels can replace bindings if all denied Secrets have Slack token names.
 Read-only drafts say so and omit the checklist without `deploy`.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
+An **Available** search typed while capabilities are pending waits for the catalog.
+Closing retains the text and defers the search until the user returns to **Available**.
+Discovery can still prefetch an empty query.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH without locking it.
 If Agent, Namespace, Configuration, selections, or approvers differ from the editor
 baseline, it sends no write. The editor clears the draft only when the response

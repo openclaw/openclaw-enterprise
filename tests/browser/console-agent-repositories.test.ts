@@ -1432,6 +1432,22 @@ test("Agent repository search prioritizes exact names before prefix matches", as
     document.addEventListener("submit", () => count.value++, true);
     return count;
   });
+  // With Create Agent enabled, Enter on a choice must stay in the picker.
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent", exact: true }));
+  const firstChoice = repositoryCheckbox(page, "omega/application");
+  await search.press("ArrowDown");
+  assert.ok(await hasFocus(firstChoice));
+  await page.keyboard.press("Enter");
+  assert.equal(
+    await submissions.evaluate((count) => count.value),
+    0,
+    "Enter on a repository checkbox submitted Create Agent",
+  );
+  assert.equal(await firstChoice.isChecked(), false);
+  assert.ok(await hasFocus(firstChoice));
+  await page.keyboard.press("ArrowUp");
+  assert.ok(await hasFocus(search));
+
   // Holding Enter must add only the first match.
   await page.keyboard.down("Enter");
   await page.keyboard.down("Enter");

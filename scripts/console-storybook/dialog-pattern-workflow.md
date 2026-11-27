@@ -70,6 +70,13 @@ staying on Loading plugins. Calendar's saved selection and policy stay unchanged
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
 
+In **Pages / Agent detail / Plugins Search While Loading**, select **Plugins**.
+Open **Configure plugins** and type `Workspace` while the catalog check is pending.
+Choose **Done**, stay on the Plugins tab, and reopen the picker after the check
+finishes. The search should still say `Workspace` and show Google Workspace without
+Slack. Reset the story and repeat with the picker open. Both paths should show
+the same results.
+
 ## Recover an unconfirmed template save
 
 Open **Pages / Credentials / Unconfirmed template save**. The preview edits Google OAuth and saves version 2, then omits the version from the response. Check that the warning and focused **Close** action are visible together, including at phone width. **Save new version** should be disabled. Press Enter to close the editor and confirm that the catalog shows one Google OAuth row at version 2.

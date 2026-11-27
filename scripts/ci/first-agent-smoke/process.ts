@@ -151,8 +151,12 @@ const channelProxyDeployments = [
   ["channel-proxy-tls-control-deploy-a", "channel-proxy-tls-control-deploy"],
 ] as const;
 const channelProxyDeploymentStages = ["submit", "wait", "verify"] as const;
-type ChannelProxyDeployment = (typeof channelProxyDeployments)[number][0];
+export type ChannelProxyDeployment = (typeof channelProxyDeployments)[number][0];
 type ChannelProxyDeploymentStage = (typeof channelProxyDeploymentStages)[number];
+
+export function isChannelProxyDeployment(value: unknown): value is ChannelProxyDeployment {
+  return channelProxyDeployments.some(([context]) => value === context);
+}
 
 type Phase =
   | "local-setup"

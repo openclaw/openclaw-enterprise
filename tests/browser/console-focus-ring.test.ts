@@ -115,6 +115,16 @@ const focusedRing = (page: Page, selector: string | null = null) =>
       const reach = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
       const box = owner.getBoundingClientRect();
       const clipped = [];
+      const { clientWidth, clientHeight } = document.documentElement;
+      const viewportCut = Math.max(
+        reach - box.top,
+        reach - box.left,
+        box.bottom + reach - clientHeight,
+        box.right + reach - clientWidth,
+      );
+      if (viewportCut >= 1) {
+        clipped.push(`viewport hides ${viewportCut.toFixed(1)}px`);
+      }
       for (
         let scroller = owner.parentElement;
         scroller && scroller !== document.documentElement;

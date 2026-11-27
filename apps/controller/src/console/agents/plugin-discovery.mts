@@ -175,7 +175,8 @@ export function createPluginDiscovery({
 
   function update() {
     render();
-    if (!prefetched && catalog.status === "idle" && canPrefetch() && canLoad()) {
+    // Background prefetch must leave a retained search alone until the picker uses it.
+    if (!query && !prefetched && catalog.status === "idle" && canPrefetch() && canLoad()) {
       if (!context.isCurrent() || isPending()) {
         return;
       }

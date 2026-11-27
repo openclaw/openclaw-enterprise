@@ -945,6 +945,10 @@ export function createRepositoryFields(
         ),
       );
       checkbox.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && checkbox.form) {
+          event.preventDefault();
+          return;
+        }
         if (!["ArrowUp", "ArrowDown"].includes(event.key)) {
           return;
         }

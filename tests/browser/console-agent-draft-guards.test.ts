@@ -1092,8 +1092,17 @@ test("Agent policy under protected execution offers only removal of saved networ
 
 async function repositoryPolicyConsole(
   t: TestContext,
-  appId = "123",
-  issuer?: ConstructorParameters<typeof OCCTokenServiceDriver>[7],
+  {
+    appId = "123",
+    issuer,
+    modelCredentialSourcePresets,
+  }: {
+    appId?: string;
+    issuer?: ConstructorParameters<typeof OCCTokenServiceDriver>[7];
+    modelCredentialSourcePresets?: ReturnType<
+      typeof installationControllerOptions
+    >["modelCredentialSourcePresets"];
+  } = {},
 ) {
   const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
@@ -1213,6 +1222,7 @@ async function repositoryPolicyConsole(
       ) => prepareOpenShellRepositorySource(repositoryRegistry, input),
     }),
     ...installationControllerOptions(installation.installation, repositoryRegistry),
+    ...(modelCredentialSourcePresets && { modelCredentialSourcePresets }),
     repositoryNetworkPolicyCeiling: [...grants, limited],
     sandboxNetworkPolicyCeiling: [
       {
@@ -1333,6 +1343,60 @@ async function openRepositoryCreate(
 const firstRepositoryDeploymentWarning =
   /Deploying without a repository policy can require a new Agent to add per-repository access later\./;
 
+test("Create Agent keeps the Runtime details focus ring above the deployment warning", async (t) => {
+  // Service Accounts use a Secret in this installation. With no repository selected,
+  // Create Agent offers deployment and the warning wraps in a short window.
+  const { fixture, namespaceId, tooling } = await repositoryPolicyConsole(t, {
+    modelCredentialSourcePresets: ["openai"],
+  });
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1024, height: 360 } },
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespaceId}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Scoped assistant");
+  await repositoryCheckbox(page, tooling.repository).waitFor();
+  await page
+    .getByLabel("Authentication method", { exact: true })
+    .selectOption({ label: "Service Accounts" });
+  await page.getByText(firstRepositoryDeploymentWarning).waitFor();
+  const model = page.getByLabel("Model ID", { exact: true });
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
+  await model.click();
+  await model.fill("gpt-4.1");
+  await settlePageRequests(page);
+
+  // Wheel until the next control is just behind the sticky bar. Tab must reveal
+  // its whole focus ring, even when the control is already inside the viewport.
+  const runtime = page.locator("summary").filter({ hasText: "Runtime details" });
+  const actions = page.locator("#create-agent-form ~ .form-actions");
+  const bar = await actions.boundingBox();
+  const summary = await runtime.boundingBox();
+  assert.ok(bar && summary);
+  await page.mouse.move(bar.x - 1, bar.y / 2);
+  await page.mouse.wheel(0, summary.y - bar.y);
+  await waitForCondition(async () => {
+    const box = await runtime.boundingBox();
+    return box && box.y < bar.y + bar.height && box.y + box.height > bar.y;
+  }, "the wheel moves Runtime details behind the action bar");
+  assert.equal(await hasFocus(model), true);
+
+  await page.keyboard.press("Tab");
+  await nextFrames(page);
+  assert.equal(await hasFocus(runtime), true);
+  const ring = await runtime.evaluate((node) => {
+    const style = getComputedStyle(node);
+    const outset = Number.parseFloat(style.outlineWidth) + Number.parseFloat(style.outlineOffset);
+    const { top, bottom } = node.getBoundingClientRect();
+    return { top: top - outset, bottom: bottom + outset, outset };
+  });
+  const footer = await actions.boundingBox();
+  assert.ok(footer && ring.outset > 0 && ring.top >= 0);
+  assert.ok(ring.bottom <= footer.y, "the focus ring must clear the deployment warning");
+});
+
 test("Console requires a registered GitHub App Client for per-repository Agent access", async (t) => {
   const { page, requests, fixture, namespaceId, tooling } = await openRepositoryCreate(t);
   assert.equal(pathRequests(requests, "GET", "/credential-clients").length, 0);
@@ -1359,10 +1423,9 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
     t,
     createServer(tls, (request, response) => github.handleRequest(request, response)),
   );
-  const setup = await repositoryPolicyConsole(t, fixtureAppId, {
-    apiOrigin,
-    ca: tls.cert,
-    clock,
+  const setup = await repositoryPolicyConsole(t, {
+    appId: fixtureAppId,
+    issuer: { apiOrigin, ca: tls.cert, clock },
   });
   const { fixture, namespaceId, tooling } = setup;
   const otherNamespace = await fixture.createNamespace("Other repository Apps", { ready: true });

@@ -549,6 +549,10 @@ interface NamespaceDispatchResult extends DispatchResult {
   readonly hintCode?: NamespaceHintCode;
 }
 
+function permanentFailure<Code extends string>(code: Code) {
+  return { outcome: "permanent", code } as const;
+}
+
 function deniedAuthorization(authorization: AuthorizationRequest, decision: AuthorizationDecision) {
   return { outcome: "permanent", code: "AUTHORIZATION_DENIED", authorization, decision } as const;
 }
@@ -2537,10 +2541,7 @@ export class ControllerWorker {
   ): Promise<void> {
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
     if (cleanupRevisionId === undefined) {
-      await this.finalize(claim, undefined, {
-        outcome: "permanent",
-        code: "INVALID_TARGET",
-      });
+      await this.finalize(claim, undefined, permanentFailure("INVALID_TARGET"));
       return;
     }
     const effect = await this.runRepositoryCleanupEffects(
@@ -3185,10 +3186,7 @@ export class ControllerWorker {
 
   private async processNamespace(claim: ClaimedWork): Promise<void> {
     if (claim.agentId !== undefined || claim.namespaceTarget === undefined) {
-      await this.finalize(claim, undefined, {
-        outcome: "permanent",
-        code: "INVALID_TARGET",
-      });
+      await this.finalize(claim, undefined, permanentFailure("INVALID_TARGET"));
       return;
     }
     let namespace: Readonly<Namespace> | undefined;
@@ -3521,19 +3519,13 @@ export class ControllerWorker {
         claim.agentTarget !== "stopped" ||
         claim.namespaceTarget !== undefined
       ) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_TARGET",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_TARGET"));
       }
       const authorizedAgent = await this.state.read((view) =>
         view.agents.findAgent(claim.namespaceId, claim.agentId!),
       );
       if (authorizedAgent === undefined) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_OWNER",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_AGENT_OWNER"));
       }
       const denied = await this.authorizeAgentAction(claim, authorizedAgent, "operate");
       if (denied !== undefined) {
@@ -3553,10 +3545,7 @@ export class ControllerWorker {
         agent === undefined ||
         agent.servicePrincipalId !== authorizedAgent.servicePrincipalId
       ) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_OWNER",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_AGENT_OWNER"));
       }
       if (agent.desiredRuntimeState !== "stopped") {
         return await this.finalizeAgentStop(claim, {
@@ -3567,10 +3556,7 @@ export class ControllerWorker {
       }
       const active = revisions.find((revision) => revision.id === agent.activeRevisionId);
       if (agent.activeRevisionId !== undefined && active === undefined) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_ACTIVE_REVISION",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_ACTIVE_REVISION"));
       }
       if (active !== undefined && !revisionAdmittedBeforeWork(active, claim)) {
         return await this.finalizeAgentStop(claim, {
@@ -3606,10 +3592,7 @@ export class ControllerWorker {
             revision.servicePrincipalId !== agent.servicePrincipalId,
         )
       ) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_REVISION_OWNER",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_REVISION_OWNER"));
       }
       if (cleanup.length > 0 && this.compute.bindAgent !== undefined) {
         await this.withClaimHeartbeat(claim, async () => {
@@ -3621,10 +3604,7 @@ export class ControllerWorker {
           view.agents.findAgent(claim.namespaceId, claim.agentId!),
         );
         if (current === undefined || current.servicePrincipalId !== agent.servicePrincipalId) {
-          return await this.finalizeAgentStop(claim, {
-            outcome: "permanent",
-            code: "INVALID_AGENT_OWNER",
-          });
+          return await this.finalizeAgentStop(claim, permanentFailure("INVALID_AGENT_OWNER"));
         }
         if (current.desiredRuntimeState !== "stopped") {
           return await this.finalizeAgentStop(claim, {
@@ -3754,10 +3734,7 @@ export class ControllerWorker {
         claim.agentTarget !== "deleted" ||
         claim.namespaceTarget !== undefined
       ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_TARGET",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_TARGET"));
       }
       const resources = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -3774,16 +3751,10 @@ export class ControllerWorker {
       });
       const { namespace, agent, revisions, provisioning } = resources;
       if (namespace === undefined || agent === undefined) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_OWNER",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_AGENT_OWNER"));
       }
       if (agent.status !== "deleting" || agent.desiredRuntimeState !== "stopped") {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_STATE",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_AGENT_STATE"));
       }
       const denied = await this.authorizeAgentAction(claim, agent, "delete");
       if (denied !== undefined) {
@@ -3797,25 +3768,19 @@ export class ControllerWorker {
             revision.servicePrincipalId !== agent.servicePrincipalId,
         )
       ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_REVISION_OWNER",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_REVISION_OWNER"));
       }
       if (revisions.some((revision) => !matchesComputeDriver(revision, this.compute))) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "COMPUTE_DRIVER_MISMATCH",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("COMPUTE_DRIVER_MISMATCH"));
       }
       if (
         this.compute.provisionAgentRuntimeCredentials !== undefined &&
         this.compute.deleteAgentRuntimeCredentials === undefined
       ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "CREDENTIAL_DELETION_UNSUPPORTED",
-        });
+        return await this.finalizeAgentDeletion(
+          claim,
+          permanentFailure("CREDENTIAL_DELETION_UNSUPPORTED"),
+        );
       }
       const pendingProvisioningEffect =
         provisioning === undefined ? undefined : provisioningPendingEffect(provisioning);
@@ -4112,10 +4077,7 @@ export class ControllerWorker {
     const attempts: CredentialWithdrawalAttempt[] = [];
     try {
       if (claim.agentId === undefined || claim.revisionId === undefined) {
-        await this.finalizeCredentialWithdrawal(claim, {
-          outcome: "permanent",
-          code: "INVALID_TARGET",
-        });
+        await this.finalizeCredentialWithdrawal(claim, permanentFailure("INVALID_TARGET"));
         return;
       }
       const agent = await this.state.read((view) =>
@@ -4916,7 +4878,7 @@ export class ControllerWorker {
         claim.namespaceTarget !== undefined ||
         claim.agentTarget !== undefined
       ) {
-        await this.finalizeRevision(claim, { outcome: "permanent", code: "INVALID_TARGET" });
+        await this.finalizeRevision(claim, permanentFailure("INVALID_TARGET"));
         return;
       }
       const resources = await this.state.read(async (view) => {
@@ -4940,10 +4902,7 @@ export class ControllerWorker {
       const { namespace, agent, revision, previous } = resources;
       claimAgent = agent;
       if (namespace === undefined || agent === undefined || revision === undefined) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: "INVALID_REVISION_OWNER",
-        });
+        await this.finalizeRevision(claim, permanentFailure("INVALID_REVISION_OWNER"));
         return;
       }
       await this.readRefusalWait(claim, agent, revision.id);
@@ -4964,10 +4923,7 @@ export class ControllerWorker {
         }
       };
       if (namespace.status !== "ready") {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "NAMESPACE_NOT_READY",
-        });
+        await refuseAdmission(permanentFailure("NAMESPACE_NOT_READY"));
         return;
       }
       if (
@@ -4975,25 +4931,16 @@ export class ControllerWorker {
         revision.agentId !== agent.id ||
         revision.servicePrincipalId !== agent.servicePrincipalId
       ) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "INVALID_ADMITTED_REVISION",
-        });
+        await refuseAdmission(permanentFailure("INVALID_ADMITTED_REVISION"));
         return;
       }
       const approvedHarness = resolveApprovedHarness(revision.harness.id, revision.harness.mode);
       if (approvedHarness === undefined || revision.harness.version !== approvedHarness.version) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "HARNESS_DESCRIPTOR_MISMATCH",
-        });
+        await refuseAdmission(permanentFailure("HARNESS_DESCRIPTOR_MISMATCH"));
         return;
       }
       if (!matchesComputeDriver(revision, this.compute)) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "COMPUTE_DRIVER_MISMATCH",
-        });
+        await refuseAdmission(permanentFailure("COMPUTE_DRIVER_MISMATCH"));
         return;
       }
       const maintenance = claim.idempotencyKey.startsWith(
@@ -5025,15 +4972,12 @@ export class ControllerWorker {
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
-          await this.finalizeRevision(claim, { outcome: "permanent", code: "REVISION_SUPERSEDED" });
+          await this.finalizeRevision(claim, permanentFailure("REVISION_SUPERSEDED"));
           return;
         }
       }
       if (agent.activeRevisionId !== undefined && previous === undefined) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "INVALID_ACTIVE_REVISION",
-        });
+        await refuseAdmission(permanentFailure("INVALID_ACTIVE_REVISION"));
         return;
       }
       const withdrawnExecutionWork =
@@ -5048,10 +4992,7 @@ export class ControllerWorker {
       if (!historySupported && agent.activeRevisionId !== revision.id) {
         // A recovered candidate can predate the API history check. Fail its work
         // before finalization can stop a predecessor. Stop and withdrawal keep their own paths.
-        await refuseAdmission({
-          outcome: "permanent",
-          code: INCOMPATIBLE_REPOSITORY_HISTORY,
-        });
+        await refuseAdmission(permanentFailure(INCOMPATIBLE_REPOSITORY_HISTORY));
         return;
       }
       // A removal can commit after the original deployment published its active pointer.
@@ -5184,10 +5125,7 @@ export class ControllerWorker {
         if (active) {
           await this.finalizeActiveRevision(claim, revision, "PLUGIN_DRIVER_MISMATCH");
         } else {
-          await refuseAdmission({
-            outcome: "permanent",
-            code: "PLUGIN_DRIVER_MISMATCH",
-          });
+          await refuseAdmission(permanentFailure("PLUGIN_DRIVER_MISMATCH"));
         }
         return;
       }
@@ -5474,10 +5412,7 @@ export class ControllerWorker {
         existingHarnessOnly ? { ...secretContext, existingHarnessOnly: true } : secretContext,
       );
       if (!validRevisionObservation(observation, revision, compute)) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: "INVALID_DRIVER_OBSERVATION",
-        });
+        await this.finalizeRevision(claim, permanentFailure("INVALID_DRIVER_OBSERVATION"));
         return;
       }
       resultData = pluginWarningsResultData(

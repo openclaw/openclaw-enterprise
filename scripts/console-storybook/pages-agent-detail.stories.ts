@@ -107,6 +107,7 @@ export const PluginAccountConsentStartFailed = story("pluginAccountConsentStartF
 export const PluginAccountConsentStartDelayed = story("pluginAccountConsentStartDelayed");
 export const PluginAccountTemplateNeedsClient = story("pluginAccountTemplateNeedsClient");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
+export const PluginsSearchWhileLoading = story("pluginsSearchWhileLoading");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
 export const DraftSourcesOperateDenied = story("draftSourcesOperateDenied");

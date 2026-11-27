@@ -81,9 +81,12 @@ discovery denied**, which display their own status instead.
 
 ## Repository search keyboard
 
-Open **Pages / Create Agent / Exact repository names before prefix matches**
+Open **Pages / Create Agent / Repository Exact Search**
 (`pages-create-agent--repository-exact-search`). Search for `application` with
-both exact matches unchecked. The cue names `omega/application` as the next selection.
+both exact matches unchecked. Press Down Arrow to focus `omega/application`,
+then press Enter. The checkbox stays unchecked and focused, and the form stays
+open. Press Space to select it. Reset the story and repeat the search.
+The cue names `omega/application` as the next selection.
 Press and hold Enter. Only `omega/application` becomes selected while the key
 repeats, and the cue changes to `zeta/application`.
 
