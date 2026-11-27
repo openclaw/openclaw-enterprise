@@ -84,7 +84,6 @@ test("workspace verification compares every submitted copy on the selected retai
   const local = join(f.directory, "private-copies");
   const workspace = join(f.directory, "workspace");
   const marker = join(f.directory, "remote-args.json");
-  const mountinfo = join(f.directory, "mountinfo");
   const expectedFiles = [join(local, "AGENTS.md"), join(local, "SOUL.md")];
   const remoteFiles = [join(workspace, "AGENTS.md"), join(workspace, "SOUL.md")];
   const contents = ["fixture-private-agents\n", "active 😀\n"];
@@ -102,18 +101,16 @@ test("workspace verification compares every submitted copy on the selected retai
   for (const directory of [bin, local, workspace]) {
     await mkdir(directory);
   }
-  const workspaceMount = `40 39 8:1 /workspace ${workspace} rw - ext4 /volume rw\n`;
-  await writeFile(mountinfo, workspaceMount);
   for (const [index, content] of contents.entries()) {
     await writeFile(expectedFiles[index]!, content);
     await writeFile(remoteFiles[index]!, content);
   }
-  // Substitute the container's filesystem paths and serve Kubernetes metadata
-  // locally. Run the command's actual remote Bash and sha256sum on real files.
+  // Model the remote response on every operator platform. On Linux, also run
+  // the actual container command against the fixture filesystem.
   await writeFile(
     join(bin, "kubectl"),
     String.raw`#!/usr/bin/env python3
-import json, os, pathlib, shlex, subprocess, sys
+import hashlib, json, os, pathlib, shlex, subprocess, sys
 
 root = pathlib.Path(os.environ["WORKSPACE_TEST_DIR"])
 mode = os.environ["WORKSPACE_TEST_MODE"]
@@ -152,6 +149,14 @@ elif request == ["get", "pvc", "workspace-claim", "-o", "json"]:
 else:
     assert request[:8] == ["exec", "harness-pod", "--container", "agent", "--", "bash", "-p", "-c"]
     marker.write_text(json.dumps(request[5:]))
+    assert request[9] == "verify-upgrade-workspace"
+    if mode != "remote-shell":
+        names = request[10:]
+        assert names and all(name in ("AGENTS.md", "SOUL.md") for name in names)
+        for name in (names[:1] if mode == "truncated" else names):
+            print(hashlib.sha256((root / "workspace" / name).read_bytes()).hexdigest())
+        print("fixture-private-cluster-diagnostic", file=sys.stderr)
+        sys.exit(1 if mode == "late-failure" else 0)
     # Keep the real Linux descriptor IDs. Substitute only our synthetic mount table.
     fd = os.open(root / "workspace", os.O_DIRECTORY)
     try:
@@ -164,10 +169,7 @@ else:
     command[3] = command[3].replace("/home/node/workspace", shlex.quote(str(root / "workspace"))).replace(
         "/proc/self/mountinfo", shlex.quote(str(root / "mapped-mountinfo"))
     )
-    result = subprocess.run(command, capture_output=True)
-    sys.stdout.buffer.write(result.stdout[:65] if mode == "truncated" else result.stdout)
-    print("fixture-private-cluster-diagnostic", file=sys.stderr)
-    sys.exit(1 if mode == "late-failure" else result.returncode)
+    sys.exit(subprocess.call(command))
 `,
     { mode: 0o700 },
   );
@@ -236,21 +238,35 @@ else:
   await verify(1);
   await rm(remoteFiles[1]!);
   await verify(2);
-  // A matching symlink target or a mount over the file is not evidence of PVC contents.
-  await symlink(expectedFiles[1]!, remoteFiles[1]!);
-  await verify(2);
-  await rm(remoteFiles[1]!);
   await writeFile(remoteFiles[1]!, contents[1]!);
-  await writeFile(
-    mountinfo,
-    workspaceMount + `41 40 8:2 /file ${remoteFiles[1]} ro - ext4 /other ro\n`,
+  await t.test(
+    "the Harness command hashes files on the visible Linux workspace mount",
+    { skip: process.platform !== "linux" },
+    async () => {
+      const mountinfo = join(f.directory, "mountinfo");
+      const workspaceMount = `40 39 8:1 /workspace ${workspace} rw - ext4 /volume rw\n`;
+      await writeFile(mountinfo, workspaceMount);
+      await verify(0, "remote-shell");
+      await writeFile(remoteFiles[1]!, "former 😀\n");
+      await verify(1, "remote-shell");
+      await rm(remoteFiles[1]!);
+      await verify(2, "remote-shell");
+      await symlink(expectedFiles[1]!, remoteFiles[1]!);
+      await verify(2, "remote-shell");
+      await rm(remoteFiles[1]!);
+      await writeFile(remoteFiles[1]!, contents[1]!);
+      // Reject a mount over a file, a hidden workspace mount and a temporary filesystem.
+      await writeFile(
+        mountinfo,
+        workspaceMount + `41 40 8:2 /file ${remoteFiles[1]} ro - ext4 /other ro\n`,
+      );
+      await verify(2, "remote-shell");
+      await writeFile(mountinfo, workspaceMount.replace("40 39", "0 39"));
+      await verify(2, "remote-shell");
+      await writeFile(mountinfo, workspaceMount.replace("ext4", "tmpfs"));
+      await verify(2, "remote-shell");
+    },
   );
-  await verify(2);
-  await writeFile(mountinfo, workspaceMount.replace("40 39", "0 39"));
-  await verify(2);
-  await writeFile(mountinfo, workspaceMount.replace("ext4", "tmpfs"));
-  await verify(2);
-  await writeFile(mountinfo, workspaceMount);
   await verify(2, "truncated");
   await verify(2, "late-failure");
   await verify(2, "restarted");
