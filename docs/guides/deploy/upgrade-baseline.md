@@ -306,22 +306,40 @@ point. A matching Agent ID and migration history cannot verify the saved draft.
 
 ## Record Agent data
 
-Pause writes to each workspace you need to preserve. Choose a trusted
-regular file the Agent or user wrote in its root. Enter its basename.
-The command accepts spaces but rejects paths and symlinks.
+Pause workspace writes. Set `TENANT_NAMESPACE` and `AGENT_ID` from the
+[production Agent guide](production-agents.md).
 
-For a dedicated Codex Harness, compare each edited file on the volume with an
-independent copy of its latest submission **before restarting or replacing the
-Gateway Pod**. Unless all match, keep the Pod running. It may hold the only
-copy. Leave writes and the upgrade paused until an authorized operator preserves
-and reconciles the files.
+**Before restarting or replacing a dedicated Codex Gateway**, check every edited workspace file.
+An edit may exist only on the Gateway. Keep each latest submission separately
+for this Agent, preserving its filename and exact bytes.
+Use the revision, Harness Pod and workspace claim UID from your trusted baseline.
 
-Set `TENANT_NAMESPACE` and `AGENT_ID` per the [production Agent guide](production-agents.md).
-Specify the exact Harness Pod. It must belong to the Agent,
-be running and ready, and have no deletion timestamp.
-Only one writer may update the private baseline. The host needs Bash,
-`kubectl`, `jq`, `mktemp`, `mv` and `rm`. The container needs Bash, `sha256sum`,
-`wc` and `find` with `-printf`.
+Run this check from the repository root. List every edited file. This example
+checks `AGENTS.md` and `SOUL.md`. Include `IDENTITY.md` and `USER.md` if edited.
+The upgrade does not run this check automatically.
+
+```bash
+copies="/secure/occ/submissions/$AGENT_ID"
+node scripts/verify-upgrade-workspace.ts "${kube[@]:1}" \
+  --namespace "$TENANT_NAMESPACE" --agent "$AGENT_ID" \
+  --revision "${AGENT_REVISION:?}" --pod "${HARNESS_POD:?}" \
+  --claim-uid "${WORKSPACE_CLAIM_UID:?}" \
+  -- "$copies/AGENTS.md" "$copies/SOUL.md"
+```
+
+Use trusted tools and a trusted container. The check uses existing Pod and
+claim read access and `pods/exec` to run Bash, `realpath` and `sha256sum`
+in the Harness. Exit 0 confirms only the files you supplied. If a copy or Pod
+is missing, or the check fails, stop the upgrade. Keep the original Gateway
+Pod running if present. Keep writes paused until an authorized operator recovers and
+reconciles the edits.
+
+**Record a baseline for every workspace.** Choose a regular file in its root.
+This sample cannot verify other edits. Use its basename (spaces allowed, paths
+and symlinks rejected). Select the Agent's running, ready Harness Pod without a
+deletion timestamp. Use one baseline writer. The host needs Bash, `kubectl`,
+`jq`, `mktemp`, `mv` and `rm`. The container needs Bash, `sha256sum`, `wc` and
+`find` with `-printf`.
 
 ```bash
 (
@@ -356,23 +374,20 @@ Only one writer may update the private baseline. The host needs Bash,
 )
 ```
 
-Require exit 0. Failed or incomplete reads leave the evidence file unchanged.
-It records the SHA-256 hash and regular-file count on separate lines. `find`
-emits one byte per file. Recheck the same workspace and file after upgrading.
+Require exit 0. Failed or incomplete reads leave evidence unchanged. It records SHA-256 and
+regular-file count on separate lines. `find` emits one byte per file. Recheck
+the same workspace and file after upgrading.
 
 For embedded Agents, specify the exact Gateway Pod, use `gateway` for the
 workload role and container, and set `WORKSPACE=/home/node/.openclaw/workspace`.
-If you use the dedicated Codex seccomp profile, [record its hash](codex-sandbox.md)
+For the dedicated Codex seccomp profile, [record its hash](codex-sandbox.md)
 on every eligible node.
 
 ## Compare the candidate with the installed manifest
 
-Before the upgrade, compare the candidate chart render with the manifest Helm
-saved for the revision recorded by a successful
-[upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window).
-Use its `UPGRADE_EVIDENCE` directory and the same release, namespace and context.
-Keep shell tracing off and keep the comparison files private because manifests
-can contain Secrets.
+Compare the candidate render with the Helm manifest for the revision from a successful [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window).
+Use its `UPGRADE_EVIDENCE`, release, namespace and context. Disable tracing.
+Keep manifests private because they can contain Secrets.
 
 ```bash
 (
@@ -393,36 +408,28 @@ can contain Secrets.
 )
 ```
 
-Stop if the comparison cannot run. Use the diff to locate changes, then check
-the required objects and fields in both files. Account for intended changes
-such as image digests and the upgrade-attempt UUID. Review the attempt's
-`server-dry-run.txt` for Helm's
-upgrade-mode output and hooks. Helm history omits later live patches. Check
-affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
-as well. Read the live object for any required field that the baseline does
-not record.
+Stop on comparison failure. Check required objects and fields in both manifests.
+Account for intended digest and upgrade-attempt UUID changes.
+Review `server-dry-run.txt` for Helm upgrade output and hooks. Because Helm
+history omits live patches, compare affected objects with [live Kubernetes records](#record-images-and-kubernetes-state).
+Read live objects for required fields absent from the baseline.
 
-If a required setting is missing, put it in supported chart values or
-Installation settings. For example, retain a required placement label in
-`controlPlane.nodeSelector` in the protected Helm values and in the
-[profile input](installation-profiles.md#use-rendered-files) if you generate
-those values. Reconcile protected settings with the installed release in a
-separate reviewed configuration change. Use the candidate file flags only for
-the [settings they support](production-upgrade.md#include-reviewed-settings).
-Rerun the preflight and comparison after a change to the release or inputs.
-The helper uses the stock chart without a post-renderer. Stop if a required
-change still depends on a live patch or a post-renderer that the helper does
-not run.
+Put missing requirements in supported chart values or Installation settings.
+Retain required `controlPlane.nodeSelector` placement labels in protected Helm
+values and any [profile input](installation-profiles.md#use-rendered-files).
+Reconcile settings with the installed release in a separate reviewed change.
+Use candidate flags only for [supported settings](production-upgrade.md#include-reviewed-settings).
+Rerun preflight and comparison after release or input changes. Stop if a
+requirement depends on a live patch or post-renderer. The helper uses the stock
+chart without one.
 
 ## Compare after the upgrade
 
 Record the baseline again in a new directory and compare. Expect new image
 digests and Pod names, new Helm revisions, the new controller image and
 Installation checksum in the live values, receipts appended by the release's
-migrations and, after a runtime release, new selected Agent revision IDs. Several of an
-Agent's NetworkPolicies and, for a dedicated Agent, its Harness Service select
-the selected version, so a runtime release changes the Agent revision ID in those
-selectors. A dedicated Agent's gateway Deployment, Service and HTTPRoute can
+migrations and, after a runtime release, new Agent revision IDs
+in NetworkPolicy selectors and dedicated Harness Service selectors. A dedicated Agent's gateway Deployment, Service and HTTPRoute can
 also be recreated; the Service gets a new cluster IP and the HTTPRoute new
 Agent revision annotations. Agents add and delete
 their own workspace files, so the file count can change slightly. Investigate
