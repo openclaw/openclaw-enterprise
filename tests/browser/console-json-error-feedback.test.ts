@@ -330,7 +330,11 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   // A number-range error has no caret location. Keep the user's selection on the first line.
   await page.keyboard.press("Control+Home");
   await page.keyboard.press("Shift+ArrowRight");
-  const editorScroll = await json.evaluate((node) => node.scrollTop);
+  const editorView = (node: HTMLTextAreaElement) => ({
+    scrollTop: node.scrollTop,
+    height: node.clientHeight,
+  });
+  const beforeError = await json.evaluate(editorView);
   const firstLineSelection = [0, 1];
   assert.deepEqual(
     await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
@@ -350,13 +354,18 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
     "#create-agent-form ~ .form-actions",
   );
   const editor = await json.boundingBox();
-  assert.equal(await json.evaluate((node) => node.scrollTop), editorScroll);
+  assert.deepEqual(await json.evaluate(editorView), beforeError);
   assert.deepEqual(
     { selection, editorTopVisible: editor !== null && editor.y >= 0, diagnosticVisible },
     { selection: firstLineSelection, editorTopVisible: true, diagnosticVisible: true },
     `Create Agent keeps the selection and shows the editor and number error above its actions at ${shortViewport.width}×${shortViewport.height}`,
   );
   await page.setViewportSize(originalViewport);
+  assert.equal(
+    await json.evaluate((node) => node.getBoundingClientRect().height),
+    resizedHeight,
+    "the editor returns to the user's chosen height when the window has room",
+  );
   for (const name of ["Choose a model from the list", "Enter model ID manually"]) {
     await page.getByRole("button", { name, exact: true }).click();
     assert.equal(await focusedId(page), "configuration-json");
@@ -369,11 +378,6 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const corrected: unknown = JSON.parse(await json.inputValue());
   assert.partialDeepStrictEqual(corrected, { metadata: { thresholds: [1, -150, 3] } });
   assert.equal(await jsonError.isHidden(), true);
-  assert.equal(
-    await json.evaluate((node) => node.getBoundingClientRect().height),
-    resizedHeight,
-    "correcting the draft restores the user-chosen editor height",
-  );
   assert.equal(await normalFocus.evaluate((node) => node === document.activeElement), true);
   await json.fill(template);
   await model.fill("gpt-4.1");
