@@ -332,6 +332,10 @@ def report_status(parser, directory, *, standalone=False):
         print("Completion was recorded; verify the current release and workloads separately.")
     elif observed["helm-started"]:
         print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
+        print(
+            "Keep writes paused. Before resuming, verify that the original upgrade and Helm processes "
+            "have stopped. Check Helm history and the API and Worker Deployments on the original cluster."
+        )
         if populated:
             print(
                 "Agent deployments may already have been accepted. "
@@ -344,9 +348,13 @@ def report_status(parser, directory, *, standalone=False):
             print("Migration Job evidence exists. Use migration apply with the original inputs to reconcile it.")
     elif observed["migration-check-passed"]:
         print("The migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
-    elif observed[startup] and not (
-        observed["prepared"] or observed[".upgrade-lock"] or observed["native-command-failures.tsv"]
-    ):
+    elif observed["prepared"]:
+        print(
+            "No completion was recorded. The upgrade can stop the OCC API and Worker before Helm starts. "
+            "Keep writes paused and preserve this evidence. On the original cluster, check the API and "
+            "Worker replica counts and readiness, then check the Helm release status."
+        )
+    elif observed[startup] and not (observed[".upgrade-lock"] or observed["native-command-failures.tsv"]):
         if observed[blocker]:
             print("Candidate startup and migration checks passed and temporary resources were removed in this attempt.")
             print("The upgrade was blocked because retained Agent revisions require their original worker.")

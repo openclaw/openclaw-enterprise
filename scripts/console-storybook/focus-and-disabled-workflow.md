@@ -6,6 +6,12 @@ inside a scrolling list or tab strip, which would clip an outer ring. Wrappers
 draw the ring for a borderless child. Use the keyboard, not the mouse: the ring
 follows `:focus-visible`. No part of any ring may be cut off.
 
+At 1440 × 900, open **Pages / Agent detail / New Version**. Tab to
+**Edit Configuration** and press Enter. Press Space, Tab to **Save
+Configuration**, Tab to **Cancel**, then press Shift+Tab to return to **Save
+Configuration**. Before scrolling at each stop, check that the whole focus
+ring, including its bottom edge, is visible. Repeat at 390 px.
+
 1. Open **Pages / Agents / Populated**. Tab from the navigation to the Agent
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
@@ -45,6 +51,15 @@ follows `:focus-visible`. No part of any ring may be cut off.
 5. Open **Components / Dialogs / Plugins (wide)**. Tab through the search field,
    Load plugins and the plugin list. The search field and buttons show the
    outer ring; each plugin in the list shows the inset ring.
+
+   In **Pages / Agent detail / Plugins Search While Loading**, select **Plugins**
+   and open **Configure plugins**. Once the list loads, type `Workspace`.
+   **Load plugins** keeps its label while disabled. The status and spinner show
+   that the search is running. The signed-in browser test **A dedicated Agent
+   with empty configuration can browse the default OpenClaw catalog** also
+   simulates a failed search. It parks the pointer just inside the button’s left
+   edge. Clicking there after the error appears should retry the same search once.
+
 6. Open **Pages / Create Agent / Repositories using the Agent default**. Tab to
    a repository row. The row draws an inset ring around its checkbox.
 7. Open **Components / Channels / Slack directory channels**. Tab into the

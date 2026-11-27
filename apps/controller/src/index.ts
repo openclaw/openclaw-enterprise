@@ -535,9 +535,9 @@ function operationTarget(
 
 function clientInstallation(
   installation: Readonly<Installation>,
-  computeDriver: Readonly<ComputeDriver> | undefined,
-  nativeAdminEnabled: boolean,
+  { computeDriver, nativeAdmin }: Pick<ControllerAppOptions, "computeDriver" | "nativeAdmin">,
 ): Record<string, unknown> {
+  const nativeAdminEnabled = nativeAdmin?.enabled === true;
   const agentProvisioning = computeDriver?.agentProvisioning;
   const capabilities = {
     ...installation.capabilities,
@@ -1732,13 +1732,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         await created.applyIAMConfiguration();
         controller = created;
         reply.status(201);
-        return sendData(
-          clientInstallation(
-            created.installation,
-            options.computeDriver,
-            options.nativeAdmin?.enabled === true,
-          ),
-        );
+        return sendData(clientInstallation(created.installation, options));
       } finally {
         bootstrapping = false;
       }
@@ -1804,13 +1798,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "getInstallation") {
-      return sendData(
-        clientInstallation(
-          await controller.getInstallation(context.actorId),
-          options.computeDriver,
-          options.nativeAdmin?.enabled === true,
-        ),
-      );
+      const installation = await controller.getInstallation(context.actorId);
+      return sendData(clientInstallation(installation, options));
     }
 
     if (operation.operationId === "getInstallationDeploymentInventory") {
