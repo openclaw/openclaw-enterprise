@@ -281,7 +281,7 @@ Only Harness mounts the dedicated workspace, generated images and Codex rollouts
 Rollouts retain history without guaranteeing restart recovery; see
 [restart limits](../reference/harness-execution.md#isolation-and-activation).
 The rest of `CODEX_HOME` stays Pod-local. External OAuth uses ephemeral placeholders
-and metadata; the token service owns refresh. Codex's remote-media reader retrieves
+and metadata; CredentialService owns refresh. Codex's remote-media reader retrieves
 reply artifacts before cleanup. Embedded storage is unchanged.
 `KubernetesComputeDriver.verifyPersistentVolumeClaim` rejects RWX claims without
 mutating them. The worker stops predecessors and suppresses their maintenance

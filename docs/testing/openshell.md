@@ -41,7 +41,7 @@ Compute Driver (Kubernetes here).
 
 ## Model and Git on the same Agent
 
-Use the [prepared TokenService Git Agent lane](manual-tests.md) to deploy a
+Use the [prepared CredentialService Git Agent lane](manual-tests.md) to deploy a
 Dedicated Codex Agent with both its model Source and a scoped GitHub grant.
 The case checks the active revision, native policy readback, a model turn, and
 stock Git access to one approved repository while refusing the other.
@@ -223,7 +223,7 @@ with preparation `--selected-file` and execution `--file`. Both require
 `OPENAI_API_KEY`, and `OCC_TEST_OPENAI_MODEL`.
 The case checks writes, frozen selection, and claim refusals. NVMe and node loss are separate.
 
-The [prepared TokenService Git Agent lane](manual-tests.md) checks a model turn and scoped Git on the same Agent.
+The [prepared CredentialService Git Agent lane](manual-tests.md) checks a model turn and scoped Git on the same Agent.
 
 Codex Sandbox and staged native OpenClaw first-Agent tests use production
 Drivers. Neither qualifies a production installation. Run the separate native
@@ -260,7 +260,7 @@ bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_T
 Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
 The local helper retains its destination through resource preparation and reset.
 In CI, custom endpoints require focused upstream, refresh, withdrawal, or Gateway
-tool-policy tests. The staged first-Agent test uses the built-in TokenService
+tool-policy tests. The staged first-Agent test uses the built-in CredentialService
 OpenAI preset. Whole-lane CI preparation rejects endpoint overrides before setup.
 
 Both commands disable ServiceAccount token projection for the OpenShell Harness.
@@ -302,7 +302,7 @@ revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret
 retain stage timings.
 
 After checking Local Setup's ready default Namespace, the test runs distinct
-Codex and native Agents concurrently with separate static TokenService Sources
+Codex and native Agents concurrently with separate static CredentialService Sources
 using the `openai` preset and `OPENAI_API_KEY`. Native OpenClaw uses the pinned
 runtime and production Drivers. A test-owned Installation authorizes the pinned
 OpenClaw Node executable to reach `api.openai.com:443`. If the test uses an
@@ -330,7 +330,7 @@ for the merged images, guided Codex, or ChatGPT OAuth.
 
 For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
-a TokenService API-key Source for the native Agent.
+a CredentialService API-key Source for the native Agent.
 
 <a id="managed-compute-prototype"></a>
 <a id="provider-replacement"></a>

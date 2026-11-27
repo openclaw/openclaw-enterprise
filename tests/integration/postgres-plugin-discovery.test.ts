@@ -6,7 +6,7 @@ import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { installationRoles } from "../helpers/postgres-sign-in-installation.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import {
   credentialSourceDeliveryBinding,
@@ -26,7 +26,7 @@ import {
   managedCliInstalls,
   managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { deferred } from "../helpers/deferred.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -235,8 +235,8 @@ test(
     assert.ok(driver.privateSecrets);
     const ownerId = "occ";
     const storeIdentity = randomUUID();
-    const instanceId = await controller.activateTokenServiceInstance(ownerId, storeIdentity);
-    const owner = new OCCTokenServiceDriver(
+    const instanceId = await controller.activateCredentialServiceInstance(ownerId, storeIdentity);
+    const owner = new OCCCredentialServiceDriver(
       ownerId,
       controller.installation.id,
       driver.privateSecrets,
@@ -250,7 +250,7 @@ test(
       ),
     );
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", ownerId);
+    controller.selectDriver("credential_service", ownerId);
 
     const namespace = await inject("POST", "/namespaces", { name: `Slack ${randomUUID()}` });
     assert.equal(namespace.statusCode, 201, namespace.body);
@@ -288,7 +288,7 @@ test(
     assert.deepEqual(pinned.mcp, { serverUrl: slack.url, resource: slot.mcp.resource });
     assert.deepEqual(pinned.destinations, [slack.endpoint]);
 
-    // Enter at the TokenService's post-exchange boundary with controlled token material.
+    // Enter at the CredentialService's post-exchange boundary with controlled token material.
     // The real owner resolves the original registration, records custody and creates the Source.
     const createSlackSource = (name: string) =>
       owner.createSource(
@@ -437,7 +437,9 @@ test(
     };
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
     Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
-    Object.assign(installation.drivers, { token_service: { id: owner.id, configuration: {} } });
+    Object.assign(installation.drivers, {
+      credential_service: { id: owner.id, configuration: {} },
+    });
     installation.drivers.compute.id = controller.selectedDriver("compute").id;
     Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");
     Object.assign(installation.drivers.compute.configuration, {
@@ -477,14 +479,17 @@ test(
       backends: runtime.installation.backend,
       recordOperations: true,
     });
-    for (const capability of ["iam", "configuration", "secret", "token_service"] as const) {
+    for (const capability of ["iam", "configuration", "secret", "credential_service"] as const) {
       const selected = controller.selectedDriver(capability);
       native.registerDriver(selected);
       native.selectDriver(capability, selected.id);
     }
     native.registerDriver(runtime.computeDriver);
     native.selectDriver("compute", runtime.computeDriver.id);
-    assert.equal(await native.activateTokenServiceInstance(owner.id, storeIdentity), instanceId);
+    assert.equal(
+      await native.activateCredentialServiceInstance(owner.id, storeIdentity),
+      instanceId,
+    );
     installSelectedSandboxDrivers(native, runtime);
     const realPluginDriver = new OCCPluginDriver();
     native.installPluginDrivers([realPluginDriver]);
@@ -527,9 +532,9 @@ test(
             item.sources.some(({ id }) => id === sourceId),
         ),
     );
-    // A configured TokenService that does not own the persisted instance makes that account
+    // A configured CredentialService that does not own the persisted instance makes that account
     // ineligible, but must not erase the otherwise available Plugin catalog.
-    const unavailableOwner = new OCCTokenServiceDriver(
+    const unavailableOwner = new OCCCredentialServiceDriver(
       "unavailable-owner",
       native.installation.id,
       driver.privateSecrets,
@@ -537,7 +542,7 @@ test(
       state,
     );
     native.registerDriver(unavailableOwner);
-    native.selectDriver("token_service", unavailableOwner.id);
+    native.selectDriver("credential_service", unavailableOwner.id);
     try {
       const unavailableCatalog = await inject(
         "POST",
@@ -556,7 +561,7 @@ test(
           ),
       );
     } finally {
-      native.selectDriver("token_service", owner.id);
+      native.selectDriver("credential_service", owner.id);
     }
     peerMethods.length = 0;
     const prospectiveDiscovery = await inject(
@@ -979,17 +984,17 @@ test(
     assert.deepEqual(
       new Set(revision.credentialSources),
       new Set([
-        { sourceId: modelId, sourceType: "static", tokenServiceInstanceId: instanceId },
+        { sourceId: modelId, sourceType: "static", credentialServiceInstanceId: instanceId },
         {
           sourceId: googleSource.id,
           sourceType: "oauth2-refresh-token",
-          tokenServiceInstanceId: instanceId,
+          credentialServiceInstanceId: instanceId,
           connectionTemplate: { id: starter.id, version: gmailConsent.version },
         },
         {
           sourceId,
           sourceType: "oauth2-refresh-token",
-          tokenServiceInstanceId: instanceId,
+          credentialServiceInstanceId: instanceId,
           connectionTemplate: { id: connectionTemplateId, version: admittedSlackVersion },
         },
       ]),

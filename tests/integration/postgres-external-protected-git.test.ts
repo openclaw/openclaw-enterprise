@@ -739,9 +739,9 @@ function externalGitJourney(
         ...repositoryGitAuthority(drivers),
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
-    // Observe the installed Token Service's loop so the cold fetch can run before it starts.
+    // Observe the installed Credential Service's loop so the cold fetch can run before it starts.
     const maintenanceAttachment = coldFetch
-      ? t.mock.method(repositoryGitAuthority(drivers).tokenService, "ownFamilies")
+      ? t.mock.method(repositoryGitAuthority(drivers).credentialService, "ownFamilies")
       : undefined;
     try {
       prepared = await startOwner(!coldFetch);
@@ -2140,7 +2140,10 @@ function externalGitJourney(
         );
         assert.equal(rowCount, 1);
         if (coldFetch) {
-          assert.ok(scheduledMaintenance, "the installed Token Service attached Git maintenance");
+          assert.ok(
+            scheduledMaintenance,
+            "the installed Credential Service attached Git maintenance",
+          );
           scheduledMaintenance.start();
         }
         if (!lostRotation) {
@@ -2493,7 +2496,7 @@ function externalGitJourney(
       const providerTraffic = () => ({
         connections: traffic().connections - directProbeRequests,
         requests: traffic().requests - directProbeRequests,
-        // Token Service retirement is lifecycle traffic, not a workload send.
+        // Credential Service retirement is lifecycle traffic, not a workload send.
         apiRequests: broad?.installation.traffic().workloadRequests,
         issuerRequests: broad?.installation.traffic().issuerRequests,
         issues: gh.issuesOfTokens.length,

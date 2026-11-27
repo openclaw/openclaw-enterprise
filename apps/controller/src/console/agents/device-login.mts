@@ -65,13 +65,13 @@ function readLogin(
   };
 }
 
-// The selected TokenService owns the device-login capability.
+// The selected CredentialService owns the device-login capability.
 export function deviceLoginOffered(capabilities: InstallationCapabilities | undefined) {
   return capabilities?.deviceAuthorization === true;
 }
 
 const NOT_OFFERED =
-  "ChatGPT sign-in needs a selected TokenService that supports device authorization. Choose another authentication method.";
+  "ChatGPT sign-in needs a selected CredentialService that supports device authorization. Choose another authentication method.";
 
 // Each request checks Agent scope: create for a new Agent, or read and update for a saved Agent.
 // Starting and completing check Source create; a ready replay checks operate on its Source.

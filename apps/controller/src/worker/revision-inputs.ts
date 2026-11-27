@@ -134,7 +134,7 @@ interface RevisionCredentialDependencies {
   readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   readonly credentialDeliveryRef:
     NonNullable<AgentRevision["credentialDeployment"]>["driver"] | undefined;
-  readonly currentTokenServiceInstanceId: () => string | undefined;
+  readonly currentCredentialServiceInstanceId: () => string | undefined;
 }
 
 /** Resolve the admitted model dependency using the caller's read view when supplied. */
@@ -143,10 +143,10 @@ export async function resolveRevisionHarnessAuth(
   {
     state,
     secretDriverId,
-    currentTokenServiceInstanceId,
+    currentCredentialServiceInstanceId,
   }: Pick<
     RevisionCredentialDependencies,
-    "state" | "secretDriverId" | "currentTokenServiceInstanceId"
+    "state" | "secretDriverId" | "currentCredentialServiceInstanceId"
   >,
   view?: PlatformReadView,
 ): Promise<
@@ -178,9 +178,9 @@ export async function resolveRevisionHarnessAuth(
   } else if (revision.harnessAuth.method === "credential_source") {
     const auth = revision.harnessAuth;
     if (
-      auth.tokenServiceInstanceId === undefined ||
+      auth.credentialServiceInstanceId === undefined ||
       !revision.credentialDeployment ||
-      currentTokenServiceInstanceId() !== auth.tokenServiceInstanceId
+      currentCredentialServiceInstanceId() !== auth.credentialServiceInstanceId
     ) {
       return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
     }
@@ -195,8 +195,8 @@ export async function resolveRevisionHarnessAuth(
     }
     if (
       source === undefined ||
-      source.ownerCapability !== "token_service" ||
-      source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
+      source.ownerCapability !== "credential_service" ||
+      source.credentialServiceInstanceId !== auth.credentialServiceInstanceId
     ) {
       return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
     }
@@ -214,7 +214,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     secretDriverId,
     proxyDriver,
     credentialDeliveryRef,
-    currentTokenServiceInstanceId,
+    currentCredentialServiceInstanceId,
   } = dependencies;
 
   async function resolveRevisionSecretContext(
@@ -274,10 +274,10 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
             binding.source.namespaceId !== revision.namespaceId ||
             source.state !== "ready" ||
             source.type !== "static" ||
-            source.ownerCapability !== "token_service" ||
-            !revision.gatewayTokenServiceInstanceId ||
-            source.tokenServiceInstanceId !== revision.gatewayTokenServiceInstanceId ||
-            currentTokenServiceInstanceId() !== revision.gatewayTokenServiceInstanceId ||
+            source.ownerCapability !== "credential_service" ||
+            !revision.gatewayCredentialServiceInstanceId ||
+            source.credentialServiceInstanceId !== revision.gatewayCredentialServiceInstanceId ||
+            currentCredentialServiceInstanceId() !== revision.gatewayCredentialServiceInstanceId ||
             withdrawal !== undefined
           ) {
             return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
@@ -339,10 +339,10 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
       if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
         continue;
       }
-      if (snapshot.tokenServiceInstanceId !== undefined) {
+      if (snapshot.credentialServiceInstanceId !== undefined) {
         if (
           !revision.credentialDeployment ||
-          currentTokenServiceInstanceId() !== snapshot.tokenServiceInstanceId
+          currentCredentialServiceInstanceId() !== snapshot.credentialServiceInstanceId
         ) {
           return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
         }
@@ -370,8 +370,8 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         }
         if (
           source === undefined ||
-          source.ownerCapability !== "token_service" ||
-          source.tokenServiceInstanceId !== snapshot.tokenServiceInstanceId
+          source.ownerCapability !== "credential_service" ||
+          source.credentialServiceInstanceId !== snapshot.credentialServiceInstanceId
         ) {
           return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
         }

@@ -72,9 +72,9 @@ export function selectBundledRepositoryGitCustody(
 /** Trusted Worker composition. The transport is the private first-party binding;
  * external Drivers do not carry it and use the controller's registered witness. */
 export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryGitDriver: driver, repositoryTransport } = drivers;
-  if (!tokenService) {
-    throw new Error("Prepared repository Git requires the installed Token Service.");
+  const { credentialService, repositoryGitDriver: driver, repositoryTransport } = drivers;
+  if (!credentialService) {
+    throw new Error("Prepared repository Git requires the installed Credential Service.");
   }
   if ((driver || repositoryTransport) && (!driver || driver !== drivers.protectedDriver)) {
     throw new Error("Missing the selected Driver's protected repository Git authority.");
@@ -87,5 +87,5 @@ export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
         kind:
           drivers.repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
       };
-  return { tokenService, repositoryGitCustody };
+  return { credentialService, repositoryGitCustody };
 }

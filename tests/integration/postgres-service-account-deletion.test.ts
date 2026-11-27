@@ -36,7 +36,7 @@ test(
     );
     // An issued account can remain after the administrator removes its ChatGPT Backend.
     const { account, source } = await state.transact(async (unit) => {
-      const tokenService = await unit.installations.selectTokenServiceInstance({
+      const credentialService = await unit.installations.selectCredentialServiceInstance({
         id: randomUUID(),
         driverId: "occ",
         storeIdentity: "force-delete-existing-custody",
@@ -47,8 +47,8 @@ test(
         name: "Retained issued PAT",
         type: "static",
         config: { provider_preset: "codex-pat" },
-        ownerCapability: "token_service",
-        tokenServiceInstanceId: tokenService.id,
+        ownerCapability: "credential_service",
+        credentialServiceInstanceId: credentialService.id,
         state: "ready",
         createdAt: new Date().toISOString(),
       });
@@ -86,7 +86,7 @@ test(
       ),
       undefined,
     );
-    // Force acts on the issuer account, so TokenService custody follows its separate lifecycle.
+    // Force acts on the issuer account, so CredentialService custody follows its separate lifecycle.
     assert.deepEqual(
       await state.read((unit) =>
         unit.credentialSources.findCredentialSource(namespace.id, source.id),

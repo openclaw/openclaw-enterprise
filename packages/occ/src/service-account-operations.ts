@@ -6,7 +6,7 @@ import {
   type ServiceAccount,
   type ServiceAccountCredential,
   type ServiceAccountDriver,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
   type AuditEvent,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -56,8 +56,8 @@ interface ServiceAccountOperationsDependencies {
   readonly selectDriver: () => ServiceAccountDriver;
   readonly configuredDriverId: string | undefined;
   readonly nextIdentifier: (kind: "service_account") => string;
-  readonly ownedTokenServiceDriver: (instanceId?: string) => TokenServiceDriver;
-  readonly currentTokenServiceInstanceId: () => string;
+  readonly ownedCredentialServiceDriver: (instanceId?: string) => CredentialServiceDriver;
+  readonly currentCredentialServiceInstanceId: () => string;
   readonly supportsCodexPatSource: () => boolean;
   readonly installationId: string;
   readonly clock: () => Date;
@@ -225,10 +225,10 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
       }
       if (!deps.supportsCodexPatSource()) {
         throw new ResourceStateConflictError(
-          "The selected TokenService does not support Codex PAT Sources.",
+          "The selected CredentialService does not support Codex PAT Sources.",
         );
       }
-      deps.ownedTokenServiceDriver();
+      deps.ownedCredentialServiceDriver();
       const credential = await driverOperation(
         () => driver.createCredential(account),
         "ServiceAccount",
@@ -243,10 +243,10 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         credential.sourceId,
       );
       if (
-        source?.ownerCapability !== "token_service" ||
+        source?.ownerCapability !== "credential_service" ||
         source.type !== "static" ||
         source.state !== "ready" ||
-        source.tokenServiceInstanceId !== deps.currentTokenServiceInstanceId() ||
+        source.credentialServiceInstanceId !== deps.currentCredentialServiceInstanceId() ||
         source.config.provider_preset !== "codex-pat"
       ) {
         throw new DependencyUnavailableError("The issued credential Source is invalid.");

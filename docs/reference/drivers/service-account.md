@@ -27,7 +27,7 @@ three methods; none is optional once a Driver is selected.
 | Method                      | Contract                                                                                                               |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `create(account)`           | Provision the upstream account for the approved OCC ServiceAccount. Does not issue a credential.                       |
-| `createCredential(account)` | Issue a credential for that account and return the exact TokenService Source ID.                                       |
+| `createCredential(account)` | Issue a credential for that account and return the exact CredentialService Source ID.                                  |
 | `delete(account)`           | Revoke and remove provider resources owned by that account; do not delete a different account on an identity mismatch. |
 
 A managed credential returns `{ kind: "access_token", sourceId }`. The
@@ -73,12 +73,12 @@ leaves the token unrevoked. See the [credential delivery flow](../../flows/servi
 
 ## Troubleshooting
 
-| Symptom                                         | What to check                                                                                                                                                     |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Account creation succeeds but has no credential | Creation and issuance are separate. Request issuance with `update` permission on that account.                                                                    |
-| Credential issuance fails                       | Check the selected Backend/Driver pair, the private account binding, provider authority, selected TokenService, and whether the account already has a credential. |
-| Deletion is rejected                            | Remove or update any Agent draft, selected version, or pending deployment reference through OCC, or let provisioning finish, before retrying.                     |
-| A managed credential is expired or revoked      | Restore access through the supported provider/account workflow. Do not substitute a different identity or assume automatic renewal.                               |
+| Symptom                                         | What to check                                                                                                                                                          |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account creation succeeds but has no credential | Creation and issuance are separate. Request issuance with `update` permission on that account.                                                                         |
+| Credential issuance fails                       | Check the selected Backend/Driver pair, the private account binding, provider authority, selected CredentialService, and whether the account already has a credential. |
+| Deletion is rejected                            | Remove or update any Agent draft, selected version, or pending deployment reference through OCC, or let provisioning finish, before retrying.                          |
+| A managed credential is expired or revoked      | Restore access through the supported provider/account workflow. Do not substitute a different identity or assume automatic renewal.                                    |
 
 ## Implementations
 
@@ -88,7 +88,7 @@ The [ChatGPT Driver](../../../apps/controller/src/drivers/service-account/chatgp
 requires a matching `type: chatgpt` Backend and an empty Driver configuration.
 It stores the private Namespace binding in PostgreSQL. Issuance and deletion
 recheck Backend, Driver and workspace ownership. The issuer hands the new PAT
-to the selected TokenService in-process. TokenService inserts the ready static
+to the selected CredentialService in-process. CredentialService inserts the ready static
 Source, and the Driver returns its exact ID. OCC grants the creator Source
 access and saves the account issuance. On a confirmed failure before finalization,
 the Driver revokes the exact provider credential and removes unfinished Source

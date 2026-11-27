@@ -102,7 +102,7 @@ interface ConfigurationOperationsDependencies {
     secretBindings: SecretBindings,
   ) => void;
   readonly ownedSecretDriver: SecretOperations["ownedSecretDriver"];
-  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
+  readonly ownedCredentialServiceDriver: (instanceId: string) => unknown;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly nextIdentifier: (kind: "configuration") => string;
   readonly timestamp: () => string;
@@ -150,7 +150,7 @@ export function storedSecretBindings(input: unknown): SecretBindings {
   }
 }
 
-/** TokenService export is supported only by a separate Gateway workload. */
+/** CredentialService export is supported only by a separate Gateway workload. */
 export function requireDedicatedGatewaySources(
   bindings: SecretBindings | undefined,
   executionMode: HarnessExecutionMode,
@@ -679,10 +679,10 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     bindings: SecretBindings,
   ): Promise<{
     readonly secrets: readonly Secret[];
-    readonly gatewayTokenServiceInstanceId?: string;
+    readonly gatewayCredentialServiceInstanceId?: string;
   }> {
     const secrets = new Map<string, Secret>();
-    let gatewayTokenServiceInstanceId: string | undefined;
+    let gatewayCredentialServiceInstanceId: string | undefined;
     for (const { source } of Object.values(bindings)) {
       if (source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Secret references cannot cross Namespaces.");
@@ -696,16 +696,16 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
           );
         }
         if (
-          selected.ownerCapability !== "token_service" ||
+          selected.ownerCapability !== "credential_service" ||
           selected.type !== "static" ||
           selected.state !== "ready"
         ) {
           throw new ResourceStateConflictError(
-            "Gateway bindings require a ready static TokenService Credential Source.",
+            "Gateway bindings require a ready static CredentialService Credential Source.",
           );
         }
-        deps.ownedTokenServiceDriver(selected.tokenServiceInstanceId);
-        gatewayTokenServiceInstanceId = selected.tokenServiceInstanceId;
+        deps.ownedCredentialServiceDriver(selected.credentialServiceInstanceId);
+        gatewayCredentialServiceInstanceId = selected.credentialServiceInstanceId;
         continue;
       }
       const secret = await state.secrets.lockSecret(namespaceId, source.id);
@@ -717,7 +717,9 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     }
     return Object.freeze({
       secrets: Object.freeze([...secrets.values()]),
-      ...(gatewayTokenServiceInstanceId === undefined ? {} : { gatewayTokenServiceInstanceId }),
+      ...(gatewayCredentialServiceInstanceId === undefined
+        ? {}
+        : { gatewayCredentialServiceInstanceId }),
     });
   }
 

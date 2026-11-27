@@ -12,7 +12,7 @@ is a separate path that gives the credential to the executing Harness.
 ## Enroll and deploy
 
 A [CredentialSource](../reference/credential-sources.md) identifies an enrolled
-credential in a Namespace. The selected [TokenService](../reference/drivers/selection.md#supported-selections)
+credential in a Namespace. The selected [CredentialService](../reference/drivers/selection.md#supported-selections)
 maintains the credential and renews eligible tokens. A
 [Connection Template](../reference/connection-templates.md) can define consent
 or approved destinations. OAuth also uses an eligible client registration.
@@ -40,7 +40,7 @@ config:
 flowchart TB
   OCC["<b>OCC</b><br/>Admits bindings<br/>and policies"] -->|network policy| S["<b>Sandbox</b><br/>Enforces requests"]
   OCC -->|injection policy| P["<b>Credential Proxy</b><br/>Prepares delivery"]
-  T["<b>TokenService</b><br/>Keeps credential"] -->|credential or Provider| P
+  T["<b>CredentialService</b><br/>Keeps credential"] -->|credential or Provider| P
   P -->|binding if required| S
   A["<b>Agent</b><br/>Sends request"] -->|request| S
   S -->|permitted request| U["<b>Upstream service</b>"]
@@ -61,7 +61,7 @@ GitHub enforces branch rules. Pull requests are outside this Git-only path.
 The upstream service enforces the credential's permissions. See the
 [request architecture](credential-proxy-architecture.md).
 
-TokenService commits replacements before delivery is updated. Withdrawal removes
+CredentialService commits replacements before delivery is updated. Withdrawal removes
 one Agent's authority and detaches its binding; Stop removes the deployment but
 keeps the Source. See [Source lifecycle](../flows/credential-source-lifecycle.md)
 and [withdrawal](../reference/credential-sources/withdrawal.md).

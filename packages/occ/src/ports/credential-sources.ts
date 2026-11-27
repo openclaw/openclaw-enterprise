@@ -1,7 +1,7 @@
 import type { CredentialPolicyReductionState } from "./credential-policy-reduction.ts";
 import type {
   StoredCredentialSource as CredentialSource,
-  CredentialSource as TokenServiceCredentialSource,
+  CredentialSource as CredentialServiceCredentialSource,
   CredentialWithdrawal,
   EgressInstallation,
   EgressMaterialEvidence,
@@ -34,9 +34,9 @@ export interface CredentialSourceReadRepository {
   /** Namespace inventory for every Source owner. Callers enforce resource authorization. */
   listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
   /** Page across ready Namespaces by Source ID for maintenance by the selected owner. */
-  scanReadyTokenServiceSourceIds(
-    type: TokenServiceCredentialSource["type"],
-    tokenServiceInstanceId: string,
+  scanReadyCredentialServiceSourceIds(
+    type: CredentialServiceCredentialSource["type"],
+    credentialServiceInstanceId: string,
     limit: number,
     afterId?: string,
   ): Promise<readonly { namespaceId: string; id: string }[]>;

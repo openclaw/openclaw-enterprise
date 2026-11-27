@@ -96,7 +96,7 @@ export interface RepositoryRevisionState {
   readonly bindings: readonly AdmittedRepositoryBinding[];
 }
 
-/** A native Repository binding uses the revision's selected TokenService Source. */
+/** A native Repository binding uses the revision's selected CredentialService Source. */
 export interface SourceBackedRepositoryRevisionState {
   readonly authorization: "credential_source";
   readonly driver: RepositoryRevisionState["driver"];

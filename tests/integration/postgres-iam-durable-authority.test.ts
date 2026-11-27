@@ -4,8 +4,8 @@ import test, { type TestContext } from "node:test";
 import type { Pool, PoolClient } from "pg";
 
 import { betterAuthIssuer, humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -248,8 +248,11 @@ async function createFixture(t: TestContext) {
     );
     await authentication.provisionPasswordAccount(prepared, seed, audit, external);
   };
-  const instanceId = await controller.activateTokenServiceInstance("durable-oauth", randomUUID());
-  const tokenOwner = new OCCTokenServiceDriver(
+  const instanceId = await controller.activateCredentialServiceInstance(
+    "durable-oauth",
+    randomUUID(),
+  );
+  const tokenOwner = new OCCCredentialServiceDriver(
     "durable-oauth",
     controller.installation.id,
     secretDriver.privateSecrets,
@@ -263,7 +266,7 @@ async function createFixture(t: TestContext) {
     ),
   );
   controller.registerDriver(tokenOwner);
-  controller.selectDriver("token_service", tokenOwner.id);
+  controller.selectDriver("credential_service", tokenOwner.id);
   await controller.applyIAMConfiguration();
 
   const administratorRoles = await pool.query<{ role_id: string }>(
@@ -337,7 +340,7 @@ async function createFixture(t: TestContext) {
       "compute",
       "configuration",
       "secret",
-      "token_service",
+      "credential_service",
     ] as const) {
       const driver = controller.selectedDriver(capability);
       next.registerDriver(driver);
@@ -504,7 +507,7 @@ test(
 
     async function connectionEffects(namespaceId: string, expected: 0 | 1) {
       const result = await f.pool.query<{ id: string; state: string }>(
-        "SELECT id,state FROM occ.credential_sources WHERE namespace_id=$1 AND owner_capability='token_service' AND type='oauth2-refresh-token'",
+        "SELECT id,state FROM occ.credential_sources WHERE namespace_id=$1 AND owner_capability='credential_service' AND type='oauth2-refresh-token'",
         [namespaceId],
       );
       assert.equal(result.rowCount, expected);

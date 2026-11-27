@@ -86,7 +86,7 @@ function failureMessage(cause: unknown, action: Action, source: CredentialSource
   return "The request outcome is unconfirmed. Refresh the Source inventory and check the credential owner before retrying.";
 }
 
-/** Managed TokenService metadata is required here. Protected/proxy rows must not call this component. */
+/** Managed CredentialService metadata is required here. Protected/proxy rows must not call this component. */
 export function createCredentialSourceActions({
   context,
   onChanged,

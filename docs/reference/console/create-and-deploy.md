@@ -85,7 +85,7 @@ For Codex plugins, open **Configure plugins**. With the
 you can browse and select supported plugins without a discovery credential. Their
 tool inventory and account access are unknown. For a hosted catalog, complete
 Codex sign-in or [enroll a service account token](../../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
-as a TokenService Source. **Previous page** and **Next page** fetch hosted pages.
+as a CredentialService Source. **Previous page** and **Next page** fetch hosted pages.
 **Search plugins** queries the catalog. **Filter configured plugins** filters saved selections locally.
 Select a plugin to load tools, then **Add**. Use toggles and **Tool policy** for
 overrides. **Configured plugins** includes selections from other pages. **Done** closes the modal;
@@ -93,13 +93,13 @@ overrides. **Configured plugins** includes selections from other pages. **Done**
 
 Hosted [discovery](../../flows/agent-plugins.md#credential-scoped-discovery) requires
 `credential_source:operate` on the selected Source. The server resolves the
-credential through TokenService. Credential, provider, and Harness changes clear results. **Plugin
+credential through CredentialService. Credential, provider, and Harness changes clear results. **Plugin
 selections JSON** preserves selections separately from Configuration. Check permissions
 or outbound access on failure, then retry. Editing follows installation capabilities
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
 The Console submits a new static [Credential Source](../credential-sources.md) directly
-to the selected TokenService through OCC. Creating it requires CredentialSource `create`;
+to the selected CredentialService through OCC. Creating it requires CredentialSource `create`;
 binding it requires `operate`. Source reads return metadata, not the credential value.
 Guided provisioning does not yet accept managed Sources, so this choice saves a draft.
 For Secret-backed authentication, each Secret menu disables a readable Secret if the caller

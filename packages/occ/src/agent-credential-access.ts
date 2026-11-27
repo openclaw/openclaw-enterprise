@@ -5,7 +5,7 @@ import {
   pluginSourceIds,
   type SelectedPluginBinding,
 } from "./plugin-credential-bindings.ts";
-import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import { isManagedCredentialServiceSource } from "./credential-source-metadata.ts";
 import {
   MAX_AGENT_CREDENTIAL_SOURCES,
   isSecretHarnessAuth,
@@ -54,7 +54,7 @@ interface AgentCredentialAccessDependencies {
   readonly installationId: string;
   readonly timestamp: () => string;
   readonly sourceDrivers: Pick<CredentialSourceDrivers, "credentialSourceOwner">;
-  readonly requireTokenServiceOwner: (instanceId: string) => void;
+  readonly requireCredentialServiceOwner: (instanceId: string) => void;
   readonly offersProtectedType: (type: string) => boolean;
 }
 
@@ -135,7 +135,7 @@ export function createAgentCredentialAccess({
   installationId,
   timestamp,
   sourceDrivers,
-  requireTokenServiceOwner,
+  requireCredentialServiceOwner,
   offersProtectedType,
 }: AgentCredentialAccessDependencies) {
   function authorizeSourceOperate(principalId: string, namespaceId: string, sourceId: string) {
@@ -188,8 +188,8 @@ export function createAgentCredentialAccess({
         // The exact-source grant has passed. Report the missing Proxy without naming the source.
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
-      if (isManagedTokenServiceSource(source)) {
-        requireTokenServiceOwner(source.tokenServiceInstanceId);
+      if (isManagedCredentialServiceSource(source)) {
+        requireCredentialServiceOwner(source.credentialServiceInstanceId);
         if (source.type === "github-app-installation") {
           sources.push(source);
           continue;
@@ -205,12 +205,12 @@ export function createAgentCredentialAccess({
         }
         if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
           throw new ResourceStateConflictError(
-            "This TokenService source must authenticate the selected Agent Harness.",
+            "This CredentialService source must authenticate the selected Agent Harness.",
           );
         }
       } else {
         if (source.ownerCapability !== "credential_proxy" || source.egress === undefined) {
-          throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+          throw new ResourceStateConflictError("Re-enroll this credential with CredentialService.");
         }
         sourceDrivers.credentialSourceOwner(source);
       }
@@ -246,7 +246,7 @@ export function createAgentCredentialAccess({
         sourceId,
       );
       if (
-        !isManagedTokenServiceSource(source) ||
+        !isManagedCredentialServiceSource(source) ||
         source.state !== "ready" ||
         source.connectionTemplateId === undefined
       ) {
@@ -254,7 +254,7 @@ export function createAgentCredentialAccess({
         continue;
       }
       try {
-        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        requireCredentialServiceOwner(source.credentialServiceInstanceId);
       } catch (error) {
         if (!(error instanceof DependencyUnavailableError)) {
           throw error;
@@ -273,10 +273,10 @@ export function createAgentCredentialAccess({
   ): Promise<ConnectionTemplateVersion> {
     if (source.namespaceId !== namespaceId || source.state !== "ready") {
       throw new ResourceStateConflictError(
-        "The Plugin connection requires a ready TokenService Source.",
+        "The Plugin connection requires a ready CredentialService Source.",
       );
     }
-    requireTokenServiceOwner(source.tokenServiceInstanceId);
+    requireCredentialServiceOwner(source.credentialServiceInstanceId);
     if (source.connectionTemplateId === undefined) {
       throw new ResourceStateConflictError(
         "The Plugin Source requires an associated Connection Template.",
@@ -363,11 +363,11 @@ export function createAgentCredentialAccess({
         source = await resolveSource(sourceId);
         // Gateway-backed selections continue to require their existing explicit attachment.
         // Leave missing or unattached legacy Sources to the Plugin's slot validator.
-        if (!isManagedTokenServiceSource(source)) {
+        if (!isManagedCredentialServiceSource(source)) {
           continue;
         }
       }
-      if (!isManagedTokenServiceSource(source)) {
+      if (!isManagedCredentialServiceSource(source)) {
         continue;
       }
       templates.set(sourceId, await qualifyPluginCredentialSource(state, namespaceId, source));
@@ -436,11 +436,11 @@ export function createAgentCredentialAccess({
         id: sourceId,
       });
       compute.validateHarnessCredentialSources?.(harness, [source]);
-      if (isManagedTokenServiceSource(source)) {
+      if (isManagedCredentialServiceSource(source)) {
         const current = plugin.templates.get(sourceId);
         snapshots.push({
           sourceId,
-          tokenServiceInstanceId: source.tokenServiceInstanceId,
+          credentialServiceInstanceId: source.credentialServiceInstanceId,
           sourceType: source.type,
           ...(current && {
             connectionTemplate: { id: current.templateId, version: current.version },

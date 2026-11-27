@@ -257,7 +257,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     cluster: `channel-proof-${suffix}`,
   });
   if (!upgrade) {
-    Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+    Object.assign(configuration.drivers, { credential_service: { id: "occ", configuration: {} } });
   }
   const { gatewayClients: _gatewayClients, ...network } =
     configuration.drivers.compute.configuration.network;

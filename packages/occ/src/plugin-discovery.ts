@@ -21,7 +21,7 @@ import {
   type PluginDriver,
   type RevisionHarnessDescriptor,
   type SavedAgentPluginCredentialSlot,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
@@ -74,7 +74,7 @@ type SavedPluginTarget = PluginTarget & { agent: Readonly<Agent> };
 interface PluginDiscoveryDependencies {
   readonly transactions: Pick<ControllerTransactions, "read">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
-  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly ownedCredentialServiceDriver: (instanceId: string) => CredentialServiceDriver;
   readonly qualifyPluginCredentialSource: AgentCredentialAccess["qualifyPluginCredentialSource"];
   readonly readConfiguration: (
     metadata: ConfigurationOwnership,
@@ -346,10 +346,10 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         if (
           namespace.status !== "ready" ||
           source?.state !== "ready" ||
-          source.ownerCapability !== "token_service"
+          source.ownerCapability !== "credential_service"
         ) {
           throw new ResourceStateConflictError(
-            "Choose a ready TokenService account Source for this catalog.",
+            "Choose a ready CredentialService account Source for this catalog.",
           );
         }
         return source;
@@ -359,25 +359,25 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     if (!account) {
       throw new ResourceStateConflictError("Choose a Codex account Source for this catalog.");
     }
-    const owner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+    const owner = dependencies.ownedCredentialServiceDriver(source.credentialServiceInstanceId);
     const deadline = AbortSignal.timeout(30_000);
     const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const resolved = await driverOperation(
       () =>
         owner.resolveCredential(
-          { sourceRef: reference, tokenServiceInstanceId: source.tokenServiceInstanceId },
+          { sourceRef: reference, credentialServiceInstanceId: source.credentialServiceInstanceId },
           requestSignal,
         ),
-      "TokenService",
+      "CredentialService",
     );
     requestSignal.throwIfAborted();
     await validateCurrent(driver, reference);
     const current = await readSource();
     if (
       current.type !== source.type ||
-      current.tokenServiceInstanceId !== source.tokenServiceInstanceId ||
+      current.credentialServiceInstanceId !== source.credentialServiceInstanceId ||
       !isDeepStrictEqual(hostedAccount(current), account) ||
-      dependencies.ownedTokenServiceDriver(current.tokenServiceInstanceId) !== owner
+      dependencies.ownedCredentialServiceDriver(current.credentialServiceInstanceId) !== owner
     ) {
       throw new ResourceStateConflictError("The account Source changed. Refresh and retry.");
     }
@@ -403,7 +403,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     for (const source of await state.credentialSources.listCredentialSources(namespaceId)) {
       const ref = { kind: "credential_source" as const, namespaceId, id: source.id };
       if (
-        source.ownerCapability !== "token_service" ||
+        source.ownerCapability !== "credential_service" ||
         source.state !== "ready" ||
         !source.connectionTemplateId ||
         !(await canRead(principalId, ref))
@@ -497,7 +497,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             return undefined;
           }
           const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
-          if (source?.ownerCapability !== "token_service" || source.state !== "ready") {
+          if (source?.ownerCapability !== "credential_service" || source.state !== "ready") {
             return undefined;
           }
           templates.set(
@@ -549,7 +549,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             );
             // Describe the saved binding using Source metadata. Catalog requests
             // still authorize the caller and the Agent before reading custody.
-            if (source?.ownerCapability === "token_service" && source.state === "ready") {
+            if (source?.ownerCapability === "credential_service" && source.state === "ready") {
               if (hostedAccount(source)) {
                 hostedCredential = "codex_account";
               } else if (
@@ -788,7 +788,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       const source = await state.credentialSources.findCredentialSource(namespace.id, sourceRef.id);
       if (
         namespace.status !== "ready" ||
-        source?.ownerCapability !== "token_service" ||
+        source?.ownerCapability !== "credential_service" ||
         source.state !== "ready"
       ) {
         throw new ResourceStateConflictError(
@@ -878,7 +878,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         current.driver !== target.driver ||
         current.harness.id !== target.harness.id ||
         current.harness.mode !== target.harness.mode ||
-        current.source.tokenServiceInstanceId !== target.source.tokenServiceInstanceId ||
+        current.source.credentialServiceInstanceId !== target.source.credentialServiceInstanceId ||
         current.template.templateId !== template.templateId ||
         current.template.version !== template.version
       ) {
@@ -892,16 +892,16 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     try {
       await validateCurrent();
       const source = target.source;
-      const owner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const owner = dependencies.ownedCredentialServiceDriver(source.credentialServiceInstanceId);
       const deadline = AbortSignal.timeout(30_000);
       const operation = signal ? AbortSignal.any([signal, deadline]) : deadline;
       const resolved = await driverOperation(
         () =>
           owner.resolveCredential(
-            { sourceRef, tokenServiceInstanceId: source.tokenServiceInstanceId },
+            { sourceRef, credentialServiceInstanceId: source.credentialServiceInstanceId },
             operation,
           ),
-        "TokenService",
+        "CredentialService",
       );
       operation.throwIfAborted();
       await validateCurrent();
@@ -1060,7 +1060,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           return { ...target, source, credential: { credentialSource: reference } };
         }
         throw new ResourceStateConflictError(
-          "Select a ready TokenService account Source in the Agent draft. Re-enroll a service account token if it is stored as a Secret.",
+          "Select a ready CredentialService account Source in the Agent draft. Re-enroll a service account token if it is stored as a Secret.",
         );
       },
     );

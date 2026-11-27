@@ -364,7 +364,7 @@ export function createInlineStaticCredentialSourcePicker(
     element(
       "p",
       { className: "hint" },
-      `This creates a reusable Source with the Installation’s selected TokenService. It remains in Credentials if you cancel. ${options.deliveryHint}`,
+      `This creates a reusable Source with the Installation’s selected CredentialService. It remains in Credentials if you cancel. ${options.deliveryHint}`,
     ),
     field({
       label: `${label} Source name`,

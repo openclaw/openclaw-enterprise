@@ -7,7 +7,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -53,7 +53,7 @@ export async function createConsoleRepositoryLaunchFixture(
     gatewaySources = false,
   }: RepositoryLaunchOptions = {},
 ) {
-  const tokenServiceId = "console-launch-token-service";
+  const credentialServiceId = "console-launch-credential-service";
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
@@ -220,8 +220,8 @@ export async function createConsoleRepositoryLaunchFixture(
       gatewayStartupSourceDelivery: (selectedCompute: unknown, owner: unknown) =>
         selectedCompute === compute &&
         selectedCompute instanceof KubernetesComputeDriver &&
-        owner instanceof OCCTokenServiceDriver &&
-        owner.id === tokenServiceId,
+        owner instanceof OCCCredentialServiceDriver &&
+        owner.id === credentialServiceId,
     }),
     // Credential provisioning requires a configured browser CSRF origin.
     publicOrigin: true,
@@ -229,19 +229,19 @@ export async function createConsoleRepositoryLaunchFixture(
   await fixture.bootstrap("Repository demo");
   if (gatewaySources) {
     assert.ok(secretDriver.privateSecrets);
-    const instanceId = await fixture.controller.activateTokenServiceInstance(
-      tokenServiceId,
+    const instanceId = await fixture.controller.activateCredentialServiceInstance(
+      credentialServiceId,
       randomUUID(),
     );
-    const owner = new OCCTokenServiceDriver(
-      tokenServiceId,
+    const owner = new OCCCredentialServiceDriver(
+      credentialServiceId,
       fixture.controller.installation.id,
       secretDriver.privateSecrets,
       instanceId,
       storage,
     );
     fixture.controller.registerDriver(owner);
-    fixture.controller.selectDriver("token_service", owner.id);
+    fixture.controller.selectDriver("credential_service", owner.id);
   }
   // Namespace provisioning is outside this Console journey. Seed its completed
   // lifecycle through State, not by replacing any Agent admission decision.

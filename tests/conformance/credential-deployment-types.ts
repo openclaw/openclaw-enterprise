@@ -3,7 +3,7 @@ import type {
   NetworkAccessPolicy,
   PluginDeploymentContract,
   PluginDeploymentTool,
-  TokenServiceDriver,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 
 type DescribeInput = Parameters<PluginDeploymentContract["describeDeployment"]>[0];
@@ -51,7 +51,7 @@ const mixed = { ...hostedApp, installation: bundle };
 const _appWithInstallation: PluginDeploymentTool = mixed;
 
 // Resolution can return an unversioned credential; push delivery must reject it at runtime.
-const _resolved: Awaited<ReturnType<TokenServiceDriver["resolveCredential"]>> = {
+const _resolved: Awaited<ReturnType<CredentialServiceDriver["resolveCredential"]>> = {
   credential: "synthetic-value",
 };
 

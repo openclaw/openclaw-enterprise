@@ -1,4 +1,4 @@
-import type { CredentialRefreshStatus } from "./drivers/token-service/index.ts";
+import type { CredentialRefreshStatus } from "./drivers/credential-service/index.ts";
 import type { Secret } from "./index.ts";
 import type {
   CredentialReadLifetime,
@@ -113,7 +113,7 @@ export interface PreparedTokenRef {
 }
 
 /** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
-export interface TokenService {
+export interface CredentialService {
   register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
   resolve(
     reference: PreparedTokenRef,
@@ -129,7 +129,7 @@ export interface OAuthAccountRef {
   readonly sourceId: string;
 }
 
-/** Internal OAuth lifecycle collaborator used by the selected TokenService. */
+/** Internal OAuth lifecycle collaborator used by the selected CredentialService. */
 export interface OAuthRefreshTokenIssuer {
   readonly tokenKind: OAuthAccountRef["kind"];
   resolve(
@@ -158,7 +158,7 @@ export interface OAuthConnectionClient {
   readonly fetchToken?: (init: RequestInit) => Promise<Response>;
 }
 
-/** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
+/** Trusted handoff from code exchange. The Credential Service retains the reusable grant. */
 export interface OAuthConnectionGrant extends ResolvedToken {
   readonly requestedScopes: readonly string[];
   /** Scopes the provider granted. An empty list means no scopes were reported or requested. */

@@ -45,7 +45,7 @@ const computeDriver = new KubernetesComputeDriver(
     implementation: selection.implementation,
     lifecycleDrivers: [installed.configurationDriver],
     channelDrivers,
-    ...(installed.tokenService ? { preparedTokens: installed.tokenService } : {}),
+    ...(installed.credentialService ? { preparedTokens: installed.credentialService } : {}),
     nodeEnrollment: createGatewayNodeEnrollment(() => {
       assert.ok(process.env.OCC_GATEWAY_API_KEY_PATH);
       return readWorkspaceFilesApiKey(process.env.OCC_GATEWAY_API_KEY_PATH);

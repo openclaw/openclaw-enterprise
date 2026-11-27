@@ -368,7 +368,7 @@ Compute deletes the Kubernetes namespace only after cleanup succeeds.
 ### 6. Withdraw Git without retiring the execution
 
 `apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
-keeps the transport inside the installed Driver. The Token Service supplies material;
+keeps the transport inside the installed Driver. The CredentialService supplies material;
 `packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` stores target, binding,
 fence, desired and observed policy, installed and pending material versions. Unknown
 writes survive restart. A forward migration preserves receipts and fences former writers.

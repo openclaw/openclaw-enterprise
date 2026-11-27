@@ -15,7 +15,7 @@ import type { RepositoryPolicyDriver } from "./repo/index.ts";
 import type { SandboxDriver } from "./sandbox/index.ts";
 import type { SecretDriver } from "./secret/index.ts";
 import type { ServiceAccountDriver } from "./service-account/index.ts";
-import type { TokenServiceDriver } from "./token-service/index.ts";
+import type { CredentialServiceDriver } from "./credential-service/index.ts";
 
 export const DRIVER_CAPABILITIES = Object.freeze([
   "iam",
@@ -31,7 +31,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "credential_refresh",
   "credential_proxy",
   "credential_proxy_delivery",
-  "token_service",
+  "credential_service",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -65,7 +65,7 @@ export type DriverByCapability = {
   credential_proxy: LegacyEgressProxyDriver;
   // TODO(credential proxy cutover): use credential_proxy for the canonical Driver after legacy retirement.
   credential_proxy_delivery: CredentialProxyDriver;
-  token_service: TokenServiceDriver;
+  credential_service: CredentialServiceDriver;
 };
 
 /** A package returns the capabilities of this instance and one lifecycle, never support flags. */

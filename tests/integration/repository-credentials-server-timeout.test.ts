@@ -7,10 +7,10 @@ import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { within } from "../helpers/wait-for.ts";
 import { listen } from "../fixtures/repository-credentials/process.ts";
-import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
+import { startCredentialServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
-  createStaticTokenServiceFactory,
+  createStaticCredentialServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.ts";
 
@@ -26,7 +26,7 @@ async function fixture(t: TestContext) {
       exchangeMs: 5000,
     },
   };
-  const scope = await startTokenServiceScope(t, options);
+  const scope = await startCredentialServiceScope(t, options);
   const { resources, tls, github } = scope;
   assert.ok(github);
   const headerMs: unknown = scope.config.limits.headerMs;
@@ -40,7 +40,7 @@ async function fixture(t: TestContext) {
     response.end("0000");
   });
   const upstreamOrigin = await listen(resources, upstream);
-  const created = await createStaticTokenServiceFactory(resources, {
+  const created = await createStaticCredentialServiceFactory(resources, {
     config: scope.config,
     clock: scope.clock,
     tls,

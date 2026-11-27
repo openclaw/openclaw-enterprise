@@ -285,7 +285,7 @@ With Docker and a selected runtime, Compose overlaps bootstrap and cluster setup
 after creating PostgreSQL. For OpenShell,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers` starts after
 kubeconfig setup, alongside runtime import and OpenShell installation. Both finish
-before routing resolves PostgreSQL’s address and starts OCC. Compose creates `oce-installation-secrets` in its OpenShell cluster before the API starts. OCC TokenService stores its private identity there. Failure cancels and
+before routing resolves PostgreSQL’s address and starts OCC. Compose creates `oce-installation-secrets` in its OpenShell cluster before the API starts. OCC CredentialService stores its private identity there. Failure cancels and
 drains siblings before rollback. Cold builds and Podman install routing afterward.
 
 Both concurrently install cert-manager and Envoy, verifying checksums, CRDs and rollout before GatewayClass acceptance or routing

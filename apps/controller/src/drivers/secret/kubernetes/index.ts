@@ -224,7 +224,7 @@ export class KubernetesSecretDriver implements SecretDriver {
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
-  /** TokenService Secrets live outside tenant placement and are never inventoried as Namespace Secrets. */
+  /** CredentialService Secrets live outside tenant placement and are never inventoried as Namespace Secrets. */
   private privateSecretStore(namespace: string): PrivateSecretStore {
     const identity = (ref: PrivateSecretRef) => ({
       name: `occ-private-${sha256Hex(JSON.stringify([ref.installationId, ref.id]), 40)}`,

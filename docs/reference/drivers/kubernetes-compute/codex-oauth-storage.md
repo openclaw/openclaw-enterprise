@@ -1,15 +1,15 @@
 # Experimental Codex OAuth credential storage
 
 Codex account sign-in creates a built-in OAuth [CredentialSource](../../credential-sources.md)
-through the selected TokenService only after the user authorizes the issuer grant.
-TokenService retains the access and refresh tokens. The selected native Credential
+through the selected CredentialService only after the user authorizes the issuer grant.
+CredentialService retains the access and refresh tokens. The selected native Credential
 Proxy delivers the access token to an OpenShell Provider; dedicated Codex receives
 only its placeholder and nonsecret account metadata. See the [fixed native
 request policy](../../credential-sources.md#codex-account-model-requests).
 
 ## Enable device login
 
-Select a TokenService with the built-in Codex device-login capability and native
+Select a CredentialService with the built-in Codex device-login capability and native
 OpenShell Credential Proxy and Sandbox delivery. Follow the [personal login
 procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 The Console keeps the **Experimental** label and reports unavailable sign-in when
@@ -27,7 +27,7 @@ OCC derives its device-login encryption key from `OCC_AUTH_SECRET`. In PostgreSQ
 it encrypts the issuer's private handle separately from the user code and
 verification URL. Completion clears the handle; cancellation or expiry clears
 both encrypted values. Closing a session does not revoke a completed Source.
-Authorized hosted Apps discovery resolves access through TokenService and does not
+Authorized hosted Apps discovery resolves access through CredentialService and does not
 send a token to the Harness.
 
 ## OAuth launch limits
@@ -39,7 +39,7 @@ apply to placeholder substitution. Dedicated Codex can combine OAuth and
 images, managed Workspace route, and approved repository grants. Active Source
 references block deletion.
 
-TokenService commits renewed material before notifying the selected Proxy. A
+CredentialService commits renewed material before notifying the selected Proxy. A
 failed delivery retains custody for retry. A new deployment version is needed to
 change account metadata. Genuine signed-in model execution and native token
-injection still require the [TokenService runtime qualification](../../../testing/openshell-oauth.md#tokenservice-codex-account-verification).
+injection still require the [CredentialService runtime qualification](../../../testing/openshell-oauth.md#credentialservice-codex-account-verification).

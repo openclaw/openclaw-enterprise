@@ -3,8 +3,8 @@ import type {
   CredentialSourceDeviceAuthorization,
   OAuthCredentialSource,
   ResourceRef,
-  TokenServiceDeviceAuthorizationContext,
-  TokenServiceDriver,
+  CredentialServiceDeviceAuthorizationContext,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 
 import type { ControllerAuthority } from "./controller-authority.ts";
@@ -38,9 +38,9 @@ interface DeviceAuthorizationDependencies {
   readonly timestamp: () => string;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
-  readonly hasTokenService: () => boolean;
-  readonly ownedTokenServiceDriver: (instanceId?: string) => TokenServiceDriver;
-  readonly currentTokenServiceInstanceId: () => string;
+  readonly hasCredentialService: () => boolean;
+  readonly ownedCredentialServiceDriver: (instanceId?: string) => CredentialServiceDriver;
+  readonly currentCredentialServiceInstanceId: () => string;
   readonly bindCreator: (
     state: PlatformUnitOfWork,
     principalId: string,
@@ -96,7 +96,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
 
   function context(
     session: Pick<DeviceAuthorizationSession, "namespaceId" | "actorId" | "harnessId">,
-  ): TokenServiceDeviceAuthorizationContext {
+  ): CredentialServiceDeviceAuthorizationContext {
     return {
       namespaceId: session.namespaceId,
       ownerPrincipalId: session.actorId,
@@ -113,19 +113,19 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
   ) {
     await authorizeScope(principalId, namespaceId, agentId);
     await authorize(principalId, "create", sourceTarget(namespaceId));
-    if (!deps.hasTokenService()) {
+    if (!deps.hasCredentialService()) {
       throw new NotImplementedError(
         "agent_device_authorization",
-        "Device authorization is unavailable without a selected TokenService.",
+        "Device authorization is unavailable without a selected CredentialService.",
       );
     }
-    const owner = deps.ownedTokenServiceDriver();
-    const tokenServiceInstanceId = deps.currentTokenServiceInstanceId();
+    const owner = deps.ownedCredentialServiceDriver();
+    const credentialServiceInstanceId = deps.currentCredentialServiceInstanceId();
     const cipher = deps.cipher;
     if (!owner.startDeviceAuthorization || !owner.pollDeviceAuthorization || !cipher) {
       throw new NotImplementedError(
         "agent_device_authorization",
-        "Device authorization is unavailable for the selected TokenService.",
+        "Device authorization is unavailable for the selected CredentialService.",
       );
     }
     let started: CredentialSourceDeviceAuthorization;
@@ -148,7 +148,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
       namespaceId,
       ...(agentId === undefined ? {} : { agentId }),
       harnessId,
-      tokenServiceInstanceId,
+      credentialServiceInstanceId,
       phase: "pending",
       expiresAt,
       nextPollAt: new Date(Date.parse(deps.timestamp()) + intervalSeconds * 1000).toISOString(),
@@ -169,7 +169,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      deps.ownedTokenServiceDriver(tokenServiceInstanceId);
+      deps.ownedCredentialServiceDriver(credentialServiceInstanceId);
       await state.authenticationStates.create({
         ...session,
         kind: "device_authorization",
@@ -210,7 +210,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
       }
       throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
     }
-    const owner = deps.ownedTokenServiceDriver(session.tokenServiceInstanceId);
+    const owner = deps.ownedCredentialServiceDriver(session.credentialServiceInstanceId);
     const cipher = deps.cipher;
     if (!owner.pollDeviceAuthorization || !cipher || !session.encryptedChallenge) {
       throw new ResourceStateConflictError(
@@ -271,7 +271,9 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
     }
     const claimedVersion = version + 1;
     let callbackError: unknown;
-    let result: Awaited<ReturnType<NonNullable<TokenServiceDriver["pollDeviceAuthorization"]>>>;
+    let result: Awaited<
+      ReturnType<NonNullable<CredentialServiceDriver["pollDeviceAuthorization"]>>
+    >;
     try {
       result = await owner.pollDeviceAuthorization(
         context(session),
@@ -280,7 +282,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
           try {
             await authorizeScope(principalId, namespaceId, agentId);
             await authorize(principalId, "create", sourceTarget(namespaceId));
-            deps.ownedTokenServiceDriver(session.tokenServiceInstanceId);
+            deps.ownedCredentialServiceDriver(session.credentialServiceInstanceId);
             const claimed = await read((state) =>
               state.authenticationStates.findDevice(namespaceId, sessionId),
             );
@@ -291,7 +293,7 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
               claimed.actorId !== principalId ||
               claimed.agentId !== agentId ||
               claimed.harnessId !== session.harnessId ||
-              claimed.tokenServiceInstanceId !== session.tokenServiceInstanceId ||
+              claimed.credentialServiceInstanceId !== session.credentialServiceInstanceId ||
               Date.parse(claimed.expiresAt) <= Date.parse(deps.timestamp())
             ) {
               throw new ResourceStateConflictError(
@@ -334,17 +336,17 @@ export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependenc
     }
     const source = result.source;
     if (
-      source.ownerCapability !== "token_service" ||
+      source.ownerCapability !== "credential_service" ||
       source.type !== "oauth2-refresh-token" ||
       source.state !== "ready" ||
       source.namespaceId !== namespaceId ||
-      source.tokenServiceInstanceId !== session.tokenServiceInstanceId ||
+      source.credentialServiceInstanceId !== session.credentialServiceInstanceId ||
       source.connectionTemplateId !== undefined ||
       source.consent.kind !== "builtin_codex" ||
       source.consent.ownerPrincipalId !== principalId
     ) {
       await replaceSession(sessionId, claimedVersion, cancelledDeviceAuthorization(session));
-      throw new ResourceStateConflictError("TokenService returned an invalid OAuth Source.");
+      throw new ResourceStateConflictError("CredentialService returned an invalid OAuth Source.");
     }
     const { privateState: _handle, encryptedChallenge: _challenge, ...metadata } = session;
     const ready: DeviceAuthorizationSession = {

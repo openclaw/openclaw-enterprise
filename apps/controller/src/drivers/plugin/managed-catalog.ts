@@ -480,7 +480,7 @@ export function managedMcpSlotAcceptsSource(
   source: CredentialSource,
   template?: ConnectionTemplateVersion,
 ): boolean {
-  if (source.ownerCapability === "token_service") {
+  if (source.ownerCapability === "credential_service") {
     if (
       source.state !== "ready" ||
       !source.connectionTemplateId ||

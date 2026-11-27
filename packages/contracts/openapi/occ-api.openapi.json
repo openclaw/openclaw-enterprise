@@ -279,7 +279,41 @@
         "title": "PushAgentCredentialsResponse",
         "type": "object"
       },
-      "RegisterGitHubAppTokenServiceSourceBody": {
+      "RegisterCredentialServiceSourceBody": {
+        "additionalProperties": false,
+        "description": "Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before CredentialService takes custody.",
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "connectionTemplateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+            "type": "string"
+          },
+          "secret": {
+            "description": "Opaque credential value.",
+            "maxLength": 65536,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string",
+            "writeOnly": true
+          },
+          "type": { "const": "static", "type": "string" }
+        },
+        "required": ["name", "type", "secret"],
+        "title": "RegisterCredentialServiceSourceBody",
+        "type": "object"
+      },
+      "RegisterGitHubAppCredentialServiceSourceBody": {
         "additionalProperties": false,
         "description": "Register a GitHub App installation Source. Select a registered App client. The Installation's GitHub registry verifies the App and supplies the installation and permissions for the selected repositories. Agent access requires a separate grant.",
         "properties": {
@@ -310,44 +344,10 @@
           "type": { "const": "github-app-installation", "type": "string" }
         },
         "required": ["name", "type", "clientId", "repositoryRefs"],
-        "title": "RegisterGitHubAppTokenServiceSourceBody",
+        "title": "RegisterGitHubAppCredentialServiceSourceBody",
         "type": "object"
       },
-      "RegisterTokenServiceSourceBody": {
-        "additionalProperties": false,
-        "description": "Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.",
-        "properties": {
-          "config": {
-            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat.",
-            "maxProperties": 32,
-            "type": "object"
-          },
-          "connectionTemplateId": {
-            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-            "type": "string"
-          },
-          "secret": {
-            "description": "Opaque credential value.",
-            "maxLength": 65536,
-            "minLength": 1,
-            "pattern": "^[^\\u0000]*$",
-            "type": "string",
-            "writeOnly": true
-          },
-          "type": { "const": "static", "type": "string" }
-        },
-        "required": ["name", "type", "secret"],
-        "title": "RegisterTokenServiceSourceBody",
-        "type": "object"
-      },
-      "UpdateTokenServiceSourceBody": {
+      "UpdateCredentialServiceSourceBody": {
         "additionalProperties": false,
         "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
         "minProperties": 1,
@@ -367,7 +367,7 @@
             "writeOnly": true
           }
         },
-        "title": "UpdateTokenServiceSourceBody",
+        "title": "UpdateCredentialServiceSourceBody",
         "type": "object"
       },
       "def-0": {
@@ -20860,7 +20860,7 @@
                       },
                       { "type": "null" }
                     ],
-                    "description": "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409."
+                    "description": "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. CredentialService Sources require direct Agent creation; guided provisioning returns 409."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -36079,7 +36079,7 @@
                   },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "repositoryNetworkPolicy": {
-                    "description": "Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless TokenService Git qualifies an earlier dedicated standalone model-only history. A qualified TokenService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+                    "description": "Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless CredentialService Git qualifies an earlier dedicated standalone model-only history. A qualified CredentialService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -41870,8 +41870,8 @@
                     "required": ["name", "type"],
                     "type": "object"
                   },
-                  { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" },
-                  { "$ref": "#/components/schemas/RegisterGitHubAppTokenServiceSourceBody" }
+                  { "$ref": "#/components/schemas/RegisterCredentialServiceSourceBody" },
+                  { "$ref": "#/components/schemas/RegisterGitHubAppCredentialServiceSourceBody" }
                 ]
               }
             }
@@ -42319,7 +42319,7 @@
                   "value": { "secret": "replace-with-your-rotated-model-key" }
                 }
               },
-              "schema": { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
+              "schema": { "$ref": "#/components/schemas/UpdateCredentialServiceSourceBody" }
             }
           },
           "required": true

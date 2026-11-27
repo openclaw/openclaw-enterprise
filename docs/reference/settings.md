@@ -77,13 +77,13 @@ When a production or explicit Kubernetes startup YAML is used, the required
 same startup YAML, stores Namespace-owned Secret values in the backing
 Kubernetes namespace, and exposes only metadata through OCC. Secret value updates
 do not restart workloads; explicitly redeploy or restart each consuming Agent to
-consume the current value. TokenService owns managed credential issuance and
+consume the current value. CredentialService owns managed credential issuance and
 renewal. [Credential Source support](credential-sources.md#implementation-status)
 
 The optional `drivers.sandbox` selection requires bundled Kubernetes Compute.
 The bundled [OpenShell Sandbox Driver](drivers/openshell-sandbox.md) also
 requires a matching [OpenShell Backend](backends.md#openshell-gateway) and
-dedicated Codex or supported dedicated OpenClaw. Select TokenService and the
+dedicated Codex or supported dedicated OpenClaw. Select CredentialService and the
 paired native Credential Proxy for managed Source delivery.
 [Driver selections](drivers/selection.md#supported-selections)
 

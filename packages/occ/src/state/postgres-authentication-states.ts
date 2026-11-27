@@ -15,7 +15,12 @@ const oauthKeys = [
   "sessionId",
   "redirectUri",
 ] as const;
-const deviceKeys = ["agentId", "harnessId", "tokenServiceInstanceId", "intervalSeconds"] as const;
+const deviceKeys = [
+  "agentId",
+  "harnessId",
+  "credentialServiceInstanceId",
+  "intervalSeconds",
+] as const;
 type OAuthBinding = Pick<OAuthAuthenticationState, (typeof oauthKeys)[number]>;
 type DeviceBinding = Pick<DeviceAuthenticationState, (typeof deviceKeys)[number]>;
 type CommonRow = { id: string; namespace_id: string; actor_id: string; expires_at: Date };

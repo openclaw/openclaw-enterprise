@@ -65,7 +65,7 @@ A representative account-creation body is:
 Issuance accepts `{}` at
 `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`.
 It requires exact ServiceAccount update and Namespace Source create grants.
-The selected TokenService enrolls a static `codex-pat` Source. The `201`
+The selected CredentialService enrolls a static `codex-pat` Source. The `201`
 account response includes `credential: { kind: "access_token", sourceId }`.
 The PAT and the provider credential ID stay private. A second issuance
 returns `409`.
@@ -109,7 +109,7 @@ rollout that re-adds it can force-delete; avoid forcing until the rollout ends.
 
 ## Version snapshots and credential delivery
 
-A Dedicated Codex revision freezes the TokenService Source binding and its
+A Dedicated Codex revision freezes the CredentialService Source binding and its
 admitted native request policy. The Worker prepares a Proxy placeholder for
 the Harness. The Source owns the stored bearer. See [PAT enrollment and
 delivery](credential-sources.md#use-a-codex-pat-source).
@@ -139,7 +139,7 @@ provider, not IAM, Compute, OCC, or the Harness.
 
 - `403` identifies a missing exact account or Source authorization.
 - `409` can indicate an existing account credential, an unready Namespace or
-  an Installation without a compatible TokenService.
+  an Installation without a compatible CredentialService.
 - `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` means the ChatGPT Backend or
   selected Driver is unavailable for issuance or revocation. Configure the
   matching [ChatGPT Backend](../guides/integrations/chatgpt.md).

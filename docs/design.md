@@ -59,7 +59,7 @@ OpenClaw gateway multi-tenant.
 The platform supports global Namespace settings. Resource references follow the
 scope and authorization rules of each resource type.
 
-OCC governs platform resource authorization and composition. The selected TokenService owns the [managed CredentialSource lifecycle](reference/credential-sources.md), and OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
+OCC governs platform resource authorization and composition. The selected CredentialService owns the [managed CredentialSource lifecycle](reference/credential-sources.md), and OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
 
 <a id="non-goals"></a>
 
@@ -176,7 +176,7 @@ the proxy owns final destination resolution and address enforcement.
 
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox,
-TokenService, and Credential Proxy integrations. [Driver development](contributing/driver-development.md)
+CredentialService, and Credential Proxy integrations. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
 to related Drivers within their documented experimental scope. Driver-owned
@@ -191,7 +191,7 @@ An optional SandboxDriver participates through Compute and can provision a
 dedicated Harness. Its cleanup for each Agent revision and Namespace must complete before
 Compute releases the corresponding infrastructure.
 
-TokenService owns custody for managed Credential Sources. On the managed
+CredentialService owns custody for managed Credential Sources. On the managed
 delivery path, OCC admits Source access and separate network and credential
 injection policies. Credential Proxy and Sandbox prepare and enforce delivery
 before activation. Start with [how Agent credentials work](design/credential-proxy.md)

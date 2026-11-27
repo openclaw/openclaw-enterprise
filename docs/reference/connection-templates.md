@@ -15,7 +15,7 @@ The Template owns the OAuth endpoints; use an authentication method advertised
 by the issuer. If metadata omits that list, use `client_secret_basic`.
 
 A public client uses `none`. For `client_secret_basic` or `client_secret_post`,
-enter the write-only secret. The selected TokenService keeps the private value.
+enter the write-only secret. The selected CredentialService keeps the private value.
 An Installation administrator can register either Client kind for the Installation
 or one Namespace. In the Console, choose **Availability**. With
 `POST /credential-clients`, supply `kind: "oauth2"` or `kind: "github-app"` and the
@@ -58,9 +58,9 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
-In the Console, open **Credentials → Create Credential Source**, select an approved OAuth Connection Template, choose a compatible Credential Client, and complete sign-in in the new tab. OCC lists Clients whose issuer and availability match the Template and selected TokenService. The Source exists only after the verified callback succeeds; OCC generates its name.
+In the Console, open **Credentials → Create Credential Source**, select an approved OAuth Connection Template, choose a compatible Credential Client, and complete sign-in in the new tab. OCC lists Clients whose issuer and availability match the Template and selected CredentialService. The Source exists only after the verified callback succeeds; OCC generates its name.
 
-OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Live delivery has been verified for Slack OAuth MCP; see the [current support limits](credential-sources.md#implementation-status).
+OCC handles browser consent and the callback. After the code exchange, the selected CredentialService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Live delivery has been verified for Slack OAuth MCP; see the [current support limits](credential-sources.md#implementation-status).
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
@@ -73,7 +73,7 @@ OCC handles browser consent and the callback. After the code exchange, the selec
    `authorizationUrl` in the same browser and approve the request. The response does not contain a Source ID: no Source exists until the callback completes.
    Register the public OCC callback URL ending in `/oauth/callback` with the provider.
 3. After the redirect, find the OAuth Source with
-   `GET /namespaces/{namespaceId}/credential-sources`. The list requires Namespace read and includes only Sources the caller can read. Use its ID with `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to inspect all nonsecret OAuth metadata with exact Source read. The Source records the original consent version, client, principal, and requested and granted scopes. TokenService keeps the tokens private and uses the original consent settings for renewal.
+   `GET /namespaces/{namespaceId}/credential-sources`. The list requires Namespace read and includes only Sources the caller can read. Use its ID with `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to inspect all nonsecret OAuth metadata with exact Source read. The Source records the original consent version, client, principal, and requested and granted scopes. CredentialService keeps the tokens private and uses the original consent settings for renewal.
 
 The native Namespace role API currently rejects `create` permissions. Installation
 administrators can connect with the built-in administrator role. See
@@ -82,7 +82,7 @@ administrators can connect with the built-in administrator role. See
 A pending request expires after ten minutes. Restart consent if it expires,
 the provider denies it, or the browser session changes. The server handles each
 code once. If the provider rejects the client secret, an administrator can correct it and
-the Token Service retries the same grant. If the provider rejects the user’s
+the CredentialService retries the same grant. If the provider rejects the user’s
 refresh grant, the user reconnects.
 
-Disconnect the OAuth Source with the [Source DELETE operation](credential-sources.md#delete-a-source). OCC records the request and retires Proxy delivery copies before TokenService removes the grant.
+Disconnect the OAuth Source with the [Source DELETE operation](credential-sources.md#delete-a-source). OCC records the request and retires Proxy delivery copies before CredentialService removes the grant.

@@ -92,10 +92,10 @@ export async function verifyDeletedResourceAccessBindingContract(
       configuration: { values: {} },
     },
   };
-  const tokenServiceInstanceId = await store.transact(async (transaction) => {
-    const instance = await transaction.installations.selectTokenServiceInstance({
+  const credentialServiceInstanceId = await store.transact(async (transaction) => {
+    const instance = await transaction.installations.selectCredentialServiceInstance({
       id: randomUUID(),
-      driverId: "platform-state-token-service",
+      driverId: "platform-state-credential-service",
       storeIdentity: "platform-state-contract",
     });
     return instance.id;
@@ -106,8 +106,8 @@ export async function verifyDeletedResourceAccessBindingContract(
     name: "Bound source " + randomUUID(),
     type: "static",
     config: { provider_preset: "openai" },
-    ownerCapability: "token_service",
-    tokenServiceInstanceId,
+    ownerCapability: "credential_service",
+    credentialServiceInstanceId,
     state: "ready",
     createdAt,
   };

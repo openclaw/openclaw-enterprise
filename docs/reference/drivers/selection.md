@@ -17,8 +17,8 @@ images; individual Agents cannot choose implementations.
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
    The table lists each capability and its allowed choices. Omit optional
-   Sandbox, TokenService, ServiceAccount, Plugin, and Repo selections
-   unless you need them. For managed Agent credentials, select TokenService
+   Sandbox, CredentialService, ServiceAccount, Plugin, and Repo selections
+   unless you need them. For managed Agent credentials, select CredentialService
    with a Sandbox registration that provides native Credential Proxy delivery.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
@@ -54,18 +54,20 @@ in either mode.
 | `compute`                   | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                                                                  |
 | `secret`                    | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                                                                         |
 | `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                                                                   |
-| `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | Selected with TokenService and an advertising Sandbox registration. No separate YAML setting.                                                                                                          |
-| `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
+| `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | Selected with CredentialService and an advertising Sandbox registration. No separate YAML setting.                                                                                                     |
+| `credential_service`        | [CredentialServiceDriver][credential-service-contract]                      | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
 | `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Deprecated and pending removal. Its special protected metadata and repository exchanges are retired from 1.0; do not select it for new workflows.                                                      |
 | `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                                                                |
 | `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                                                                           |
 | `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; use Source-backed native Git for managed Agent credentials.                                                                                                    |
 
-[token-service-contract]: ../../../packages/contracts/src/drivers/token-service/index.ts
+[credential-service-contract]: ../../../packages/contracts/src/drivers/credential-service/index.ts
+
+Existing Installation files must change `drivers.token_service` to `drivers.credential_service`, including the matching OpenShell Backend member. The bundled implementation identifiers are `occ/credential-service` and `openshell/credential-service`.
 
 Credential Gateway (`credential_gateway`) and Credential Refresh
 (`credential_refresh`) selections are retired and unsupported. Enroll managed
-credentials through TokenService instead.
+credentials through CredentialService instead.
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -86,7 +88,7 @@ contract still requires the Secret selection.
 
 The `credential_proxy` selection belongs to the deprecated legacy
 credential-egress Driver and is pending removal. Its protected metadata and
-repository exchanges are retired from Credential Design 1.0. Use TokenService
+repository exchanges are retired from Credential Design 1.0. Use CredentialService
 and native `credential_proxy_delivery` for new managed workflows. The [prepared Git sender](../repository-credentials/prepared-native-git.md)
 is a separate no-Sandbox path.
 
@@ -114,8 +116,8 @@ are required and must match the selected registry `(capability, id)`. The bundle
 ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
 Driver. OpenShell requires its Sandbox Driver. A deprecated protected-egress
 `credential_proxy` Backend member must match the selected legacy Proxy until that path is removed. An
-OpenShell `token_service` Backend member must match the selected OpenShell
-TokenService preview. There is no per-Agent Driver selection.
+OpenShell `credential_service` Backend member must match the selected OpenShell
+CredentialService preview. There is no per-Agent Driver selection.
 
 Runtime Backend injection is limited to those bundled Drivers; installed
 packages keep the factory arguments below, and Backend loading or injection into

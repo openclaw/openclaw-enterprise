@@ -132,7 +132,7 @@ ref and an approved transport. Installation-wide access requires the protected
 Credential Proxy and fails native startup. Composition validates the private
 worker socket path and trusted upstream origins, then loads TLS. It constructs
 `warm-registry-factory.ts:createPreparedGitHubRegistryFactory`, which consumes
-READY material and has no App key or issuer capability. The worker Token Service
+READY material and has no App key or issuer capability. The worker CredentialService
 retains issuance and cleanup ownership.
 
 `github-token` is the explicit development alternative. It requires

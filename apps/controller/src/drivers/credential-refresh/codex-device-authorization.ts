@@ -2,7 +2,7 @@ import type {
   CredentialSourceDeviceAuthorization,
   ExternalChatgptAuth,
 } from "@openclaw-enterprise/contracts";
-import { BUILTIN_CODEX_OAUTH_PRESET } from "../../backends/token-service/codex-oauth-preset.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../backends/credential-service/codex-oauth-preset.ts";
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";

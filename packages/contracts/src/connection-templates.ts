@@ -38,7 +38,7 @@ export interface OAuthClient extends CredentialClientRegistration {
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
 }
 
-/** The signing key is used only within the selected TokenService. */
+/** The signing key is used only within the selected CredentialService. */
 export interface GitHubAppClient extends CredentialClientRegistration {
   readonly kind: "github-app";
   readonly appId: string;

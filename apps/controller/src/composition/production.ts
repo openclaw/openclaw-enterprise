@@ -13,10 +13,10 @@ import {
   installationControllerOptions,
 } from "./installation-config.ts";
 import {
-  installTokenServiceDriver,
-  scheduleTokenServiceMaintenance,
+  installCredentialServiceDriver,
+  scheduleCredentialServiceMaintenance,
   gatewayStartupSourceDelivery,
-} from "./token-service.ts";
+} from "./credential-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
@@ -36,7 +36,7 @@ import {
 import { createFastifyApp } from "../index.ts";
 import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
-import type { GitHubAppIssuerOptions } from "../drivers/token-service/github-app-issuer.ts";
+import type { GitHubAppIssuerOptions } from "../drivers/credential-service/github-app-issuer.ts";
 import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
@@ -149,7 +149,7 @@ export async function composeProduction(
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
-      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
+      preparedTokenProof: config.drivers.credentialService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -225,7 +225,9 @@ export async function composeProduction(
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
-        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(config.drivers.credentialService && {
+          preparedTokens: config.drivers.credentialService,
+        }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -244,7 +246,7 @@ export async function composeProduction(
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
     installSelectedSandboxDrivers(controller, config.drivers);
-    const tokenService = await installTokenServiceDriver(
+    const credentialService = await installCredentialServiceDriver(
       controller,
       config.drivers,
       state,
@@ -393,8 +395,8 @@ export async function composeProduction(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    const stopTokenMaintenance = tokenService
-      ? scheduleTokenServiceMaintenance(app, tokenService, config.logger)
+    const stopTokenMaintenance = credentialService
+      ? scheduleCredentialServiceMaintenance(app, credentialService, config.logger)
       : undefined;
     app.addHook("onClose", async () => {
       await stopTokenMaintenance?.();

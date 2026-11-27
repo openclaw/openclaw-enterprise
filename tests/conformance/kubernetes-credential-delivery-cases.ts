@@ -199,7 +199,7 @@ export async function checkGatewayCredentialAggregateLimit() {
   );
   const revision = {
     ...fixture.revision,
-    gatewayTokenServiceInstanceId: randomUUID(),
+    gatewayCredentialServiceInstanceId: randomUUID(),
     secretBindings: Object.fromEntries(Object.keys(values).map((name) => [name, { source }])),
   };
   await assert.rejects(

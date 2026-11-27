@@ -101,7 +101,7 @@ operator recovery.
 refused OAuth-client creates. OCC keeps the hidden registration and selected
 Driver until `cleanupCredentialClients` confirms deletion or absence. Ordinary private
 ownership checks and unknown SQL outcomes remain unchanged. See
-[private custody](../reference/drivers/kubernetes-secret.md#tokenservice-private-custody).
+[private custody](../reference/drivers/kubernetes-secret.md#credentialservice-private-custody).
 
 Secret mutations share the 12-second Kubernetes budget of
 [Configuration writes](configuration-driver/persistence-and-revisions.md).
@@ -170,10 +170,10 @@ caller from its key, authorizes through IAM, and audits mutations. Reruns reuse
 exact bindings and verify Role permissions, including a Role left by a failed
 binding. Database access only reads existing Secret metadata.
 
-With OpenShell, it registers a static TokenService Source using the `openai`
+With OpenShell, it registers a static CredentialService Source using the `openai`
 or `codex-pat` preset and grants exact `credential_source:operate`. The
 `--replace-key` option PATCHes the existing Source with the replacement value.
-TokenService commits it and notifies Credential Proxy. Without OpenShell,
+CredentialService commits it and notifies Credential Proxy. Without OpenShell,
 the helper updates its Namespace Secret. The private record prevents Harness
 or Sandbox Driver changes on reruns.
 `scripts/first-agent.ts:withRecord` creates the PID lock and atomic record

@@ -1332,7 +1332,7 @@
               "flows/connection-templates",
               "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
-              "flows/token-service-static-custody",
+              "flows/credential-service-static-custody",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
@@ -1472,7 +1472,7 @@
       "from": "/guides/deploy/openshell-credential-sources/",
       "to": "/guides/deploy/credential-lifecycle/#create-or-reuse-a-static-model-source-in-the-console",
       "anchors": {
-        "rotate-the-key": "/guides/deploy/credential-lifecycle/#replace-an-occ-tokenservice-managed-model-key",
+        "rotate-the-key": "/guides/deploy/credential-lifecycle/#replace-an-occ-credentialservice-managed-model-key",
         "clean-up": "/reference/credential-sources/#delete-a-source"
       }
     },

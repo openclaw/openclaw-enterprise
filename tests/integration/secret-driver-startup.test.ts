@@ -10,12 +10,12 @@ import {
   OpenClawController,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { installCredentialServiceDriver } from "../../apps/controller/src/composition/credential-service.ts";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
 } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
@@ -90,11 +90,11 @@ test("secret-driver-startup requires one bundled SecretDriver selection and vali
   });
 });
 
-test("TokenService startup keeps marker ownership with the selected private Secret Driver", async (t) => {
+test("CredentialService startup keeps marker ownership with the selected private Secret Driver", async (t) => {
   const core = new FakeSecretCoreV1Api();
   const state = new InMemoryPlatformState();
   const createdAt = new Date().toISOString();
-  const installation = { id: `ins_${randomUUID()}`, name: "TokenService startup", createdAt };
+  const installation = { id: `ins_${randomUUID()}`, name: "CredentialService startup", createdAt };
   await state.transact((unit) => unit.installations.createInstallation(installation));
   let deliveredCredential: string | undefined;
   let initialDrivers: Awaited<ReturnType<typeof loadInstallationFile>>;
@@ -110,7 +110,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     base.drivers.secret.id = secretId;
     const configuration = {
       ...base,
-      drivers: { ...base.drivers, token_service: { id: "occ", configuration: {} } },
+      drivers: { ...base.drivers, credential_service: { id: "occ", configuration: {} } },
     };
     const drivers = await loadInstallationFile(t, configuration);
     assert.ok(drivers);
@@ -126,7 +126,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     // before the controller has selected its Sandbox or delivery capability.
     assert.equal(Reflect.set(proxy, "notifyCredentialUpdated", notify), true);
     const controller = new OpenClawController(installation, { state });
-    await installTokenServiceDriver(controller, drivers, state, { role });
+    await installCredentialServiceDriver(controller, drivers, state, { role });
     return controller;
   }
 
@@ -134,14 +134,14 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   await assert.rejects(start("secret-a", "worker"), SecretBackendUnavailableError);
   assert.equal(core.secrets.size, 0);
   const initial = await start("secret-a");
-  const initialInstance = initial.currentTokenServiceInstanceId();
+  const initialInstance = initial.currentCredentialServiceInstanceId();
   // An API restart can reuse the same loaded native registration and replace its resolver.
   assert.ok(initialDrivers);
   const restartedApi = new OpenClawController(installation, { state });
-  await installTokenServiceDriver(restartedApi, initialDrivers, state);
-  assert.equal(restartedApi.currentTokenServiceInstanceId(), initialInstance);
+  await installCredentialServiceDriver(restartedApi, initialDrivers, state);
+  assert.equal(restartedApi.currentCredentialServiceInstanceId(), initialInstance);
   assert.equal(
-    (await start("secret-a", "worker")).currentTokenServiceInstanceId(),
+    (await start("secret-a", "worker")).currentCredentialServiceInstanceId(),
     initialInstance,
   );
   assert.equal(core.secrets.size, 1);
@@ -158,7 +158,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   await state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
   );
-  const owner = initial.selectedDriver("token_service");
+  const owner = initial.selectedDriver("credential_service");
   const missingClientOperation = Object.create(owner);
   Object.defineProperties(missingClientOperation, {
     id: { value: "missing-client-operation" },
@@ -179,7 +179,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     kind: "oauth2" as const,
     namespaceId,
     id: `ccr_${randomUUID()}`,
-    tokenServiceInstanceId: initialInstance,
+    credentialServiceInstanceId: initialInstance,
     issuer: "https://issuer.example.org",
   };
   const firstClientSecret = randomUUID();
@@ -189,7 +189,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     firstClientSecret,
   );
 
-  // TokenService custody is scoped to the exact selected owner, Namespace and issuer.
+  // CredentialService custody is scoped to the exact selected owner, Namespace and issuer.
   await assert.rejects(
     owner.resolveClientSecret(
       { ...client, issuer: "https://other.example.org" },
@@ -204,7 +204,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   );
   await assert.rejects(
     owner.resolveClientSecret(
-      { ...client, tokenServiceInstanceId: randomUUID() },
+      { ...client, credentialServiceInstanceId: randomUUID() },
       AbortSignal.timeout(5_000),
     ),
     ScopeViolationError,
@@ -216,7 +216,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
       {
         kind: "github-app",
         id: `ccr_${randomUUID()}`,
-        tokenServiceInstanceId: initialInstance,
+        credentialServiceInstanceId: initialInstance,
         appId: "123",
       },
       randomUUID(),
@@ -245,7 +245,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   );
   const sourceInstance = {
     sourceRef: { kind: "credential_source" as const, namespaceId, id: source.id },
-    tokenServiceInstanceId: initialInstance,
+    credentialServiceInstanceId: initialInstance,
   };
   const refreshedCredential = randomUUID();
   await owner.updateSource(
@@ -256,7 +256,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   assert.equal(deliveredCredential, refreshedCredential);
 
   // A new private owner can establish its own marker, but live source custody
-  // still prevents selecting a replacement TokenService instance.
+  // still prevents selecting a replacement CredentialService instance.
   await assert.rejects(start("secret-b"), /still has registrations/);
   await state.transact(({ credentialSources }) =>
     credentialSources.markCredentialSourceDeleting(namespaceId, source.id),
@@ -264,10 +264,10 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   await owner.removeSource(sourceInstance, AbortSignal.timeout(5_000));
 
   const replacement = await start("secret-b");
-  assert.notEqual(replacement.currentTokenServiceInstanceId(), initialInstance);
+  assert.notEqual(replacement.currentCredentialServiceInstanceId(), initialInstance);
   assert.equal(
-    (await start("secret-b")).currentTokenServiceInstanceId(),
-    replacement.currentTokenServiceInstanceId(),
+    (await start("secret-b")).currentCredentialServiceInstanceId(),
+    replacement.currentCredentialServiceInstanceId(),
   );
   assert.equal(core.secrets.size, 2);
   assert.deepEqual(
@@ -278,14 +278,14 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   );
 });
 
-test("TokenService verifies the GitHub App before private custody and hot key replacement", async (t) => {
+test("CredentialService verifies the GitHub App before private custody and hot key replacement", async (t) => {
   const gh = await startGitHubFixture(t, { clock: createSystemClock() });
   const core = new FakeSecretCoreV1Api();
   const secretDriver = new KubernetesSecretDriver({ authentication: { mode: "inCluster" } });
   Reflect.set(secretDriver, "client", Promise.resolve(core));
   const installationId = `ins_${randomUUID()}`;
   const instanceId = randomUUID();
-  const owner = new OCCTokenServiceDriver(
+  const owner = new OCCCredentialServiceDriver(
     "occ",
     installationId,
     secretDriver.privateSecrets,
@@ -298,7 +298,7 @@ test("TokenService verifies the GitHub App before private custody and hot key re
   const client = {
     kind: "github-app" as const,
     id: `ccr_${randomUUID()}`,
-    tokenServiceInstanceId: instanceId,
+    credentialServiceInstanceId: instanceId,
     appId: fixtureAppId,
   };
   const firstKey = gh.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -319,7 +319,7 @@ test("TokenService verifies the GitHub App before private custody and hot key re
     return createHash("sha256").update(encoded).digest("hex");
   };
   const firstDigest = privateDigest();
-  const untrustedOwner = new OCCTokenServiceDriver(
+  const untrustedOwner = new OCCCredentialServiceDriver(
     "occ",
     installationId,
     secretDriver.privateSecrets,

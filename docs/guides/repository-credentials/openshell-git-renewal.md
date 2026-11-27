@@ -1,6 +1,6 @@
 # Verify Git token renewal
 
-For Source-backed Git, TokenService renews the GitHub installation token independently of the Agent revision's saved Repository grant. A request still needs a valid Source credential and must match that grant. Token expiry does not withdraw the grant.
+For Source-backed Git, CredentialService renews the GitHub installation token independently of the Agent revision's saved Repository grant. A request still needs a valid Source credential and must match that grant. Token expiry does not withdraw the grant.
 
 Use [Source-backed Git enrollment](../repository-credentials.md#set-github-app-access-for-an-openshell-agent) and the operator shell
 from [first Agent setup](../deploy/deploy-first-agent.md), which defines `request`.

@@ -14,7 +14,7 @@ export async function loadedProxyInstallation(
     id: string;
     registry: { backendId: string };
     preview?: boolean;
-    tokenService?: true;
+    credentialService?: true;
     /** repository.preparedGitHub.apiOrigin; omitted selects github.com. */
     apiOrigin?: string;
     createOpenShellBackend: NonNullable<
@@ -62,7 +62,7 @@ export async function loadedProxyInstallation(
     ],
     drivers: {
       ...base.drivers,
-      ...(input.tokenService && { token_service: { id: "occ", configuration: {} } }),
+      ...(input.credentialService && { credential_service: { id: "occ", configuration: {} } }),
       sandbox: {
         ...base.drivers.sandbox,
         id: input.id,

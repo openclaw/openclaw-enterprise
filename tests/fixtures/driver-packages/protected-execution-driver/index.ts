@@ -224,7 +224,7 @@ export function createDriver({
         removeRevision: outsideProfile,
       },
       // This external package advertises staged delivery but refuses every operation. Startup
-      // selects that role only when OCC TokenService is actually configured.
+      // selects that role only when OCC CredentialService is actually configured.
       credential_proxy_delivery: {
         id,
         implementation,

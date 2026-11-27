@@ -784,7 +784,7 @@ async function prepare(): Promise<void> {
       drivers: {
         ...conf.drivers,
         service_account: { id: "recovery-service-account", configuration: {} },
-        token_service: { id: "occ", configuration: {} },
+        credential_service: { id: "occ", configuration: {} },
       },
     }),
     { mode: 0o600 },
@@ -905,7 +905,7 @@ after(async () => {
 });
 
 test(
-  "fresh issued ServiceAccount PAT uses TokenService custody and preserves independent Source lifecycle",
+  "fresh issued ServiceAccount PAT uses CredentialService custody and preserves independent Source lifecycle",
   requiresPostgres,
   async () => {
     const a = await account("fresh");
@@ -1013,19 +1013,21 @@ test(
     const storedSource = await live.state!.read((view) =>
       view.credentialSources.findCredentialSource(live.namespaceId, sourceId),
     );
-    assert.ok(storedSource?.ownerCapability === "token_service" && storedSource.type === "static");
-    const owner = live.controller!.selectedDriver("token_service");
+    assert.ok(
+      storedSource?.ownerCapability === "credential_service" && storedSource.type === "static",
+    );
+    const owner = live.controller!.selectedDriver("credential_service");
     const resolved = await owner.resolveCredential(
       {
         sourceRef: { kind: "credential_source", namespaceId: live.namespaceId, id: sourceId },
-        tokenServiceInstanceId: storedSource.tokenServiceInstanceId,
+        credentialServiceInstanceId: storedSource.credentialServiceInstanceId,
       },
       AbortSignal.timeout(5_000),
     );
     assert.equal(
       resolved.credential === c.token,
       true,
-      "selected TokenService holds the issued bearer",
+      "selected CredentialService holds the issued bearer",
     );
     assert.equal(source.type, "static");
     assert.deepEqual(source.config, { provider_preset: "codex-pat" });

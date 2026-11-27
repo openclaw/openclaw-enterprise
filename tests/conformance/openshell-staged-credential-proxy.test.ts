@@ -799,15 +799,15 @@ async function fixture(t: TestContext, workspaceNamespace: string = namespace.na
     client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
     drivers: { sandbox: selectedSandbox.id },
   };
-  const createProxy = (tokenServiceImplementation: string) =>
+  const createProxy = (credentialServiceImplementation: string) =>
     new OpenShellCredentialProxyDriver({
       id: selectedSandbox.id,
       implementation: selectedSandbox.implementation,
       backend,
       sandbox: selectedSandbox,
-      tokenServiceImplementation,
+      credentialServiceImplementation,
     });
-  const proxy = createProxy("occ/token-service");
+  const proxy = createProxy("occ/credential-service");
   proxy.bindSourceNamespaceResolver(async (sourceRef) => {
     assert.equal(sourceRef.namespaceId, namespace.id);
     return placedNamespace;
@@ -1046,7 +1046,7 @@ function addSecondSandboxTarget(f: Awaited<ReturnType<typeof fixture>>) {
   return { sandbox, context };
 }
 
-test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider without resolving again", async (t) => {
+test("staged OpenShell Proxy accepts OCC CredentialService and reuses its Provider without resolving again", async (t) => {
   const f = await fixture(t);
   const first = await f.configure();
   assert.deepEqual(first, {
@@ -1118,7 +1118,7 @@ test("native Proxy prepares one Codex account Provider for the three fixed model
         method: "credential_source",
         sourceId: binding.sourceRef.id,
         sourceType: "oauth2-refresh-token",
-        tokenServiceInstanceId: "tokens",
+        credentialServiceInstanceId: "tokens",
       },
       credentialDeployment: {
         ...f.context.revision.credentialDeployment!,
@@ -1221,12 +1221,12 @@ test("native Proxy delivers a managed Slack MCP binding and rejects broadened po
         method: "credential_source",
         sourceId: binding.sourceRef.id,
         sourceType: "static",
-        tokenServiceInstanceId: "tokens",
+        credentialServiceInstanceId: "tokens",
       },
       credentialSources: [binding.sourceRef, sourceRef].map(({ id }) => ({
         sourceId: id,
         sourceType: "static",
-        tokenServiceInstanceId: "tokens",
+        credentialServiceInstanceId: "tokens",
       })),
       plugins: {
         driver: { id: "openclaw-plugin", implementation: "occ/openclaw-plugin" },
@@ -1390,18 +1390,18 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
         method: "credential_source",
         sourceId: binding.sourceRef.id,
         sourceType: "static",
-        tokenServiceInstanceId: "tokens",
+        credentialServiceInstanceId: "tokens",
       },
       credentialSources: [
         {
           sourceId: binding.sourceRef.id,
           sourceType: "static",
-          tokenServiceInstanceId: "tokens",
+          credentialServiceInstanceId: "tokens",
         },
         {
           sourceId: pluginSourceRef.id,
           sourceType: "oauth2-refresh-token",
-          tokenServiceInstanceId: "tokens",
+          credentialServiceInstanceId: "tokens",
         },
       ],
       plugins: {
@@ -1748,16 +1748,16 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
   );
 });
 
-test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {
+test("staged OpenShell Proxy rejects an unsupported CredentialService before resolving or mutating the Gateway", async (t) => {
   const f = await fixture(t);
-  assert.throws(() => f.createProxy("unsupported/token-service"), {
-    message: "OpenShell credential delivery requires a supported TokenService implementation.",
+  assert.throws(() => f.createProxy("unsupported/credential-service"), {
+    message: "OpenShell credential delivery requires a supported CredentialService implementation.",
   });
 });
 
 test("staged OpenShell Proxy attaches and detaches an authoritative Provider without copying it", async (t) => {
   const f = await fixture(t);
-  const proxy = f.createProxy("openshell/token-service");
+  const proxy = f.createProxy("openshell/credential-service");
   const name = openShellProviderName(binding.sourceRef.id);
   const id = randomUUID();
   const provider = {
@@ -1772,7 +1772,7 @@ test("staged OpenShell Proxy attaches and detaches an authoritative Provider wit
     profile_workspace: namespace.name,
     config: {},
   };
-  // TokenService verifies custody separately. This case exercises the Proxy against an
+  // CredentialService verifies custody separately. This case exercises the Proxy against an
   // existing Provider and checks that Proxy cleanup leaves its owner's material in place.
   f.state.provider = provider;
   const purposes: string[] = [];
@@ -1817,7 +1817,7 @@ test("staged OpenShell Proxy attaches and detaches an authoritative Provider wit
 
 test("OpenShell custody delivers a Codex PAT from its authoritative Source Provider", async (t) => {
   const f = await fixture(t);
-  const proxy = f.createProxy("openshell/token-service");
+  const proxy = f.createProxy("openshell/credential-service");
   const preset = resolveModelCredentialPreset({
     presetId: "codex-pat",
     configuration: { agents: { defaults: { model: "codex/model-fixture" } } },
@@ -1850,7 +1850,7 @@ test("OpenShell custody delivers a Codex PAT from its authoritative Source Provi
         method: "credential_source",
         sourceId: codex.sourceRef.id,
         sourceType: "static",
-        tokenServiceInstanceId: "tokens",
+        credentialServiceInstanceId: "tokens",
       },
       credentialDeployment: {
         ...f.context.revision.credentialDeployment!,
@@ -1944,7 +1944,7 @@ test("OpenShell Source notification refuses a version that differs from resolved
 
 test("OpenShell Source notification rejects a mismatched Source Namespace placement", async (t) => {
   const f = await fixture(t);
-  const proxy = f.createProxy("occ/token-service");
+  const proxy = f.createProxy("occ/credential-service");
   proxy.bindSourceNamespaceResolver(async () => ({ ...namespace, id: "other-namespace" }));
 
   // Placement must resolve the same canonical Namespace as the Source before any custody read
@@ -1988,7 +1988,7 @@ test("OpenShell Source notification updates an attached Provider copy and confir
   const profile = structuredClone(f.state.profile);
   assert.equal((f.state.profile!.credentials as Wire[])[0]!.stable_placeholder, true);
 
-  // Simulate TokenService's authoritative Source update; this client/server fixture proves the native
+  // Simulate CredentialService's authoritative Source update; this client/server fixture proves the native
   // Proxy's UpdateProvider protocol, not propagation into a live running Harness.
   f.setResolvedCredential("synthetic-material-v2", "source-v2");
   await f.notify("source-v2");
@@ -2684,7 +2684,7 @@ test("Kubernetes Stop detaches native Git and model Providers from a retained ma
     implementation: sandbox.implementation,
     backend: f.backend,
     sandbox,
-    tokenServiceImplementation: "occ/token-service",
+    credentialServiceImplementation: "occ/credential-service",
   });
   const deployment = f.context.revision.credentialDeployment;
   const owner = new InstalledDriver(
@@ -2716,7 +2716,7 @@ test("Kubernetes Stop detaches native Git and model Providers from a retained ma
       },
     },
   };
-  const tokenServiceInstanceId = "tokens";
+  const credentialServiceInstanceId = "tokens";
   const revision = {
     ...f.context.revision,
     compute: { id: compute.id, implementation: compute.implementation },
@@ -2734,14 +2734,18 @@ test("Kubernetes Stop detaches native Git and model Providers from a retained ma
       method: "credential_source" as const,
       sourceId: binding.sourceRef.id,
       sourceType: "static" as const,
-      tokenServiceInstanceId,
+      credentialServiceInstanceId,
     },
     credentialSources: [
-      { sourceId: binding.sourceRef.id, sourceType: "static" as const, tokenServiceInstanceId },
+      {
+        sourceId: binding.sourceRef.id,
+        sourceType: "static" as const,
+        credentialServiceInstanceId,
+      },
       {
         sourceId: git.sourceRef.id,
         sourceType: "github-app-installation" as const,
-        tokenServiceInstanceId,
+        credentialServiceInstanceId,
       },
     ],
     repositoryCredentials: {

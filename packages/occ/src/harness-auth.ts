@@ -1,5 +1,5 @@
 import type { AgentCredentialAccess } from "./agent-credential-access.ts";
-import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import { isManagedCredentialServiceSource } from "./credential-source-metadata.ts";
 import {
   isSecretHarnessAuth,
   normalizeHarnessAuthBinding,
@@ -40,7 +40,7 @@ interface HarnessAuthDependencies {
   readonly secrets: Pick<SecretOperations, "ownedSecretDriver" | "secretDriver">;
   readonly hasCredentialProxyDelivery: () => boolean;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
-  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
+  readonly ownedCredentialServiceDriver: (instanceId: string) => unknown;
   readonly serviceAccounts: Pick<
     ServiceAccountOperations,
     "hasServiceAccountDriver" | "serviceAccountDriverId"
@@ -130,12 +130,12 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
         namespaceId,
         binding.sourceId,
       );
-      if (!isManagedTokenServiceSource(source) || source.state !== "ready") {
+      if (!isManagedCredentialServiceSource(source) || source.state !== "ready") {
         throw new ScopeViolationError(
-          "The selected Harness requires a ready TokenService Source in this Namespace.",
+          "The selected Harness requires a ready CredentialService Source in this Namespace.",
         );
       }
-      dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      dependencies.ownedCredentialServiceDriver(source.credentialServiceInstanceId);
     } else {
       throw new ResourceStateConflictError(
         "Bind the issued ServiceAccount's Credential Source instead.",
@@ -229,23 +229,25 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
       namespaceId,
       binding.sourceId,
     );
-    if (!isManagedTokenServiceSource(source) || source.state !== "ready") {
-      throw new ScopeViolationError("The selected Harness requires a ready TokenService Source.");
+    if (!isManagedCredentialServiceSource(source) || source.state !== "ready") {
+      throw new ScopeViolationError(
+        "The selected Harness requires a ready CredentialService Source.",
+      );
     }
-    dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+    dependencies.ownedCredentialServiceDriver(source.credentialServiceInstanceId);
     if (
       source.type !== "static" &&
       (source.type !== "oauth2-refresh-token" || source.consent.kind !== "builtin_codex")
     ) {
       throw new ResourceStateConflictError(
-        "This TokenService source cannot authenticate a staged model deployment.",
+        "This CredentialService source cannot authenticate a staged model deployment.",
       );
     }
     return immutableCopy({
       method: "credential_source" as const,
       sourceId: source.id,
       sourceType: source.type,
-      tokenServiceInstanceId: source.tokenServiceInstanceId,
+      credentialServiceInstanceId: source.credentialServiceInstanceId,
     });
   }
 
@@ -320,7 +322,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
   ): void {
     if (auth.method === "credential_source") {
       requireCredentialSourceSandbox(sandbox);
-      if (auth.tokenServiceInstanceId !== undefined) {
+      if (auth.credentialServiceInstanceId !== undefined) {
         if (!dependencies.hasCredentialProxyDelivery()) {
           throw new ResourceStateConflictError(
             "A staged credential deployment requires a selected Credential Proxy.",
@@ -332,7 +334,9 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
           );
         }
       } else {
-        throw new ResourceStateConflictError("Harness credentials require a TokenService Source.");
+        throw new ResourceStateConflictError(
+          "Harness credentials require a CredentialService Source.",
+        );
       }
     }
   }

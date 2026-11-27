@@ -15,7 +15,7 @@ Linear connection. A Source from Codex OAuth or a Codex PAT can browse the
 account catalog. An OpenAI API key cannot access hosted Apps. A real PAT-backed
 turn and a hosted App tool call remain unverified on the managed delivery path.
 
-Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and ready TokenService account Source. Selecting a plugin does not authorize a new connection.
+Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and ready CredentialService account Source. Selecting a plugin does not authorize a new connection.
 
 ## 1. Enable Linear and redeploy
 
@@ -31,7 +31,7 @@ Save the plugin selections, then continue below to stop and redeploy the Agent.
 
 ### Discover Linear in the account catalog
 
-Use the ready TokenService account Source for Codex. The saved session supplies its Namespace Source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+Use the ready CredentialService account Source for Codex. The saved session supplies its Namespace Source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
 
 ```bash
 # Read the Source reference for the existing Agent's account.

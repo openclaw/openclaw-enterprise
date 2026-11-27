@@ -362,7 +362,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return err
 		}
 		if sandboxDriver == "openshell" {
-			// OCC TokenService needs its Kubernetes private store before the Compose API starts.
+			// OCC CredentialService needs its Kubernetes private store before the Compose API starts.
 			if err := r.ensureKubernetesNamespace(ctx, "oce-installation-secrets"); err != nil {
 				return err
 			}

@@ -251,7 +251,7 @@ letting a dedicated Codex Gateway start once on a first deploy. The two-minute
 bridge-route wait also bounds each container-engine lookup.
 
 For Credential Design 1.0, configure the OpenShell Backend and Sandbox without
-the retired Gateway or Refresh Driver selections. Select TokenService and native
+the retired Gateway or Refresh Driver selections. Select CredentialService and native
 Credential Proxy delivery, then [register and bind a Source](deploy-first-agent.md#1-select-or-register-the-model-credential).
 See [credential implementation status](../../reference/credential-sources.md#implementation-status).
 

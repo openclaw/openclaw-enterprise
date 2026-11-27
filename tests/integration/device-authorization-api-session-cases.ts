@@ -5,7 +5,7 @@ import {
   assertNoCredentials,
   readyLogin,
 } from "./device-authorization-api-fixture.ts";
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { installDeviceCredentialService } from "../helpers/device-credential-service.ts";
 
 export function registerDeviceAuthorizationSessionCases(): void {
   test("cancelling or expiring a pending device login closes temporary state without creating a Source", async (t) => {
@@ -29,16 +29,16 @@ export function registerDeviceAuthorizationSessionCases(): void {
     assertNoCredentials(fixture);
   });
 
-  test("a changed TokenService instance cannot receive an existing device login handle", async (t) => {
+  test("a changed CredentialService instance cannot receive an existing device login handle", async (t) => {
     const fixture = await createFixture(t);
     const login = await fixture.start();
     const stored = await fixture.stored(login);
-    assert.equal(stored.tokenServiceInstanceId, fixture.instanceId);
-    await installDeviceTokenService(
+    assert.equal(stored.credentialServiceInstanceId, fixture.instanceId);
+    await installDeviceCredentialService(
       fixture.controller,
       fixture.state,
       fixture.secretDriver,
-      "replacement-device-token-service",
+      "replacement-device-credential-service",
     );
     await fixture.clock.advance(5000);
     assert.equal((await fixture.poll(login)).status, 503);

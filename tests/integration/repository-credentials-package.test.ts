@@ -287,7 +287,7 @@ test(
     const token = `gho_${"p".repeat(36)}`;
     const tokenFile = join(temporary, "token");
     await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
-    const tokenConfiguration = join(temporary, "token-service.json");
+    const tokenConfiguration = join(temporary, "credential-service.json");
     const developmentConfiguration = {
       gateway: {
         ...preparedConfiguration.gateway,

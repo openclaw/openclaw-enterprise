@@ -51,7 +51,7 @@ type StaticTokenOptions = Pick<ListenerOptions, "config" | "clock" | "tls"> & {
 };
 
 /** Development token authority: the service owns `token`; GitHub never issues one. */
-export async function createGitHubTokenServiceFactory(
+export async function createGitHubCredentialServiceFactory(
   resources: FixtureOwner,
   {
     config,
@@ -159,7 +159,7 @@ export async function startServiceListeners(
  * A development token factory in front of the fake GitHub, which accepts the static host
  * `token` on git and REST without issuing it. Git goes to `gitOrigin` (default: GitHub).
  */
-export async function createStaticTokenServiceFactory(
+export async function createStaticCredentialServiceFactory(
   resources: FixtureOwner,
   {
     config,
@@ -172,7 +172,7 @@ export async function createStaticTokenServiceFactory(
   }: StaticTokenOptions,
 ) {
   const tokenIndex = github.acceptStatic(token);
-  const factory = await createGitHubTokenServiceFactory(resources, {
+  const factory = await createGitHubCredentialServiceFactory(resources, {
     config,
     clock,
     token,
@@ -183,16 +183,16 @@ export async function createStaticTokenServiceFactory(
 }
 
 /**
- * createStaticTokenServiceFactory, then startServiceListeners with the same options. The
+ * createStaticCredentialServiceFactory, then startServiceListeners with the same options. The
  * listeners trust the fake GitHub and `gitOrigin` unless the options name the origins.
  */
-export async function startStaticTokenService(
+export async function startStaticCredentialService(
   resources: FixtureOwner,
   options: StaticTokenOptions &
     Pick<ListenerOptions, "trustedUpstreamOrigins" | "upstreamOrigins" | "log">,
 ) {
   const { github, gitOrigin = github.origin } = options;
-  const created = await createStaticTokenServiceFactory(resources, options);
+  const created = await createStaticCredentialServiceFactory(resources, options);
   const started = await startServiceListeners(resources, {
     upstreamOrigins: [...new Set([github.origin, gitOrigin])],
     ...options,

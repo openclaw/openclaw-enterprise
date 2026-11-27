@@ -296,7 +296,7 @@ test("Agent and CredentialSource operations document the permissions they check"
       (permission) => record(permission, "permission").resourceKind === "credential_source",
     ),
   );
-  // Source registration and update deliver write-only material directly to TokenService.
+  // Source registration and update deliver write-only material directly to CredentialService.
   assert.deepEqual(permissions("createCredentialSource"), [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },
   ]);

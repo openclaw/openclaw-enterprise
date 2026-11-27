@@ -25,10 +25,10 @@ import {
 export async function verifyPlatformStateLifecycle(
   store: PlatformStateStore,
   seed: Pick<PlatformStateSeed, "agent" | "audit" | "configuration" | "namespace" | "revision">,
-  tokenServiceInstanceId: string,
+  credentialServiceInstanceId: string,
 ) {
   const { lifecycleNamespace, deletedAt } = await verifyNamespaceLifecycle(store, seed);
-  const accounts = await verifyServiceAccountLifecycle(store, seed, tokenServiceInstanceId);
+  const accounts = await verifyServiceAccountLifecycle(store, seed, credentialServiceInstanceId);
   const lifecycleAgent = await verifyAgentDeletionAdmission(store, seed);
   return { lifecycleNamespace, deletedAt, lifecycleAgent, ...accounts };
 }
@@ -217,7 +217,7 @@ async function verifyNamespaceLifecycle(
 async function verifyServiceAccountLifecycle(
   store: PlatformStateStore,
   { namespace, revision }: Pick<PlatformStateSeed, "namespace" | "revision">,
-  tokenServiceInstanceId: string,
+  credentialServiceInstanceId: string,
 ) {
   const accountNamespace = {
     id: identifier("ns"),
@@ -292,8 +292,8 @@ async function verifyServiceAccountLifecycle(
         namespaceId,
         name: `Issued account Source ${id}`,
         type: "static",
-        ownerCapability: "token_service",
-        tokenServiceInstanceId,
+        ownerCapability: "credential_service",
+        credentialServiceInstanceId,
         config: { provider_preset: "codex-pat" },
         state: "ready",
         createdAt: accountNamespace.createdAt,
@@ -465,7 +465,7 @@ async function verifyServiceAccountLifecycle(
     } satisfies ServiceAccountCredential,
   };
   await store.transact(async (transaction) => {
-    // Later contract cases can select a new TokenService after this case's own Source is gone.
+    // Later contract cases can select a new CredentialService after this case's own Source is gone.
     assert.equal(
       await transaction.serviceAccounts.deleteServiceAccount(accountNamespace.id, account.id),
       true,

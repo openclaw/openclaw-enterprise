@@ -6,7 +6,7 @@ import type {
   InstallationCapabilities,
   PluginDriver,
   SandboxDriver,
-  TokenServiceDriver,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { HARNESS_EXECUTION_MODES } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
@@ -20,7 +20,7 @@ interface InstallationCapabilityDependencies {
   readonly protectedSourceTypes: () => readonly CredentialSourceType[];
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly sandboxDriver: () => SandboxDriver | undefined;
-  readonly tokenServiceDriver: () => TokenServiceDriver | undefined;
+  readonly credentialServiceDriver: () => CredentialServiceDriver | undefined;
   readonly modelCredentialSourcePresets: () => InstallationCapabilities["modelCredentialSourcePresets"];
 }
 
@@ -60,7 +60,7 @@ async function readInstallationCapabilities(
       ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
       : {}),
   }));
-  const owner = dependencies.tokenServiceDriver();
+  const owner = dependencies.credentialServiceDriver();
   const deviceAuthorization =
     typeof owner?.startDeviceAuthorization === "function" &&
     typeof owner.pollDeviceAuthorization === "function";

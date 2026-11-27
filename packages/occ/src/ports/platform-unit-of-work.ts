@@ -83,7 +83,7 @@ export function bindPlatformUnitOfWork(
     installations: bindRepository(repositories.installations, lifetime, [
       ...platformReadMethods.installations,
       "createInstallation",
-      "selectTokenServiceInstance",
+      "selectCredentialServiceInstance",
       "holdPrincipalAccount",
       "holdAuthenticationSession",
       "holdIAMConfiguration",

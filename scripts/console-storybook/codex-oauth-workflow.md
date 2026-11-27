@@ -140,4 +140,4 @@ Record the tested commit and browser; label it simulated UI proof.
 ## Select an issued PAT Source
 
 Use the [issued account selection workflow](codex-pat-workflow.md) to verify that
-saving a ChatGPT service account binds its TokenService Source to the Agent.
+saving a ChatGPT service account binds its CredentialService Source to the Agent.

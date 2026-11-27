@@ -24,7 +24,7 @@ import {
 import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
 import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-credential-policy.ts";
 import { openShellRepositoryMetadataRequest } from "../drivers/sandbox/openshell-git-network-policy.ts";
-import { isGitHubAppSourceScopeCurrent } from "../drivers/token-service/github-app-source.ts";
+import { isGitHubAppSourceScopeCurrent } from "../drivers/credential-service/github-app-source.ts";
 
 /** Qualify the installed native pair against the complete admitted deployment policy. */
 export const supportsOpenShellCredentialDeployment: NonNullable<

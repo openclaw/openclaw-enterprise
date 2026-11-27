@@ -217,7 +217,7 @@ Create a private evidence directory and record these values before mutation.
       repository registry metadata, broker sessions, and external provider or
       channel grants.
 - [ ] Inventory Credential Source IDs, status and Agent bindings. Record the
-      selected TokenService and Credential Proxy and which credentials need
+      selected CredentialService and Credential Proxy and which credentials need
       [re-enrollment](production-upgrade-credentials.md) when upgrading retired Gateway delivery.
       Keep Slack Channel startup Secrets in the separate channel inventory.
 - [ ] Compare Agent drafts and persisted Preset plugin policies with the
@@ -301,7 +301,7 @@ Follow the [operator instructions for each surface](upgrade-dispositions.md).
       downstream operation. Where plugin approval is required, verify approval
       and denial through the intended reviewer. See
       [workflow verification](production-handoff.md#verify-the-deployed-workflow).
-- [ ] Confirm TokenService Source status, exact operator and Agent grants,
+- [ ] Confirm CredentialService Source status, exact operator and Agent grants,
       and the active revision's bindings. Verify a real model reply through
       the selected Credential Proxy delivery path.
 - [ ] Evidence contains the before/after inventory, rendered configuration,

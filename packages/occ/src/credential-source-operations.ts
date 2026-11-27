@@ -12,7 +12,7 @@ import {
   type OAuthConnectionStatus,
   type ResourceRef,
   type SecretReference,
-  type TokenService,
+  type CredentialService,
 } from "@openclaw-enterprise/contracts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
@@ -28,7 +28,7 @@ import {
   legacyCredentialSourceMetadata,
   type LegacyCredentialSourceMetadata as CredentialSourceMetadata,
   type CredentialSourceManagementMetadata,
-  isManagedTokenServiceSource,
+  isManagedCredentialServiceSource,
 } from "./credential-source-metadata.ts";
 import {
   CredentialDeliveryFailedError,
@@ -71,13 +71,13 @@ interface CredentialSourceDependencies {
   readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly nextSourceId: () => string;
   readonly timestamp: () => string;
-  readonly tokenService: () => Pick<TokenService, "register">;
-  readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
+  readonly credentialService: () => Pick<CredentialService, "register">;
+  readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<CredentialService["issuer"]>>;
   readonly readConnectionStatus: (
     namespaceId: string,
     sourceId: string,
   ) => Promise<OAuthConnectionStatus>;
-  readonly refreshTokenServiceSource: (
+  readonly refreshCredentialServiceSource: (
     namespaceId: string,
     sourceId: string,
   ) => Promise<CredentialRefreshStatus>;
@@ -86,7 +86,7 @@ interface CredentialSourceDependencies {
 function legacySource(
   source: Readonly<StoredCredentialSource> | undefined,
 ): Readonly<CredentialSource> | undefined {
-  return source?.ownerCapability === "token_service" ? undefined : source;
+  return source?.ownerCapability === "credential_service" ? undefined : source;
 }
 
 /** A mint that did not produce a token is reported with the Driver's safe failure code. */
@@ -95,7 +95,7 @@ function assertRefreshMinted(status: CredentialRefreshStatus): void {
     return;
   }
   const code = status.failureCode === undefined ? "" : ` (${status.failureCode})`;
-  throw new DependencyUnavailableError(`TokenService did not mint a token${code}.`);
+  throw new DependencyUnavailableError(`CredentialService did not mint a token${code}.`);
 }
 
 function credentialSourceFieldsMatch(
@@ -155,7 +155,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     const { namespace, source, issuer, egress } = registration;
     if (egress.adoption === "prepared" && issuer) {
       try {
-        await dependencies.tokenService().register(
+        await dependencies.credentialService().register(
           {
             kind: dependencies.preparedIssuer(egress.key.provider).tokenKind,
             source: egress,
@@ -216,7 +216,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     if (protectedType === undefined) {
       throw new CredentialSourceConfigError(
         "type",
-        "Register static credentials or OAuth through TokenService.",
+        "Register static credentials or OAuth through CredentialService.",
       );
     }
     const { type, driver } = protectedType;
@@ -309,18 +309,21 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         );
       }
       if (
-        !isManagedTokenServiceSource(source) ||
+        !isManagedCredentialServiceSource(source) ||
         source.type === "static" ||
         source.state !== "ready"
       ) {
         throw new ResourceStateConflictError(
-          "Only a ready TokenService OAuth or GitHub App installation Source can be renewed.",
+          "Only a ready CredentialService OAuth or GitHub App installation Source can be renewed.",
         );
       }
       return source;
     });
     try {
-      const refresh = await dependencies.refreshTokenServiceSource(source.namespaceId, source.id);
+      const refresh = await dependencies.refreshCredentialServiceSource(
+        source.namespaceId,
+        source.id,
+      );
       assertRefreshMinted(refresh);
       if (audit) {
         await dependencies.transactions.transact((state) => state.audit.append(audit));
@@ -331,7 +334,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
           source.id,
         );
         if (
-          !isManagedTokenServiceSource(current) ||
+          !isManagedCredentialServiceSource(current) ||
           current.type !== source.type ||
           current.state !== "ready"
         ) {
@@ -386,7 +389,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       }
       return source;
     });
-    if (isManagedTokenServiceSource(source)) {
+    if (isManagedCredentialServiceSource(source)) {
       if (source.type === "static") {
         return credentialSourceMetadata(source);
       }
@@ -434,7 +437,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         state: source.state === "ready" && prepared ? "ready" : "pending",
       });
     }
-    throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+    throw new ResourceStateConflictError("Re-enroll this credential with CredentialService.");
   }
 
   async function listCredentialSources(
@@ -462,7 +465,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       Object.freeze(
         await Promise.all(
           sources.map((source) =>
-            !isManagedTokenServiceSource(source)
+            !isManagedCredentialServiceSource(source)
               ? legacyCredentialSourceMetadata(source)
               : source.type === "static"
                 ? credentialSourceMetadata(source)

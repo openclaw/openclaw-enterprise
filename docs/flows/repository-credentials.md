@@ -72,7 +72,7 @@ factory's `createPrepared` capability to select a session constructor before eit
 Both constructors share admission, capacity and shutdown:
 
 - **Prepared:** [Pass the original authority and selection to `createPrepared`](../../apps/controller/src/drivers/repo/access/session-construction.ts)
-  and verify the returned binding. The sender reads READY material from the worker Token Service;
+  and verify the returned binding. The sender reads READY material from the worker CredentialService;
   it cannot mint installation tokens. It loads neither development custody nor the development lifecycle.
 - **Development:** [Construct custody and lifecycle locally](../../apps/controller/src/drivers/repo/access/development-session.ts)
   and drain failed construction. The [GitHub factory](../../apps/controller/src/drivers/repo/github/access/factory.ts)

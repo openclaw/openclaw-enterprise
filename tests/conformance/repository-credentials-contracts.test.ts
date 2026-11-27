@@ -10,10 +10,10 @@ import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/js
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
-import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
+import { startCredentialServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
-  startStaticTokenService,
+  startStaticCredentialService,
   writeSessionClientConfiguration,
 } from "../fixtures/repository-credentials/service-resources.ts";
 import { issueResponse, pullResponse } from "../fixtures/repository-credentials/builders.ts";
@@ -638,10 +638,10 @@ test(
   "service resource factories dispose development sessions before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
-    const { resources, tls, github, config, clock } = await startTokenServiceScope(t);
+    const { resources, tls, github, config, clock } = await startCredentialServiceScope(t);
     assert.ok(github);
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const { service, listeners } = await startStaticTokenService(resources, {
+    const { service, listeners } = await startStaticCredentialService(resources, {
       config,
       clock,
       tls,

@@ -10,7 +10,7 @@ last_updated_session: authoring-run/97afbc63-ab09-45c6-bf75-044b4068cfef
 
 An authorized caller searches Slack users or channels with a ready static
 Credential Source. OpenClaw Control Plane (OCC) checks the caller's exact access,
-resolves the Source through its TokenService owner, and gives the token in memory
+resolves the Source through its CredentialService owner, and gives the token in memory
 to the ChannelDriver. The Driver returns names, stable IDs, and workspace identity.
 The Agent or Configuration stores only the selected IDs.
 
@@ -20,7 +20,7 @@ The Agent or Configuration stores only the selected IDs.
   Namespace channel directory route with `sourceId`.
 - Assumptions: the caller can create an Agent or update the exact Agent or
   Configuration, and can operate the selected same-Namespace Source. Its owner
-  and Compute must be the qualified OCC TokenService and Kubernetes Compute pair.
+  and Compute must be the qualified OCC CredentialService and Kubernetes Compute pair.
 - Source: `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`,
   `packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`,
   and `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.lookupDirectory`.
@@ -33,7 +33,7 @@ graph TD
   UI["<b>Console</b><br/>Select bot Source"] --> A["<b>Directory API</b><br/>sourceId and edit target"]
   A --> B["<b>OCC authorization</b><br/>Exact target and Source operate"]
   B --> C["<b>Qualification</b><br/>Ready static Source<br/>OCC + Kubernetes"]
-  C --> D["<b>TokenService</b><br/>Resolve current token"]
+  C --> D["<b>CredentialService</b><br/>Resolve current token"]
   D --> E["<b>OCC recheck</b><br/>Authority, owner, readiness"]
   E --> F["<b>ChannelDriver</b><br/>Slack via OCC listener"]
   F --> G["<b>Safe result</b><br/>Workspace, names, IDs"]
@@ -49,8 +49,8 @@ graph TD
 
 The request names `sourceId` and optionally the Agent or Configuration being
 edited. OCC checks Agent create or exact target update and `operate` on that
-same-Namespace Credential Source. It requires a ready static TokenService Source
-and the qualified OCC TokenService/Kubernetes Compute pair. A missing, foreign,
+same-Namespace Credential Source. It requires a ready static CredentialService Source
+and the qualified OCC CredentialService/Kubernetes Compute pair. A missing, foreign,
 or unsupported Source is rejected before credential resolution or provider I/O.
 
 ### 2. Read and use the current value

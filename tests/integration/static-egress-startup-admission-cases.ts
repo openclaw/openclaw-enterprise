@@ -22,7 +22,7 @@ export function registerStartupAdmissionCases(): void {
     });
     assert.equal(result.status, 400, JSON.stringify(result.body));
     assert.equal(result.body.error.code, "INVALID_REQUEST");
-    assert.match(result.body.error.message, /through TokenService/);
+    assert.match(result.body.error.message, /through CredentialService/);
     assert.equal(f.countSecretReads(), reads);
     assert.deepEqual(await sources(), before);
   });

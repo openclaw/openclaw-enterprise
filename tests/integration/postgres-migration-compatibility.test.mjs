@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:https";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -42,6 +43,19 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
+import {
+  createGitHubProtocol,
+  fixtureAppId,
+  fixtureInstallationId,
+  fixtureRepository,
+  fixtureRepositoryId,
+} from "../fixtures/repository-credentials/github/protocol.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   assertReleasedControllerCompatibility,
@@ -1577,6 +1591,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preCredentialServiceRename"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -1839,11 +1854,22 @@ test(
         ])
       ).rows[0].document;
     const readStatic = async (database = db) => ({
-      instances: (await database.app.query("SELECT * FROM occ.token_service_instances")).rows,
+      instances: (
+        await database.app.query(
+          (
+            await database.app.query(
+              "SELECT to_regclass('occ.credential_service_instances') IS NOT NULL AS current",
+            )
+          ).rows[0].current
+            ? "SELECT * FROM occ.credential_service_instances"
+            : "SELECT * FROM occ.token_service_instances",
+        )
+      ).rows,
       sources: (
         await database.app.query(
           `SELECT id, namespace_id, name, type, config, driver_id, state, created_at,
-                  owner_capability, egress, token_service_instance_id,
+                  CASE WHEN owner_capability='token_service' THEN 'credential_service' ELSE owner_capability END AS owner_capability,
+                  egress, COALESCE(to_jsonb(source)->'credential_service_instance_id', to_jsonb(source)->'token_service_instance_id') AS credential_service_instance_id,
                   to_jsonb(source)->'backend_ref' AS backend_ref
              FROM occ.credential_sources AS source`,
         )
@@ -1854,8 +1880,8 @@ test(
     const staticMetadata = await readStatic();
     assert.equal(staticMetadata.instances.length, 1);
     assert.equal(staticMetadata.sources.length, 1);
-    assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
-    assert.equal(staticMetadata.sources[0].owner_capability, "token_service");
+    assert.equal(staticMetadata.sources[0].credential_service_instance_id, instance);
+    assert.equal(staticMetadata.sources[0].owner_capability, "credential_service");
     assert.equal(staticMetadata.sources[0].driver_id, null);
     assert.equal(staticMetadata.sources[0].backend_ref, null);
     const before = await historySnapshot(db);
@@ -2019,6 +2045,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preCredentialServiceRename"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -2104,7 +2131,20 @@ test(
           if (history !== "preNativeGitDelivery") {
             await assertUpgradedRevisionReadable(db);
           }
-          assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+          const expected = upgradedCanonicalData(before);
+          if (history === "preNativeGitDelivery") {
+            // 0101 renames managed Source snapshots without changing their Source or instance IDs.
+            for (const { value } of expected.agent_revisions) {
+              const spec = value.admitted_spec;
+              for (const source of [spec.harness_auth, ...(spec.credential_sources ?? [])]) {
+                if (source && Object.hasOwn(source, "tokenServiceInstanceId")) {
+                  source.credentialServiceInstanceId = source.tokenServiceInstanceId;
+                  delete source.tokenServiceInstanceId;
+                }
+              }
+            }
+          }
+          assert.deepEqual(await canonicalData(db), expected);
           // Upgrading an existing revision must never invent a recoverable first-deployment intent.
           const existingBindings = await db.app.query(
             "SELECT first_deployment_digest FROM occ.agent_revisions",
@@ -2175,18 +2215,24 @@ test(
           ).rows[0];
           const sourceId = `cs_${randomUUID()}`;
           const instanceId = randomUUID();
-          const source = { sourceId, sourceType: "static", tokenServiceInstanceId: instanceId };
+          const beforeRename = history === "preNativeGitDelivery";
+          const service = beforeRename ? "token_service" : "credential_service";
+          const source = {
+            sourceId,
+            sourceType: "static",
+            [beforeRename ? "tokenServiceInstanceId" : "credentialServiceInstanceId"]: instanceId,
+          };
           await db.app.query(
-            `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
-             SELECT id,$1,'fixture-token-service','fixture-store' FROM occ.installation`,
+            `INSERT INTO occ.${service}_instances(installation_id,id,driver_id,store_identity)
+             SELECT id,$1,'fixture-credential-service','fixture-store' FROM occ.installation`,
             [instanceId],
           );
           await db.app.query(
             `INSERT INTO occ.credential_sources
-             (id,namespace_id,name,type,config,owner_capability,token_service_instance_id,
+             (id,namespace_id,name,type,config,owner_capability,${service}_instance_id,
               state,created_at)
              VALUES($1,$2,'Model key','static','{"provider_preset":"openai"}',
-                    'token_service',$3,'ready',now())`,
+                    '${service}',$3,'ready',now())`,
             [sourceId, namespaceId, instanceId],
           );
           await db.app.query(
@@ -2411,6 +2457,357 @@ test(
 );
 
 test(
+  "Canonical CredentialService rename preserves predecessor identities, snapshots, and credential resolution",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "credential_service_rename", {
+      prefix: 100,
+    });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const storeIdentity = randomUUID();
+    const staticId = `cs_${randomUUID()}`;
+    const oauthId = `cs_${randomUUID()}`;
+    const gitId = `cs_${randomUUID()}`;
+    const clientId = `ccr_${randomUUID()}`;
+    const oauthClientId = `ccr_${randomUUID()}`;
+    const actorId = `migration-principal-${randomUUID()}`;
+    const deviceId = `sec_${randomUUID()}`;
+    const credential = randomUUID();
+    const version = randomUUID();
+    const oauthCredential = randomUUID();
+    const oauthClientSecret = randomUUID();
+    const gitCredential = randomUUID();
+    const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+    const secretDriver = createTestSecretDriver();
+    assert.ok(secretDriver.privateSecrets);
+
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Credential rename',now())",
+      [installationId],
+    );
+    const { agent, revision } = await seedCanonicalAgent(db, namespaceId, {
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    await db.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration','subject')",
+      [actorId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ',$3)",
+      [installationId, instanceId, storeIdentity],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id)
+      VALUES($1,$2,'Static','static','{"provider_preset":"openai"}','token_service','ready',now(),$3)`,
+      [staticId, namespaceId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id,oauth_provenance,oauth_account,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes)
+      VALUES($1,$2,'OAuth','oauth2-refresh-token','{}','token_service','ready',now(),$3,'builtin_codex','{"accountId":"fixture","planType":"fixture","isFedramp":false}',$4,ARRAY['read'],ARRAY['read'])`,
+      [oauthId, namespaceId, instanceId, actorId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients(id,kind,display_name,app_id,token_service_instance_id,created_at)
+      VALUES($1,'github-app','GitHub App',$2,$3,now())`,
+      [clientId, fixtureAppId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients(id,kind,namespace_id,display_name,issuer,client_id,token_endpoint_auth_method,token_service_instance_id,created_at)
+      VALUES($1,'oauth2',$2,'Confidential OAuth','https://issuer.example.test','client','client_secret_post',$3,now())`,
+      [oauthClientId, namespaceId, instanceId],
+    );
+    const scope = {
+      appId: fixtureAppId,
+      installationId: fixtureInstallationId,
+      repositories: [{ repositoryId: fixtureRepositoryId, repository: fixtureRepository }],
+      permissions: { metadata: "read", contents: "read" },
+    };
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id,github_app_client_id,github_app_scope)
+      VALUES($1,$2,'Git','github-app-installation','{}','token_service','ready',now(),$3,$4,$5::jsonb)`,
+      [gitId, namespaceId, instanceId, clientId, JSON.stringify(scope)],
+    );
+
+    // Seed predecessor custody under its actual opaque Source and Client locators.
+    const sourceSecret = (id) => ({
+      installationId,
+      id: JSON.stringify(["token_service", instanceId, "credential_source", namespaceId, id]),
+    });
+    const oauthSecret = sourceSecret(oauthId);
+    await secretDriver.privateSecrets.create(
+      sourceSecret(staticId),
+      JSON.stringify({ credential, version }),
+    );
+    await secretDriver.privateSecrets.create(
+      oauthSecret,
+      JSON.stringify({
+        phase: "ready",
+        version: randomUUID(),
+        accessToken: oauthCredential,
+        refreshToken: randomUUID(),
+        expiresAt,
+        renewAt: expiresAt,
+        grantedScopes: ["read"],
+      }),
+    );
+    await db.app.query(
+      "INSERT INTO occ.connection_token_custody(namespace_id,credential_source_id,secret_ref) VALUES($1,$2,$3::jsonb)",
+      [namespaceId, oauthId, JSON.stringify(oauthSecret)],
+    );
+    await secretDriver.privateSecrets.create(
+      sourceSecret(gitId),
+      JSON.stringify({
+        credential: gitCredential,
+        version: randomUUID(),
+        expiresAt,
+        providerExpiresAt: expiresAt,
+      }),
+    );
+    await secretDriver.privateSecrets.create(
+      {
+        installationId,
+        id: JSON.stringify([
+          "token_service",
+          instanceId,
+          "oauth_client",
+          namespaceId,
+          oauthClientId,
+          "https://issuer.example.test",
+        ]),
+      },
+      oauthClientSecret,
+    );
+    const clock = createControlledClock();
+    const github = createGitHubProtocol({ clock, additionalPermissions: [scope.permissions] });
+    const tls = await createTlsMaterial(context);
+    const apiOrigin = await listen(context, createServer(tls, github.handleRequest));
+    await secretDriver.privateSecrets.create(
+      {
+        installationId,
+        id: JSON.stringify([
+          "token_service",
+          instanceId,
+          "github_app_client",
+          clientId,
+          fixtureAppId,
+        ]),
+      },
+      github.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    );
+    const request = {
+      binary: "/usr/bin/model-client",
+      host: "api.openai.com",
+      ports: [{ from: 443, to: 443 }],
+      requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+    };
+    const source = { sourceId: staticId, sourceType: "static", tokenServiceInstanceId: instanceId };
+    const original = (
+      await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision])
+    ).rows[0].admitted_spec;
+    const spec = {
+      ...original,
+      execution_admission: { version: 8, mode: "standalone" },
+      sandbox_driver_id: "sandbox",
+      harness_auth: { method: "credential_source", ...source },
+      credential_sources: [source],
+      secret_bindings: {
+        CHANNEL_TOKEN: {
+          source: { kind: "credential_source", namespaceId, id: staticId },
+          delivery: { type: "env" },
+        },
+      },
+      gateway_token_service_instance_id: instanceId,
+      credential_deployment: {
+        driver: { id: "sandbox", implementation: "openshell", configurationId: "a".repeat(64) },
+        proxyDriverId: "proxy",
+        networkAccessPolicy: { allowed: [request] },
+        bindings: [
+          {
+            bindingRef: "model",
+            sourceRef: { kind: "credential_source", namespaceId, id: staticId },
+            consumer: { kind: "model", providerId: "openai" },
+            projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+          },
+        ],
+        injectionPolicies: [{ bindingRef: "model", allowedRequests: [request] }],
+      },
+    };
+    const retainedRevision = `rev_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,admitted_at) VALUES($1,$2,$3,2,$4::jsonb,now())",
+      [retainedRevision, namespaceId, agent, JSON.stringify(spec)],
+    );
+    await db.app.query(
+      `INSERT INTO occ.authentication_states(id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,version)
+      VALUES($1,'device_authorization',$2,$3,now()+interval '1 hour',$4::jsonb,'cancelled',now(),1)`,
+      [
+        deviceId,
+        namespaceId,
+        actorId,
+        JSON.stringify({
+          harnessId: "codex",
+          tokenServiceInstanceId: instanceId,
+          intervalSeconds: 5,
+        }),
+      ],
+    );
+
+    const receipts = await historyReceipts(db.migrator);
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+      ok: true,
+      history: "preCredentialServiceRename",
+    });
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preCredentialServiceRename",
+    });
+    await assertCompletedHistory(db, receipts);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT id,driver_id,store_identity FROM occ.credential_service_instances",
+        )
+      ).rows,
+      [{ id: instanceId, driver_id: "occ", store_identity: storeIdentity }],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT id,owner_capability,credential_service_instance_id FROM occ.credential_sources ORDER BY id",
+        )
+      ).rows,
+      [staticId, oauthId, gitId].sort().map((id) => ({
+        id,
+        owner_capability: "credential_service",
+        credential_service_instance_id: instanceId,
+      })),
+    );
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT id,credential_service_instance_id FROM occ.oauth_clients WHERE id=ANY($1::text[]) ORDER BY id",
+          [[clientId, oauthClientId]],
+        )
+      ).rows,
+      [clientId, oauthClientId]
+        .sort()
+        .map((id) => ({ id, credential_service_instance_id: instanceId })),
+    );
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT secret_ref FROM occ.connection_token_custody WHERE credential_source_id=$1",
+          [oauthId],
+        )
+      ).rows,
+      [{ secret_ref: oauthSecret }],
+    );
+    const upgradedSpec = (
+      await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
+        retainedRevision,
+      ])
+    ).rows[0].admitted_spec;
+    assert.equal(upgradedSpec.gateway_credential_service_instance_id, instanceId);
+    assert.equal(upgradedSpec.harness_auth.credentialServiceInstanceId, instanceId);
+    assert.equal(upgradedSpec.credential_sources[0].credentialServiceInstanceId, instanceId);
+    assert.equal(JSON.stringify(upgradedSpec).includes("tokenServiceInstanceId"), false);
+    assert.deepEqual(
+      (await db.app.query("SELECT binding FROM occ.authentication_states WHERE id=$1", [deviceId]))
+        .rows[0].binding,
+      { harnessId: "codex", credentialServiceInstanceId: instanceId, intervalSeconds: 5 },
+    );
+
+    const pool = await createPostgresPool(db.applicationUrl, { max: 1 });
+    try {
+      const state = new PostgresPlatformState(pool);
+      const revision = await state.read((view) =>
+        view.revisions.findRevision(namespaceId, agent, retainedRevision),
+      );
+      assert.equal(revision?.gatewayCredentialServiceInstanceId, instanceId);
+      assert.equal(revision.harnessAuth.credentialServiceInstanceId, instanceId);
+      assert.equal(revision.credentialSources[0].credentialServiceInstanceId, instanceId);
+      const registry = {
+        version: 1,
+        backendId: "github",
+        providerInstanceId: "github",
+        appId: fixtureAppId,
+        githubInstallationId: fixtureInstallationId,
+        maximumDurationSeconds: 600,
+        repositories: [
+          {
+            repositoryRef: "fixture",
+            repositoryId: fixtureRepositoryId,
+            repository: fixtureRepository,
+            namespaces: [
+              { namespaceId, profiles: ["github-repository"], permissions: scope.permissions },
+            ],
+          },
+        ],
+      };
+      const owner = new OCCCredentialServiceDriver(
+        "occ",
+        installationId,
+        secretDriver.privateSecrets,
+        instanceId,
+        state,
+        undefined,
+        new OAuthAccountTokens(state, secretDriver.privateSecrets, async () => {
+          throw new Error("An unexpired grant must not contact its issuer.");
+        }),
+        { apiOrigin, ca: tls.ca, clock },
+        { registry },
+      );
+      const selected = (id) => ({
+        sourceRef: { kind: "credential_source", namespaceId, id },
+        credentialServiceInstanceId: instanceId,
+      });
+      const resolved = await owner.resolveCredential(selected(staticId), AbortSignal.timeout(5000));
+      assert.ok(
+        resolved.credential === credential,
+        "The static credential must resolve from its unchanged custody locator.",
+      );
+      assert.equal(resolved.version, version);
+      assert.ok(
+        (await owner.resolveCredential(selected(oauthId), AbortSignal.timeout(5000))).credential ===
+          oauthCredential,
+        "The existing OAuth grant must resolve from its unchanged custody reference.",
+      );
+      assert.ok(
+        (await owner.resolveCredential(selected(gitId), AbortSignal.timeout(5000))).credential ===
+          gitCredential,
+        "The existing GitHub Source credential must resolve from its unchanged custody locator.",
+      );
+      assert.ok(
+        (await owner.resolveClientSecret(
+          {
+            kind: "oauth2",
+            namespaceId,
+            id: oauthClientId,
+            issuer: "https://issuer.example.test",
+            credentialServiceInstanceId: instanceId,
+          },
+          AbortSignal.timeout(5000),
+        )) === oauthClientSecret,
+        "The confidential Client must resolve its existing secret.",
+      );
+      await owner.forceRefresh(selected(gitId), AbortSignal.timeout(5000));
+      assert.ok(
+        (await owner.resolveCredential(selected(gitId), AbortSignal.timeout(5000))).credential !==
+          gitCredential,
+        "GitHub renewal must use the existing Client signing key and publish a new credential.",
+      );
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
+test(
   "Credential cutover preserves an existing backend-owned TokenService Source",
   requiresHistoryPostgres,
   async (context) => {
@@ -2445,16 +2842,18 @@ test(
       (
         await db.app.query(
           `SELECT id,namespace_id,name,type,config,owner_capability,state,created_at,
-                  token_service_instance_id,backend_ref FROM occ.credential_sources WHERE id=$1`,
+                  COALESCE(to_jsonb(credential_sources)->'credential_service_instance_id', to_jsonb(credential_sources)->'token_service_instance_id') AS credential_service_instance_id,
+                  backend_ref FROM occ.credential_sources WHERE id=$1`,
           [sourceId],
         )
       ).rows[0];
     const before = await readSource();
+    const upgraded = { ...before, owner_capability: "credential_service" };
     assert.deepEqual(await runHistoryCommand(db, "production"), {
       ok: true,
       history: "preTokenServiceCredentialSources",
     });
-    assert.deepEqual(await readSource(), before);
+    assert.deepEqual(await readSource(), upgraded);
     assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
       ok: true,
       history: "completed",
@@ -2467,7 +2866,7 @@ test(
       ]),
       { code: "55000" },
     );
-    assert.deepEqual(await readSource(), before);
+    assert.deepEqual(await readSource(), upgraded);
   },
 );
 
@@ -2592,10 +2991,11 @@ test(
        VALUES($1,$2,'occ-token-service','fixture-store')`,
       [installationId, instanceId],
     );
+    let upgraded = false;
     const insertClient = (id, owner) =>
       db.app.query(
         `INSERT INTO occ.oauth_clients
-           (id,kind,namespace_id,display_name,app_id,token_service_instance_id,created_at)
+           (id,kind,namespace_id,display_name,app_id,${upgraded ? "credential_service_instance_id" : "token_service_instance_id"},created_at)
          VALUES($1,'github-app',$2,'GitHub App',$3,$4,now())`,
         [id, owner, appId, instanceId],
       );
@@ -2603,8 +3003,8 @@ test(
       db.app.query(
         `INSERT INTO occ.credential_sources
            (id,namespace_id,name,type,config,owner_capability,state,created_at,
-            token_service_instance_id,github_app_client_id,github_app_scope)
-         VALUES($1,$2,'GitHub Source','github-app-installation','{}','token_service','ready',
+            ${upgraded ? "credential_service_instance_id" : "token_service_instance_id"},github_app_client_id,github_app_scope)
+         VALUES($1,$2,'GitHub Source','github-app-installation','{}','${upgraded ? "credential_service" : "token_service"}','ready',
                 now(),$3,$4,$5::jsonb)
          RETURNING id,namespace_id,github_app_client_id,github_app_scope`,
         [`cs_${randomUUID()}`, owner, instanceId, clientId, JSON.stringify(scope)],
@@ -2622,6 +3022,7 @@ test(
       ok: true,
       history: "preNamespaceGitHubAppClients",
     });
+    upgraded = true;
     await assertCompletedHistory(db, previous);
 
     assert.deepEqual(
@@ -2635,7 +3036,7 @@ test(
       [retained],
     );
     await insertClient(namespaceClientId, namespaceId);
-    // Both Clients have the same App ID and TokenService owner. Only the Namespace differs.
+    // Both Clients have the same App ID and CredentialService owner. Only the Namespace differs.
     await assert.rejects(insertSource(otherNamespaceId, namespaceClientId), {
       code: "23514",
       message: "Git Source requires a ready GitHub App client",
@@ -3251,6 +3652,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preCredentialServiceRename"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3393,6 +3795,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preCredentialServiceRename"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3568,6 +3971,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preCredentialServiceRename"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

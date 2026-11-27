@@ -166,7 +166,7 @@ async function proxyServer(
 interface Installation {
   drivers: {
     compute: { configuration: { runtime: { channelEgress: Record<string, unknown> } } };
-    token_service?: { id: "occ"; configuration: Record<string, never> };
+    credential_service?: { id: "occ"; configuration: Record<string, never> };
   };
 }
 interface Values {
@@ -218,7 +218,7 @@ async function configureInstallation(
   }));
   Object.assign(egress, { upstreamProxies, proxyTrust: trust });
   Object.assign(values.channelEgress, { upstreamProxies, proxyTrust: trust });
-  installation.drivers.token_service = { id: "occ", configuration: {} };
+  installation.drivers.credential_service = { id: "occ", configuration: {} };
   const data = JSON.stringify(installation);
   await writeFile(installationPath, data, { mode: 0o600 });
   await kubectlPatch(

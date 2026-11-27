@@ -1,5 +1,5 @@
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
-import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { CredentialService } from "../../apps/controller/src/backends/credential-service/service.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
@@ -481,7 +481,7 @@ async function buildStaticEgressFixture(
     },
     { id: "openshell-sandbox", backend },
   );
-  const preparedTokens = new TokenService();
+  const preparedTokens = new CredentialService();
   const preparedProvider = configurePreparedTokens?.(preparedTokens);
   const origin = await createExchangeOrigin(t, { key, cert }, providerServer);
   const { providerPort, providerRequests, setResponse } = origin;

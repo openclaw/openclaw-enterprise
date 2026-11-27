@@ -1,4 +1,4 @@
-import type { TokenPreparationObservation } from "../../../../backends/token-service/preparation.ts";
+import type { TokenPreparationObservation } from "../../../../backends/credential-service/preparation.ts";
 
 export interface ProviderObservation {
   readonly stage:

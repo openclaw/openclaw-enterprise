@@ -42,7 +42,8 @@ const NAMESPACE_ID = "openclaw.dev/namespace-id";
 const GRPC_FAILED_PRECONDITION = 9;
 const DELIVERY_OWNER = "openclaw.dev/credential-proxy-delivery";
 const STATIC_DELIVERY = "static";
-const TOKEN_SERVICE_OWNER = "openclaw.dev/token-service";
+// Existing OpenShell Providers retain this persisted ownership label.
+const CREDENTIAL_SERVICE_OWNER = "openclaw.dev/token-service";
 const SOURCE_VERSION = "oce_source_version";
 
 /** The nonsecret identity of the delivery resource, including the source version it holds. */
@@ -128,7 +129,7 @@ function ownsDeliveryProvider(
     provider.labels[SOURCE_ID_LABEL] === sourceRef.id &&
     provider.labels[NAMESPACE_ID] === sourceRef.namespaceId &&
     provider.labels[DELIVERY_OWNER] === STATIC_DELIVERY &&
-    provider.labels[TOKEN_SERVICE_OWNER] === undefined
+    provider.labels[CREDENTIAL_SERVICE_OWNER] === undefined
   );
 }
 
@@ -158,7 +159,7 @@ function checkProvider(
   profileVersion: string,
 ): OpenShellPushedProvider {
   const version = provider?.config[SOURCE_VERSION];
-  // Native TokenService sources can use the same source-derived name. Mixed ownership is unsafe.
+  // Native CredentialService sources can use the same source-derived name. Mixed ownership is unsafe.
   if (
     !ownsDeliveryProvider(provider, sourceRef, workspace, name) ||
     provider.type !== name ||
@@ -197,7 +198,7 @@ export async function readOwnedOpenShellPushedProvider(input: {
 }
 
 /** Retire only the Proxy-owned copy and profile; OpenShell refuses a Provider still in use. */
-export async function retireOccTokenServiceProviderCopy(input: {
+export async function retireOccCredentialServiceProviderCopy(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
     | "getWorkspace"
@@ -257,8 +258,8 @@ export async function retireOccTokenServiceProviderCopy(input: {
   }
 }
 
-/** Reuse the Proxy's Provider copy, or initialize it from an authorized OCC TokenService Source. */
-export async function prepareOccTokenServiceProviderCopy(input: {
+/** Reuse the Proxy's Provider copy, or initialize it from an authorized OCC CredentialService Source. */
+export async function prepareOccCredentialServiceProviderCopy(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
     | "getWorkspace"
@@ -378,8 +379,8 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   return prepared;
 }
 
-/** Push a committed OCC TokenService version into the existing, Proxy-owned delivery copy. */
-export async function updateOccTokenServiceProviderCopy(input: {
+/** Push a committed OCC CredentialService version into the existing, Proxy-owned delivery copy. */
+export async function updateOccCredentialServiceProviderCopy(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
     "getWorkspace" | "getProvider" | "getProviderProfile" | "updateProviderCredentialsConditionally"

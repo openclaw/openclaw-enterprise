@@ -67,7 +67,7 @@ Docker, SSH and Kubernetes require native HTTP.
 The revision saves [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode),
 native configuration, Harness identity/version/mode, Compute selection, and Agent
 ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
-Gateway Source admission requires qualified dedicated delivery and freezes the TokenService instance.
+Gateway Source admission requires qualified dedicated delivery and freezes the CredentialService instance.
 Custom images declare native-worker support. An associated `access_token` requires
 dedicated Codex and an opaque Secret snapshot. Compute resolves overrides before
 admission; OCC saves Harness settings, checks consent, and fingerprints the provider.

@@ -76,7 +76,7 @@ For embedded OpenClaw, Kubernetes projects the Secret as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, or `OCE_MODEL_API_KEY`. A custom provider must reference
 `OCE_MODEL_API_KEY` in its Configuration. Dedicated Codex logs in with the key
 or PAT through stdin on the direct Secret path. For managed model authentication
-in OpenShell, use a [compatible TokenService Source](credential-sources.md#implementation-status).
+in OpenShell, use a [compatible CredentialService Source](credential-sources.md#implementation-status).
 
 The dedicated gateway does not receive the selected Harness model credential.
 The revision records source references, never historical Secret bytes. A managed

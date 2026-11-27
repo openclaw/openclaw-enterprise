@@ -5,7 +5,7 @@ import type {
   TokenAttempt,
   TokenFamily,
   TokenPreparationStore,
-} from "../../../../backends/token-service/custody.ts";
+} from "../../../../backends/credential-service/custody.ts";
 
 type GrantIdentity = Readonly<{
   id: string;

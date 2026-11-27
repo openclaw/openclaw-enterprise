@@ -12,7 +12,7 @@ export function requireManagedCredentialRuntime(
   const unadmitted = [...cli, ...mcp].some(({ install }) => !stagedPluginIds?.has(install.id));
   if (unadmitted) {
     throw new ConfigurationHarnessError(
-      "Bound Plugin credentials require TokenService Sources and staged credential delivery.",
+      "Bound Plugin credentials require CredentialService Sources and staged credential delivery.",
     );
   }
 }

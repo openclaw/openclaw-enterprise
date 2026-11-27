@@ -191,7 +191,7 @@ drops its acknowledgment and stops the process that holds the old File Transfer
 policy. The restart reads the current binding and rebuilds the policy from the
 admitted configuration. A changed image or route blocks startup.
 
-For a Dedicated OpenClaw Agent with an OCC TokenService Git Source, the staged
+For a Dedicated OpenClaw Agent with an OCC CredentialService Git Source, the staged
 Sandbox launcher selects the Runner's read-only Git configuration and passes
 the worker its admitted repository paths and the attached Provider's stable
 `GITHUB_TOKEN` placeholder. Stock Git verifies

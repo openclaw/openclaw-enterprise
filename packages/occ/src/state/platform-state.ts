@@ -67,7 +67,7 @@ import type {
   CredentialClientRepository,
   StoredCredentialClient,
 } from "../ports/credential-clients.ts";
-import type { TokenServiceInstance } from "../ports/token-service.ts";
+import type { CredentialServiceInstance } from "../ports/credential-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
@@ -239,8 +239,8 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
         return false;
       }
       const keys = Object.keys(value).sort().join(",");
-      if (keys === "method,sourceId,sourceType,tokenServiceInstanceId") {
-        return isNonEmptyString(value.tokenServiceInstanceId);
+      if (keys === "credentialServiceInstanceId,method,sourceId,sourceType") {
+        return isNonEmptyString(value.credentialServiceInstanceId);
       }
       return (
         keys === "credentialGatewayId,loginMode,method,sourceId,sourceType" &&
@@ -387,7 +387,7 @@ export async function assertRevisionAuthAvailable(
       readonly state: CredentialSource["state"];
       readonly ownerCapability: CredentialSource["ownerCapability"];
       readonly driverId?: string;
-      readonly tokenServiceInstanceId?: string;
+      readonly credentialServiceInstanceId?: string;
       readonly connectionTemplateId?: string;
     }[]
   >,
@@ -425,19 +425,19 @@ export async function assertRevisionAuthAvailable(
     }
     const ownerMatches =
       (source.ownerCapability === "credential_gateway" &&
-        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialServiceInstanceId === undefined &&
         snapshot.credentialProxyId === undefined &&
         snapshot.credentialGatewayId === source.driverId) ||
       (source.ownerCapability === "credential_proxy" &&
-        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialServiceInstanceId === undefined &&
         snapshot.credentialGatewayId === undefined &&
         snapshot.credentialProxyId === source.driverId) ||
-      (source.ownerCapability === "token_service" &&
+      (source.ownerCapability === "credential_service" &&
         source.driverId === undefined &&
-        isNonEmptyString(source.tokenServiceInstanceId) &&
+        isNonEmptyString(source.credentialServiceInstanceId) &&
         snapshot.credentialGatewayId === undefined &&
         snapshot.credentialProxyId === undefined &&
-        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId);
+        snapshot.credentialServiceInstanceId === source.credentialServiceInstanceId);
     if (source.type !== snapshot.sourceType || !ownerMatches) {
       throw new ScopeViolationError(
         "The AgentRevision credential source snapshot does not match its current owner or type.",
@@ -564,12 +564,12 @@ function matchesGitHubRepositoryGrants(
   source: Readonly<CredentialSource> | undefined,
 ): boolean {
   if (
-    source?.ownerCapability !== "token_service" ||
+    source?.ownerCapability !== "credential_service" ||
     source.type !== "github-app-installation" ||
     source.state !== "ready" ||
     source.clientId !== access.githubAppClientId ||
     revision.harnessAuth.method !== "credential_source" ||
-    source.tokenServiceInstanceId !== revision.harnessAuth.tokenServiceInstanceId
+    source.credentialServiceInstanceId !== revision.harnessAuth.credentialServiceInstanceId
   ) {
     return false;
   }
@@ -650,16 +650,16 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     }
     const valid =
       [
-        "connectionTemplate,sourceId,sourceType,tokenServiceInstanceId",
+        "connectionTemplate,credentialServiceInstanceId,sourceId,sourceType",
         "credentialGatewayId,sourceId,sourceType",
         "credentialProxyId,sourceId,sourceType",
-        "sourceId,sourceType,tokenServiceInstanceId",
+        "credentialServiceInstanceId,sourceId,sourceType",
       ].includes(keys.join(",")) &&
       isNonEmptyString(snapshot.sourceId) &&
       isNonEmptyString(
         snapshot.credentialGatewayId ??
           snapshot.credentialProxyId ??
-          snapshot.tokenServiceInstanceId,
+          snapshot.credentialServiceInstanceId,
       ) &&
       isNonEmptyString(snapshot.sourceType) &&
       !seen.has(snapshot.sourceId);
@@ -702,7 +702,7 @@ export function validStandaloneCredentialDeployment(
     const snapshot = snapshots.find(({ sourceId }) => sourceId === binding.sourceRef.id);
     if (
       !snapshot ||
-      !isNonEmptyString(snapshot.tokenServiceInstanceId) ||
+      !isNonEmptyString(snapshot.credentialServiceInstanceId) ||
       binding.sourceRef.kind !== "credential_source" ||
       binding.sourceRef.namespaceId !== revision.namespaceId
     ) {
@@ -715,7 +715,7 @@ export function validStandaloneCredentialDeployment(
         modelBindings !== 1 ||
         auth.method !== "credential_source" ||
         snapshot.sourceId !== auth.sourceId ||
-        snapshot.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+        snapshot.credentialServiceInstanceId !== auth.credentialServiceInstanceId ||
         snapshot.sourceType !== auth.sourceType
       ) {
         return false;
@@ -747,7 +747,7 @@ export function validStandaloneCredentialDeployment(
     }
   }
   const managedHarness =
-    auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined;
+    auth.method === "credential_source" && auth.credentialServiceInstanceId !== undefined;
   return (
     (managedHarness ? modelBindings === 1 : modelBindings === 0) &&
     used.size === snapshots.length &&
@@ -808,10 +808,10 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
     (revision.executionAdmission.mode === "standalone" && revision.sandboxDriverId === undefined) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
-    gatewaySourceSelected !== (revision.gatewayTokenServiceInstanceId !== undefined) ||
-    (revision.gatewayTokenServiceInstanceId !== undefined &&
+    gatewaySourceSelected !== (revision.gatewayCredentialServiceInstanceId !== undefined) ||
+    (revision.gatewayCredentialServiceInstanceId !== undefined &&
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-        revision.gatewayTokenServiceInstanceId,
+        revision.gatewayCredentialServiceInstanceId,
       )) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
@@ -863,7 +863,7 @@ interface IAMSubjectSource {
 interface PlatformSnapshot {
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
-  tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
+  credentialServiceInstance: Readonly<CredentialServiceInstance> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
@@ -1029,7 +1029,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
-    tokenServiceInstance: snapshot.tokenServiceInstance,
+    credentialServiceInstance: snapshot.credentialServiceInstance,
     namespaces: copyStoredMap(snapshot.namespaces),
     configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
@@ -1155,7 +1155,7 @@ async function assertSecretBindingsAvailable(
   credentialSources: Pick<CredentialSourceReadRepository, "findCredentialSource">,
   namespaceId: string,
   bindings: SecretBindings | undefined,
-  gatewayTokenServiceInstanceId?: string,
+  gatewayCredentialServiceInstanceId?: string,
 ): Promise<void> {
   for (const source of secretBindingRefs(bindings)) {
     if (source.namespaceId !== namespaceId) {
@@ -1171,9 +1171,9 @@ async function assertSecretBindingsAvailable(
       if (
         credentialSource?.type !== "static" ||
         credentialSource.state !== "ready" ||
-        credentialSource.ownerCapability !== "token_service" ||
-        (gatewayTokenServiceInstanceId !== undefined &&
-          credentialSource.tokenServiceInstanceId !== gatewayTokenServiceInstanceId)
+        credentialSource.ownerCapability !== "credential_service" ||
+        (gatewayCredentialServiceInstanceId !== undefined &&
+          credentialSource.credentialServiceInstanceId !== gatewayCredentialServiceInstanceId)
       ) {
         throw new ScopeViolationError(
           "Secret bindings reference unavailable static CredentialSources.",
@@ -1424,18 +1424,20 @@ function validGitHubAppSourceScope(scope: unknown): boolean {
 
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
-  const legacy = source.ownerCapability !== "token_service";
+  const legacy = source.ownerCapability !== "credential_service";
   if (legacy && source.egress !== undefined) {
     assertProtectedEgressSource(source.egress, source.namespaceId, source.id);
   }
   const config: unknown =
-    source.ownerCapability === "token_service" && source.type !== "static" ? {} : source.config;
+    source.ownerCapability === "credential_service" && source.type !== "static"
+      ? {}
+      : source.config;
   const secretInputs: unknown = legacy ? source.secrets : {};
   const backendRef = "backendRef" in source ? source.backendRef : undefined;
   const validBackendRef =
     backendRef === undefined ||
     (!legacy &&
-      source.tokenServiceInstanceId !== undefined &&
+      source.credentialServiceInstanceId !== undefined &&
       isPlainRecord(backendRef) &&
       Object.keys(backendRef).length > 0 &&
       Object.values(backendRef).every((value) => typeof value === "string" && value.length > 0));
@@ -1454,7 +1456,7 @@ function assertCredentialSource(source: CredentialSource): void {
             source.clientId,
           ) &&
           validGitHubAppSourceScope(source.scope))) &&
-      typeof source.tokenServiceInstanceId === "string" &&
+      typeof source.credentialServiceInstanceId === "string" &&
       (source.state === "ready" || source.state === "deleting");
   if (
     !credentialSourceIdentifier.test(source.id) ||
@@ -1515,7 +1517,7 @@ function updateOAuthConsent(
     name: source.name,
     type: source.type,
     ownerCapability: source.ownerCapability,
-    tokenServiceInstanceId: source.tokenServiceInstanceId,
+    credentialServiceInstanceId: source.credentialServiceInstanceId,
     state: source.state,
     createdAt: source.createdAt,
   };
@@ -1568,7 +1570,7 @@ function repositories(
       snapshot.installation = saved;
       return saved;
     },
-    selectTokenServiceInstance: async (candidate) => {
+    selectCredentialServiceInstance: async (candidate) => {
       assertInitialized(snapshot);
       if (
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
@@ -1581,9 +1583,9 @@ function repositories(
         candidate.storeIdentity.length > 200 ||
         candidate.storeIdentity !== candidate.storeIdentity.trim()
       ) {
-        throw new ScopeViolationError("The TokenService instance identity is invalid.");
+        throw new ScopeViolationError("The CredentialService instance identity is invalid.");
       }
-      const current = snapshot.tokenServiceInstance;
+      const current = snapshot.credentialServiceInstance;
       if (
         current?.driverId === candidate.driverId &&
         current.storeIdentity === candidate.storeIdentity
@@ -1595,17 +1597,19 @@ function repositories(
         (current.id === candidate.id ||
           Array.from(snapshot.credentialSources.values()).some(
             (source) =>
-              source.ownerCapability === "token_service" &&
-              source.tokenServiceInstanceId === current.id,
+              source.ownerCapability === "credential_service" &&
+              source.credentialServiceInstanceId === current.id,
           ) ||
           Array.from(snapshot.clientRegistrations.values()).some(
-            (client) => client.tokenServiceInstanceId === current.id,
+            (client) => client.credentialServiceInstanceId === current.id,
           ))
       ) {
-        throw new ResourceStateConflictError("The TokenService instance still has registrations.");
+        throw new ResourceStateConflictError(
+          "The CredentialService instance still has registrations.",
+        );
       }
       const selected = immutableCopy(candidate);
-      snapshot.tokenServiceInstance = selected;
+      snapshot.credentialServiceInstance = selected;
       return selected;
     },
     // In-memory State has no human accounts, and its units are serialized.
@@ -1836,7 +1840,7 @@ function repositories(
     setCleanup: async (id, cleanupAfter) => {
       const row = snapshot.clientRegistrations.get(id);
       if (row) {
-        if (cleanupAfter !== null && row.tokenServiceInstanceId === undefined) {
+        if (cleanupAfter !== null && row.credentialServiceInstanceId === undefined) {
           throw new ResourceConflictError("Only confidential clients require private cleanup.");
         }
         const { cleanupAfter: _old, ...client } = row;
@@ -1851,13 +1855,13 @@ function repositories(
       const confidential =
         registration.kind === "github-app" || registration.tokenEndpointAuthMethod !== "none";
       if (
-        confidential !== (registration.tokenServiceInstanceId !== undefined) ||
+        confidential !== (registration.credentialServiceInstanceId !== undefined) ||
         (confidential &&
-          registration.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id) ||
+          registration.credentialServiceInstanceId !== snapshot.credentialServiceInstance?.id) ||
         (!confidential && cleanupAfter !== undefined)
       ) {
         throw new ResourceConflictError(
-          "Private client material must belong to the selected TokenService.",
+          "Private client material must belong to the selected CredentialService.",
         );
       }
       if (
@@ -1902,10 +1906,10 @@ function repositories(
         [...snapshot.credentialSources.values()].some(
           (source) =>
             (source.type === "oauth2-refresh-token" &&
-              source.ownerCapability === "token_service" &&
+              source.ownerCapability === "credential_service" &&
               source.consent.kind === "connection_template" &&
               source.consent.oauthClientId === registrationId) ||
-            (source.ownerCapability === "token_service" &&
+            (source.ownerCapability === "credential_service" &&
               source.type === "github-app-installation" &&
               source.clientId === registrationId),
         ) ||
@@ -2027,7 +2031,7 @@ function repositories(
       if (
         [...snapshot.credentialSources.values()].some(
           (source) =>
-            source.ownerCapability === "token_service" &&
+            source.ownerCapability === "credential_service" &&
             source.type !== "github-app-installation" &&
             source.connectionTemplateId === templateId,
         ) ||
@@ -2111,7 +2115,10 @@ function repositories(
       snapshot.connectionTokenCustody.set(key, storedCopy(next));
       if (typeof schedule === "object") {
         const source = snapshot.credentialSources.get(key);
-        if (source?.ownerCapability === "token_service" && source.type === "oauth2-refresh-token") {
+        if (
+          source?.ownerCapability === "credential_service" &&
+          source.type === "oauth2-refresh-token"
+        ) {
           if (
             !schedule.grantedScopes.every((scope) => source.consent.grantedScopes.includes(scope))
           ) {
@@ -2124,13 +2131,13 @@ function repositories(
         }
       }
     },
-    listDueOAuthSources: async (tokenServiceInstanceId, limit, afterSourceId) =>
+    listDueOAuthSources: async (credentialServiceInstanceId, limit, afterSourceId) =>
       [...snapshot.credentialSources.values()]
         .filter(
           (s) =>
-            s.ownerCapability === "token_service" &&
+            s.ownerCapability === "credential_service" &&
             s.type === "oauth2-refresh-token" &&
-            s.tokenServiceInstanceId === tokenServiceInstanceId &&
+            s.credentialServiceInstanceId === credentialServiceInstanceId &&
             s.state === "ready" &&
             !s.consent.revocationRequestedBy &&
             s.id > (afterSourceId ?? "") &&
@@ -2146,7 +2153,7 @@ function repositories(
         : [...snapshot.credentialSources.values()]
             .filter(
               (s) =>
-                s.ownerCapability === "token_service" &&
+                s.ownerCapability === "credential_service" &&
                 s.type === "oauth2-refresh-token" &&
                 s.consent.revocationRequestedBy !== undefined &&
                 s.id > (afterSourceId ?? ""),
@@ -2512,7 +2519,7 @@ function repositories(
       for (const source of snapshot.credentialSources.values()) {
         if (
           source.namespaceId === namespaceId &&
-          source.ownerCapability !== "token_service" &&
+          source.ownerCapability !== "credential_service" &&
           Object.values(source.secrets).some((reference) => reference.id === secretId)
         ) {
           add("credential_source", source.id);
@@ -2630,7 +2637,7 @@ function repositories(
       const key = agentKey(namespaceId, sourceId);
       const source = snapshot.credentialSources.get(key);
       if (
-        source?.ownerCapability === "token_service" &&
+        source?.ownerCapability === "credential_service" &&
         source.type === "oauth2-refresh-token" &&
         !source.consent.revocationRequestedBy
       ) {
@@ -2644,7 +2651,7 @@ function repositories(
       const key = agentKey(namespaceId, sourceId);
       const source = snapshot.credentialSources.get(key);
       if (
-        source?.ownerCapability === "token_service" &&
+        source?.ownerCapability === "credential_service" &&
         source.type === "oauth2-refresh-token" &&
         source.consent.revocationRequestedBy &&
         !source.consent.revokedAt
@@ -2750,7 +2757,7 @@ function repositories(
       const current = await findCredentialSource(namespaceId, sourceId);
       if (
         !current ||
-        current.ownerCapability === "token_service" ||
+        current.ownerCapability === "credential_service" ||
         current.state !== "ready" ||
         (current.egress?.key.source.generation ?? 0) !== expectedGeneration
       ) {
@@ -2887,14 +2894,14 @@ function repositories(
           .map((source) => immutableCopy(source)),
       );
     },
-    scanReadyTokenServiceSourceIds: async (type, instanceId, limit, afterId) =>
+    scanReadyCredentialServiceSourceIds: async (type, instanceId, limit, afterId) =>
       Object.freeze(
         [...snapshot.credentialSources.values()]
           .filter((source) => {
             const namespace = snapshot.namespaces.get(source.namespaceId);
             return (
-              source.ownerCapability === "token_service" &&
-              source.tokenServiceInstanceId === instanceId &&
+              source.ownerCapability === "credential_service" &&
+              source.credentialServiceInstanceId === instanceId &&
               source.type === type &&
               source.state === "ready" &&
               source.id > (afterId ?? "") &&
@@ -2910,7 +2917,10 @@ function repositories(
     createCredentialSource: async (source) => {
       assertInitialized(snapshot);
       assertCredentialSource(source);
-      if (source.ownerCapability === "token_service" && source.type === "oauth2-refresh-token") {
+      if (
+        source.ownerCapability === "credential_service" &&
+        source.type === "oauth2-refresh-token"
+      ) {
         if (source.consent.kind === "builtin_codex") {
           const account = source.consent.account;
           const accountFields = [
@@ -2945,20 +2955,23 @@ function repositories(
           throw new ResourceStateConflictError("The OAuth Source requires its approved Template.");
         }
       }
-      if (source.ownerCapability === "token_service" && source.type === "github-app-installation") {
+      if (
+        source.ownerCapability === "credential_service" &&
+        source.type === "github-app-installation"
+      ) {
         const client = snapshot.clientRegistrations.get(source.clientId);
         if (
           client?.kind !== "github-app" ||
           client.cleanupAfter !== undefined ||
           (client.namespaceId !== undefined && client.namespaceId !== source.namespaceId) ||
           client.appId !== source.scope.appId ||
-          client.tokenServiceInstanceId !== source.tokenServiceInstanceId
+          client.credentialServiceInstanceId !== source.credentialServiceInstanceId
         ) {
           throw new ResourceStateConflictError("The GitHub App Source client is unavailable.");
         }
       }
       if (
-        source.ownerCapability === "token_service" &&
+        source.ownerCapability === "credential_service" &&
         source.type !== "github-app-installation" &&
         source.connectionTemplateId !== undefined
       ) {
@@ -2996,7 +3009,7 @@ function repositories(
               client.tokenEndpointAuthMethod,
             ) !== true ||
             (client.tokenEndpointAuthMethod !== "none" &&
-              client.tokenServiceInstanceId !== source.tokenServiceInstanceId)
+              client.credentialServiceInstanceId !== source.credentialServiceInstanceId)
           ) {
             throw new ResourceStateConflictError(
               "The OAuth consent does not match its Template version and client.",
@@ -3005,12 +3018,12 @@ function repositories(
         }
       }
       if (
-        source.ownerCapability === "token_service" &&
-        source.tokenServiceInstanceId !== undefined &&
-        source.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id
+        source.ownerCapability === "credential_service" &&
+        source.credentialServiceInstanceId !== undefined &&
+        source.credentialServiceInstanceId !== snapshot.credentialServiceInstance?.id
       ) {
         throw new ScopeViolationError(
-          "The credential source belongs to an unavailable TokenService instance.",
+          "The credential source belongs to an unavailable CredentialService instance.",
         );
       }
       const namespace = await namespaces.lockNamespace(source.namespaceId);
@@ -3020,7 +3033,7 @@ function repositories(
       ) {
         throw new ScopeViolationError("The credential source belongs to an unavailable Namespace.");
       }
-      for (const reference of source.ownerCapability === "token_service"
+      for (const reference of source.ownerCapability === "credential_service"
         ? []
         : Object.values(source.secrets)) {
         if (!snapshot.secrets.has(agentKey(source.namespaceId, reference.id))) {
@@ -3054,7 +3067,7 @@ function repositories(
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (
         current === undefined ||
-        current.ownerCapability === "token_service" ||
+        current.ownerCapability === "credential_service" ||
         current.state !== "ready"
       ) {
         return undefined;
@@ -3076,7 +3089,7 @@ function repositories(
     updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (
-        current?.ownerCapability !== "token_service" ||
+        current?.ownerCapability !== "credential_service" ||
         current.type !== "static" ||
         current.state !== "ready"
       ) {
@@ -3330,7 +3343,7 @@ function repositories(
       if ("sourceId" in credential) {
         const source = await findCredentialSource(namespaceId, credential.sourceId);
         if (
-          source?.ownerCapability !== "token_service" ||
+          source?.ownerCapability !== "credential_service" ||
           source.type !== "static" ||
           source.state !== "ready" ||
           source.config.provider_preset !== "codex-pat"
@@ -4062,7 +4075,7 @@ function repositories(
         credentialSources,
         revision.namespaceId,
         secretBindings,
-        revision.gatewayTokenServiceInstanceId,
+        revision.gatewayCredentialServiceInstanceId,
       );
       const key = agentKey(revision.namespaceId, revision.agentId);
       const policy = snapshot.sandboxPolicies.get(key);
@@ -4829,7 +4842,7 @@ function finalizeAgentDeletion(
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
     installation: undefined,
-    tokenServiceInstance: undefined,
+    credentialServiceInstance: undefined,
     namespaces: new Map(),
     configurations: new Map(),
     connectionTemplates: new Map(),

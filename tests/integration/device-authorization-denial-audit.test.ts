@@ -12,10 +12,10 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   controlDeviceIssuer,
-  installDeviceTokenService,
+  installDeviceCredentialService,
   DEVICE_OAUTH_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-token-service.ts";
+} from "../helpers/device-credential-service.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -113,7 +113,7 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   const controller = fixture.controller;
   assert.ok(controller);
   assert.ok(state);
-  await installDeviceTokenService(controller, state, secretDriver);
+  await installDeviceCredentialService(controller, state, secretDriver);
   const basePath = `/namespaces/${namespace.id}/agents`;
   const unsaved: Target = { path: `${basePath}/device-authorizations` };
   async function savedTarget(name: string) {

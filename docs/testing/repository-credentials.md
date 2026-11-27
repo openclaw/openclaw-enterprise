@@ -31,7 +31,7 @@ at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
 fixtures use a controlled provider and verified TLS; they do not prove live GitHub
 access. The `gh` workflow requires the [combined qualification image](#qualify-emitted-artifacts)
 because push-policy sessions require installed client hooks. Prepared token renewal
-is exercised by the worker Token Service suites.
+is exercised by the worker CredentialService suites.
 
 The source boundary check also runs in `pnpm check:workspace`. Changes to its
 privileged allowlists require security review of the authority, caller, scope,
@@ -93,7 +93,7 @@ worker version tests with `OCC_TEST_DATABASE_URL` set. The
 `postgres-standing-expiry-authority.test.ts` cases verify the Worker stops an
 unauthorized Git-only execution without issuing another token. The
 `postgres-staged-github-source-admission.test.ts` case verifies that two Agents
-freeze their own approved grants, reuse one TokenService Source, and keep
+freeze their own approved grants, reuse one CredentialService Source, and keep
 that Source's installed token current. OpenShell and GitHub peers are controlled.
 
 ## Qualify emitted artifacts
@@ -229,7 +229,7 @@ offline checks through the actual aggregate CLI. They do not execute an installe
 
 ## Verify a model turn and Git on one Agent
 
-Select the [prepared TokenService Git Agent lane](manual-tests.md) for live
+Select the [prepared CredentialService Git Agent lane](manual-tests.md) for live
 native delivery. It exercises Source-backed model and Git on one revision with
 stock OpenShell. The [PostgreSQL staged Git test](../../tests/integration/postgres-staged-github-source-admission.test.ts)
 separately verifies Agent admission, Source reuse, and scheduled renewal and

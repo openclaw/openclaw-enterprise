@@ -1,5 +1,5 @@
 import { prepareProviderScope } from "./provider-transport/request-options.ts";
-import { retireToken } from "../../../../backends/token-service/retirement.ts";
+import { retireToken } from "../../../../backends/credential-service/retirement.ts";
 import type { Clock } from "../../access/backend-contracts.ts";
 import type { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";

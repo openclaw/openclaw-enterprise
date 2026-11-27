@@ -814,7 +814,7 @@ test(
 );
 
 test(
-  "TokenService Git mounts the finite registry without legacy Git components",
+  "CredentialService Git mounts the finite registry without legacy Git components",
   tooling,
   async () => {
     const objects = await resources(

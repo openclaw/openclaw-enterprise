@@ -10,7 +10,7 @@ import {
   CredentialSourceSchema,
   type CredentialSourceWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   deploymentErrorForWork,
@@ -94,7 +94,7 @@ import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.ts";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { installDeviceCredentialService } from "../helpers/device-credential-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
@@ -105,7 +105,7 @@ import { waitUntil } from "../helpers/wait-for.ts";
 export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 
 /**
- * Real Console/Fastify/IAM/TokenService Source enrollment for browser tests. The selected
+ * Real Console/Fastify/IAM/CredentialService Source enrollment for browser tests. The selected
  * Compute and its qualification callback are fixtures: this proves UI and admission interactions,
  * not Worker export, Kubernetes delivery, or Gateway execution.
  */
@@ -126,14 +126,14 @@ export async function createSlackSourceConsoleFixture(
     ...options,
     secretDriver,
     gatewayStartupSourceDelivery: (compute: { id: string }, owner: unknown) =>
-      compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
+      compute.id === "console-compute" && owner instanceof OCCCredentialServiceDriver,
     wrapState(current: PlatformStateStore) {
       state = current;
       return current;
     },
   });
   assert.ok(state);
-  await installDeviceTokenService(fixture.controller, state, secretDriver);
+  await installDeviceCredentialService(fixture.controller, state, secretDriver);
   async function enroll(sourceName: string, prefix = "xoxb") {
     const secret = `${prefix}-${randomUUID()}`;
     const response = await fixture.request(

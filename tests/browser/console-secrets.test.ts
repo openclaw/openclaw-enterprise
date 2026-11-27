@@ -4,8 +4,8 @@ import { createServer } from "node:https";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page, Route } from "playwright";
 
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import type { GitHubAppIssuerOptions } from "../../apps/controller/src/drivers/token-service/github-app-issuer.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
+import type { GitHubAppIssuerOptions } from "../../apps/controller/src/drivers/credential-service/github-app-issuer.ts";
 import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
@@ -157,8 +157,11 @@ async function clientConsoleFixture(
   assert.ok(state);
   const store = controller.selectedDriver("secret").privateSecrets;
   assert.ok(store);
-  const instance = await controller.activateTokenServiceInstance("console-clients", randomUUID());
-  const owner = new OCCTokenServiceDriver(
+  const instance = await controller.activateCredentialServiceInstance(
+    "console-clients",
+    randomUUID(),
+  );
+  const owner = new OCCCredentialServiceDriver(
     "console-clients",
     controller.installation.id,
     store,
@@ -169,7 +172,7 @@ async function clientConsoleFixture(
     issuer,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   return fixture;
 }
 
@@ -566,7 +569,7 @@ test("a Template neither assigns nor fences an independent credential client", a
 });
 
 test("an administrator registers and rotates a verified GitHub App signing key", async (t) => {
-  // Exercise the real TokenService verifier against the existing signed TLS issuer fixture.
+  // Exercise the real CredentialService verifier against the existing signed TLS issuer fixture.
   const clock = createControlledClock();
   const tls = await createTlsMaterial(t);
   const github = createGitHubProtocol({ clock });

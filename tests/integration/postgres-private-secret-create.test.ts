@@ -15,7 +15,7 @@ import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 
 const origin = "https://console.oce.localhost";
@@ -101,19 +101,19 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   controller.selectDriver("iam", iam.id);
   const { core, driver } = useInstallationSecretDriver(controller);
   assert.ok(driver.privateSecrets);
-  const instanceId = await controller.activateTokenServiceInstance(
-    "private-client-token-service",
+  const instanceId = await controller.activateCredentialServiceInstance(
+    "private-client-credential-service",
     "private-client-store",
   );
-  const owner = new OCCTokenServiceDriver(
-    "private-client-token-service",
+  const owner = new OCCCredentialServiceDriver(
+    "private-client-credential-service",
     installation.id,
     driver.privateSecrets,
     instanceId,
     state,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   const auth = await createPostgresControllerAuth({
     ...authOptions(installation.id),
     pool: transport,
@@ -187,11 +187,11 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
     (
       await pool.query<{
         id: string;
-        token_service_instance_id: string;
+        credential_service_instance_id: string;
         hidden: boolean;
         due: boolean;
       }>(
-        "SELECT id,token_service_instance_id,cleanup_after IS NOT NULL AS hidden,cleanup_after<=now() AS due FROM occ.oauth_clients WHERE client_id=$1",
+        "SELECT id,credential_service_instance_id,cleanup_after IS NOT NULL AS hidden,cleanup_after<=now() AS due FROM occ.oauth_clients WHERE client_id=$1",
         [clientId],
       )
     ).rows[0];
@@ -210,9 +210,9 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   const recovered = new OpenClawController(installation, { state: recoveryState });
   recovered.registerDriver(driver);
   recovered.selectDriver("secret", driver.id);
-  await recovered.activateTokenServiceInstance(owner.id, "private-client-store");
+  await recovered.activateCredentialServiceInstance(owner.id, "private-client-store");
   recovered.registerDriver(owner);
-  recovered.selectDriver("token_service", owner.id);
+  recovered.selectDriver("credential_service", owner.id);
   const absentFromPublic = async (value: string, clientId: string) => {
     const response = await inject("GET", "/credential-clients");
     assert.equal(response.statusCode, 200);
@@ -304,7 +304,7 @@ test(
     assertSanitizedPrivateFailure(response, input.clientSecret, f.driver.id, "NOT_FOUND");
     const reserved = await f.row(input.clientId);
     assert.ok(reserved?.hidden);
-    assert.equal(reserved.token_service_instance_id, f.instanceId);
+    assert.equal(reserved.credential_service_instance_id, f.instanceId);
     await f.absentFromPublic(input.clientSecret, input.clientId);
     const immediatelyAbsent = !f.core.secrets.has(key);
     const immediateDeletes = f.core.calls.deleteNamespacedSecret;
@@ -433,7 +433,7 @@ test(
           expectedStatus === 404 ? "NOT_FOUND" : "DEPENDENCY_UNAVAILABLE",
         );
         assert.ok(reserved?.hidden);
-        assert.equal(reserved.token_service_instance_id, f.instanceId);
+        assert.equal(reserved.credential_service_instance_id, f.instanceId);
         await f.absentFromPublic(input.clientSecret, input.clientId);
         const hasPreconditions = ![
           "missing-uid",

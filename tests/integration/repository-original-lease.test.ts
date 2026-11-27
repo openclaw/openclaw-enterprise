@@ -29,7 +29,7 @@ import {
   gatewayRequest,
 } from "../fixtures/repository-credentials/service-fixture.ts";
 import {
-  createGitHubTokenServiceFactory,
+  createGitHubCredentialServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.ts";
 
@@ -235,7 +235,7 @@ for (const { name, mode } of firstWriteCases) {
     };
     created.subscribe(observe);
     resources.after(() => created.unsubscribe(observe));
-    const backendFactory: RepositoryBackendFactory = await createGitHubTokenServiceFactory(
+    const backendFactory: RepositoryBackendFactory = await createGitHubCredentialServiceFactory(
       resources,
       {
         config,

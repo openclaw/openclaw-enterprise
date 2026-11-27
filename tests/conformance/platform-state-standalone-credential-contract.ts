@@ -18,7 +18,7 @@ import {
 async function readySource(
   transaction: PlatformUnitOfWork,
   seed: PlatformStateSeed,
-  tokenServiceInstanceId: string,
+  credentialServiceInstanceId: string,
 ): Promise<string> {
   const sourceId = identifier("cs");
   const createdAt = new Date().toISOString();
@@ -28,8 +28,8 @@ async function readySource(
     name: `Standalone model source ${randomUUID()}`,
     type: "static",
     config: { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: "openai" },
-    ownerCapability: "token_service",
-    tokenServiceInstanceId,
+    ownerCapability: "credential_service",
+    credentialServiceInstanceId,
     state: "ready",
     createdAt,
   });
@@ -42,9 +42,9 @@ async function standaloneRevision(
   options: { repository?: RepositoryRevisionState; extraSource?: boolean } = {},
 ): Promise<AgentRevision> {
   const { repository } = options;
-  const instance = await transaction.installations.selectTokenServiceInstance({
+  const instance = await transaction.installations.selectCredentialServiceInstance({
     id: randomUUID(),
-    driverId: "token-service-contract",
+    driverId: "credential-service-contract",
     storeIdentity: "standalone-state-contract",
   });
   const sourceId = await readySource(transaction, seed, instance.id);
@@ -99,12 +99,12 @@ async function standaloneRevision(
     harnessAuth: {
       ...agent.harnessAuth,
       sourceType: "static",
-      tokenServiceInstanceId: instance.id,
+      credentialServiceInstanceId: instance.id,
     },
     credentialSources: sourceIds.map((id) => ({
       sourceId: id,
       sourceType: "static",
-      tokenServiceInstanceId: instance.id,
+      credentialServiceInstanceId: instance.id,
     })),
     credentialDeployment: {
       driver: {

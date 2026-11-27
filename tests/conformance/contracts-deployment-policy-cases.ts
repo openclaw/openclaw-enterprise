@@ -68,7 +68,7 @@ function policyRefusals(policy: DeploymentPolicy, context: DeploymentPolicyValid
 }
 
 export function registerDeploymentPolicyCases(): void {
-  test("staged source snapshots stay bound to the selected TokenService instance", () => {
+  test("staged source snapshots stay bound to the selected CredentialService instance", () => {
     const source = {
       id: "cs_work",
       namespaceId: "ns_example",
@@ -77,18 +77,18 @@ export function registerDeploymentPolicyCases(): void {
       config: {},
       state: "ready",
       createdAt: "2026-11-20T00:00:00Z",
-      ownerCapability: "token_service",
-      tokenServiceInstanceId: "instance-a",
+      ownerCapability: "credential_service",
+      credentialServiceInstanceId: "instance-a",
     } as const satisfies CredentialSource;
     const snapshot = {
       sourceId: source.id,
       sourceType: source.type,
-      tokenServiceInstanceId: "instance-a",
+      credentialServiceInstanceId: "instance-a",
     };
     assert.equal(credentialSourceMatchesSnapshot(source, snapshot), true);
     assert.equal(
       credentialSourceMatchesSnapshot(
-        { ...source, tokenServiceInstanceId: "instance-b" },
+        { ...source, credentialServiceInstanceId: "instance-b" },
         snapshot,
       ),
       false,
@@ -138,10 +138,10 @@ export function registerDeploymentPolicyCases(): void {
       method: "credential_source" as const,
       sourceId: "cs_work",
       sourceType: "static",
-      tokenServiceInstanceId: "instance-a",
+      credentialServiceInstanceId: "instance-a",
     };
     assert.doesNotThrow(() => assertExecutionAdmission({ ...staged, harnessAuth: sourceAuth }));
-    // A persisted TokenService snapshot cannot gain auth authority from a legacy Harness login mode.
+    // A persisted CredentialService snapshot cannot gain auth authority from a legacy Harness login mode.
     assert.throws(
       () =>
         assertExecutionAdmission({
@@ -167,7 +167,7 @@ export function registerDeploymentPolicyCases(): void {
             method: "credential_source",
             sourceId: "cs_work",
             sourceType: "static",
-            tokenServiceInstanceId: "instance-a",
+            credentialServiceInstanceId: "instance-a",
           },
         }),
       /own execution admission/,
@@ -177,7 +177,11 @@ export function registerDeploymentPolicyCases(): void {
         assertExecutionAdmission({
           executionAdmission: { version: 2, mode: "unprotected" },
           credentialSources: [
-            { sourceId: "cs_work", sourceType: "static", tokenServiceInstanceId: "instance-a" },
+            {
+              sourceId: "cs_work",
+              sourceType: "static",
+              credentialServiceInstanceId: "instance-a",
+            },
           ],
         }),
       /own execution admission/,

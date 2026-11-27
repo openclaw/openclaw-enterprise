@@ -202,7 +202,7 @@ Configuration. If enabled Slack settings reference a public Namespace Secret
 binding, the script refuses before it stops any Agent. Stop the affected Slack
 Agents under the old controller and start a fresh upgrade attempt. After the
 upgrade, select the qualified OCC
-TokenService with Kubernetes Compute, recreate their credentials as Credential
+CredentialService with Kubernetes Compute, recreate their credentials as Credential
 Sources, update their Slack Configuration bindings, and deploy them yourself.
 The script does not import the old Secret values.
 

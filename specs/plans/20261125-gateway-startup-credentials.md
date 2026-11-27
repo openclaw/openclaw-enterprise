@@ -14,7 +14,7 @@ rfc: ../rfcs/20261125-gateway-startup-credentials.md
 
 A dedicated Gateway can consume an explicitly bound, supported static CredentialSource after OCC authorizes the exact binding and resolves its recorded TokenService owner. Compute owns startup delivery. Preserve existing dedicated and embedded Namespace Secret behavior, Slack directory and preflight, and their authorization paths. OpenShell qualification is separate.
 
-At this baseline, OpenShell accepts generic static Sources, but Gateway delivery remains unqualified. See [OpenShell TokenService](../../apps/controller/src/drivers/token-service/openshell.ts).
+At this baseline, OpenShell accepts generic static Sources, but Gateway delivery remains unqualified. See [OpenShell TokenService](https://github.com/openclaw/openclaw-enterprise/blob/8e8c7faaeb5f750c3e2d7e9ebcca61b7d57ac1aa/apps/controller/src/drivers/token-service/openshell.ts).
 
 ## Accepted decisions
 

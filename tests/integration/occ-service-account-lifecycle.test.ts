@@ -126,7 +126,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   assert(controller);
   await fixture.markNamespaceReady(namespace.id);
   await controller.transact(async (unit) => {
-    const instance = await unit.installations.selectTokenServiceInstance({
+    const instance = await unit.installations.selectCredentialServiceInstance({
       id: randomUUID(),
       driverId: "occ",
       storeIdentity: "force-delete-existing-custody",
@@ -137,8 +137,8 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
       name: "Retained issued PAT",
       type: "static",
       config: { provider_preset: "codex-pat" },
-      ownerCapability: "token_service",
-      tokenServiceInstanceId: instance.id,
+      ownerCapability: "credential_service",
+      credentialServiceInstanceId: instance.id,
       state: "ready",
       createdAt: new Date().toISOString(),
     });

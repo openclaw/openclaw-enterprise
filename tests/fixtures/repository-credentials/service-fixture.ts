@@ -14,7 +14,10 @@ import { createResourceScope, createTestResourceScope, type FixtureOwner } from 
 import { socketDirectory } from "../../helpers/socket-directory.ts";
 import { waitFor } from "../../helpers/wait-for.ts";
 import { serviceConfigurationData } from "./builders.ts";
-import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.ts";
+import {
+  startStaticCredentialService,
+  writeSessionClientConfiguration,
+} from "./service-resources.ts";
 
 import type { Clock } from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
@@ -26,7 +29,7 @@ import { appFunction } from "./app-functions.ts";
 type ControlledClock = ReturnType<typeof createControlledClock>;
 type TlsMaterial = Awaited<ReturnType<typeof createTlsMaterial>>;
 type TokenConfiguration = NonNullable<
-  Parameters<typeof startStaticTokenService>[1]["configuration"]
+  Parameters<typeof startStaticCredentialService>[1]["configuration"]
 >;
 
 export function validateFixtureServiceConfiguration(
@@ -88,7 +91,7 @@ export async function createLoopbackServiceConfiguration(
 }
 
 /**
- * The shared setup of the token service suites: a resource scope that closes after `t`, a
+ * The shared setup of the credential service suites: a resource scope that closes after `t`, a
  * clock (controlled, or `"system"`, or the caller's), TLS material, a loopback service
  * configuration with `limits`, and the fake GitHub unless `github` is false. Each step
  * registers its cleanup on the scope in this order, so teardown runs in reverse.
@@ -106,19 +109,19 @@ type TokenScope<C extends Clock> = {
   github: Awaited<ReturnType<typeof startGitHubFixture>> | undefined;
 };
 
-export function startTokenServiceScope(
+export function startCredentialServiceScope(
   t: FixtureOwner,
   options?: TokenScopeOptions & { clock?: undefined },
 ): Promise<TokenScope<ControlledClock>>;
-export function startTokenServiceScope<C extends Clock>(
+export function startCredentialServiceScope<C extends Clock>(
   t: FixtureOwner,
   options: TokenScopeOptions & { clock: C },
 ): Promise<TokenScope<C>>;
-export function startTokenServiceScope(
+export function startCredentialServiceScope(
   t: FixtureOwner,
   options: TokenScopeOptions,
 ): Promise<TokenScope<Clock>>;
-export async function startTokenServiceScope(
+export async function startCredentialServiceScope(
   t: FixtureOwner,
   { clock, limits, github = true }: TokenScopeOptions = {},
 ): Promise<TokenScope<Clock>> {
@@ -185,7 +188,7 @@ async function startServiceFixture<C extends Clock>(
     );
     const github = await startGitHubFixture(resources, { clock, tls });
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const { factory, service, listeners } = await startStaticTokenService(resources, {
+    const { factory, service, listeners } = await startStaticCredentialService(resources, {
       config,
       clock,
       tls,

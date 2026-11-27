@@ -132,7 +132,7 @@ export async function verifySandboxDriverHarnessObservation({
       method: "credential_source",
       sourceId: "cs_pat",
       sourceType: "static",
-      tokenServiceInstanceId: "tokens",
+      credentialServiceInstanceId: "tokens",
     },
     credentialDeployment: {
       proxyDriverId: driver.id,

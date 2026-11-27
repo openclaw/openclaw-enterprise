@@ -871,7 +871,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409.",
+          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. CredentialService Sources require direct Agent creation; guided provisioning returns 409.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),

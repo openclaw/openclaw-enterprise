@@ -327,7 +327,7 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   );
 }
 
-async function readTokenServiceCustodyVersion(
+async function readCredentialServiceCustodyVersion(
   kube,
   { installationId, namespaceId, sourceId, secretNamespace },
 ) {
@@ -344,7 +344,7 @@ async function readTokenServiceCustodyVersion(
       "--selector",
       "app.kubernetes.io/managed-by=openclaw-enterprise",
     ],
-    "the TokenService Source custody metadata",
+    "the CredentialService Source custody metadata",
     `go-template=${template}`,
   );
   const versions = metadata.split("\n").flatMap((line) => {
@@ -355,7 +355,7 @@ async function readTokenServiceCustodyVersion(
     const ref = JSON.parse(privateIdentity);
     return Array.isArray(ref) &&
       ref.length === 5 &&
-      ref[0] === "token_service" &&
+      ref[0] === "credential_service" &&
       ref[2] === "credential_source" &&
       ref[3] === namespaceId &&
       ref[4] === sourceId
@@ -365,7 +365,7 @@ async function readTokenServiceCustodyVersion(
   assert.equal(
     versions.length,
     1,
-    "The selected TokenService must have one private Source receipt",
+    "The selected CredentialService must have one private Source receipt",
   );
   assert.ok(versions[0].uid && versions[0].resourceVersion);
   return versions[0];
@@ -732,7 +732,7 @@ test(
     if (selectedSandboxDriver === "openshell") {
       assert.ok(
         !process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
-        "The native First Agent proof requires the approved TokenService OpenAI preset.",
+        "The native First Agent proof requires the approved CredentialService OpenAI preset.",
       );
     }
     const own = ownFirstAgentWork(context);
@@ -830,7 +830,7 @@ test(
       const installation = await request("GET", "/installation");
       assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
       assert.ok(installation.capabilities?.modelCredentialSourcePresets?.includes("openai"));
-      // Enroll the native Agent's own separate Source through the selected TokenService.
+      // Enroll the native Agent's own separate Source through the selected CredentialService.
       const nativeSource = await request("POST", `${base}/credential-sources`, {
         name: `first-agent-native-${suffix}`,
         type: "static",
@@ -1584,7 +1584,7 @@ test(
           : "oce-installation-secrets";
       assert.ok(secretNamespace, "The local API must select an installation Secret Namespace");
       readCustodyVersion = () =>
-        readTokenServiceCustodyVersion(custodyKube, {
+        readCredentialServiceCustodyVersion(custodyKube, {
           installationId: recorded.installationId,
           namespaceId: first.namespaceId,
           sourceId: source.id,

@@ -13,7 +13,7 @@ import type {
   OpenClawConfigurationDocument,
   SecretBindings,
   StoredCredentialSource,
-  TokenServiceDriver,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
@@ -73,9 +73,9 @@ interface DeploymentChannelDependencies {
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedChannel: () => ChannelDriver;
   readonly selectedCompute: () => ComputeDriver | undefined;
-  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly ownedCredentialServiceDriver: (instanceId: string) => CredentialServiceDriver;
   readonly gatewayStartupSourceDelivery:
-    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
+    ((compute: ComputeDriver, owner: CredentialServiceDriver) => boolean) | undefined;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly requireBundledChannelBindings: (
     values: OpenClawConfigurationDocument,
@@ -216,25 +216,25 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
       state.credentialSources.findCredentialSource(source.namespaceId, source.id);
     const readySource = (current: Readonly<StoredCredentialSource> | undefined) => {
       if (
-        current?.ownerCapability !== "token_service" ||
+        current?.ownerCapability !== "credential_service" ||
         current.type !== "static" ||
         current.state !== "ready"
       ) {
         throw new ResourceStateConflictError(
-          "Channel credentials require a ready static TokenService Credential Source.",
+          "Channel credentials require a ready static CredentialService Credential Source.",
         );
       }
       return current;
     };
     const qualify = (instanceId: string) => {
-      const owner = dependencies.ownedTokenServiceDriver(instanceId);
+      const owner = dependencies.ownedCredentialServiceDriver(instanceId);
       const compute = dependencies.selectedCompute();
       if (
         compute === undefined ||
         dependencies.gatewayStartupSourceDelivery?.(compute, owner) !== true
       ) {
         throw new ResourceStateConflictError(
-          "The selected Compute and TokenService do not support Gateway Source delivery.",
+          "The selected Compute and CredentialService do not support Gateway Source delivery.",
         );
       }
       return { compute, owner };
@@ -248,12 +248,12 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
         return find(state);
       }),
     );
-    const { owner, compute } = qualify(selected.tokenServiceInstanceId);
+    const { owner, compute } = qualify(selected.credentialServiceInstanceId);
     const currentSource = (current: Readonly<StoredCredentialSource> | undefined) => {
       const active = readySource(current);
-      const qualified = qualify(active.tokenServiceInstanceId);
+      const qualified = qualify(active.credentialServiceInstanceId);
       if (
-        active.tokenServiceInstanceId !== selected.tokenServiceInstanceId ||
+        active.credentialServiceInstanceId !== selected.credentialServiceInstanceId ||
         qualified.owner !== owner ||
         qualified.compute !== compute
       ) {
@@ -266,10 +266,13 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
           resolved: await driverOperation(
             () =>
               owner.resolveCredential(
-                { sourceRef: source, tokenServiceInstanceId: selected.tokenServiceInstanceId },
+                {
+                  sourceRef: source,
+                  credentialServiceInstanceId: selected.credentialServiceInstanceId,
+                },
                 AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS),
               ),
-            "TokenService",
+            "CredentialService",
           ),
         };
       } catch {

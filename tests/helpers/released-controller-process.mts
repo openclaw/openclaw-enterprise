@@ -75,11 +75,10 @@ assert.ok(
   "The image must receive its selected browser origin and Agent domain.",
 );
 const {
-  TokenService,
-}: Partial<typeof import("../../apps/controller/src/backends/token-service/service.ts")> = candidate
-  ? await import(`${controllerPath}/backends/token-service/service.ts`)
-  : {};
-const preparedTokens = TokenService === undefined ? undefined : new TokenService();
+  CredentialService,
+}: Partial<typeof import("../../apps/controller/src/backends/credential-service/service.ts")> =
+  candidate ? await import(`${controllerPath}/backends/credential-service/service.ts`) : {};
+const preparedTokens = CredentialService === undefined ? undefined : new CredentialService();
 const controller = new OpenClawController(installation, {
   state,
   ...(configuredIAM
@@ -134,7 +133,7 @@ if (preparedTokens !== undefined) {
   controller.registerDriver(secretDriver);
   controller.selectDriver("secret", secretDriver.id);
   const { OAuthAccountTokens } = await import(
-    `${controllerPath}/backends/token-service/oauth-connection.ts`
+    `${controllerPath}/backends/credential-service/oauth-connection.ts`
   );
   preparedTokens.registerIssuer(
     new OAuthAccountTokens(

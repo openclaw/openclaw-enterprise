@@ -139,7 +139,7 @@ function stagedManagedRelease(
     method: "credential_source",
     sourceId: modelSourceId,
     sourceType: "static",
-    tokenServiceInstanceId: "00000000-0000-4000-8000-000000000014",
+    credentialServiceInstanceId: "00000000-0000-4000-8000-000000000014",
   } as const;
   const sourceRef = (id: string) =>
     ({ kind: "credential_source", id, namespaceId: tenant.id }) as const;
@@ -176,8 +176,8 @@ function stagedManagedRelease(
   const bindings = [model, plugin];
   const custody = {
     namespaceId: tenant.id,
-    ownerCapability: "token_service" as const,
-    tokenServiceInstanceId: harnessAuth.tokenServiceInstanceId,
+    ownerCapability: "credential_service" as const,
+    credentialServiceInstanceId: harnessAuth.credentialServiceInstanceId,
     state: "ready" as const,
     createdAt: tenant.createdAt,
   };
@@ -210,10 +210,10 @@ function stagedManagedRelease(
     revision: {
       executionAdmission: { version: 8, mode: "standalone" },
       harnessAuth,
-      credentialSources: sources.map(({ id, type, tokenServiceInstanceId }) => ({
+      credentialSources: sources.map(({ id, type, credentialServiceInstanceId }) => ({
         sourceId: id,
         sourceType: type,
-        tokenServiceInstanceId,
+        credentialServiceInstanceId,
         ...(id === pluginSourceId && { connectionTemplate: pluginTemplate }),
       })),
       sandboxPolicy: {

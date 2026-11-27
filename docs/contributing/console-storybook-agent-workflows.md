@@ -211,7 +211,7 @@ the response: loading starts while typing, keeps focus, and replaces empty-resul
 feedback. **Plugin tools loading** holds Calendar's details: check loading status
 and disabled **Add Calendar**. Reset to replay pending states before timeout.
 
-**Hosted Apps needs a TokenService Source** shows how saving a service account
+**Hosted Apps needs a CredentialService Source** shows how saving a service account
 token enables hosted discovery. **PAT Source enrollment denied** simulates a
 refused Source create and keeps discovery unavailable.
 

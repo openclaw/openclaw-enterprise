@@ -279,7 +279,7 @@
     "tests/integration/postgres-prepared-repository-git-broker.test.ts": 13400,
     "tests/integration/postgres-prepared-standing-expiry.test.ts": 2900,
     "tests/integration/postgres-prepared-standing-removal.test.ts": 1700,
-    "tests/integration/postgres-prepared-token-service.test.ts": 2700,
+    "tests/integration/postgres-prepared-credential-service.test.ts": 2700,
     "tests/integration/postgres-presets.test.ts": 2100,
     "tests/integration/postgres-production-wireup.test.ts": 16300,
     "tests/integration/postgres-protected-credential-free.test.ts": 2400,

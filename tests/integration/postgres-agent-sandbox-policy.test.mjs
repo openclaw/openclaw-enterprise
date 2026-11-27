@@ -16,7 +16,7 @@ import {
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import {
   editStoredRepositoryGrants,
   rejectStaleRepositoryPolicySave,
@@ -31,7 +31,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
 
-// These app instances share one durable TokenService owner, so they must share its custody store.
+// These app instances share one durable CredentialService owner, so they must share its custody store.
 const channelSourceSecretDriver = createTestSecretDriver({ id: "sandbox-policy-pg-secret" });
 
 async function createPolicyApp(
@@ -124,7 +124,8 @@ async function createPolicyApp(
       ...(channelSources
         ? {
             gatewayStartupSourceDelivery: (compute, owner) =>
-              compute.id === "sandbox-policy-pg-compute" && owner instanceof OCCTokenServiceDriver,
+              compute.id === "sandbox-policy-pg-compute" &&
+              owner instanceof OCCCredentialServiceDriver,
           }
         : {}),
       driverConfigurations: [

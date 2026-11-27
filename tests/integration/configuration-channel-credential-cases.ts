@@ -5,7 +5,7 @@ import type { Static } from "typebox";
 import { Check } from "typebox/value";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import {
   AgentResponse,
   AgentRevisionListResponse,
@@ -168,11 +168,11 @@ async function createEnvSourceBinding(
   if (!sourceOwners.has(context.controller)) {
     const store = context.controller.selectedDriver("secret").privateSecrets;
     assert.ok(store);
-    const instanceId = await context.controller.activateTokenServiceInstance(
+    const instanceId = await context.controller.activateCredentialServiceInstance(
       "configuration-source-owner",
       randomUUID(),
     );
-    const owner = new OCCTokenServiceDriver(
+    const owner = new OCCCredentialServiceDriver(
       "configuration-source-owner",
       context.controller.installation.id,
       store,
@@ -180,7 +180,7 @@ async function createEnvSourceBinding(
       context.platformState,
     );
     context.controller.registerDriver(owner);
-    context.controller.selectDriver("token_service", owner.id);
+    context.controller.selectDriver("credential_service", owner.id);
     sourceOwners.add(context.controller);
   }
   const response = await context.request(

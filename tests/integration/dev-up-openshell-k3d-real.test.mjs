@@ -880,7 +880,7 @@ test(
       "the regular OCC workflow must observe the bootstrap Namespace as ready",
     );
 
-    // Registration gives OCC TokenService custody. Delivery to OpenShell starts at deployment.
+    // Registration gives OCC CredentialService custody. Delivery to OpenShell starts at deployment.
     const cli = async (...args) =>
       JSON.parse(
         (
@@ -918,7 +918,7 @@ test(
       (await cli("credential-source", "list")).map(({ id }) => id),
       [source.id],
     );
-    // An unbound Source stays in TokenService. No Provider delivery copy should exist.
+    // An unbound Source stays in CredentialService. No Provider delivery copy should exist.
     const providers = await gateway.listProviders(
       createdPhysicalNamespace,
       AbortSignal.timeout(10_000),

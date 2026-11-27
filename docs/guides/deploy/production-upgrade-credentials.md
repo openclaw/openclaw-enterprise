@@ -6,7 +6,7 @@ active revision, retained Agent revisions with Repository credentials, and pendi
 operation without recording credential values. A retained standalone v8 Agent
 revision blocks migration if it has Repository credentials without Source-backed
 authorization, even after Stop. Legacy Gateway OAuth client-credentials tool
-Sources are dropped and have no TokenService
+Sources are dropped and have no CredentialService
 successor. Obtain an approved disposition for retained revisions and a replacement
 workflow for those tools before starting the cutover. Keep the inventory for
 the OpenShell operator. Existing OAuth grant or confidential Client custody
@@ -22,7 +22,7 @@ changes. Review and rehearse a coordinated upgrade with the target chart,
 controller, and Installation settings. Use the [Installation-change guide](production-installation-changes.md)
 for Secret and checksum handling only; do not apply its old-controller upgrade
 unchanged. Follow the [controller upgrade safeguards](production-upgrade.md#upgrade-the-control-plane).
-Select [TokenService and Credential Proxy](../../reference/drivers/selection.md#supported-selections).
+Select [CredentialService and Credential Proxy](../../reference/drivers/selection.md#supported-selections).
 The migration drops Gateway Source records and clears their draft assignments;
 it does not transfer credentials or clean external Providers. Keep the OpenShell
 gateway service and unrelated credential material. After upgrade, enroll replacement

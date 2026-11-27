@@ -13,7 +13,7 @@ import {
   type OAuthConnectionTemplateVersion,
   type OAuthCredentialSource,
   type Permission,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
@@ -113,8 +113,8 @@ interface OAuthConsentDependencies
   readonly iamPolicyDriver: (
     method: "createNamespaceAccessBinding" | "createNamespaceRole",
   ) => IAMDriver;
-  readonly selectedTokenServiceDriver: () => TokenServiceDriver;
-  readonly currentTokenServiceInstanceId: () => string;
+  readonly selectedCredentialServiceDriver: () => CredentialServiceDriver;
+  readonly currentCredentialServiceInstanceId: () => string;
   readonly oauthIssuer: OAuthIssuerOperations | undefined;
   readonly withOAuthClientSecret: <T>(
     client: Readonly<OAuthClient>,
@@ -161,15 +161,15 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         throw new ResourceStateConflictError("A static template cannot use an OAuth client.");
       }
       const version = template.current;
-      const owner = deps.selectedTokenServiceDriver();
-      const instanceId = deps.currentTokenServiceInstanceId();
+      const owner = deps.selectedCredentialServiceDriver();
+      const instanceId = deps.currentCredentialServiceInstanceId();
       return (await state.credentialClients.list())
         .filter(
           (client): client is Extract<typeof client, { kind: "oauth2" }> =>
             client.kind === "oauth2" &&
             eligibleClient(client, namespaceId, version, owner, instanceId),
         )
-        .map(({ tokenServiceInstanceId: _owner, ...metadata }) => metadata);
+        .map(({ credentialServiceInstanceId: _owner, ...metadata }) => metadata);
     });
   }
   async function startNamespaceConnection(
@@ -178,7 +178,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     audit?: () => AuditEvent,
   ) {
     await authorizeCreate(principalId, input.namespaceId);
-    deps.selectedTokenServiceDriver();
+    deps.selectedCredentialServiceDriver();
     return deps.transact(async (state) => {
       const namespace = await lockNamespace(state, input.namespaceId);
       if (namespace.status !== "ready") {
@@ -305,8 +305,8 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
           ),
         };
       });
-      const owner = deps.selectedTokenServiceDriver();
-      const tokenServiceInstanceId = deps.currentTokenServiceInstanceId();
+      const owner = deps.selectedCredentialServiceDriver();
+      const credentialServiceInstanceId = deps.currentCredentialServiceInstanceId();
       const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
       const issuer = requireIssuer();
       await issuer.revalidate(
@@ -342,8 +342,8 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       if (
         source.type !== "oauth2-refresh-token" ||
         source.state !== "ready" ||
-        source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== tokenServiceInstanceId ||
+        source.ownerCapability !== "credential_service" ||
+        source.credentialServiceInstanceId !== credentialServiceInstanceId ||
         source.namespaceId !== session.namespaceId ||
         source.consent.kind !== "connection_template" ||
         source.connectionTemplateId !== session.connectionTemplateId ||
@@ -353,7 +353,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         !isDeepStrictEqual(source.consent.requestedScopes, session.selectedScopes) ||
         !isDeepStrictEqual(source.consent.grantedScopes, grant.grantedScopes)
       ) {
-        throw new ResourceStateConflictError("TokenService returned an invalid OAuth Source.");
+        throw new ResourceStateConflictError("CredentialService returned an invalid OAuth Source.");
       }
       await deps.transact(async (state) => {
         await grantConnectionOwner(state, source.namespaceId, principalId, source.id);
@@ -375,7 +375,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         registrationSource ??
         (await view.credentialSources.findCredentialSource(ref.namespaceId, ref.sourceId));
       if (
-        source?.ownerCapability !== "token_service" ||
+        source?.ownerCapability !== "credential_service" ||
         source.type !== "oauth2-refresh-token" ||
         source.id !== ref.sourceId ||
         source.namespaceId !== ref.namespaceId ||
@@ -443,14 +443,15 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     client: Extract<StoredCredentialClient, { kind: "oauth2" }>,
     namespaceId: string,
     version: OAuthConnectionTemplateVersion,
-    owner: TokenServiceDriver,
+    owner: CredentialServiceDriver,
     instanceId: string,
   ): boolean {
     const scope = client.namespaceId === undefined ? "installation" : "namespace";
     return (
       (client.namespaceId === undefined || client.namespaceId === namespaceId) &&
       owner.clientScopes.oauth2?.includes(scope) === true &&
-      (client.tokenEndpointAuthMethod === "none" || client.tokenServiceInstanceId === instanceId) &&
+      (client.tokenEndpointAuthMethod === "none" ||
+        client.credentialServiceInstanceId === instanceId) &&
       client.issuer === version.issuer &&
       version.issuerVerification?.tokenEndpointAuthMethods.includes(
         client.tokenEndpointAuthMethod,
@@ -472,13 +473,13 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         client,
         namespaceId,
         version,
-        deps.selectedTokenServiceDriver(),
-        deps.currentTokenServiceInstanceId(),
+        deps.selectedCredentialServiceDriver(),
+        deps.currentCredentialServiceInstanceId(),
       )
     ) {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
     }
-    const { tokenServiceInstanceId: _owner, ...metadata } = client;
+    const { credentialServiceInstanceId: _owner, ...metadata } = client;
     return metadata;
   }
 

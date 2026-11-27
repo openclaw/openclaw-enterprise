@@ -7,7 +7,7 @@ import {
   startBrowserAuthorization,
   exchangeAuthorizationCode,
 } from "../../packages/occ/src/browser-authorization.ts";
-import { OAuthGrantStore } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OAuthGrantStore } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
 import { refreshPinnedOAuthGrant } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerOAuthRenewalRefusalCases } from "./oauth-renewal-refusal-cases.ts";
@@ -108,7 +108,7 @@ async function oauthCustody(grant, signal) {
   return { driver, custody, schedule, service, worker };
 }
 
-test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
+test("the Credential Service keeps the first access token in custody and serializes rotation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
   const requests = [];
   const first = randomUUID();

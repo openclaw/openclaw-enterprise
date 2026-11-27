@@ -701,7 +701,7 @@ export function credentialsScenarios({
         { selector: "#service-account-id", value: "sa_demo" },
       ],
       description:
-        "Select a freshly issued service account. Saving binds its canonical TokenService Source and uses ordinary Source permissions.",
+        "Select a freshly issued service account. Saving binds its canonical CredentialService Source and uses ordinary Source permissions.",
       gap: "Service-account issuance is outside the console.",
     },
     authServiceEmpty: {

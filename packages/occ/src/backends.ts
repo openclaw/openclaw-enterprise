@@ -404,7 +404,7 @@ function validateOpenShellBackend(
       key !== "credential_gateway" &&
       key !== "credential_refresh" &&
       key !== "credential_proxy" &&
-      key !== "token_service"
+      key !== "credential_service"
     ) {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
@@ -450,9 +450,14 @@ function validateOpenShellBackend(
       ...(drivers.credential_refresh === undefined
         ? {}
         : { credential_refresh: drivers.credential_refresh as string }),
-      ...(drivers.token_service === undefined
+      ...(drivers.credential_service === undefined
         ? {}
-        : { token_service: backendId(drivers.token_service, "TokenService Driver ID") }),
+        : {
+            credential_service: backendId(
+              drivers.credential_service,
+              "CredentialService Driver ID",
+            ),
+          }),
     },
   });
 }
@@ -475,9 +480,9 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
     ...(backend.drivers.credential_proxy === undefined
       ? []
       : [`credential_proxy:${backend.drivers.credential_proxy}`]),
-    ...(backend.drivers.token_service === undefined
+    ...(backend.drivers.credential_service === undefined
       ? []
-      : [`token_service:${backend.drivers.token_service}`]),
+      : [`credential_service:${backend.drivers.credential_service}`]),
   ];
 }
 
@@ -577,8 +582,12 @@ export function validateSelectedBackendDrivers(
           "Credential Refresh Driver",
         );
       }
-      if (backend.drivers.token_service !== undefined) {
-        requires("token_service", backend.drivers.token_service, "TokenService Driver");
+      if (backend.drivers.credential_service !== undefined) {
+        requires(
+          "credential_service",
+          backend.drivers.credential_service,
+          "CredentialService Driver",
+        );
       }
       if (backend.drivers.credential_proxy !== undefined) {
         requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");

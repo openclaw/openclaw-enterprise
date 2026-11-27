@@ -11,7 +11,7 @@ import type {
   LegacyCredentialSourceMetadata,
   UpdateManagedCredentialSourceInput,
 } from "@openclaw-enterprise/occ";
-import { BUILTIN_CODEX_OAUTH_PRESET } from "../backends/token-service/codex-oauth-preset.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../backends/credential-service/codex-oauth-preset.ts";
 
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 

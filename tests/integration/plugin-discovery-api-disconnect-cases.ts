@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer, request as httpRequest, IncomingMessage, ServerResponse } from "node:http";
 import type { TestContext } from "node:test";
 
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { installDeviceCredentialService } from "../helpers/device-credential-service.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { CredentialSourceResponse } from "../../packages/contracts/src/api/resources.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
@@ -37,7 +37,7 @@ export async function honorsDisconnectsDuringIam(t: TestContext) {
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
-  await installDeviceTokenService(fixture.controller, fixture.state, fixture.secretDriver);
+  await installDeviceCredentialService(fixture.controller, fixture.state, fixture.secretDriver);
   const enrolled = await fixture.request(
     "POST",
     `/namespaces/${fixture.namespace.id}/credential-sources`,

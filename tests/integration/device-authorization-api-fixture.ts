@@ -20,11 +20,11 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   controlDeviceIssuer,
-  installDeviceTokenService,
+  installDeviceCredentialService,
   DEVICE_OAUTH_ACCESS_TOKEN,
   DEVICE_OAUTH_REFRESH_TOKEN,
   type DeviceIssuerOptions,
-} from "../helpers/device-token-service.ts";
+} from "../helpers/device-credential-service.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { gatewayRouting } from "../helpers/kubernetes-routed-options.ts";
@@ -69,7 +69,7 @@ export async function createFixture(
     const configuration = buildSandboxInstallation();
     Reflect.deleteProperty(configuration.drivers, "credential_gateway");
     Reflect.deleteProperty(configuration.backend[0]?.drivers ?? {}, "credential_gateway");
-    Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+    Object.assign(configuration.drivers, { credential_service: { id: "occ", configuration: {} } });
     if (ceiling !== undefined) {
       Reflect.deleteProperty(configuration.drivers.compute.configuration.network, "gatewayClients");
       Object.assign(configuration.drivers.compute.configuration, { gatewayRouting });
@@ -124,7 +124,11 @@ export async function createFixture(
   await fixture.bootstrap();
   const controller = fixture.controller;
   assert.ok(controller instanceof OpenClawController && state);
-  const { owner, instanceId } = await installDeviceTokenService(controller, state, secretDriver);
+  const { owner, instanceId } = await installDeviceCredentialService(
+    controller,
+    state,
+    secretDriver,
+  );
   const namespace = await fixture.createNamespace("Device login", { ready: true });
   if (runtime) {
     controller.registerDriver(runtime.computeDriver);

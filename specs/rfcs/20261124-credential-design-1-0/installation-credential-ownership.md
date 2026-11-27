@@ -51,7 +51,7 @@ A rejected withdrawal leaves the old policy in force and cannot count as complet
 
 ## Contract entry points
 
-- [TokenServiceDriver](../../../packages/contracts/src/drivers/token-service/index.ts) owns the six source lifecycle operations. OCC validates and persists its registration and supplies the recorded reference to trusted consumers. Client-registration material has a separate Installation identity and no delivery binding.
+- [TokenServiceDriver](https://github.com/openclaw/openclaw-enterprise/blob/8e8c7faaeb5f750c3e2d7e9ebcca61b7d57ac1aa/packages/contracts/src/drivers/token-service/index.ts) owns the six source lifecycle operations. OCC validates and persists its registration and supplies the recorded reference to trusted consumers. Client-registration material has a separate Installation identity and no delivery binding.
 - [Plugin deployment](../../../packages/contracts/src/drivers/plugin/deployment.ts) describes one plugin at a time. Tool IDs connect each named credential to its consumer and reviewed request requirements. An installed plugin may declare a credential requirement with zero connected accounts.
 - The historical [Sandbox deployment contract](https://github.com/openclaw/openclaw-enterprise/blob/840e8ac0044e0d803f7975632ce4d58e3c9f9006/packages/contracts/src/drivers/sandbox/deployment.ts) and [proxy deployment](../../../packages/contracts/src/drivers/credential-proxy/index.ts) shared [deployment references and policies](../../../packages/contracts/src/credential-deployment.ts). The fresh-start amendment below replaces the Sandbox contract with direct Driver operations.
 

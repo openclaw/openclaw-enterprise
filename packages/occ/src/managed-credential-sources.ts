@@ -6,7 +6,7 @@ import {
   type AuditEvent,
   type CredentialSource,
   type EgressRef,
-  type TokenService,
+  type CredentialService,
   type StaticCredentialSource,
   type CredentialSourceMetadata,
   type CredentialSourceReference,
@@ -17,7 +17,7 @@ import {
   type SourceRegistrationInput,
   type SourceUpdate,
   type SecretDriver,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
@@ -30,7 +30,7 @@ import {
   credentialSourceMetadata,
   githubAppCredentialSourceMetadata,
   credentialSourceRef,
-  isManagedTokenServiceSource,
+  isManagedCredentialServiceSource,
 } from "./credential-source-metadata.ts";
 import {
   AuthorizationDeniedError,
@@ -51,7 +51,7 @@ import {
 } from "./iam-policy-cleanup.ts";
 import { selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
-import type { TokenServiceInstance } from "./ports/token-service.ts";
+import type { CredentialServiceInstance } from "./ports/credential-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 type CreateStaticCredentialSourceInput = Omit<
@@ -114,9 +114,9 @@ interface ManagedCredentialSourceDependencies {
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator">;
   readonly sourceDrivers: Pick<CredentialSourceDrivers, "credentialSourceOwner">;
-  readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
+  readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<CredentialService["issuer"]>>;
   readonly clock: () => Date;
-  readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  readonly selectedCredentialServiceDriver: () => CredentialServiceDriver;
   readonly secretDriver: (driverId: string) => SecretDriver;
   readonly pluginDrivers: () => readonly PluginDriver[];
   readonly retireDelivery: (
@@ -124,52 +124,52 @@ interface ManagedCredentialSourceDependencies {
     source: CredentialSourceReference,
     signal: AbortSignal,
   ) => Promise<void>;
-  readonly tokenServiceTimeoutMs: number;
+  readonly credentialServiceTimeoutMs: number;
 }
 
 export function createManagedCredentialSources(dependencies: ManagedCredentialSourceDependencies) {
-  let tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
+  let credentialServiceInstance: Readonly<CredentialServiceInstance> | undefined;
 
-  async function activateTokenServiceInstance(
+  async function activateCredentialServiceInstance(
     driverId: string,
     storeIdentity: string,
   ): Promise<string> {
     if (!isNonEmptyString(driverId) || !isNonEmptyString(storeIdentity)) {
-      throw new DriverSelectionError("The TokenService store identity is unavailable.");
+      throw new DriverSelectionError("The CredentialService store identity is unavailable.");
     }
     const selected = await dependencies.transactions.transact((state) =>
-      state.installations.selectTokenServiceInstance({
+      state.installations.selectCredentialServiceInstance({
         id: crypto.randomUUID(),
         driverId,
         storeIdentity,
       }),
     );
-    tokenServiceInstance = selected;
+    credentialServiceInstance = selected;
     return selected.id;
   }
 
-  function currentTokenServiceInstanceId(): string {
-    if (!tokenServiceInstance) {
-      throw new DependencyUnavailableError("The selected TokenService store is unavailable.");
+  function currentCredentialServiceInstanceId(): string {
+    if (!credentialServiceInstance) {
+      throw new DependencyUnavailableError("The selected CredentialService store is unavailable.");
     }
-    return tokenServiceInstance.id;
+    return credentialServiceInstance.id;
   }
 
-  function ownedTokenServiceDriver(instanceId?: string): TokenServiceDriver {
-    let owner: TokenServiceDriver;
+  function ownedCredentialServiceDriver(instanceId?: string): CredentialServiceDriver {
+    let owner: CredentialServiceDriver;
     try {
-      owner = dependencies.selectedTokenServiceDriver();
+      owner = dependencies.selectedCredentialServiceDriver();
     } catch {
-      throw new DependencyUnavailableError("The selected TokenService Driver is unavailable.");
+      throw new DependencyUnavailableError("The selected CredentialService Driver is unavailable.");
     }
-    const instance = tokenServiceInstance;
+    const instance = credentialServiceInstance;
     if (
       !instance ||
       owner.id !== instance.driverId ||
       (instanceId !== undefined && instance.id !== instanceId)
     ) {
       throw new DependencyUnavailableError(
-        "The selected TokenService instance does not own this registration.",
+        "The selected CredentialService instance does not own this registration.",
       );
     }
     return owner;
@@ -234,7 +234,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           );
         }
       }
-      const owner = ownedTokenServiceDriver();
+      const owner = ownedCredentialServiceDriver();
       await state.audit.append(audit(collection, "registration_started"));
       return owner;
     });
@@ -257,8 +257,11 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         : { ...input, namespaceId };
     const created = await driverOperation(
       () =>
-        owner.createSource(registration, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
-      "TokenService",
+        owner.createSource(
+          registration,
+          AbortSignal.timeout(dependencies.credentialServiceTimeoutMs),
+        ),
+      "CredentialService",
     ).catch((error: unknown) => {
       if (
         registration.type === "github-app-installation" &&
@@ -269,14 +272,14 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       throw error;
     });
     if (
-      !isManagedTokenServiceSource(created) ||
+      !isManagedCredentialServiceSource(created) ||
       created.namespaceId !== namespaceId ||
-      created.tokenServiceInstanceId !== currentTokenServiceInstanceId() ||
+      created.credentialServiceInstanceId !== currentCredentialServiceInstanceId() ||
       created.state !== "ready" ||
       created.name !== input.name
     ) {
       throw new ResourceStateConflictError(
-        "The TokenService returned an invalid credential source.",
+        "The CredentialService returned an invalid credential source.",
       );
     }
     let metadata: CredentialSourceMetadata;
@@ -295,7 +298,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       metadata = githubAppCredentialSourceMetadata(created);
     } else {
       throw new ResourceStateConflictError(
-        "The TokenService returned an invalid credential source.",
+        "The CredentialService returned an invalid credential source.",
       );
     }
     return dependencies.transactions.transact(async (state) => {
@@ -327,10 +330,10 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       client?.kind !== "github-app" ||
       (appId !== undefined && client.appId !== appId) ||
       (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
-      client.tokenServiceInstanceId !== currentTokenServiceInstanceId()
+      client.credentialServiceInstanceId !== currentCredentialServiceInstanceId()
     ) {
       throw new ResourceStateConflictError(
-        "Select a GitHub App Client available in this Namespace for the approved installation and selected TokenService.",
+        "Select a GitHub App Client available in this Namespace for the approved installation and selected CredentialService.",
       );
     }
   }
@@ -346,15 +349,15 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       readonly matches: (source: Readonly<GitHubAppInstallationCredentialSource>) => boolean;
     },
   ): Promise<string> {
-    const instanceId = currentTokenServiceInstanceId();
+    const instanceId = currentCredentialServiceInstanceId();
     await validateDeploymentGitHubAppClient(namespaceId, input.clientId, input.appId);
     const eligibleSources = await dependencies.transactions.read(async (state) =>
       (await state.credentialSources.listCredentialSources(namespaceId)).filter(
         (source) =>
-          isManagedTokenServiceSource(source) &&
+          isManagedCredentialServiceSource(source) &&
           source.type === "github-app-installation" &&
           source.state === "ready" &&
-          source.tokenServiceInstanceId === instanceId &&
+          source.credentialServiceInstanceId === instanceId &&
           source.clientId === input.clientId &&
           source.scope.appId === input.appId &&
           source.scope.installationId === input.installationId &&
@@ -432,7 +435,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           "An issued ServiceAccount credential cannot be replaced through Source update.",
         );
       }
-      if (!isManagedTokenServiceSource(source)) {
+      if (!isManagedCredentialServiceSource(source)) {
         throw new ResourceStateConflictError(
           "The update does not match the credential source owner.",
         );
@@ -456,7 +459,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       }
       if (source.state !== "ready") {
         throw new ResourceStateConflictError(
-          "This credential source cannot be updated through the selected TokenService.",
+          "This credential source cannot be updated through the selected CredentialService.",
         );
       }
       if (
@@ -507,7 +510,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           source.id,
           managedSourceConfig(source, input),
         );
-        if (!isManagedTokenServiceSource(updated) || updated.type !== "static") {
+        if (!isManagedCredentialServiceSource(updated) || updated.type !== "static") {
           throw new ResourceStateConflictError("The credential source changed during update.");
         }
         await state.audit.append(completedAudit());
@@ -516,7 +519,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     }
     const { source, owner } = await dependencies.transactions.transact(async (state) => {
       const source = await authorize(state);
-      const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const owner = ownedCredentialServiceDriver(source.credentialServiceInstanceId);
       await state.audit.append(audit(resource, "update_started"));
       return { source, owner };
     });
@@ -537,20 +540,23 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       const updated = await driverOperation(
         () =>
           owner.updateSource(
-            { sourceRef: resource, tokenServiceInstanceId: source.tokenServiceInstanceId },
+            {
+              sourceRef: resource,
+              credentialServiceInstanceId: source.credentialServiceInstanceId,
+            },
             update,
-            AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+            AbortSignal.timeout(dependencies.credentialServiceTimeoutMs),
           ),
-        "TokenService",
+        "CredentialService",
       );
       if (
-        !isManagedTokenServiceSource(updated) ||
+        !isManagedCredentialServiceSource(updated) ||
         updated.id !== source.id ||
         updated.namespaceId !== source.namespaceId ||
-        updated.tokenServiceInstanceId !== source.tokenServiceInstanceId
+        updated.credentialServiceInstanceId !== source.credentialServiceInstanceId
       ) {
         throw new ResourceStateConflictError(
-          "The TokenService returned an invalid credential source.",
+          "The CredentialService returned an invalid credential source.",
         );
       }
       return dependencies.transactions.transact(async (state) => {
@@ -586,7 +592,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       await dependencies.retireDelivery(
         namespace,
         credentialSourceRef(source),
-        AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+        AbortSignal.timeout(dependencies.credentialServiceTimeoutMs),
       );
     } catch {
       throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
@@ -609,7 +615,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       const namespace = await lockNamespace(state, namespaceId);
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (
-        !isManagedTokenServiceSource(source) ||
+        !isManagedCredentialServiceSource(source) ||
         source.type !== "oauth2-refresh-token" ||
         source.consent.revocationRequestedBy === undefined
       ) {
@@ -623,7 +629,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     if (!pending) {
       return undefined;
     }
-    const owner = ownedTokenServiceDriver(pending.source.tokenServiceInstanceId);
+    const owner = ownedCredentialServiceDriver(pending.source.credentialServiceInstanceId);
     if (pending.source.consent.revokedAt === undefined) {
       await retireSourceDelivery(pending.namespace, pending.source);
     }
@@ -632,11 +638,11 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         owner.removeSource(
           {
             sourceRef: credentialSourceRef(pending.source),
-            tokenServiceInstanceId: pending.source.tokenServiceInstanceId,
+            credentialServiceInstanceId: pending.source.credentialServiceInstanceId,
           },
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+          AbortSignal.timeout(dependencies.credentialServiceTimeoutMs),
         ),
-      "TokenService",
+      "CredentialService",
     );
     const current = await dependencies.transactions.read((state) =>
       state.credentialSources.findCredentialSource(namespaceId, sourceId),
@@ -736,7 +742,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       );
       if (
         deleteDenial !== undefined &&
-        (!isManagedTokenServiceSource(source) ||
+        (!isManagedCredentialServiceSource(source) ||
           source.type !== "oauth2-refresh-token" ||
           source.consent.ownerPrincipalId !== principalId)
       ) {
@@ -754,9 +760,9 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           "Delete the owning ServiceAccount to revoke this issued credential.",
         );
       }
-      if (!isManagedTokenServiceSource(source)) {
+      if (!isManagedCredentialServiceSource(source)) {
         if (source.ownerCapability !== "credential_proxy" || source.egress === undefined) {
-          throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+          throw new ResourceStateConflictError("Re-enroll this credential with CredentialService.");
         }
         dependencies.sourceDrivers.credentialSourceOwner(source);
         const blocking = await state.credentialSources.findBlockingReference(
@@ -775,7 +781,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           source.state === "deleting"
             ? source
             : await state.credentialSources.markCredentialSourceDeleting(namespaceId, source.id);
-        if (!deleting || isManagedTokenServiceSource(deleting)) {
+        if (!deleting || isManagedCredentialServiceSource(deleting)) {
           throw new ResourceStateConflictError("The credential source changed during deletion.");
         }
         return {
@@ -786,7 +792,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       if (!audit) {
         throw new ResourceStateConflictError("Source retirement requires audit evidence.");
       }
-      ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      ownedCredentialServiceDriver(source.credentialServiceInstanceId);
       const blocking = await state.credentialSources.findBlockingReference(namespaceId, source.id);
       if (blocking === "reference") {
         throw new ResourceStateConflictError(
@@ -808,7 +814,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         source.state === "deleting"
           ? source
           : await state.credentialSources.markCredentialSourceDeleting(namespaceId, source.id);
-      if (!isManagedTokenServiceSource(deleting)) {
+      if (!isManagedCredentialServiceSource(deleting)) {
         throw new ResourceStateConflictError("The Source changed during retirement.");
       }
       if (
@@ -820,7 +826,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       await state.audit.append(audit([], "retirement_started"));
       return { namespace, source: deleting };
     });
-    if (!isManagedTokenServiceSource(source)) {
+    if (!isManagedCredentialServiceSource(source)) {
       if (source.egress?.adoption === "prepared") {
         await dependencies
           .preparedIssuer(source.egress.key.provider)
@@ -852,18 +858,18 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       }
       return;
     }
-    const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
+    const owner = ownedCredentialServiceDriver(source.credentialServiceInstanceId);
     await retireSourceDelivery(namespace, source);
     const removed = await driverOperation(
       () =>
         owner.removeSource(
           {
             sourceRef: credentialSourceRef(source),
-            tokenServiceInstanceId: source.tokenServiceInstanceId,
+            credentialServiceInstanceId: source.credentialServiceInstanceId,
           },
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+          AbortSignal.timeout(dependencies.credentialServiceTimeoutMs),
         ),
-      "TokenService",
+      "CredentialService",
     );
     await dependencies.transactions.transact((state) =>
       state.audit.append(audit!(removed.map(removedAccessBinding))),
@@ -871,9 +877,9 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
   }
 
   return {
-    activateTokenServiceInstance,
-    currentTokenServiceInstanceId,
-    ownedTokenServiceDriver,
+    activateCredentialServiceInstance,
+    currentCredentialServiceInstanceId,
+    ownedCredentialServiceDriver,
     createManagedCredentialSource,
     prepareDeploymentGitHubAppSource,
     validateDeploymentGitHubAppClient,

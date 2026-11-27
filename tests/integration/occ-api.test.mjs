@@ -1184,7 +1184,7 @@ async function bindSlackDeploymentCredentials(fixture, namespaceId, agent, { app
 }
 
 const qualifiedSlackDelivery = (compute, owner) =>
-  compute.id === "compute-provisioning-api" && owner.implementation === "occ/token-service";
+  compute.id === "compute-provisioning-api" && owner.implementation === "occ/credential-service";
 
 test("Agent provisioning and deploy name a refused channel token reference form before Slack validation", async () => {
   // Finding 2506: provisioning ran the Slack Channel Driver's check before the Configuration rules

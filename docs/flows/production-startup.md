@@ -173,7 +173,7 @@ awaits completion. Cleanup ignores repeated signals.
 
 Under the advisory lock, the migrator verifies [history](../reference/settings/operations.md#migration-history),
 roles, catalogs and grants against native or reviewed restore digests before
-DDL or bootstrap. On 0085, check and apply refuse unfinished managed TokenService
+DDL or bootstrap. On 0085, check and apply refuse unfinished managed CredentialService
 registrations with `MIGRATION_REGISTRATION_PENDING`.
 The SQL constraint guards later changes. After option checks, completed apply
 skips Drizzle only when `transaction_read_only` is off. Drizzle handles pending migrations
@@ -231,7 +231,7 @@ or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drai
 
 The [production](../../apps/controller/src/composition/production.ts) and
 [development](../../apps/controller/src/composition/development-postgres.ts) APIs
-stop TokenService maintenance before closing the exchange binding,
+stop CredentialService maintenance before closing the exchange binding,
 protected Driver, and database in order. Resource cleanup continues after an
 error and reports the first failure. Failed startup preserves its original error.
 

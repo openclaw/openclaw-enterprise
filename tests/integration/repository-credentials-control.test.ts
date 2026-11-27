@@ -40,14 +40,14 @@ import {
   createServiceConfiguration,
   eventually,
   createLoopbackServiceConfiguration,
-  startTokenServiceScope,
+  startCredentialServiceScope,
 } from "../fixtures/repository-credentials/service-fixture.ts";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
 import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
 import {
-  createStaticTokenServiceFactory,
+  createStaticCredentialServiceFactory,
   startServiceListeners,
-  startStaticTokenService,
+  startStaticCredentialService,
 } from "../fixtures/repository-credentials/service-resources.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
@@ -205,7 +205,7 @@ async function dropControlResponse(owner: ResourceOwner, target: string) {
 
 async function admissionFixture(t: TestContext, onCreate?: (sessionId: string) => void) {
   const scopeOptions = { limits: { sessions: 1 }, github: false };
-  const { resources, clock, tls, config } = await startTokenServiceScope(t, scopeOptions);
+  const { resources, clock, tls, config } = await startCredentialServiceScope(t, scopeOptions);
   const callControl = await appFunction(
     "drivers/repo/github/access/client/operator",
     "callControl",
@@ -424,14 +424,20 @@ test(
   { timeout: 10000 },
   async (t) => {
     const scopeOptions: { clock: "system"; github?: boolean } = { clock: "system" };
-    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startCredentialServiceScope(
+      t,
+      scopeOptions,
+    );
     assert.ok(github);
-    const { listeners }: { listeners: BoundListeners } = await startStaticTokenService(resources, {
-      config,
-      clock,
-      tls,
-      github,
-    });
+    const { listeners }: { listeners: BoundListeners } = await startStaticCredentialService(
+      resources,
+      {
+        config,
+        clock,
+        tls,
+        github,
+      },
+    );
     assert.equal((await lstat(config.gateway.controlSocket)).mode & 0o777, 0o600);
     // Standalone services do not implement registry-backed durable admission.
     assert.equal(
@@ -712,7 +718,10 @@ test(
       // A single exchange slot makes leaked ownership observable on the next request.
       limits: { exchanges: 1, exchangesPerSession: 1 },
     };
-    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startCredentialServiceScope(
+      t,
+      scopeOptions,
+    );
     assert.ok(github);
     const [{ createCredentialService }, startListeners] = await Promise.all([
       import("../fixtures/repository-credentials/service.ts"),
@@ -745,7 +754,7 @@ test(
     });
     const origin = await listen(resources, upstream);
     const { factory }: { factory: RepositoryBackendFactory } =
-      await createStaticTokenServiceFactory(resources, {
+      await createStaticCredentialServiceFactory(resources, {
         config,
         clock,
         tls,

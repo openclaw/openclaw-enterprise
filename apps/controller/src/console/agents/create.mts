@@ -2947,7 +2947,7 @@ function renderAgentForm(
       ((passwordAuth && staticSourceRequired()) ||
         (!passwordAuth && canUseManagedStatic() && modelSourcePicker.creating)));
   const usesExistingModelSource = () => usesModelSourcePicker() && !modelSourcePicker.creating;
-  // TokenService enrollment and per-repository GitHub access use the draft path.
+  // CredentialService enrollment and per-repository GitHub access use the draft path.
   const shouldProvision = () =>
     !repositories.scoped() &&
     !usesManagedStatic() &&

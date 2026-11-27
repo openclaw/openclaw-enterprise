@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   createControllerApp,
@@ -508,7 +508,7 @@ export function slackValidationConfiguration({
   };
 }
 
-const sourceOwners = new WeakMap<OpenClawController, OCCTokenServiceDriver>();
+const sourceOwners = new WeakMap<OpenClawController, OCCCredentialServiceDriver>();
 
 /** Enroll a static Source through the HTTP caller using the selected OCC owner. */
 export async function enrollStaticSource(
@@ -524,8 +524,8 @@ export async function enrollStaticSource(
   if (!owner) {
     const store = occ.selectedDriver("secret").privateSecrets;
     assert(store);
-    const instance = await occ.activateTokenServiceInstance("fixture-tokens", randomUUID());
-    owner = new OCCTokenServiceDriver(
+    const instance = await occ.activateCredentialServiceInstance("fixture-tokens", randomUUID());
+    owner = new OCCCredentialServiceDriver(
       "fixture-tokens",
       occ.installation.id,
       store,
@@ -533,7 +533,7 @@ export async function enrollStaticSource(
       state,
     );
     occ.registerDriver(owner);
-    occ.selectDriver("token_service", owner.id);
+    occ.selectDriver("credential_service", owner.id);
     sourceOwners.set(occ, owner);
   }
   const response = await controller.request(

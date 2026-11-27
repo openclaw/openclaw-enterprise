@@ -142,7 +142,7 @@ whom a key was issued for, so start each key's `--name` with the person's name, 
 | Update a Configuration and deploy again | [Agent revisions](topics/agent-revisions.md); its CLI examples also require `jq`                                                                                   |
 | Stop or delete an Agent                 | [Agent lifecycle](topics/agent.md#how-an-agent-runs) and [deletion and cleanup](../reference/agents.md#deletion)                                                   |
 | Create or replace integration Secrets   | [Namespace Secrets](../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and [Configuration bindings](../reference/configuration/secrets.md) |
-| Enroll a managed credential             | [Credential Sources](../reference/credential-sources.md), including TokenService, Credential Proxy and cutover status                                              |
+| Enroll a managed credential             | [Credential Sources](../reference/credential-sources.md), including CredentialService, Credential Proxy and cutover status                                         |
 | Grant access to a Namespace resource    | [Namespace IAM](../reference/authorization.md#manage-namespace-policy)                                                                                             |
 | Let an Agent use a Secret               | [Grant the Agent's own identity Secret `operate`](topics/iam.md#let-an-agent-use-a-secret)                                                                         |
 | Inspect or upgrade the running fleet    | [Production image upgrades](deploy/production-upgrade.md) and the [CLI reference](../reference/cli.md)                                                             |

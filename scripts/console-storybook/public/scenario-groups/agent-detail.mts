@@ -1600,7 +1600,7 @@ export function createAgentDetailScenarios({
         rules: [{ suffix: "/connections/oauth-clients", method: "GET", data: [] }],
         description:
           "The selected Template has no compatible Client. The dialog explains the missing registration and cannot start consent.",
-        gap: "Client eligibility is simulated; this does not prove Namespace authorization or TokenService custody.",
+        gap: "Client eligibility is simulated; this does not prove Namespace authorization or CredentialService custody.",
       },
       pluginAccountConsentClientsLoading: {
         ...accountConsent,

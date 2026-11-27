@@ -143,7 +143,7 @@ async function fixture({
       });
     },
     async createCredential() {
-      assert.fail("credential issuance requires the real TokenService and Credential Proxy");
+      assert.fail("credential issuance requires the real CredentialService and Credential Proxy");
     },
     async delete(account) {
       await deleteAccount?.(account);
@@ -174,7 +174,7 @@ async function fixture({
 // A previously issued account can outlive the Installation's selected Backend.
 async function seedIssuedSource(controller: OpenClawController, account: ServiceAccount) {
   const sourceId = `cs_${randomUUID()}`;
-  const tokenServiceInstanceId = await controller.activateTokenServiceInstance(
+  const credentialServiceInstanceId = await controller.activateCredentialServiceInstance(
     "issued-source-service-account-conformance",
     randomUUID(),
   );
@@ -184,8 +184,8 @@ async function seedIssuedSource(controller: OpenClawController, account: Service
       namespaceId: account.namespaceId,
       name: `Managed credential for ${account.name}`,
       type: "static",
-      ownerCapability: "token_service",
-      tokenServiceInstanceId,
+      ownerCapability: "credential_service",
+      credentialServiceInstanceId,
       state: "ready",
       config: { provider_preset: "codex-pat" },
       createdAt: new Date().toISOString(),
@@ -268,7 +268,7 @@ test("issuance checks grants and account identity before requiring Codex PAT Sou
     controller.createServiceAccountCredential(administrator, namespace.id, account.id),
     (error) => {
       assert.ok(error instanceof ResourceStateConflictError, String(error));
-      assert.match(error.message, /selected TokenService does not support Codex PAT Sources/);
+      assert.match(error.message, /selected CredentialService does not support Codex PAT Sources/);
       return true;
     },
   );

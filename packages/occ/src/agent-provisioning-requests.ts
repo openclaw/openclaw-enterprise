@@ -318,7 +318,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
           if (namespace.status !== "ready") {
             throw new NamespaceNotReadyError();
           }
-          // This authorization accepts only a ready managed TokenService Source.
+          // This authorization accepts only a ready managed CredentialService Source.
           await harnessOperations.authorizeHarnessAuthSource(
             state,
             principalId,

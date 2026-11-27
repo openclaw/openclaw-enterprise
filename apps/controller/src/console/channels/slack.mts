@@ -283,7 +283,7 @@ function credentialReferenceField(
     label: binding.label,
     initial: bindingSource(activeSecretBindings(context)[binding.key], context.namespaceId),
     inputClassName: "channel-field",
-    deliveryHint: "Slack delivery currently requires OCC TokenService and Kubernetes Compute.",
+    deliveryHint: "Slack delivery currently requires OCC CredentialService and Kubernetes Compute.",
     onChange(source) {
       const next = { ...activeSecretBindings(context) };
       if (source) {

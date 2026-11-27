@@ -25,7 +25,7 @@ export const inputLimits = Object.freeze({
 export class RetiredGitHubAuthorityError extends Error {
   constructor() {
     super(
-      "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching; configure the worker Token Service and prepared Git delivery. Do not transfer keys or replay uncertain work.",
+      "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching; configure the worker Credential Service and prepared Git delivery. Do not transfer keys or replay uncertain work.",
     );
   }
 }

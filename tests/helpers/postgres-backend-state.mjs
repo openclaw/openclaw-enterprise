@@ -207,8 +207,8 @@ export function createBackendWorkerDrivers(
   if (options.secretDriver !== undefined) {
     installation.drivers.secret.id = options.secretDriver.id;
   }
-  if (options.tokenServiceDriverId !== undefined) {
-    installation.drivers.token_service = { id: options.tokenServiceDriverId };
+  if (options.credentialServiceDriverId !== undefined) {
+    installation.drivers.credential_service = { id: options.credentialServiceDriverId };
   }
   if (backends.length > 0) {
     installation.drivers.service_account = {
@@ -218,7 +218,7 @@ export function createBackendWorkerDrivers(
   return {
     installation,
     computeDriver,
-    ...(options.tokenService && { tokenService: options.tokenService }),
+    ...(options.credentialService && { credentialService: options.credentialService }),
     configurationDriver: createTestConfigurationDriver({
       id: installation.drivers.configuration.id,
     }),

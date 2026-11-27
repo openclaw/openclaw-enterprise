@@ -10,7 +10,7 @@ import {
   rejectCrossNamespaceSecretSources,
   requireDedicatedGatewaySources,
 } from "./configuration-operations.ts";
-import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import { isManagedCredentialServiceSource } from "./credential-source-metadata.ts";
 import {
   isName,
   normalizeInitialWorkspaceFiles,
@@ -858,7 +858,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       if (requestedSources === undefined && requestedAuth !== undefined) {
         const retained = agent.credentialSources ?? [];
         assertHarnessSourceListed(retained, requestedAuth);
-        // Admission permits a managed TokenService source only as the Harness source, so
+        // Admission permits a managed CredentialService source only as the Harness source, so
         // changing authentication can leave only the previous selection attached incorrectly.
         if (
           previousAuth?.method === "credential_source" &&
@@ -872,9 +872,9 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
             namespace.id,
             previousAuth.sourceId,
           );
-          if (isManagedTokenServiceSource(source)) {
+          if (isManagedCredentialServiceSource(source)) {
             throw new ResourceStateConflictError(
-              "This TokenService source must remain the selected Harness authentication source.",
+              "This CredentialService source must remain the selected Harness authentication source.",
             );
           }
         }

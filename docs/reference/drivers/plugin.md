@@ -127,7 +127,7 @@ for a ready Codex account Source in that Namespace. For credential-free discover
 omit it. Managed MCP details instead require `managedConnection: {slot, sourceId}`;
 OCC checks caller Source `operate` or, for saved discovery, the verified saved
 binding and Agent grant before using it. The supported slot flow accepts only
-TokenService Sources. An MCP bearer must contain visible ASCII without spaces or control
+CredentialService Sources. An MCP bearer must contain visible ASCII without spaces or control
 characters.
 
 For managed MCP, OCC lists upstream tool names through its credential-authorized transport, then passes `discoveredMcpToolNames` to the selected Driver without the bearer. The Driver returns the catalog entry and omits names that cannot map to distinct reviewed OpenClaw aliases. OCC rejects tools that are duplicated, absent from the upstream inventory, or owned by another plugin.
@@ -135,11 +135,11 @@ For details, provide `pluginId`; for catalog discovery, supply `q` (up to 1,024 
 `cursor` as needed. Keep the same query while paging.
 
 Both pre-Agent routes require Agent `create` in the Namespace. OCC authorizes the
-exact Source, resolves fresh material through its owning TokenService, and rechecks
+exact Source, resolves fresh material through its owning CredentialService, and rechecks
 access and Source state before dispatch. Hosted Codex discovery passes the
 credential and trusted account metadata to the PluginDriver only in server
 memory. Managed MCP discovery keeps the bearer in OCC's transport and sends the
-Driver only discovered names. Refresh remains with TokenService.
+Driver only discovered names. Refresh remains with CredentialService.
 A wrong-Namespace reference returns `400 INVALID_REQUEST`; a missing or non-ready
 Source returns `409 RESOURCE_CONFLICT`, and denied Source access returns `403`.
 For details of an ID that a bundled catalog (`occ-plugin` or the curated

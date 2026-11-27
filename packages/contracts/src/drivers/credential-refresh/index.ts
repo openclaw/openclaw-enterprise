@@ -1,7 +1,7 @@
 import type {
   CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
-} from "../token-service/index.ts";
+} from "../credential-service/index.ts";
 import type { CredentialSourceContext } from "../credential-gateway/index.ts";
 import type { Driver } from "../index.ts";
 

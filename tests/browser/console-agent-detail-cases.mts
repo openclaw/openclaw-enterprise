@@ -17,7 +17,7 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
@@ -4058,8 +4058,8 @@ export function registerSharingCredentialsAndChannelsCases(
     const { driver } = useInstallationSecretDriver(controller);
     const store = driver.privateSecrets;
     assert.ok(store);
-    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
-    const owner = new OCCTokenServiceDriver(
+    const instance = await controller.activateCredentialServiceInstance("occ", randomUUID());
+    const owner = new OCCCredentialServiceDriver(
       "occ",
       controller.installation.id,
       store,
@@ -4067,7 +4067,7 @@ export function registerSharingCredentialsAndChannelsCases(
       state,
     );
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
     const enrollment = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/credential-sources`,
@@ -4245,8 +4245,8 @@ export function registerSharingCredentialsAndChannelsCases(
     const { driver } = useInstallationSecretDriver(controller);
     const store = driver.privateSecrets;
     assert.ok(store);
-    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
-    const owner = new OCCTokenServiceDriver(
+    const instance = await controller.activateCredentialServiceInstance("occ", randomUUID());
+    const owner = new OCCCredentialServiceDriver(
       "occ",
       controller.installation.id,
       store,
@@ -4254,7 +4254,7 @@ export function registerSharingCredentialsAndChannelsCases(
       state,
     );
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
     const enrollment = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/credential-sources`,

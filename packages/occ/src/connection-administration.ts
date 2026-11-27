@@ -143,7 +143,7 @@ interface ConnectionAdministrationDependencies {
   readonly installationId: string;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize">;
-  readonly tokenServiceTimeoutMs: number;
+  readonly credentialServiceTimeoutMs: number;
   readonly oauthIssuer: OAuthIssuerOperations | undefined;
   readonly timestamp: () => string;
 }
@@ -152,7 +152,7 @@ export function createConnectionAdministration({
   installationId,
   transactions,
   authority,
-  tokenServiceTimeoutMs,
+  credentialServiceTimeoutMs,
   oauthIssuer,
   timestamp,
 }: ConnectionAdministrationDependencies) {
@@ -311,7 +311,7 @@ export function createConnectionAdministration({
     }
     const issuerVerification = await oauthIssuer.verifyTemplate(
       values,
-      AbortSignal.timeout(tokenServiceTimeoutMs),
+      AbortSignal.timeout(credentialServiceTimeoutMs),
     );
     return { ...values, issuerVerification };
   }

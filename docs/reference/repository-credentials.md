@@ -5,9 +5,9 @@ revision. Each binding grants HTTPS access to a named repository under an
 approved profile. See the [operator guide](../guides/repository-credentials.md)
 for setup and [Credential Proxy architecture](../design/credential-proxy-architecture.md) for delivery boundaries.
 
-## Native OpenShell Git with TokenService
+## Native OpenShell Git with CredentialService
 
-Dedicated Codex uses TokenService and the paired OpenShell Sandbox and native
+Dedicated Codex uses CredentialService and the paired OpenShell Sandbox and native
 Credential Proxy. Agents can share one finite Namespace token. Proxy injects it
 only for each Agent’s admitted operations. See [setup](../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 and [access levels](repository-credentials/access-levels.md).
@@ -53,7 +53,7 @@ supplies the resolver that checks the admitted grant and selects its destination
 - `listOptions` lists approved repositories and profiles for the Namespace.
 - `resolve` checks the selection against Namespace policy and returns the bindings and duration.
 
-For native OpenShell Git, select `repository` with the TokenService and paired
+For native OpenShell Git, select `repository` with the CredentialService and paired
 Sandbox and native Credential Proxy. For the prepared sender, select
 `repository.nativeSender` with `repository.preparedGitHub`. Protected Git uses
 the deprecated legacy credential-egress Driver and its own repository settings. Controller startup rejects the legacy
@@ -129,7 +129,7 @@ repository and one writable ref on one App installation.
 ```
 
 Use platform Namespace IDs and positive decimal App and installation IDs.
-TokenService mode accepts short names for `github-repository` with
+CredentialService mode accepts short names for `github-repository` with
 `nativeGit: "v1"`. Other modes require `owner/repo` and numeric repository IDs.
 References, names, and supplied IDs must be unique. Limits are 1,000 repositories,
 128 Namespace policies per repository, and 4,096 policies total.
@@ -193,9 +193,9 @@ Keep the App key there and retain the existing approval scope. The development
 `github-token` backend requires both its configuration opt-in and
 `--development-authority`. See [development token authority](repository-credentials/development-token.md).
 
-## Token Service lifecycle
+## CredentialService lifecycle
 
-For native Git with a managed Source, the selected TokenService signs an App
+For native Git with a managed Source, the selected CredentialService signs an App
 JWT with the registered Client key, verifies the installation token's exact
 scope and expiry, and updates the Source's private token custody. The API
 schedules renewal and the selected Credential Proxy delivers replacement

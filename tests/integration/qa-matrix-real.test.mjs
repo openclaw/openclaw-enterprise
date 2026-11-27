@@ -354,19 +354,19 @@ test(
         "openshell-optional-plugin-withdrawal",
       );
     }
-    if (selection.tokenServiceAgent) {
+    if (selection.credentialServiceAgent) {
       await stage(
         context,
         "kubernetes/OpenClaw/OpenShell",
         "native Source custody, dedicated model turn, rotation and withdrawal",
         async () => {
-          const env = { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" };
+          const env = { ...process.env, OCC_TEST_OPENSHELL_CREDENTIAL_SERVICE_AGENT_REAL: "1" };
           // The parent test runner marks its worker with this variable. Passing it to a new
           // node --test process makes Node suppress the child suite as a recursive run.
           delete env.NODE_TEST_CONTEXT;
           const result = await promisify(execFile)(
             process.execPath,
-            ["--test", "tests/integration/openshell-token-service-agent-real.test.ts"],
+            ["--test", "tests/integration/openshell-credential-service-agent-real.test.ts"],
             {
               env,
               timeout: 1_800_000,
@@ -377,7 +377,7 @@ test(
           assert.match(result.stdout, /(?:skipped|skip) 0/);
           context.diagnostic(result.stdout);
         },
-        "openshell-token-service-agent",
+        "openshell-credential-service-agent",
       );
     }
     if (selection.oidcAgentChat) {
@@ -507,9 +507,9 @@ test(
                     cell.scenarios.includes("gateway-startup-credentials"),
                 )
               ) {
-                // The Sandbox-none launcher does not select TokenService. Qualify
+                // The Sandbox-none launcher does not select CredentialService. Qualify
                 // the supported OCC owner on this run-owned installation only.
-                fixture.configuration.drivers.token_service = { id: "occ", configuration: {} };
+                fixture.configuration.drivers.credential_service = { id: "occ", configuration: {} };
               }
               await prepareQaPluginCatalogs(fixture);
               return fixture;

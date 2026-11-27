@@ -499,7 +499,7 @@
         "sandboxNamePrefix": "os"
       }
     },
-    "token_service": {
+    "credential_service": {
       "id": "occ",
       "configuration": {}
     }

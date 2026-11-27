@@ -236,4 +236,4 @@ kubectl -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
   --clusterrole=oce-openclaw-tenant-worker --serviceaccount="$worker_sa"
 ```
 
-Register credentials only after `request GET "$base"` reports `status: ready`. The Installation selects OCC TokenService for custody and the OpenShell Sandbox with native Credential Proxy for delivery.
+Register credentials only after `request GET "$base"` reports `status: ready`. The Installation selects OCC CredentialService for custody and the OpenShell Sandbox with native Credential Proxy for delivery.

@@ -6,14 +6,14 @@ import test, { type TestContext } from "node:test";
 import pg from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { gatewayStartupSourceDelivery } from "../../apps/controller/src/composition/token-service.ts";
+import { gatewayStartupSourceDelivery } from "../../apps/controller/src/composition/credential-service.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
@@ -24,8 +24,8 @@ import {
   managedCliInstalls,
   managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
-import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/credential-service/codex-device-authorization.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import type {
@@ -425,7 +425,7 @@ test(
     const sourceCountsBeforeCustody: number[] = [];
     const ownerStore: PrivateSecretStore = {
       create: async (ref, value) => {
-        // An independent connection must not see an OCC reservation before TokenService takes custody.
+        // An independent connection must not see an OCC reservation before CredentialService takes custody.
         const existing = await pool.query(
           "SELECT count(*)::int AS count FROM occ.credential_sources WHERE namespace_id=$1",
           [namespaceId],
@@ -446,7 +446,7 @@ test(
       delete: (ref) => privateStore.delete(ref),
     };
     const storeIdentity = randomUUID();
-    const instanceId = await controller.activateTokenServiceInstance(
+    const instanceId = await controller.activateCredentialServiceInstance(
       "selected-owner",
       storeIdentity,
     );
@@ -468,7 +468,7 @@ test(
         throw error;
       }
     };
-    const owner = new OCCTokenServiceDriver(
+    const owner = new OCCCredentialServiceDriver(
       "selected-owner",
       controller.installation.id,
       ownerStore,
@@ -483,7 +483,7 @@ test(
       ),
     );
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
 
     const createdNamespace = await inject("POST", "/namespaces", {
       name: `Draft ${randomUUID()}`,
@@ -538,7 +538,7 @@ test(
       details: [{ path: "/config/provider_preset", code: "INVALID_VALUE" }],
     });
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
-    // Template selection is validated before the concrete TokenService takes custody.
+    // Template selection is validated before the concrete CredentialService takes custody.
     const template = await inject("POST", "/connection-templates", {
       namespaceId,
       displayName: "Plugin API access",
@@ -698,7 +698,7 @@ test(
       assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
     }
     // The Template cannot be removed while a Source references it. Deleting the Source
-    // through the TokenService releases its immutable Template reference.
+    // through the CredentialService releases its immutable Template reference.
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 409);
     assert.equal(
       (await inject("DELETE", `${base}/credential-sources/${selectedId}`)).statusCode,
@@ -706,7 +706,7 @@ test(
     );
     sourceCountsBeforeCustody.length = 0;
     notifications.length = 0;
-    // Enrollment must reach the selected concrete TokenService through the supported Source route.
+    // Enrollment must reach the selected concrete CredentialService through the supported Source route.
     const createdSource = remember(
       await inject("POST", `${base}/credential-sources`, {
         name: "Private source",
@@ -745,7 +745,7 @@ test(
         "secrets",
         "ownerCapability",
         "driverId",
-        "tokenServiceInstanceId",
+        "credentialServiceInstanceId",
       ]) {
         assert.equal(Object.hasOwn(value, privateField), false, privateField);
       }
@@ -762,7 +762,7 @@ test(
     const recorded = await state.read((view) =>
       view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
-    assert.ok(recorded?.ownerCapability === "token_service");
+    assert.ok(recorded?.ownerCapability === "credential_service");
     assert.equal(JSON.stringify(recorded).includes(enrollmentMaterial), false);
     assert.equal(
       (
@@ -777,7 +777,7 @@ test(
         await owner.resolveCredential(
           {
             sourceRef,
-            tokenServiceInstanceId: instanceId,
+            credentialServiceInstanceId: instanceId,
           },
           AbortSignal.timeout(5_000),
         )
@@ -1329,7 +1329,7 @@ test(
     });
 
     // Explicitly dropping both bindings remains possible when the previously selected owner is unavailable.
-    const replacement = new OCCTokenServiceDriver(
+    const replacement = new OCCCredentialServiceDriver(
       "replacement-owner",
       controller.installation.id,
       driver.privateSecrets,
@@ -1337,14 +1337,14 @@ test(
       state,
     );
     controller.registerDriver(replacement);
-    controller.selectDriver("token_service", replacement.id);
+    controller.selectDriver("credential_service", replacement.id);
     const detached = await inject("PATCH", `${base}/agents/${agent.id}`, {
       configurationId,
       harnessAuth: null,
       credentialSources: [],
     });
     assert.equal(detached.statusCode, 200, detached.body);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
     const metadata = await pool.query(
       "SELECT to_jsonb(s)::text AS metadata FROM occ.credential_sources AS s WHERE s.id=$1",
       [sourceId],
@@ -1465,7 +1465,7 @@ test(
       apiVersion: "v1",
       kind: "Namespace",
     });
-    // The native transport is controlled. Real Source routes, PostgreSQL, TokenService,
+    // The native transport is controlled. Real Source routes, PostgreSQL, CredentialService,
     // the selected OpenShell Proxy, and its production gRPC client remain in the path.
     const nativeTransport = await controlledRetirementTransport(
       t,
@@ -1475,7 +1475,7 @@ test(
     const runtime = await loadSelectedOpenShellAgentInstallation(t, {
       installation,
       computeId: controller.selectedDriver("compute").id,
-      tokenServiceId: "occ",
+      credentialServiceId: "occ",
       core,
       gatewayClient: nativeTransport.client,
     });
@@ -1497,7 +1497,10 @@ test(
           ...runtime.installation,
           drivers: {
             ...runtime.installation.drivers,
-            token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+            credential_service: {
+              ...runtime.installation.drivers.credential_service!,
+              id: owner.id,
+            },
           },
         },
       }),
@@ -1505,7 +1508,7 @@ test(
       backends: runtime.installation.backend,
       recordOperations: true,
     });
-    for (const capability of ["iam", "configuration", "secret", "token_service"] as const) {
+    for (const capability of ["iam", "configuration", "secret", "credential_service"] as const) {
       const selected = controller.selectedDriver(capability);
       nativeController.registerDriver(selected);
       nativeController.selectDriver(capability, selected.id);
@@ -1513,7 +1516,7 @@ test(
     nativeController.registerDriver(runtime.computeDriver);
     nativeController.selectDriver("compute", runtime.computeDriver.id);
     assert.equal(
-      await nativeController.activateTokenServiceInstance(owner.id, storeIdentity),
+      await nativeController.activateCredentialServiceInstance(owner.id, storeIdentity),
       instanceId,
     );
     installSelectedSandboxDrivers(nativeController, runtime);
@@ -1880,7 +1883,7 @@ test(
     assert.equal(stillBound.statusCode, 409, stillBound.body);
     assert.equal(nativeTransport.reads, nativeReadsBeforeGuard);
 
-    // A native refusal must stop before TokenService mutates its authoritative custody.
+    // A native refusal must stop before CredentialService mutates its authoritative custody.
     const custodyBeforeRefusal = structuredClone([...core.secrets]);
     nativeTransport.refused = true;
     const refusedRetirement = remember(
@@ -2089,7 +2092,7 @@ test(
     mixedSpec.credential_sources.push({
       sourceId: googleSource.id,
       sourceType: "static",
-      tokenServiceInstanceId: instanceId,
+      credentialServiceInstanceId: instanceId,
       connectionTemplate: { id: googleTemplateId, version: 1 },
     });
     mixedSpec.credential_deployment.networkAccessPolicy.allowed.push(pluginRequest);
@@ -2578,7 +2581,7 @@ test(
       );
       assert.equal(active?.activeRevisionId, candidate.id);
     }
-    // The original test selected this TokenService owner directly. Give worker composition the
+    // The original test selected this CredentialService owner directly. Give worker composition the
     // same private-store identity that production startup reads before selecting that owner.
     await privateStore.create(
       {
@@ -2614,7 +2617,10 @@ test(
             drivers: {
               ...runtime.installation.drivers,
               secret: { ...runtime.installation.drivers.secret, id: driver.id },
-              token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+              credential_service: {
+                ...runtime.installation.drivers.credential_service!,
+                id: owner.id,
+              },
             },
           },
           secretDriver: driver,
@@ -3178,7 +3184,7 @@ test(
           );
           assert.ok(next?.credentialDeployment);
           // Both candidates are admitted through the API; neither is activated or run here.
-          assert.equal(next.gatewayTokenServiceInstanceId, undefined);
+          assert.equal(next.gatewayCredentialServiceInstanceId, undefined);
           assert.deepEqual(next.secretBindings ?? {}, {});
           assert.deepEqual(
             next.credentialDeployment.bindings,

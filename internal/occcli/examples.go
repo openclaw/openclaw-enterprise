@@ -60,7 +60,7 @@ const credentialSourceCreateExample = `  (
   )
 
   The body is {"name": "example-model", "type": "static", "config": {"provider_preset": "openai"}, "secret": "<credential>"}.
-  TokenService takes custody of the write-only credential. The example keeps the
+  CredentialService takes custody of the write-only credential. The example keeps the
   credential off the command line and removes the temporary file on exit. See
   https://docs-enterprise.openclaw.org/reference/credential-sources/`
 

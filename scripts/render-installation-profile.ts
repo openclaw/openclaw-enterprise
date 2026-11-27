@@ -2301,7 +2301,7 @@ function buildRendered(
   if (repositoryEnabled) {
     if (repository.authority !== "prepared-git") {
       diagnostics.errors.push(
-        "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
+        "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Credential Service custody. Do not transfer keys or replay uncertain work.",
       );
     }
     const credentials = {

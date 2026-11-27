@@ -19,7 +19,7 @@ export async function persistGuardedDeployment(context: TestContext, databaseUrl
     { createTestSecretDriver },
     { createReadyComputeDriver, registerAndSelectDrivers },
     { SlackChannelDriver },
-    { OCCTokenServiceDriver },
+    { OCCCredentialServiceDriver },
     { resolveApprovedHarness },
     { grantAgentSecretOperate },
     { createHarnessConfiguration },
@@ -33,7 +33,7 @@ export async function persistGuardedDeployment(context: TestContext, databaseUrl
     import("../helpers/secret-driver.mjs"),
     import("../helpers/development.ts"),
     import("../../apps/controller/src/drivers/channel/slack.ts"),
-    import("../../apps/controller/src/drivers/token-service/occ.ts"),
+    import("../../apps/controller/src/drivers/credential-service/occ.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
     import("../helpers/postgres-harness-auth.ts"),
     import("../helpers/harness-configuration.mjs"),
@@ -77,7 +77,7 @@ export async function persistGuardedDeployment(context: TestContext, databaseUrl
       recordOperations: true,
       // Controlled admission qualification; this case does not exercise Kubernetes staging.
       gatewayStartupSourceDelivery: (selectedCompute, owner) =>
-        selectedCompute === compute && owner instanceof OCCTokenServiceDriver,
+        selectedCompute === compute && owner instanceof OCCCredentialServiceDriver,
     });
     registerAndSelectDrivers(controller, [
       new NativeIAMDriver(store),
@@ -86,8 +86,8 @@ export async function persistGuardedDeployment(context: TestContext, databaseUrl
       secretDriver,
       channel,
     ]);
-    const instanceId = await controller.activateTokenServiceInstance(ownerId, storeIdentity);
-    const owner = new OCCTokenServiceDriver(
+    const instanceId = await controller.activateCredentialServiceInstance(ownerId, storeIdentity);
+    const owner = new OCCCredentialServiceDriver(
       ownerId,
       installation.id,
       secretDriver.privateSecrets,
@@ -100,7 +100,7 @@ export async function persistGuardedDeployment(context: TestContext, databaseUrl
       return resolve(...args);
     };
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
     return controller;
   };
   const controller = await createController(state);

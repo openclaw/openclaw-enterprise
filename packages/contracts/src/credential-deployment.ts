@@ -187,7 +187,7 @@ export function isNativeStagedRepositoryRevision(
     binding.projection.presentation !== "github_repository" ||
     revision.harnessAuth.method !== "credential_source" ||
     revision.harnessAuth.sourceId !== model.sourceRef.id ||
-    revision.harnessAuth.tokenServiceInstanceId === undefined ||
+    revision.harnessAuth.credentialServiceInstanceId === undefined ||
     !deployment.injectionPolicies.some(
       ({ bindingRef, allowedRequests }) =>
         bindingRef === binding.bindingRef && allowedRequests.length > 0,
@@ -201,6 +201,6 @@ export function isNativeStagedRepositoryRevision(
   );
   return (
     snapshot?.sourceType === "github-app-installation" &&
-    snapshot.tokenServiceInstanceId === revision.harnessAuth.tokenServiceInstanceId
+    snapshot.credentialServiceInstanceId === revision.harnessAuth.credentialServiceInstanceId
   );
 }

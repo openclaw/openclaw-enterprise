@@ -36,7 +36,7 @@ import {
 } from "./credential-source-operations.ts";
 import { createCredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
-import type { TokenService, EgressRef } from "@openclaw-enterprise/contracts";
+import type { CredentialService, EgressRef } from "@openclaw-enterprise/contracts";
 import {
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
@@ -88,7 +88,7 @@ import type {
   ResourceKind,
   SandboxDriver,
   SecretBindings,
-  TokenServiceDriver,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isName, NAME_RULE, normalizeLoggingLevel } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -174,11 +174,11 @@ export interface ControllerOptions {
         signal: AbortSignal,
       ) => Promise<void>)
     | undefined;
-  readonly preparedTokens?: TokenService | undefined;
+  readonly preparedTokens?: CredentialService | undefined;
   /** Code-only qualification of the selected Gateway Source delivery composition. */
   readonly gatewayStartupSourceDelivery?: (
     compute: ComputeDriver,
-    owner: TokenServiceDriver,
+    owner: CredentialServiceDriver,
   ) => boolean;
   readonly modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   readonly modelCredentialPreset?: (input: {
@@ -249,7 +249,7 @@ interface ControllerDispatch
     Pick<CredentialSourceOperations, "createCredentialSource">,
     Pick<ManagedCredentialSources, "deleteCredentialSource">,
     Pick<ReturnType<typeof createConfigurationOperations>, "updateConfiguration"> {
-  refreshTokenServiceSource(
+  refreshCredentialServiceSource(
     namespaceId: string,
     sourceId: string,
   ): Promise<import("@openclaw-enterprise/contracts").CredentialRefreshStatus>;
@@ -293,10 +293,10 @@ function validatedInstallation(installation: Installation): Readonly<Installatio
   });
 }
 
-function createPreparedTokenAccess(preparedTokens: TokenService | undefined) {
-  function tokenService(): TokenService {
+function createPreparedTokenAccess(preparedTokens: CredentialService | undefined) {
+  function credentialService(): CredentialService {
     if (!preparedTokens) {
-      throw new DependencyUnavailableError("The Token Service is unavailable.");
+      throw new DependencyUnavailableError("The Credential Service is unavailable.");
     }
     return preparedTokens;
   }
@@ -309,7 +309,7 @@ function createPreparedTokenAccess(preparedTokens: TokenService | undefined) {
     }
     return lifecycle;
   }
-  return { tokenService, preparedIssuer };
+  return { credentialService, preparedIssuer };
 }
 
 function createComputeConfigurationPolicy(
@@ -506,16 +506,16 @@ function createCredentialServices({
     | "transact"
     | "createCredentialSource"
     | "deleteCredentialSource"
-    | "refreshTokenServiceSource"
+    | "refreshCredentialServiceSource"
   >;
-  preparedTokens: TokenService | undefined;
+  preparedTokens: CredentialService | undefined;
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
   oauthIssuer: ControllerOptions["oauthIssuer"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
   const nextSourceId = () => resourceValues.nextIdentifier("credential_source");
-  const { tokenService, preparedIssuer } = createPreparedTokenAccess(preparedTokens);
+  const { credentialService, preparedIssuer } = createPreparedTokenAccess(preparedTokens);
   const credentialSourceDrivers = createCredentialSourceDrivers({
     selectedCompute: () => publicController.selectedDriver("compute"),
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
@@ -539,30 +539,33 @@ function createCredentialServices({
     bindCreator: iamPolicy.bindCreator,
     nextSourceId,
     timestamp: resourceValues.timestamp,
-    tokenService,
+    credentialService,
     preparedIssuer,
     readConnectionStatus: async (namespaceId, sourceId) => {
       const source = await transactions.read((state) =>
         state.credentialSources.findCredentialSource(namespaceId, sourceId),
       );
-      if (source?.ownerCapability !== "token_service" || source.type !== "oauth2-refresh-token") {
+      if (
+        source?.ownerCapability !== "credential_service" ||
+        source.type !== "oauth2-refresh-token"
+      ) {
         throw new ScopeViolationError("The OAuth Source is unavailable.");
       }
       return driverOperation(
         () =>
-          publicController.selectedDriver("token_service").getRefreshStatus(
+          publicController.selectedDriver("credential_service").getRefreshStatus(
             {
               sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
-              tokenServiceInstanceId: source.tokenServiceInstanceId,
+              credentialServiceInstanceId: source.credentialServiceInstanceId,
               operationId: crypto.randomUUID(),
             },
             AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
           ),
-        "TokenService",
+        "CredentialService",
       );
     },
-    refreshTokenServiceSource: (namespaceId, sourceId) =>
-      publicController.refreshTokenServiceSource(namespaceId, sourceId),
+    refreshCredentialServiceSource: (namespaceId, sourceId) =>
+      publicController.refreshCredentialServiceSource(namespaceId, sourceId),
   });
   const deviceAuthorization = createDeviceAuthorizationFlow({
     installationId,
@@ -571,10 +574,11 @@ function createCredentialServices({
     timestamp: resourceValues.timestamp,
     transactions,
     authority,
-    hasTokenService: () => drivers.hasSelection("token_service"),
-    ownedTokenServiceDriver: (instanceId) =>
-      managedCredentialSources.ownedTokenServiceDriver(instanceId),
-    currentTokenServiceInstanceId: () => managedCredentialSources.currentTokenServiceInstanceId(),
+    hasCredentialService: () => drivers.hasSelection("credential_service"),
+    ownedCredentialServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedCredentialServiceDriver(instanceId),
+    currentCredentialServiceInstanceId: () =>
+      managedCredentialSources.currentCredentialServiceInstanceId(),
     bindCreator: iamPolicy.bindCreator,
   });
   const managedCredentialSources: ManagedCredentialSources = createManagedCredentialSources({
@@ -585,7 +589,7 @@ function createCredentialServices({
     sourceDrivers: credentialSourceDrivers,
     preparedIssuer,
     clock: resourceValues.now,
-    selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+    selectedCredentialServiceDriver: () => publicController.selectedDriver("credential_service"),
     secretDriver,
     pluginDrivers: () => drivers.enabledPluginDrivers(),
     retireDelivery: async (namespace, source, signal) => {
@@ -604,7 +608,7 @@ function createCredentialServices({
         signal,
       );
     },
-    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    credentialServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
   });
   const agentCredentialAccess: AgentCredentialAccess = createAgentCredentialAccess({
     authority,
@@ -612,8 +616,8 @@ function createCredentialServices({
     drivers,
     installationId,
     timestamp: resourceValues.timestamp,
-    requireTokenServiceOwner: (instanceId) => {
-      managedCredentialSources.ownedTokenServiceDriver(instanceId);
+    requireCredentialServiceOwner: (instanceId) => {
+      managedCredentialSources.ownedCredentialServiceDriver(instanceId);
     },
     offersProtectedType: (type) =>
       egressAdmission.protectedSourceTypes().some((offer) => offer.type.type === type),
@@ -623,7 +627,7 @@ function createCredentialServices({
     installationId,
     transactions,
     authority,
-    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    credentialServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
     oauthIssuer,
     timestamp: resourceValues.timestamp,
   });
@@ -631,9 +635,9 @@ function createCredentialServices({
     installationId,
     transactions,
     authority,
-    tokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
-    tokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
-    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    credentialServiceDriver: managedCredentialSources.ownedCredentialServiceDriver,
+    credentialServiceInstanceId: managedCredentialSources.currentCredentialServiceInstanceId,
+    credentialServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
   });
@@ -642,8 +646,8 @@ function createCredentialServices({
     transact: transactions.transact,
     authorize: authority.authorize,
     iamPolicyDriver: iamPolicy.iamPolicyDriver,
-    selectedTokenServiceDriver: () => managedCredentialSources.ownedTokenServiceDriver(),
-    currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
+    selectedCredentialServiceDriver: () => managedCredentialSources.ownedCredentialServiceDriver(),
+    currentCredentialServiceInstanceId: managedCredentialSources.currentCredentialServiceInstanceId,
     withOAuthClientSecret: credentialClientAdministration.withOAuthClientSecret,
     oauthIssuer,
     timestamp: resourceValues.timestamp,
@@ -673,7 +677,7 @@ function createCredentialServices({
       currentCredentialSourceOwner: credentialSourceDrivers.currentCredentialSourceOwner,
       preparedTokens,
       resolvePrepared: (key, options) =>
-        tokenService().resolve({ kind: preparedIssuer(key.provider).tokenKind, key }, options),
+        credentialService().resolve({ kind: preparedIssuer(key.provider).tokenKind, key }, options),
       receipts: new EgressSendReceipts(platformState),
     });
   }
@@ -718,7 +722,7 @@ export function createControllerComposition(
   } = createComputeConfigurationPolicy(drivers, selectedCompute);
 
   const authorization: ControllerOptions["authorize"] | undefined = options.authorize;
-  const preparedTokens: TokenService | undefined = options.preparedTokens;
+  const preparedTokens: CredentialService | undefined = options.preparedTokens;
   const stateAndAuthority = createStateAndAuthority(
     admittedInstallation,
     options,
@@ -747,8 +751,8 @@ export function createControllerComposition(
     validateComputeConfiguration,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
-    ownedTokenServiceDriver: (instanceId) =>
-      managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    ownedCredentialServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedCredentialServiceDriver(instanceId),
     nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
   });
@@ -777,7 +781,8 @@ export function createControllerComposition(
     transactions,
     authority,
     proxy: () => publicController.selectedDriver("credential_proxy_delivery"),
-    tokenService: (instanceId) => managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    credentialService: (instanceId) =>
+      managedCredentialSources.ownedCredentialServiceDriver(instanceId),
     timeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
   });
   const readAgentAuditEvents = createAgentAuditReader({
@@ -912,15 +917,15 @@ export function createControllerComposition(
     transactions,
     authority,
     qualifyPluginCredentialSource: agentCredentialAccess.qualifyPluginCredentialSource,
-    ownedTokenServiceDriver: (instanceId) =>
-      managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    ownedCredentialServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedCredentialServiceDriver(instanceId),
     readConfiguration: (metadata) => configurationOperations.savedConfigurationReader(metadata)(),
     modelPolicyAgent,
     pluginDriver: (harnessId) => drivers.pluginDriver(harnessId),
     validatePluginPlacement: agentPlugins.validatePluginPlacement,
   });
   const modelCredentialSourcePresets = () =>
-    drivers.hasSelection("credential_proxy_delivery") && drivers.hasSelection("token_service")
+    drivers.hasSelection("credential_proxy_delivery") && drivers.hasSelection("credential_service")
       ? options.modelCredentialSourcePresets
       : undefined;
   function requireModelSource(
@@ -953,7 +958,7 @@ export function createControllerComposition(
     });
     if (preset) {
       throw new ConfigurationHarnessError(
-        "Enroll this model credential as a TokenService Source and select it for Harness authentication.",
+        "Enroll this model credential as a CredentialService Source and select it for Harness authentication.",
       );
     }
   }
@@ -978,8 +983,10 @@ export function createControllerComposition(
     authority,
     transactions,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
-    tokenServiceDriver: () =>
-      drivers.hasSelection("token_service") ? drivers.selectedDriver("token_service") : undefined,
+    credentialServiceDriver: () =>
+      drivers.hasSelection("credential_service")
+        ? drivers.selectedDriver("credential_service")
+        : undefined,
     modelCredentialSourcePresets,
     protectedSourceTypes: () => egressAdmission.protectedSourceTypes().map(({ type }) => type),
     enabledPluginDrivers: () => drivers.enabledPluginDrivers(),
@@ -1008,7 +1015,7 @@ export function createControllerComposition(
       publicController.getAgentSandboxPolicy(principalId, namespaceId, agentId, facet),
     selectCompute: selectedCompute,
     selectChannel: () => publicController.selectedDriver("channel"),
-    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    ownedCredentialServiceDriver: (id) => managedCredentialSources.ownedCredentialServiceDriver(id),
     gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const runtimeCredentials: AgentRuntimeCredentials = new AgentRuntimeCredentials({
@@ -1027,8 +1034,8 @@ export function createControllerComposition(
     selectDriver: () => publicController.selectedDriver("service_account"),
     configuredDriverId: configuredServiceAccountDriverId,
     nextIdentifier: resourceValues.nextIdentifier,
-    ownedTokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
-    currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
+    ownedCredentialServiceDriver: managedCredentialSources.ownedCredentialServiceDriver,
+    currentCredentialServiceInstanceId: managedCredentialSources.currentCredentialServiceInstanceId,
     supportsCodexPatSource: () => modelCredentialSourcePresets()?.includes("codex-pat") === true,
     installationId: admittedInstallation.id,
     clock: resourceValues.now,
@@ -1041,7 +1048,7 @@ export function createControllerComposition(
     secrets: secretOperations,
     hasCredentialProxyDelivery: () => drivers.hasSelection("credential_proxy_delivery"),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
-    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    ownedCredentialServiceDriver: (id) => managedCredentialSources.ownedCredentialServiceDriver(id),
     serviceAccounts: serviceAccountOperations,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
     agentRuntimeConfiguration: (values, harness, compute, sandbox) =>
@@ -1085,7 +1092,7 @@ export function createControllerComposition(
     configurationDriver: configurationOperations.selectedDriver,
     requireBundledChannelBindings,
     selectedCompute,
-    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    ownedCredentialServiceDriver: (id) => managedCredentialSources.ownedCredentialServiceDriver(id),
     gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const provisioningRequests = createProvisioningRequests({
@@ -1150,7 +1157,7 @@ export function createControllerComposition(
     modelCredentialPreset: options.modelCredentialPreset,
     supportsCredentialDeployment: options.supportsCredentialDeployment,
     sandboxNetworkPolicyCeiling,
-    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    ownedCredentialServiceDriver: (id) => managedCredentialSources.ownedCredentialServiceDriver(id),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,

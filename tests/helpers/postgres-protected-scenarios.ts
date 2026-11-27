@@ -155,7 +155,7 @@ export async function postgresEgressFixture(
   const source = await fixture.controller.transact((unit) =>
     unit.credentialSources.findCredentialSource(fixture.namespace.id, sourceId),
   );
-  assert.ok(source && source.ownerCapability !== "token_service", "historical Source record");
+  assert.ok(source && source.ownerCapability !== "credential_service", "historical Source record");
   assert.ok("evidence" in observed && supervisorEvidence(observed.evidence));
 
   const { namespaceId, agentId, revisionId } = fixture.installation.plan.execution;

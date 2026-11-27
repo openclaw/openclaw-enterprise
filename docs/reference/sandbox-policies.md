@@ -169,7 +169,7 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 Set `repositoryNetworkPolicyCeiling` on the Installation to delegate at most
 32 named repositories, each with `read` or `write` access. Use lowercase
-`owner/name` without `.git`. The TokenService Git profile also accepts short
+`owner/name` without `.git`. The CredentialService Git profile also accepts short
 repository names. An absent or empty ceiling delegates no access. A policy read
 returns the subset approved for the Namespace.
 
@@ -183,12 +183,12 @@ returns `409 RESOURCE_CONFLICT` if the Agent also has a separately saved
 policy update retains the saved list. Use an Agent draft without that list.
 [Native Git access levels](repository-credentials/access-levels.md#native-git-delivery)
 
-Native Git requires a supported TokenService model Source and the paired OpenShell
+Native Git requires a supported CredentialService model Source and the paired OpenShell
 Sandbox and Credential Proxy. Dedicated Codex requires inspected Gateway and Agent
 images. Dedicated OpenClaw requires service mode and an inspected Gateway image
 qualified in the worker role. An unset image pin disables that placement.
 [Controller build arguments](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git)
-A dedicated Agent with only standalone TokenService model revisions can add
+A dedicated Agent with only standalone CredentialService model revisions can add
 native Git after Stop. An Agent with earlier unscoped Git needs a new Agent ID.
 Clear the Agent's repository selections to request withdrawal on its running
 revision. [GitHub App setup](../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)

@@ -6,7 +6,7 @@ import {
   type CredentialClientSecretInstance,
   type OAuthClient,
   type OAuthClientSecretInstance,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -34,7 +34,7 @@ export type RotateCredentialClientInput =
   | { readonly kind: "github-app"; readonly privateKey: string };
 
 function clientMetadata({
-  tokenServiceInstanceId: _owner,
+  credentialServiceInstanceId: _owner,
   ...metadata
 }: StoredCredentialClient): CredentialClient {
   return immutableCopy(metadata);
@@ -47,9 +47,9 @@ interface CredentialClientAdministrationDependencies {
     "read" | "transact" | "requireIndependentMutation"
   >;
   readonly authority: Pick<ControllerAuthority, "authorize">;
-  readonly tokenServiceDriver: (expectedInstanceId?: string) => TokenServiceDriver;
-  readonly tokenServiceInstanceId: () => string;
-  readonly tokenServiceTimeoutMs: number;
+  readonly credentialServiceDriver: (expectedInstanceId?: string) => CredentialServiceDriver;
+  readonly credentialServiceInstanceId: () => string;
+  readonly credentialServiceTimeoutMs: number;
   readonly now: () => Date;
   readonly timestamp: () => string;
 }
@@ -58,9 +58,9 @@ export function createCredentialClientAdministration({
   installationId,
   transactions,
   authority,
-  tokenServiceDriver,
-  tokenServiceInstanceId,
-  tokenServiceTimeoutMs,
+  credentialServiceDriver,
+  credentialServiceInstanceId,
+  credentialServiceTimeoutMs,
   now,
   timestamp,
 }: CredentialClientAdministrationDependencies) {
@@ -80,24 +80,24 @@ export function createCredentialClientAdministration({
   }
 
   function selectedClientOwner(kind: CredentialClient["kind"], namespaceId?: string) {
-    const driver = tokenServiceDriver();
+    const driver = credentialServiceDriver();
     const scope = namespaceId === undefined ? "installation" : "namespace";
     if (!driver.clientScopes[kind]?.includes(scope)) {
       throw new DependencyUnavailableError(
-        `The selected TokenService does not support ${kind} clients at ${scope} scope.`,
+        `The selected CredentialService does not support ${kind} clients at ${scope} scope.`,
       );
     }
     return driver;
   }
 
   function clientInstance(client: StoredCredentialClient): CredentialClientSecretInstance {
-    const tokenServiceInstanceId = client.tokenServiceInstanceId;
-    if (!tokenServiceInstanceId) {
+    const credentialServiceInstanceId = client.credentialServiceInstanceId;
+    if (!credentialServiceInstanceId) {
       throw new ResourceStateConflictError("This client has no private material.");
     }
     const owner = {
       id: client.id,
-      tokenServiceInstanceId,
+      credentialServiceInstanceId,
       ...(client.namespaceId !== undefined && { namespaceId: client.namespaceId }),
     };
     return client.kind === "github-app"
@@ -106,7 +106,7 @@ export function createCredentialClientAdministration({
   }
 
   function signal() {
-    return AbortSignal.timeout(tokenServiceTimeoutMs);
+    return AbortSignal.timeout(credentialServiceTimeoutMs);
   }
 
   function checkedOAuthIssuer(value: string) {
@@ -196,7 +196,7 @@ export function createCredentialClientAdministration({
     const registration: StoredCredentialClient =
       material === undefined
         ? client
-        : { ...client, tokenServiceInstanceId: tokenServiceInstanceId() };
+        : { ...client, credentialServiceInstanceId: credentialServiceInstanceId() };
     await transact(async (state) => {
       await authorizeAdministration(principalId);
       await holdSession?.(state);
@@ -224,10 +224,10 @@ export function createCredentialClientAdministration({
           );
         }
         const instance = clientInstance(reserved);
-        const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
+        const owner = credentialServiceDriver(instance.credentialServiceInstanceId);
         await driverOperation(
           () => owner.registerClientSecret(instance, material!, signal()),
-          "TokenService",
+          "CredentialService",
         );
         await state.credentialClients.setCleanup(id, null);
         if (audit) {
@@ -278,11 +278,11 @@ export function createCredentialClientAdministration({
     return transact(async (state) => {
       const client = await lockClient(state);
       const instance = clientInstance(client);
-      const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
+      const owner = credentialServiceDriver(instance.credentialServiceInstanceId);
       const material = input.kind === "github-app" ? input.privateKey : input.clientSecret;
       await driverOperation(
         () => owner.updateClientSecret(instance, material, signal()),
-        "TokenService",
+        "CredentialService",
       );
       if (audit) {
         await state.audit.append({ ...audit, occurredAt: timestamp() });
@@ -306,7 +306,10 @@ export function createCredentialClientAdministration({
         throw new ScopeViolationError("The client does not exist.");
       }
       if (
-        !(await state.credentialClients.delete(id, client.tokenServiceInstanceId !== undefined))
+        !(await state.credentialClients.delete(
+          id,
+          client.credentialServiceInstanceId !== undefined,
+        ))
       ) {
         throw new ResourceStateConflictError(
           client.kind === "github-app"
@@ -330,8 +333,11 @@ export function createCredentialClientAdministration({
         }
         try {
           const instance = clientInstance(client);
-          const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
-          await driverOperation(() => owner.removeClientSecret(instance, signal()), "TokenService");
+          const owner = credentialServiceDriver(instance.credentialServiceInstanceId);
+          await driverOperation(
+            () => owner.removeClientSecret(instance, signal()),
+            "CredentialService",
+          );
         } catch {
           await state.credentialClients.setCleanup(
             id,
@@ -362,10 +368,10 @@ export function createCredentialClientAdministration({
       return use(undefined);
     }
     const instance = clientInstance(current) as OAuthClientSecretInstance;
-    const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
+    const owner = credentialServiceDriver(instance.credentialServiceInstanceId);
     const secret = await driverOperation(
       () => owner.resolveClientSecret(instance, signal()),
-      "TokenService",
+      "CredentialService",
     );
     return use(secret);
   }
