@@ -270,17 +270,6 @@ async function request(url, method, path, options = {}) {
   };
 }
 
-async function defaultNamespace(controller) {
-  const result = await controller.request("GET", "/namespaces");
-  assert.equal(result.status, 200);
-  const found = result.data.find(
-    (namespace) => namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-  );
-  assert.ok(found, "fresh bootstrap must create the default Namespace");
-  assert.equal(found.status, "provisioning");
-  return found;
-}
-
 function assertOnlyDefaultNamespace(response) {
   assert.equal(response.status, 200);
   assert.deepEqual(
@@ -592,7 +581,6 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   runResourceRoutes({
     configuredController,
     bootstrap,
-    defaultNamespace,
     createNamespace,
     createAgent,
     missingRevisionId,

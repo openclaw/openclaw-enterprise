@@ -17,6 +17,7 @@ import {
   CredentialSourceResponse,
   InstallationResponse,
   JsonValue,
+  NamespaceListResponse,
   NamespaceResponse,
   PluginApproversSchema,
   PluginDesiredSelectionSchema,
@@ -36,7 +37,11 @@ import {
   type CredentialSourceReference,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  InMemoryPlatformState,
+  OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
@@ -652,6 +657,15 @@ export async function bootstrapInstallation(
   assert.equal(data.name, name);
   assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
   return data;
+}
+
+export async function defaultNamespace({ request }: Pick<InjectedController, "request">) {
+  const response = await request("GET", "/namespaces");
+  const { data } = checkedInjectedBody(response, 200, NamespaceListResponse);
+  const found = data.find((namespace) => namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME);
+  assert.ok(found, "fresh bootstrap must create the default Namespace");
+  assert.equal(found.status, "provisioning");
+  return found;
 }
 
 export async function createNamespace(

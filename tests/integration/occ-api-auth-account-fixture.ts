@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import {
-  ErrorResponse,
-  NamespaceListResponse,
-  RequestId,
-  type ErrorCode,
-} from "../../packages/contracts/src/index.ts";
-import { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "../../packages/occ/src/index.ts";
+import { ErrorResponse, RequestId, type ErrorCode } from "../../packages/contracts/src/index.ts";
 import {
   checkedInjectedBody,
   createInjectedControllerFixture,
@@ -51,16 +45,4 @@ export async function configuredController(options: FixtureOptions = {}) {
     withoutBackendSummaries,
   );
   return { fixture, request: requestForFixture(fixture), auditSink };
-}
-
-type TestController = Awaited<ReturnType<typeof configuredController>>;
-
-export async function defaultNamespace(controller: TestController) {
-  const response = await controller.request("GET", "/namespaces");
-  const { data, meta } = checkedInjectedBody(response, 200, NamespaceListResponse);
-  assert.equal(meta.requestId, response.headers.get("x-request-id"));
-  const found = data.find((namespace) => namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME);
-  assert.ok(found, "fresh bootstrap must create the default Namespace");
-  assert.equal(found.status, "provisioning");
-  return found;
 }

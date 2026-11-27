@@ -31,6 +31,7 @@ import {
   createAgent as createFixtureAgent,
   createNamespace as createFixtureNamespace,
   createServiceAccount,
+  defaultNamespace,
   identifier,
   injectedRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -62,15 +63,11 @@ function resourceId(data: unknown): string {
 export async function runResourceRoutes({
   configuredController,
   bootstrap,
-  defaultNamespace,
   createNamespace,
   createAgent,
   missingRevisionId,
   missingAgentId,
-}: ControllerSetup & {
-  defaultNamespace(controller: Controller): Promise<NamespaceWire>;
-  missingAgentId: string;
-}) {
+}: ControllerSetup & { missingAgentId: string }) {
   const controller = await configuredController();
   // Before bootstrap a Preset write, whose grant check runs before its body is read, answers
   // the same not-found as the handler would.
