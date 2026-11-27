@@ -337,10 +337,10 @@ test("a full 1 MiB container window is cut after sanitizing it once", async (t) 
   // With tailLines=1000 a chatty container fills the kubelet's 1 MiB read on every
   // poll: twice what one 512 KiB page may carry. Choosing the cut must not sanitize
   // the window again for each candidate prefix (a binary search did about five
-  // window sanitizations per poll). Sanitizing a line classifies it (one JSON.parse of
-  // the raw line) and redacts its message (one argv split of the message text), so
-  // call-through spies on both count per-line work without depending on runner load.
-  // Every spied call returns the real result.
+  // window sanitizations per poll). Call-through spies count raw-line classification
+  // and the redactor's splits of message text without depending on runner load. The
+  // redactor may scan a message more than once, so one genuine sanitization defines
+  // its work budget. Every spied call returns the real result.
   const started = Date.parse("2026-09-30T12:00:00Z");
   const lines = Array.from({ length: 1000 }, (_, index) => ({
     time: iso(started + index),
@@ -371,17 +371,18 @@ test("a full 1 MiB container window is cut after sanitizing it once", async (t) 
       classified: parse.mock.calls.filter(
         ({ arguments: [text] }) => typeof text === "string" && raws.has(text),
       ).length,
-      redacted: split.mock.calls.filter((call) => texts.has(String(call.this))).length,
+      redactorSplits: split.mock.calls.filter((call) => texts.has(String(call.this))).length,
     };
   };
   // The Driver's byte cut drops the final, partial line before any classification.
   const complete = lines.slice(0, -1);
   const evidence = await work(() => runtimeLogEvidence(complete));
   const once = await work(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
-  // The proxies hold: one sanitization classifies and redacts each complete line once,
-  // and the evidence pass classifies without redacting.
-  assert.deepEqual(once, { classified: complete.length, redacted: complete.length });
-  assert.equal(evidence.redacted, 0);
+  // Classification remains exactly once per complete line. Redactor work is measured
+  // independently; the evidence pass must classify without running those scans.
+  assert.equal(once.classified, complete.length);
+  assert.ok(once.redactorSplits > 0, "one sanitization exercises the redactor work counter");
+  assert.deepEqual(evidence, { classified: complete.length, redactorSplits: 0 });
   let page: RuntimeLogPage | undefined;
   const cut = await work(async () => {
     page = await pollReader().poll(lines, { truncated: true });
@@ -392,15 +393,31 @@ test("a full 1 MiB container window is cut after sanitizing it once", async (t) 
   assert.ok(delivered > 300 && delivered < 999, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
   // The fetched safety evidence classifies every complete line once; the prefix
-  // builds then share one sanitization. Both bounds are exact today: classifying or
-  // redacting even the delivered prefix once more adds at least 300 lines.
+  // builds then share one sanitization. These limits come from the genuine work
+  // above, including whatever bounded scans the redactor needs for one message.
   assert.ok(
     cut.classified <= evidence.classified + once.classified,
     `the cut page classified ${cut.classified} window lines; the evidence pass and one sanitization classify ${evidence.classified + once.classified}`,
   );
   assert.ok(
-    cut.redacted <= once.redacted,
-    `the cut page redacted ${cut.redacted} window messages; one sanitization redacts ${once.redacted}`,
+    cut.redactorSplits <= once.redactorSplits,
+    `the cut page made ${cut.redactorSplits} message splits; one sanitization makes ${once.redactorSplits}`,
+  );
+  // Reproduce the old failure mode with real work: after the evidence pass and a
+  // complete sanitization, sanitize just the delivered prefix again without a memo.
+  // Even that smaller duplicate must exceed both of the same limits.
+  const repeated = await work(() => {
+    runtimeLogEvidence(complete);
+    sanitizeRuntimeLogChunk({ stream, lines, truncated: true });
+    sanitizeRuntimeLogChunk({ stream, lines: complete.slice(0, delivered), truncated: false });
+  });
+  assert.ok(
+    repeated.classified > evidence.classified + once.classified,
+    "classifying the delivered prefix again must exceed the one-window classification budget",
+  );
+  assert.ok(
+    repeated.redactorSplits > once.redactorSplits,
+    "redacting the delivered prefix again must exceed the one-window redactor budget",
   );
 });
 
