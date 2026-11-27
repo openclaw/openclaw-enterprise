@@ -1232,7 +1232,7 @@ export function createPluginFields({
             render();
             search.focus();
           },
-          { className: "plugin-back" },
+          { className: "plugin-back", "data-discovery": "true" },
         ),
         element(
           "div",

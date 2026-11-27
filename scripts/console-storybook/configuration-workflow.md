@@ -110,8 +110,10 @@ In **Pages → Agent detail → Plugins Draft**, set **Plugin selections JSON** 
 `{}`. Check that the summary and **Configured** tab both report zero. Replace
 the draft with `[`. The summary should explain how to fix the draft, and
 **Configured** should show no count or invitation to add a plugin. In
-**Available**, check that no plugin is labelled **Not selected**. Close the
-dialog and enter `{"sample":{"enabled":false}}`. Check that the summary and
+**Available**, check that no plugin is labelled **Not selected**. At 390 px,
+open a plugin and use the keyboard to activate **Back to plugins**. Check that
+focus returns to **Search plugins**. Close the dialog and enter
+`{"sample":{"enabled":false}}`. Check that the summary and
 **Configured** both count the disabled plugin once.
 
 ## Correct an out-of-range Configuration number
