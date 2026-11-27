@@ -253,6 +253,16 @@ test("prepared Git admits only the dedicated Harness peer and retires it without
   assert.deepEqual((await read()).ingress, []);
 });
 
+test("prepared Git leaves out the gh api publication skill", async () => {
+  const { f, prepare } = await preparedIngressFixture({
+    hostname: "git.credentials.svc.cluster.local",
+  });
+  await prepare();
+  // The prepared sender opens drafts with oce-github, which the gh api skill never mentions.
+  const gateway = parseRecord(preparedNativeDocument(f));
+  assert.equal(gateway.skills, undefined);
+});
+
 test("prepared Git binds the session origin to the selected broker Service", async (t) => {
   const custom = "git.credentials.svc.cluster.internal";
   for (const scenario of [
