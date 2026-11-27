@@ -1557,6 +1557,24 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), true);
 
+  // A narrower search hides both selected rows while leaving an unchecked match.
+  await search.fill("application-api");
+  assert.equal(await firstChoice.count(), 0);
+  assert.equal(await repositoryCheckbox(page, "zeta/application").count(), 0);
+  const nextChoice = repositoryCheckbox(page, prefixMatch);
+  assert.equal(await nextChoice.isChecked(), false);
+  const searchDescription = await search.evaluate(
+    (input) =>
+      input.ariaDescribedByElements?.map((description) => description.textContent).join(" ") ?? "",
+  );
+  assert.match(
+    searchDescription,
+    /^2 selected\b/,
+    "The hint must count selections outside the search",
+  );
+  assert.ok(searchDescription.includes(`Enter selects ${prefixMatch}`));
+  await search.fill("application");
+
   // On a phone the next match can be below the fold. Keep search focused and
   // leave the results heading above the sticky form actions.
   await page.setViewportSize(consoleViewports[1]);
@@ -1572,7 +1590,6 @@ test("Agent repository search prioritizes exact names before prefix matches", as
       .evaluate((name) => name.getBoundingClientRect().top >= globalThis.innerHeight),
     "The next result must be below the viewport before Enter",
   );
-  const nextChoice = repositoryCheckbox(page, prefixMatch);
   assert.equal(await nextChoice.isChecked(), false);
   assert.ok(
     await search.evaluate(
