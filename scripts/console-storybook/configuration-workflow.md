@@ -126,6 +126,11 @@ Before scrolling, check that the selection and the whole error are visible above
 the buttons. Type `2` to replace just the selected number. Repeat with the
 application repository unchecked. The deployment warning should stay visible too.
 
+Repeat the rejection in a tall window. Keep **Configuration JSON** focused as
+you shrink the window. When both fit, the selection and full error should stay
+visible. Leave the editor focused, scroll away from the error, then resize again.
+Check that the page stays where you scrolled and the editor keeps focus.
+
 ## Keep Runtime details visible while tabbing
 
 Open **Pages → Create Agent → GitHub repository access with a registered App**
