@@ -368,7 +368,7 @@ export function createPluginFields({
       setupInstructions,
     ),
   );
-  const setupReminder = element("details", { className: "plugin-setup-reminder" });
+  const setupReminder = element("details", { className: "plugin-setup-reminder", hidden: true });
   dialog.append(
     element(
       "div",
@@ -1194,12 +1194,16 @@ export function createPluginFields({
     available.setAttribute("aria-pressed", String(!configuredOnly));
     configured.setAttribute("aria-pressed", String(configuredOnly));
     const count = values === null ? null : Object.keys(values).length;
-    accessHelp.hidden = !catalog?.setup;
-    setupReminder.hidden = !catalog?.setup || count === 0;
-    setupInstructions.replaceChildren(...(catalog?.setup ? setupContent(catalog.setup) : []));
+    const setup = catalog?.setup;
+    accessHelp.hidden = !setup;
+    // Keep the reminder in place while the draft is unreadable.
+    if (!setup || count !== null) {
+      setupReminder.hidden = !setup || count === 0;
+    }
+    setupInstructions.replaceChildren(...(setup ? setupContent(setup) : []));
     setupReminder.replaceChildren(
       element("summary", {}, "Check plugin access and credentials before deployment"),
-      ...(catalog?.setup ? setupContent(catalog.setup) : []),
+      ...(setup ? setupContent(setup) : []),
     );
     summary.textContent =
       count === null
