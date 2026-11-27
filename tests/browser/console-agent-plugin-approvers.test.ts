@@ -713,7 +713,7 @@ test("Back keeps focus when saved plugin tools finish loading", async (t) => {
   } finally {
     held.release();
   }
-  await ui.dialog.locator('[data-tool="app_hosted/search"]').waitFor();
+  await ui.dialog.locator('details[data-tool="app_hosted/search"]').waitFor();
   assert.equal(await back.evaluate(focused), true, "Back remains focused after the tool response");
   await ui.page.keyboard.press("Enter");
   await ui.button("Alpha").waitFor();
