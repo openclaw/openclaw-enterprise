@@ -62,8 +62,11 @@ const openDialog = (page: Page) =>
       box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
       viewport,
       focusInside: dialog !== document.activeElement && dialog.contains(document.activeElement),
-      actions: Array.from(dialog.querySelectorAll(".dialog-actions button"), (button) =>
-        button.textContent.trim(),
+      actions: Array.from(
+        dialog.querySelectorAll(
+          ":scope > .dialog-actions button, :scope > form > .dialog-actions button",
+        ),
+        (button) => button.textContent.trim(),
       ),
     };
   });

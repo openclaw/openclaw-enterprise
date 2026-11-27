@@ -5,11 +5,10 @@ import type {
   Namespace,
   StaticKeyDestination,
 } from "@openclaw-enterprise/contracts";
+import { isOAuthTemplate, type OAuthTemplate } from "./credential-consent.mjs";
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
   openCredentialClientRegistration,
-  isOAuthTemplate,
-  type OAuthTemplate,
   availabilityLabel,
   availableInNamespace,
   oauthClients,

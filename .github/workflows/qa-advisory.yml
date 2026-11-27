@@ -113,7 +113,7 @@ jobs:
             installationFiles = process.env.GITHUB_EVENT_NAME === 'push' ? [] : undefined;
             qa.push(
               { installation: 'compose', preset: 'Codex', scenarios: 'console-secrets,agent-audit,http-chat', focused: false },
-              { installation: 'kubernetes', preset: 'Codex', scenarios: 'console-secrets,http-chat', focused: false },
+              { installation: 'kubernetes', preset: 'Codex', scenarios: 'console-secrets,http-chat,gateway-startup-credentials', focused: false },
               { installation: 'kubernetes', preset: 'OpenClaw', scenarios: 'http-chat', focused: true },
               { installation: 'compose', preset: 'OpenClaw', scenarios: 'http-chat', focused: true },
             );

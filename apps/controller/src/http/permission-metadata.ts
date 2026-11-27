@@ -115,7 +115,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       return [primary("namespace")];
     case "lookupChannelDirectory":
       return [
-        requirement("operate", "secret", "request_body", "directory_lookup"),
+        requirement("operate", "credential_source", "request_body", "directory_lookup"),
         requirement("create", "agent", "namespace", "directory_lookup"),
         requirement("update", "agent", "request_body", "directory_lookup"),
         requirement("update", "configuration", "request_body", "directory_lookup"),
@@ -360,8 +360,8 @@ function permissionDescription(
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
       if (condition === "directory_lookup") {
-        if (resourceKind === "secret") {
-          return "Requires operate permission on the exact Secret named by secretId.";
+        if (resourceKind === "credential_source") {
+          return "Requires operate permission on the exact CredentialSource named by sourceId.";
         }
         if (action === "create") {
           return "Without an edit target, requires Agent create permission in the Namespace.";

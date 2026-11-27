@@ -26,6 +26,7 @@ import { normalizeOpenShellModelId } from "../../scripts/ci/openshell-model-inpu
 import { createEnvoyWorkspaceGatewayPlan } from "./envoy-workspace-gateway.mjs";
 import { createHarnessConfiguration, nativeAdminGatewayAuth } from "./harness-configuration.mjs";
 import { loadInstallationFile } from "./installation-file.ts";
+import { fixtureOAuthIssuer } from "./oauth-issuer.ts";
 import {
   createOpenShellTokenServiceInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -219,6 +220,16 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   const native = new OpenClawController(controller.installation, {
     state,
     ...installationControllerOptions(runtime.installation),
+    // Pin issuer metadata independently of the request. The controlled response
+    // supports the public test client used with the synthetic grant below.
+    oauthIssuer: fixtureOAuthIssuer(
+      {
+        issuer: "https://accounts.google.com",
+        authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+        tokenUrl: "https://oauth2.googleapis.com/token",
+      },
+      ["none"],
+    ),
     credentialSourceDelivery: delivery,
     namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
     backends: runtime.installation.backend,

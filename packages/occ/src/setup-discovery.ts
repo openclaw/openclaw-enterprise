@@ -4,10 +4,11 @@ import type {
   ChannelDriver,
   ComputeDriver,
   ConfigurationContext,
+  CredentialSourceReference,
   DriverConfigurationDescriptor,
   SandboxFacet,
-  Secret,
-  SecretDriver,
+  StaticCredentialSource,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
@@ -22,17 +23,17 @@ import type { DriverRegistry } from "./driver-registry.ts";
 import {
   AgentDeletingError,
   ChannelDirectoryError,
-  DependencyUnavailableError,
   ModelDiscoveryError,
   NotImplementedError,
   ResourceStateConflictError,
   ScopeViolationError,
 } from "./errors.ts";
 import { exactNamespace } from "./resource-scope.ts";
-import { sameSecretBackend, secretOperation } from "./secret-operations.ts";
+import { driverOperation } from "./driver-operation.ts";
+import { PROTECTED_SOURCE_TIMEOUT_MS } from "./credential-source-drivers.ts";
 
 export interface LookupChannelDirectoryInput {
-  readonly secretId: string;
+  readonly sourceId: string;
   readonly kind: ChannelDirectoryLookupInput["kind"];
   readonly query?: string;
   readonly cursor?: string;
@@ -55,7 +56,9 @@ interface SetupDiscoveryDependencies {
   ) => Promise<{ readonly configuration: DriverConfigurationDescriptor | undefined }>;
   readonly selectCompute: () => ComputeDriver;
   readonly selectChannel: () => ChannelDriver;
-  readonly secretDriver: (driverId: string) => SecretDriver;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly gatewayStartupSourceDelivery:
+    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
 }
 
 function validateChannelDirectoryInput(
@@ -70,7 +73,7 @@ function validateChannelDirectoryInput(
     characters(value) <= max &&
     !value.includes("\u0000");
   if (
-    !bounded(input.secretId, 200) ||
+    !bounded(input.sourceId, 200) ||
     (input.kind !== "users" && input.kind !== "channels") ||
     (input.query !== undefined && !bounded(input.query, 200, true)) ||
     (input.cursor !== undefined && !bounded(input.cursor, 2048)) ||
@@ -209,7 +212,7 @@ export class SetupDiscovery {
     signal?: AbortSignal,
   ): Promise<ChannelDirectoryResult> {
     const ids = validateChannelDirectoryInput(input);
-    const first = await this.channelDirectorySecret(principalId, namespaceId, input);
+    const first = await this.channelDirectorySource(principalId, namespaceId, input);
     let driver: ChannelDriver;
     try {
       driver = this.dependencies.selectChannel();
@@ -219,64 +222,68 @@ export class SetupDiscovery {
         "Channel directory lookup is unavailable.",
       );
     }
-    if (!first.driver.withValue) {
-      throw new DependencyUnavailableError(
-        "The selected Secret Driver cannot use credentials for directory lookup.",
+    // Source metadata lookup is asynchronous. Repeat exact authority immediately before custody.
+    await this.authorizeChannelDirectoryUse(principalId, namespaceId, input);
+    let token: string;
+    try {
+      const timeout = AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS);
+      const resolved = await driverOperation(
+        () =>
+          first.owner.resolveCredential(
+            { sourceRef: first.ref, tokenServiceInstanceId: first.source.tokenServiceInstanceId },
+            signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+          ),
+        "TokenService",
+      );
+      if (!isNonEmptyString(resolved.credential) || !isNonEmptyString(resolved.version)) {
+        throw new ChannelDirectoryError("invalid_response");
+      }
+      token = resolved.credential;
+    } catch {
+      throw new ChannelDirectoryError("unavailable");
+    }
+    // Recheck both target and Source authority, readiness, selected owner, and delivery
+    // qualification after owner I/O before the Channel Driver can contact Slack.
+    const current = await this.channelDirectorySource(principalId, namespaceId, input);
+    if (
+      current.source.tokenServiceInstanceId !== first.source.tokenServiceInstanceId ||
+      current.owner !== first.owner ||
+      current.compute !== first.compute
+    ) {
+      throw new ResourceStateConflictError(
+        "The channel directory credential changed. Refresh and retry.",
       );
     }
-    const outcome = await secretOperation(() =>
-      first.driver.withValue!(first.secret, async (token) => {
-        if (!isNonEmptyString(token)) {
-          return { error: new ChannelDirectoryError("invalid_response") };
-        }
-        try {
-          // Recheck the exact target grant and Secret identity after backend I/O.
-          const current = await this.channelDirectorySecret(principalId, namespaceId, input);
-          if (!sameSecretBackend(first.secret, current.secret)) {
-            return {
-              validationError: new ResourceStateConflictError(
-                "The channel directory credential changed. Refresh and retry.",
-              ),
-            };
-          }
-        } catch (error) {
-          return { validationError: error };
-        }
-        try {
-          const result = await driver.lookupDirectory(
-            {
-              token,
-              kind: input.kind,
-              ...(input.query === undefined ? {} : { query: input.query }),
-              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-              ...(ids === undefined ? {} : { ids }),
-            },
-            signal,
-          );
-          return safeChannelDirectoryResult(result, ids, token);
-        } catch (error) {
-          return {
-            error: new ChannelDirectoryError(
-              error instanceof ChannelDirectoryError ? error.reason : "unavailable",
-            ),
-          };
-        }
-      }),
-    );
-    if ("validationError" in outcome) {
-      throw outcome.validationError;
+    await this.authorizeChannelDirectoryUse(principalId, namespaceId, input);
+    let result: ChannelDirectoryResult;
+    try {
+      result = await driver.lookupDirectory(
+        {
+          token,
+          kind: input.kind,
+          ...(input.query === undefined ? {} : { query: input.query }),
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          ...(ids === undefined ? {} : { ids }),
+        },
+        signal,
+      );
+    } catch (error) {
+      throw new ChannelDirectoryError(
+        error instanceof ChannelDirectoryError ? error.reason : "unavailable",
+      );
     }
+    const outcome = safeChannelDirectoryResult(result, ids, token);
     if ("error" in outcome) {
       throw outcome.error;
     }
     return outcome.value;
   }
 
-  private async channelDirectorySecret(
+  private async authorizeChannelDirectoryUse(
     principalId: string,
     namespaceId: string,
     input: LookupChannelDirectoryInput,
-  ): Promise<{ readonly secret: Readonly<Secret>; readonly driver: SecretDriver }> {
+  ): Promise<void> {
     if (input.agentId !== undefined) {
       await this.dependencies.authority.authorize(principalId, "update", {
         kind: "agent",
@@ -297,10 +304,23 @@ export class SetupDiscovery {
       });
     }
     await this.dependencies.authority.authorize(principalId, "operate", {
-      kind: "secret",
-      id: input.secretId,
+      kind: "credential_source",
+      id: input.sourceId,
       namespaceId,
     });
+  }
+
+  private async channelDirectorySource(
+    principalId: string,
+    namespaceId: string,
+    input: LookupChannelDirectoryInput,
+  ): Promise<{
+    readonly ref: CredentialSourceReference;
+    readonly source: Readonly<StaticCredentialSource>;
+    readonly owner: TokenServiceDriver;
+    readonly compute: ComputeDriver;
+  }> {
+    await this.authorizeChannelDirectoryUse(principalId, namespaceId, input);
     return this.dependencies.transactions.read(async (state) => {
       const namespace = await exactNamespace(state, namespaceId);
       if (input.agentId !== undefined) {
@@ -322,11 +342,37 @@ export class SetupDiscovery {
           );
         }
       }
-      const secret = await state.secrets.findSecret(namespace.id, input.secretId);
-      if (secret === undefined) {
-        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
+      const source = await state.credentialSources.findCredentialSource(
+        namespace.id,
+        input.sourceId,
+      );
+      if (source === undefined) {
+        throw new ScopeViolationError(
+          "The Credential Source does not belong to the exact Namespace.",
+        );
       }
-      return { secret, driver: this.dependencies.secretDriver(secret.driverId) };
+      if (
+        source.ownerCapability !== "token_service" ||
+        source.type !== "static" ||
+        source.state !== "ready"
+      ) {
+        throw new ResourceStateConflictError(
+          "Channel directory lookup requires a ready static TokenService Credential Source.",
+        );
+      }
+      const owner = this.dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const compute = this.dependencies.selectCompute();
+      if (this.dependencies.gatewayStartupSourceDelivery?.(compute, owner) !== true) {
+        throw new ResourceStateConflictError(
+          "The selected Compute and TokenService do not support Gateway Source delivery.",
+        );
+      }
+      return {
+        ref: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
+        source,
+        owner,
+        compute,
+      };
     });
   }
 

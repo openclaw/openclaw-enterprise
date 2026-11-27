@@ -477,14 +477,14 @@ See [initial runtime credentials](../../reference/console/create-and-deploy.md#i
 to provision credentials separately or investigate a conflict.
 
 Model authentication comes from the saved `harnessAuth` binding and is projected
-only into the model-executing workload. Slack tokens use separate Namespace
-Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
+only into the model-executing workload. Slack uses Gateway Credential
+Sources; see [Slack setup](../integrations/slack.md). Keep values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
 
 You need `deploy` on this Agent and `read` on its saved Configuration.
 You and the [Agent's service principal](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
-need `operate` on the model Secret and each `secretBindings` Secret.
+need `operate` on the model credential and each exact `secretBindings` credential.
 With [external IAM policy](../../reference/drivers/iam.md#namespace-policy-operations), grant the Agent `operate` before deployment.
 
 For this new, stopped Agent, review the saved Configuration and note its
