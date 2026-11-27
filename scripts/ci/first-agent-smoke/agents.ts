@@ -8,6 +8,7 @@ import { defaultAgentModel } from "../../../apps/controller/src/console/agents/s
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
 import {
   channelProxyDeploymentStep,
+  isChannelProxyDeployment,
   log,
   minute,
   observeAgentStop,
@@ -16,6 +17,7 @@ import {
   run,
   waitFor,
   type AgentStopState,
+  type ChannelProxyDeployment,
   type ChannelProxyDeploymentTiming,
   type RunOptions,
 } from "./process.ts";
@@ -132,10 +134,70 @@ export interface GatewayPod {
   pod: string;
 }
 
+function podTimestamp(value: unknown): number | undefined {
+  // Kubernetes core/v1 Pod times use UTC with whole-second resolution.
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  // Date.parse can normalize invalid calendar dates.
+  if (Number.isFinite(parsed) && new Date(parsed).toISOString() === `${value.slice(0, -1)}.000Z`) {
+    return parsed;
+  }
+  return undefined;
+}
+
+function podConditionTimestamp(pod: Pod, type: "PodScheduled" | "Ready") {
+  const matches = pod.status?.conditions?.filter((condition) => condition?.type === type);
+  const condition = matches?.length === 1 ? matches[0] : undefined;
+  return condition?.status === "True" ? podTimestamp(condition.lastTransitionTime) : undefined;
+}
+
+function podInterval(start: number | undefined, end: number | undefined): number | undefined {
+  if (start === undefined || end === undefined) {
+    return undefined;
+  }
+  const elapsed = end - start;
+  return elapsed >= 0 && elapsed <= 60 * minute ? elapsed : undefined;
+}
+
+function logGatewayPodIntervals(pod: Pod, context: ChannelProxyDeployment) {
+  const created = podTimestamp(pod.metadata.creationTimestamp);
+  const scheduled = podConditionTimestamp(pod, "PodScheduled");
+  const containerStatuses = pod.status?.containerStatuses;
+  const gateways = Array.isArray(containerStatuses)
+    ? containerStatuses.filter((container) => container?.name === "gateway")
+    : [];
+  const gateway = gateways.length === 1 ? gateways[0] : undefined;
+  const started =
+    gateway?.restartCount === 0 &&
+    gateway.lastState?.terminated == null &&
+    gateway.state?.waiting == null &&
+    gateway.state?.terminated == null
+      ? podTimestamp(gateway.state?.running?.startedAt)
+      : undefined;
+  const ready = gateway?.ready === true ? podConditionTimestamp(pod, "Ready") : undefined;
+
+  // Ready is the latest recorded transition in this sample. These intervals do
+  // not measure the deployment's wall time or the old Pod's retirement.
+  const intervals = [
+    ["createdToScheduledMs", podInterval(created, scheduled)],
+    ["scheduledToGatewayStartMs", podInterval(scheduled, started)],
+    ["gatewayStartToLatestPodReadyMs", podInterval(started, ready)],
+  ] as const;
+  const fields = intervals.flatMap(([name, elapsed]) =>
+    elapsed === undefined ? [] : [`${name}=${elapsed}`],
+  );
+  if (fields.length > 0) {
+    log(`${context}: sampled gateway Pod intervals ${fields.join(" ")}`);
+  }
+}
+
 export async function readyGateway(
   stack: LocalSetup,
   agentId: string,
   revisionId: string,
+  context?: ChannelProxyDeployment,
 ): Promise<GatewayPod> {
   const pods = await agentPods(stack, agentId);
   // Same revision match as scripts/first-agent-model.ts: the gateway Pod
@@ -152,7 +214,18 @@ export async function readyGateway(
     1,
     `expected one Ready gateway Pod for ${revisionId}, found ${gateways.length} of ${pods.length} Agent Pods`,
   );
-  const { namespace, name } = gateways[0]!.metadata;
+  const gateway = gateways[0]!;
+  const { namespace, name } = gateway.metadata;
+  if (
+    isChannelProxyDeployment(context) &&
+    gateway.metadata.labels?.["openclaw.dev/agent"] === agentId
+  ) {
+    try {
+      logGatewayPodIntervals(gateway, context);
+    } catch {
+      // Optional timing data must never change gateway selection or its outcome.
+    }
+  }
   return { namespace, pod: name };
 }
 
