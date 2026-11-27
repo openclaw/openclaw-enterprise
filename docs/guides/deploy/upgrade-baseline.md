@@ -306,17 +306,22 @@ point. A matching Agent ID and migration history cannot verify the saved draft.
 
 ## Record Agent data
 
-For each Agent whose data you must keep, choose a trusted regular file that an
-Agent or user wrote directly in the workspace root. Enter its basename below.
-The example accepts spaces in the name and rejects symlinks and paths to other
-directories. Pause workspace writers during each capture.
+Pause writes to each workspace you need to preserve. Choose a trusted
+regular file the Agent or user wrote in its root. Enter its basename.
+The command accepts spaces but rejects paths and symlinks.
 
-For a dedicated Codex Harness, set `TENANT_NAMESPACE` and `AGENT_ID` from the
-[production Agent guide](production-agents.md) and enter the exact Harness Pod
-name. The command checks that the Pod belongs to the Agent and is Running,
-ready and not terminating. On the host, use Bash, `kubectl`, `jq`, `mktemp`,
-`mv` and `rm`. Keep the private baseline directory under a single writer’s
-control. The container needs Bash, `sha256sum`, `wc` and a `find` with `-printf`.
+For a dedicated Codex Harness, compare each edited file on the volume with an
+independent copy of its latest submission **before restarting or replacing the
+Gateway Pod**. Unless all match, keep the Pod running. It may hold the only
+copy. Leave writes and the upgrade paused until an authorized operator preserves
+and reconciles the files.
+
+Set `TENANT_NAMESPACE` and `AGENT_ID` per the [production Agent guide](production-agents.md).
+Specify the exact Harness Pod. It must belong to the Agent,
+be running and ready, and have no deletion timestamp.
+Only one writer may update the private baseline. The host needs Bash,
+`kubectl`, `jq`, `mktemp`, `mv` and `rm`. The container needs Bash, `sha256sum`,
+`wc` and `find` with `-printf`.
 
 ```bash
 (
@@ -351,15 +356,14 @@ control. The container needs Bash, `sha256sum`, `wc` and a `find` with `-printf`
 )
 ```
 
-Require exit 0 before using the evidence. A failed read or incomplete response
-leaves the final evidence file untouched. Its two lines record the SHA-256 hash
-and the regular-file count. `find` emits one byte per file regardless of its
-name. Use the same workspace and representative file after the upgrade.
+Require exit 0. Failed or incomplete reads leave the evidence file unchanged.
+It records the SHA-256 hash and regular-file count on separate lines. `find`
+emits one byte per file. Recheck the same workspace and file after upgrading.
 
-For an embedded Agent, set the exact Gateway Pod, change the workload-role check
-and container to `gateway`, and set `WORKSPACE=/home/node/.openclaw/workspace`.
-If the dedicated Codex seccomp profile is in use, also record its file hash on
-every eligible node, as the [Codex sandbox procedure](codex-sandbox.md) shows.
+For embedded Agents, specify the exact Gateway Pod, use `gateway` for the
+workload role and container, and set `WORKSPACE=/home/node/.openclaw/workspace`.
+If you use the dedicated Codex seccomp profile, [record its hash](codex-sandbox.md)
+on every eligible node.
 
 ## Compare the candidate with the installed manifest
 

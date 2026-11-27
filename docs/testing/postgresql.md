@@ -131,10 +131,9 @@ host and start with a fresh run directory.
 
 ## Other PostgreSQL suites
 
-Run `pnpm db:up` from one checkout and reuse its PostgreSQL service on port 55432
-for standalone tests. Run the Compose setup commands from that checkout and
-create fresh disposable databases on the shared development server. Use the
-isolated workflow above for version-worker tests and full CI lanes.
+Run `pnpm db:up` and the Compose setup commands from one checkout. Use its service
+on port 55432 to create fresh disposable databases for standalone tests.
+Version-worker tests and full CI lanes require [isolated preparation](#version-worker-tests).
 
 The bootstrap test creates an Installation. Give it a fresh migrated database
 with no Installation. The [Kubernetes HTTP fixture](kubernetes.md#kubernetes-http-fixture)
@@ -170,6 +169,16 @@ live gateway. Four optional Configuration cases also require
 `OCC_TEST_KUBERNETES_CONFIGURATION=1` and a configured live Kubernetes Driver.
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
 version-worker tests and therefore require prepared ownership.
+
+The standalone platform-state command skips the guarded receipt case. Use
+[prepared ownership](ci/run-lanes.md#run-a-complete-local-attempt):
+
+```sh
+corepack pnpm exec node scripts/ci/run-tests.ts run postgres-platform --lifecycle complete \
+  --attempt "$HOME/oce-postgres-guarded-attempt-1" \
+  --file tests/integration/postgres-platform-state.test.ts \
+  --test-name 'PostgreSQL guarded first deployment persists one private receipt and one reconcile work'
+```
 
 ## OIDC human sign-in
 
@@ -344,6 +353,16 @@ OCC_TEST_REHEARSAL_RECOVERY_IMAGE="$RECOVERY_IMAGE" \
 OCC_TEST_REHEARSAL_RECOVERY_SOURCE="$RECOVERY_SOURCE" \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
+
+To check Console sessions, set `OCC_TEST_PRODUCTION_TUI_BROWSER=1` for this
+in-place run. On Linux, provide `certutil` and sandboxed Chromium. Set
+`OCC_TEST_BROWSER_EXECUTABLE` to use an installed browser. Each image must
+serve its source revision in the Console HTML's `occ-build-revision` meta element.
+
+With one login, verify saved Agents in four tabs at each switch. Keep one open,
+load one fresh, delay the third tab's entry and delay the fourth tab's imports.
+Compare the delayed entry and Agent detail module with the fresh tab.
+Local HTTPS tests compatibility across a switch. It cannot establish continuous availability.
 
 Require a pass without skips. The test performs an ordinary controller-only
 forward upgrade. After the candidate acknowledges an Agent draft save, it checks

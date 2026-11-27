@@ -22,6 +22,7 @@ import {
   MAX_CHANNELS,
 } from "../../deploy/runtime/strands-box/transport.mjs";
 import { connect as tlsConnect } from "node:tls";
+import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { serveHarness } from "../../deploy/runtime/strands-box/supervisor.mjs";
 
@@ -59,10 +60,8 @@ function tcpPort(server: Pick<Server, "address">): number {
 }
 
 async function supervisor(t: TestContext) {
-  const reservation = createTcpServer();
-  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
-  const port = tcpPort(reservation);
-  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const tls = await harnessTlsFixture(t);
+  const probePath = join(tls.directory, "probe.sock");
   const reader = new PassThrough();
   const writer = new PassThrough();
   const token = randomUUID();
@@ -76,9 +75,18 @@ async function supervisor(t: TestContext) {
     socket.destroy();
   });
   gateway.connections = 0;
-  await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
-  const tls = await harnessTlsFixture(t);
-  const probePath = join(tls.directory, "probe.sock");
+  t.after(() => {
+    reader.destroy();
+    writer.destroy();
+    gateway.close();
+  });
+  await once(gateway.listen(0, "127.0.0.1"), "listening");
+
+  // Hold the manifest port on the supervisor's bind address until its TLS listener is up.
+  const reservation = await reservePort({ host: "0.0.0.0" });
+  t.after(reservation.release);
+  await bindReservedPortInProcess(reservation);
+  const { port } = reservation;
   const serving = serveHarness(
     {
       port,
@@ -96,13 +104,13 @@ async function supervisor(t: TestContext) {
       terminate() {},
     },
   );
-  await once(serving.server, "listening");
-  t.after(() => {
-    serving.stop();
-    reader.destroy();
-    writer.destroy();
-    gateway.close();
-  });
+  t.after(() => serving.stop());
+  await Promise.all([
+    once(serving.server, "listening"),
+    once(serving.diagnostics, "listening"),
+    once(serving.probeServer, "listening"),
+  ]);
+  await reservation.release();
   async function client(local = false) {
     const accepted = once(
       local ? serving.probeServer : serving.server,

@@ -7,14 +7,24 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  OpenClawController,
+  type ControllerOptions,
+} from "../../packages/occ/src/index.ts";
 import {
   createControllerApp,
   type ControllerApp,
   type ControllerAppOptions,
 } from "../../apps/controller/src/index.ts";
-import { ErrorResponse, Meta, RequestId } from "../../packages/contracts/src/api/common.ts";
+import {
+  ErrorResponse,
+  JsonValue,
+  Meta,
+  RequestId,
+} from "../../packages/contracts/src/api/common.ts";
 import {
   AgentReadResponse,
   AgentResponse,
@@ -26,8 +36,6 @@ import {
   SecretResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type {
-  CredentialGatewayDriver,
-  CredentialSourceInput,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
   Permission,
@@ -111,6 +119,7 @@ type FixtureOptions = Pick<ControllerAppOptions, "computeDriver"> & {
   secretDriver?: ReturnType<typeof createTestSecretDriver>;
   recordOperations?: boolean;
   now?: () => Date;
+  gatewayStartupSourceDelivery?: ControllerOptions["gatewayStartupSourceDelivery"];
 };
 
 async function createFixture(options: FixtureOptions = {}) {
@@ -145,6 +154,7 @@ async function createFixture(options: FixtureOptions = {}) {
     { id: "iam-secret-api" },
   );
   const auditSink = new InMemoryAuditSink();
+  const platformState = new InMemoryPlatformState({ auditSink });
   const secretDriver = options.secretDriver ?? createTestSecretDriver({ id: "secret-api-test" });
   let controller: OpenClawController | undefined;
   const sessionsByPrincipalId = new Map<string, Session>();
@@ -156,8 +166,11 @@ async function createFixture(options: FixtureOptions = {}) {
         : {
             createController(installation) {
               controller = new OpenClawController(installation, {
-                state: new InMemoryPlatformState({ auditSink }),
+                state: platformState,
                 recordOperations: options.recordOperations ?? false,
+                ...(options.gatewayStartupSourceDelivery === undefined
+                  ? {}
+                  : { gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery }),
                 ...(options.now === undefined ? {} : { now: options.now }),
               });
               return controller;
@@ -206,6 +219,7 @@ async function createFixture(options: FixtureOptions = {}) {
     createPrincipal,
     principal,
     secretDriver,
+    platformState,
     state,
   };
 }
@@ -842,7 +856,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
         body: {
           kind: "agent",
           values: {},
-          secretBindings: { SLACK_BOT_TOKEN: { source: key.data.ref } },
+          secretBindings: { SHARED_GATEWAY_KEY: { source: key.data.ref } },
         },
       },
     );
@@ -1208,108 +1222,413 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
   }
 });
 
-/** Records gateway copies; OCC admission, IAM and the audit rows under test stay real. */
-function createRecordingCredentialGateway() {
-  const stored = new Map<string, CredentialSourceInput["secrets"]>();
-  return {
-    id: "credential-gateway-secret-api",
-    capability: "credential_gateway",
-    implementation: "test-recording-gateway",
-    stored,
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "openai",
-          config: [],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+test("Gateway Source bindings use exact grants, preserve reusable static Sources, and refuse unsupported delivery", async (t) => {
+  async function setup(qualified: boolean) {
+    const kubernetes = createTestKubernetesComputeDriver("gateway-source-rules");
+    const fixture = await createFixture({
+      recordOperations: true,
+      ...(qualified ? { gatewayStartupSourceDelivery: () => true } : {}),
+      // This passive fixture exercises OCC's selected Kubernetes admission rules, not a cluster.
+      computeDriver: createReadyComputeDriver("gateway-source-compute", {
+        implementation: kubernetes.implementation,
+        validateHarnessAuth: kubernetes.validateHarnessAuth.bind(kubernetes),
+      }),
+    });
+    const namespace = await bootstrapNamespace(fixture);
+    const controller = fixture.controller();
+    const instanceId = await controller.activateTokenServiceInstance(
+      "gateway-source-owner",
+      randomUUID(),
+    );
+    const owner = new OCCTokenServiceDriver(
+      "gateway-source-owner",
+      controller.installation.id,
+      fixture.secretDriver.privateSecrets,
+      instanceId,
+      fixture.platformState,
+    );
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const sources = `/namespaces/${namespace.id}/credential-sources`;
+    const source = await request(fixture.app, "POST", sources, {
+      schema: CredentialSourceResponse,
+      body: {
+        name: "Model Source explicitly reused by Gateway",
+        type: "static",
+        config: { provider_preset: "openai" },
+        secret: `synthetic-source-${randomUUID()}`,
+      },
+    });
+    assert.equal(source.status, 201, JSON.stringify(source.body));
+    const modelKey = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+      schema: SecretResponse,
+      body: { name: "Dedicated Harness PAT", value: `synthetic-pat-${randomUUID()}` },
+    });
+    assert.equal(modelKey.status, 201, JSON.stringify(modelKey.body));
+    const values = {
+      ...createHarnessConfiguration("codex", "gpt-5"),
+      agents: {
+        defaults: {
+          model: "codex/gpt-5",
+          models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
         },
-      ];
-    },
-    async registerSource(context, input) {
-      stored.set(context.source.id, input.secrets);
-      return { state: "ready" };
-    },
-    async updateSource(context, input) {
-      stored.set(context.source.id, input.secrets);
-      return { state: "ready" };
-    },
-    async sourceStatus(context) {
-      return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
-    },
-    async removeSource(context) {
-      stored.delete(context.source.id);
-    },
-    async attachForRevision() {
-      throw new Error("not exercised");
-    },
-    async attachmentStatus() {
-      throw new Error("not exercised");
-    },
-    async withdraw() {
-      throw new Error("not exercised");
-    },
-  } satisfies CredentialGatewayDriver & { stored: typeof stored };
-}
+      },
+      cron: { webhookToken: "${GW_HOOK_TOKEN}" },
+    };
+    const bindings = {
+      GW_HOOK_TOKEN: { source: source.data.ref },
+      GW_HOOK_TOKEN_ALIAS: { source: source.data.ref },
+    };
+    const configurations = `/namespaces/${namespace.id}/configurations`;
+    const agents = `/namespaces/${namespace.id}/agents`;
+    const createConfiguration = (app: SessionApp = fixture.app) =>
+      request(app, "POST", configurations, {
+        body: { kind: "agent", values, secretBindings: bindings },
+      });
+    const createAgent = (
+      configurationId: string,
+      app: SessionApp = fixture.app,
+      executionMode = "dedicated",
+    ) =>
+      request(app, "POST", agents, {
+        body: {
+          name: `Gateway Source Agent ${randomUUID()}`,
+          configurationId,
+          executionMode,
+          harnessAuth: { method: "codex_pat", source: modelKey.data.ref },
+        },
+      });
+    return {
+      fixture,
+      namespace,
+      source: source.data,
+      modelKey: modelKey.data,
+      instanceId,
+      configurations,
+      agents,
+      values,
+      bindings,
+      createConfiguration,
+      createAgent,
+    };
+  }
 
-test("credential source writes commit one value-free audit row each", async () => {
-  let now = Date.now();
-  const fixture = await createFixture({
-    now: () => new Date(now),
-    computeDriver: {
-      ...createReadyComputeDriver("compute-secret-api"),
-      async resolveSandboxNamespace(namespace) {
-        return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
+  const active = await setup(true);
+  const { fixture, namespace, source, modelKey } = active;
+  const member = await fixture.createPrincipal("gateway-source-operator");
+  grantRole(fixture.state, member.principal.id, {
+    id: "gateway-source-configuration-and-agent",
+    namespaceId: namespace.id,
+    permissions: { configuration: ["create", "read"], agent: ["create"] },
+  });
+  // Configuration create permission alone does not authorize exporting a particular Source.
+  assertApiError(await active.createConfiguration(member.app), 403, "FORBIDDEN");
+  assert.deepEqual(
+    fixture.auditSink.events.findLast((event) => event.kind === "authorization_denial")
+      ?.authorization?.resource,
+    source.ref,
+  );
+  grantRole(fixture.state, member.principal.id, {
+    id: "gateway-source-exact-operate",
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: source.id },
+  });
+  const configuration = await active.createConfiguration(member.app);
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configurationId = asRecord(configuration.data)?.id;
+  assert.equal(typeof configurationId, "string");
+  grantRole(fixture.state, member.principal.id, {
+    id: "gateway-source-harness-operate",
+    namespaceId: namespace.id,
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: modelKey.id },
+  });
+  const sourceGrantIndex = fixture.state.bindings.findIndex(
+    ({ id }) => id === "gateway-source-exact-operate",
+  );
+  assert.notEqual(sourceGrantIndex, -1);
+  const [sourceGrant] = fixture.state.bindings.splice(sourceGrantIndex, 1);
+  assert.ok(sourceGrant);
+  // Assignment repeats the caller's exact grant check; Configuration access is not consumption.
+  assertApiError(await active.createAgent(configurationId as string, member.app), 403, "FORBIDDEN");
+  assert.deepEqual(
+    fixture.auditSink.events.findLast((event) => event.kind === "authorization_denial")
+      ?.authorization?.resource,
+    source.ref,
+  );
+  fixture.state.bindings.push(sourceGrant);
+  const embedded = await active.createAgent(configurationId as string, member.app, "embedded");
+  assert.equal(embedded.status, 409, JSON.stringify(embedded.body));
+  const createdAgent = await active.createAgent(configurationId as string, member.app);
+  assert.equal(createdAgent.status, 201, JSON.stringify(createdAgent.body));
+  const agentId = asRecord(createdAgent.data)?.id;
+  assert.equal(typeof agentId, "string");
+  const agent = await fixture
+    .controller()
+    .getAgent(fixture.principal.id, namespace.id, agentId as string);
+  grantRole(fixture.state, member.principal.id, {
+    id: "gateway-source-deploy",
+    namespaceId: namespace.id,
+    permissions: { agent: ["read", "operate", "deploy"] },
+    resource: { kind: "agent", id: agent.id },
+  });
+  fixture.state.identities.push({
+    kind: "service_principal",
+    id: agent.servicePrincipalId,
+    namespaceId: namespace.id,
+  });
+  grantRole(fixture.state, agent.servicePrincipalId, {
+    id: "gateway-source-agent-harness",
+    namespaceId: namespace.id,
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: modelKey.id },
+  });
+  fixture.state.bindings.splice(fixture.state.bindings.indexOf(sourceGrant), 1);
+  assertApiError(
+    await request(member.app, "POST", `${active.agents}/${agent.id}/deploy`),
+    403,
+    "FORBIDDEN",
+  );
+  assert.deepEqual(
+    fixture.auditSink.events.findLast((event) => event.kind === "authorization_denial")
+      ?.authorization?.resource,
+    source.ref,
+  );
+  fixture.state.bindings.push(sourceGrant);
+  const deploy = () => request(fixture.app, "POST", `${active.agents}/${agent.id}/deploy`);
+  // The administrator's Source grant does not authorize the Agent service principal.
+  const agentDenied = await deploy();
+  assert.equal(agentDenied.status, 403);
+  const agentDenial = fixture.auditSink.events.findLast(
+    (event) => event.kind === "authorization_denial",
+  );
+  assert.equal(agentDenial?.reasonCode, "AGENT_PRINCIPAL_NOT_AUTHORIZED");
+  assert.deepEqual(agentDenial?.details?.resource, source.ref);
+  grantRole(fixture.state, agent.servicePrincipalId, {
+    id: "gateway-source-agent-source",
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: source.id },
+  });
+  const admitted = await deploy();
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  assert.equal(JSON.stringify(admitted.body).includes("gatewayTokenServiceInstanceId"), false);
+  const revisionId = asRecord(admitted.data)?.id;
+  const revision = await fixture
+    .controller()
+    .getRevision(fixture.principal.id, namespace.id, agent.id, revisionId as string);
+  assert.equal(revision.gatewayTokenServiceInstanceId, active.instanceId);
+  assert.equal(
+    revision.secretDriverId,
+    undefined,
+    "Source-only Gateway bindings do not select a Secret Driver",
+  );
+  const retained = await request(
+    fixture.app,
+    "DELETE",
+    `/namespaces/${namespace.id}/credential-sources/${source.id}`,
+  );
+  assert.equal(retained.status, 409, JSON.stringify(retained.body));
+  assert.deepEqual(
+    Object.values(revision.secretBindings ?? {}).map(({ source: ref }) => ref),
+    [source.ref, source.ref],
+  );
+  assert.equal(
+    revision.credentialSources,
+    undefined,
+    "Gateway reuse does not create a Harness or Proxy binding",
+  );
+  // Simulate the Worker's publication through the real state transition, then admit a queued
+  // successor. The API must request withdrawal for both revisions that can hold a Gateway copy.
+  const published = await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
+  );
+  assert.equal(published?.activeRevisionId, revision.id);
+  const successor = await deploy();
+  assert.equal(successor.status, 202, JSON.stringify(successor.body));
+  const successorId = asRecord(successor.data)?.id as string;
+  const withdrawn = await request(
+    fixture.app,
+    "POST",
+    `${active.agents}/${agent.id}/credential-sources/${source.id}/withdraw`,
+  );
+  assert.equal(withdrawn.status, 202, JSON.stringify(withdrawn.body));
+  assert.equal(asRecord(withdrawn.data)?.state, "pending");
+  for (const id of [revision.id, successorId]) {
+    const record = await fixture.platformState.read((view) =>
+      view.credentialSources.findCredentialWithdrawal(namespace.id, id, source.id),
+    );
+    assert.equal(record?.state, "pending");
+  }
+
+  const slackBody = {
+    kind: "agent",
+    values: {
+      channels: {
+        slack: {
+          enabled: true,
+          botToken: { source: "env", provider: "default", id: "CUSTOM_BOT" },
+        },
       },
     },
+    secretBindings: { CUSTOM_BOT: { source: source.ref } },
+  };
+  // Slack uses the same exact Source grant as any other explicit Gateway binding.
+  fixture.state.bindings.splice(fixture.state.bindings.indexOf(sourceGrant), 1);
+  assertApiError(
+    await request(member.app, "POST", active.configurations, { body: slackBody }),
+    403,
+    "FORBIDDEN",
+  );
+  assert.deepEqual(
+    fixture.auditSink.events.findLast((event) => event.kind === "authorization_denial")
+      ?.authorization?.resource,
+    source.ref,
+  );
+  fixture.state.bindings.push(sourceGrant);
+  const slack = await request(member.app, "POST", active.configurations, {
+    body: slackBody,
   });
+  assert.equal(slack.status, 201, JSON.stringify(slack.body));
+  assert.ok(Check({ SafeJsonValue: JsonValue }, ConfigurationResponse, slack.body));
+  assert.deepEqual(
+    asRecord(asRecord(asRecord(slack.data)?.secretBindings)?.CUSTOM_BOT)?.source,
+    source.ref,
+  );
+  // Disabled account inputs are still ordinary explicit Gateway bindings.
+  const disabledSlack = await request(fixture.app, "POST", active.configurations, {
+    body: {
+      kind: "agent",
+      values: {
+        channels: {
+          slack: {
+            enabled: true,
+            accounts: {
+              inactive: {
+                enabled: false,
+                botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+              },
+            },
+          },
+        },
+      },
+      secretBindings: { SLACK_BOT_TOKEN: { source: source.ref } },
+    },
+  });
+  assert.equal(disabledSlack.status, 201, JSON.stringify(disabledSlack.body));
+
+  const unsupported = await setup(false);
+  const unsupportedConfiguration = await request(
+    unsupported.fixture.app,
+    "POST",
+    unsupported.configurations,
+    {
+      body: {
+        ...slackBody,
+        values: { ...unsupported.values, ...slackBody.values },
+        secretBindings: {
+          ...unsupported.bindings,
+          CUSTOM_BOT: { source: unsupported.source.ref },
+        },
+      },
+    },
+  );
+  assert.equal(unsupportedConfiguration.status, 201, JSON.stringify(unsupportedConfiguration.body));
+  const unsupportedAgent = await unsupported.createAgent(
+    asRecord(unsupportedConfiguration.data)?.id as string,
+  );
+  assert.equal(unsupportedAgent.status, 201, JSON.stringify(unsupportedAgent.body));
+  const unsupportedId = asRecord(unsupportedAgent.data)?.id as string;
+  const unsupportedPrivateAgent = await unsupported.fixture
+    .controller()
+    .getAgent(unsupported.fixture.principal.id, unsupported.namespace.id, unsupportedId);
+  unsupported.fixture.state.identities.push({
+    kind: "service_principal",
+    id: unsupportedPrivateAgent.servicePrincipalId,
+    namespaceId: unsupported.namespace.id,
+  });
+  grantRole(unsupported.fixture.state, unsupportedPrivateAgent.servicePrincipalId, {
+    id: "gateway-source-unsupported-harness",
+    namespaceId: unsupported.namespace.id,
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: unsupported.modelKey.id },
+  });
+  const ownerReads = t.mock.method(unsupported.fixture.secretDriver.privateSecrets, "withValue");
+  const unsupportedDeploy = await request(
+    unsupported.fixture.app,
+    "POST",
+    `${unsupported.agents}/${asRecord(unsupportedAgent.data)?.id}/deploy`,
+  );
+  assert.equal(unsupportedDeploy.status, 409, JSON.stringify(unsupportedDeploy.body));
+  assert.match(responseError(unsupportedDeploy).message, /do not support Gateway Source delivery/);
+  assert.equal(ownerReads.mock.callCount(), 0, "unqualified delivery must not read Source custody");
+});
+
+test("credential source writes commit one value-free audit row each", async (t) => {
+  const fixture = await createFixture();
   const namespace = await bootstrapNamespace(fixture);
-  const gateway = createRecordingCredentialGateway();
-  fixture.controller().registerDriver(gateway);
-  fixture.controller().selectDriver("credential_gateway", gateway.id);
+  const controller = fixture.controller();
+  const store = fixture.secretDriver.privateSecrets;
+  const instanceId = await controller.activateTokenServiceInstance("audit-owner", randomUUID());
+  const owner = new OCCTokenServiceDriver(
+    "audit-owner",
+    controller.installation.id,
+    store,
+    instanceId,
+    fixture.platformState,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  // Observe the real private store reference so deletion proves custody is removed, not merely
+  // that the public Source record has disappeared.
+  const storeCreate = t.mock.method(store, "create");
   const value = `credential-source-value-${randomUUID()}`;
   const rotated = `credential-source-rotated-${randomUUID()}`;
-  const secret = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
-    schema: SecretResponse,
-    body: { name: "Source key", value },
-  });
-  assert.equal(secret.status, 201);
   const sources = `/namespaces/${namespace.id}/credential-sources`;
-
   const created = await request(fixture.app, "POST", sources, {
     schema: CredentialSourceResponse,
-    body: { name: "openai", type: "openai", secrets: { api_key: secret.data.ref } },
+    body: { name: "audit source", type: "static", secret: value },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: value });
-  const updatedSecret = await request(
-    fixture.app,
-    "PATCH",
-    `/namespaces/${namespace.id}/secrets/${secret.data.id}`,
-    { body: { value: rotated } },
-  );
-  assert.equal(updatedSecret.status, 200);
+  assert.equal(storeCreate.mock.calls.length, 1);
+  const custodyRef = storeCreate.mock.calls[0]!.arguments[0];
+  const source = {
+    sourceRef: created.data.ref,
+    tokenServiceInstanceId: instanceId,
+  };
+  const resolve = async () =>
+    (await owner.resolveCredential(source, AbortSignal.timeout(5_000))).credential;
+  assert.equal(await resolve(), value);
+
   const updated = await request(fixture.app, "PATCH", `${sources}/${created.data.id}`, {
-    body: {},
+    body: { secret: rotated },
   });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: rotated });
-  // Past the registration fence: no timed-out registration could still create a gateway copy.
-  now += 71_000;
+  assert.equal(await resolve(), rotated);
   const deleted = await request(fixture.app, "DELETE", `${sources}/${created.data.id}`);
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
-  assert.equal(gateway.stored.has(created.data.id), false);
+  await assert.rejects(
+    store.withValue(custodyRef, async () => undefined),
+    /does not exist/,
+  );
 
   const mutations = fixture.auditSink.events.filter(
-    (event) => event.kind === "mutation" && event.resource.kind === "credential_source",
+    (event) =>
+      event.kind === "mutation" &&
+      event.outcome === "success" &&
+      event.resource.kind === "credential_source" &&
+      !event.action.endsWith(".started"),
   );
   assert.deepEqual(
     mutations.map((event) => [event.action, event.resource]),
     ["create", "update", "delete"].map((verb) => [
       `openclaw.credential_sources.${verb}`,
-      { kind: "credential_source", id: created.data.id, namespaceId: namespace.id },
+      {
+        kind: "credential_source",
+        id: created.data.id,
+        namespaceId: namespace.id,
+      },
     ]),
   );
   const audit = JSON.stringify(fixture.auditSink.events);

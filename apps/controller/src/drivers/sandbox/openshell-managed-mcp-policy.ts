@@ -39,14 +39,24 @@ export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonl
       {
         ...endpoint,
         ports: [port],
-        rules: managedMcpRequests(toolNames).map(({ method, toolName }) => ({
-          allow: {
-            method,
-            ...(toolName !== undefined && { params: { name: { glob: toolName } } }),
-          },
-        })),
+        rules: managedMcpRequests(toolNames).map(managedMcpRule),
       },
     ],
+  };
+}
+
+export function managedMcpRule({
+  method,
+  toolName,
+}: {
+  readonly method: string;
+  readonly toolName?: string;
+}) {
+  return {
+    allow: {
+      method,
+      ...(toolName !== undefined && { params: { name: { glob: toolName } } }),
+    },
   };
 }
 

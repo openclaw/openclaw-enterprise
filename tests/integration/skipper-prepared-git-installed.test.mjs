@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import { isRecord, record } from "../helpers/egress-observation-values.ts";
 import assert from "node:assert/strict";
 import { request } from "node:http";
@@ -57,7 +58,7 @@ test(
     } = await prepareComputeSkipper(t, input, git.repositoryRef);
     const current = record(await api("GET", agentPath));
     assert.equal(current.activeRevisionId, revision.id);
-    assert.deepEqual(current.repositoryBindings, [
+    assert.deepEqual(repositoryAccessSelections(current.repositoryAccess), [
       { repositoryRef: git.repositoryRef, profile: "git-write" },
     ]);
     const sessions = await query(
@@ -241,7 +242,7 @@ test(
       assert.ok(permits > 0);
       const removed = await api("PATCH", agentPath, {
         configurationId: current.configurationId,
-        repositoryBindings: [],
+        repositoryAccess: { defaultProfile: "git-write", repositories: [] },
       });
       assert.equal(Object.hasOwn(record(removed), "repositoryBindings"), false);
       assert.ok(isRecord(removed));
@@ -308,7 +309,7 @@ test(
 
       const bound = record(await api("GET", agentPath));
       assert.equal(bound.activeRevisionId, revision.id);
-      assert.deepEqual(bound.repositoryBindings ?? [], []);
+      assert.deepEqual(repositoryAccessSelections(bound.repositoryAccess) ?? [], []);
       const label = "fresh-authenticated-fetch-after-effective-withdrawal";
       await sendScript(fetchAfterWithdrawalCommand(dir, 401), label);
       const denied = await witness("/evidence");

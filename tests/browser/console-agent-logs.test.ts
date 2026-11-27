@@ -21,7 +21,7 @@ import type {
   PermissionAction,
   SandboxLogLine,
 } from "../../packages/contracts/src/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import {
   authorizationDenials,
   createConsoleAppFixture,
@@ -349,6 +349,64 @@ for (const viewport of [
       true,
     );
   });
+
+  test(`the first Logs response keeps focus on the version chooser at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+    const marker = "first log output after moving focus";
+    computeDriver.state.lines = [line(1, marker)];
+    const { page } = await newPage(t, fixture, { context: { viewport, reducedMotion: "reduce" } });
+    await trackSettledFetches(page);
+    // Hold the first-view deadline until the successful response can be released.
+    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.runFor(100);
+
+    const logPath = revisionLogsPath(logs);
+    const firstLog = await holdRequests(t, page, (url) => url.pathname === logPath, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
+    const chooser = page.getByRole("combobox", { name: "Viewing version" });
+    const chooserFocused = () =>
+      chooser.evaluate((node) => node === globalThis.document.activeElement);
+
+    await logsTab.focus();
+    await page.keyboard.press("Enter");
+    assert.equal((await firstLog.requested)?.status(), 200);
+    assert.equal(await logsTab.getAttribute("aria-selected"), "true");
+    assert.equal(await logsTab.evaluate((node) => node.matches(":focus")), true);
+    for (let steps = 0; steps < 12 && !(await chooserFocused()); steps += 1) {
+      await page.keyboard.press("Shift+Tab");
+    }
+    assert.equal(await chooserFocused(), true, "Shift+Tab moved focus to the version chooser");
+    await page.locator(".agent-logs-pending").waitFor({ state: "attached" });
+    assert.equal(await settledFetches(page, logPath), 0);
+    const scrollBefore = await page.evaluate(() => globalThis.scrollY);
+
+    firstLog.release();
+    await page.getByRole("log", { name: "Runtime log output" }).getByText(marker).waitFor();
+    await waitForIdleFetches(page);
+    // Advance past the post-render frame and timer. Reduced motion makes any scroll immediate.
+    await page.clock.runFor(100);
+
+    assert.equal(await logsTab.getAttribute("aria-selected"), "true");
+    assert.equal(
+      await chooserFocused(),
+      true,
+      "the first Logs response moved focus from the chooser",
+    );
+    assert.equal(await page.evaluate(() => globalThis.scrollY), scrollBefore);
+  });
 }
 
 test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
@@ -471,6 +529,33 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   assert.equal(await strip.evaluate((node) => node.isConnected), true);
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");
+
+  // Arrow focus stays on Deployment when the strip narrows, while Logs remains selected.
+  await resize(1440, 900);
+  const logs = page.getByRole("tab", { name: "Logs", exact: true });
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  await logs.press("ArrowLeft");
+  assert.equal(await deployment.evaluate((tab) => tab === document.activeElement), true);
+  await resize(390, 844);
+  assert.equal(await logs.getAttribute("aria-selected"), "true");
+  const geometry = await deployment.evaluate((tab) => {
+    const tabList = tab.closest(".agent-tabs")!;
+    const stripBounds = tabList.getBoundingClientRect();
+    const bounds = tab.getBoundingClientRect();
+    const style = getComputedStyle(tabList);
+    return {
+      focused: tab === document.activeElement && tab.matches(":focus-visible"),
+      before: bounds.left - stripBounds.left,
+      after: stripBounds.right - bounds.right,
+      fadeBefore: Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-before")),
+      fadeAfter: Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-after")),
+    };
+  });
+  assert.equal(geometry.focused, true);
+  assert.ok(geometry.fadeBefore > 0 && geometry.fadeAfter > 0, "both strip edges fade");
+  // The outline is inset, so keeping the whole button clear of the fades also clears its ring.
+  assert.ok(geometry.before >= geometry.fadeBefore - 1, "Deployment clears the leading fade");
+  assert.ok(geometry.after >= geometry.fadeAfter - 1, "Deployment clears the trailing fade");
 });
 
 test("the Logs tab shows runtime status, sanitized output and follows with a cursor", async (t) => {
@@ -806,7 +891,7 @@ test("the log message column stays readable beside the version list", async (t) 
 // cards at about 265 px each beside the version list, Pod names and container states wrapping
 // over 3-4 lines next to about 280 px of blank strip (finding 2100, at 1440 on a live install).
 // Here the strip is a little narrower, so the old layout leaves that gap from 1600 px.
-test("runtime Pod cards fill the status strip at desktop and phone widths", async (t) => {
+test("runtime Pod cards fill the status strip and pair status facts on wide desktop cards", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.harnessPod = { ready: true };
   const { page } = await newPage(t, fixture);
@@ -814,6 +899,7 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
   const strip = page.locator(".runtime-strip");
   await strip.getByRole("heading", { name: "Agent (Harness)" }).waitFor();
   await strip.getByRole("heading", { name: "Gateway" }).waitFor();
+  const gateway = strip.getByRole("article", { name: /^Gateway Pod / });
   for (const width of [1440, 1600, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const { row, tracks, cards } = await strip.evaluate((node) => {
@@ -844,6 +930,28 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
         `cards end ${row.right - last.right}px before the strip's edge at ${width}px`,
       );
     }
+    const facts = await gateway.locator("dt").evaluateAll((terms) =>
+      terms.map((term) => ({
+        label: term.textContent,
+        top: term.getBoundingClientRect().top,
+        valueTop: term.nextElementSibling!.getBoundingClientRect().top,
+      })),
+    );
+    for (const { label, top, valueTop } of facts) {
+      assert.equal(top, valueTop, `${label} and its value share a row at ${width}px`);
+    }
+    const factRows = [...Map.groupBy(facts, ({ top }) => top).values()];
+    assert.deepEqual(
+      factRows.map((row) => row.map(({ label }) => label)),
+      width === 390
+        ? [["Phase"], ["Ready"], ["Container"], ["Restarts"], ["State"], ["Age"]]
+        : [
+            ["Phase", "Ready"],
+            ["Container", "Restarts"],
+            ["State", "Age"],
+          ],
+      `Gateway status rows at ${width}px`,
+    );
   }
 });
 

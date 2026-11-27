@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-23"
-last_updated_session: "authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80"
+updated: "2026-11-26"
+last_updated_session: "authoring-run/7d89351c-291e-4e5a-828d-3c7c81cdb253"
 ---
 
 # Agent sandbox policy flow
@@ -13,7 +13,7 @@ denials and recommendations.
 
 ## Entry Points
 
-- Trigger: console Policy denials tab or `occ agent policy`.
+- Trigger: [Repositories](../guides/topics/agent-sandbox-policy.md#repository-access), Policy denials or `occ agent policy`.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: ready Namespace, active Agent, exact grants, editing enabled for
@@ -64,38 +64,35 @@ Installation ceiling and Sandbox wildcard and range support. Preview writes noth
 Validation names failed fields and checks. Stale or denied requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
 
-`packages/occ/src/agent-deployment-admission.ts:admitModelCredentialPolicy` matches
-one grant against the approved inference host/port, checks the ceiling, and
-records separate network and method/path injection policies in the revision ([status](../reference/credential-sources.md#implementation-status)).
+Model admission uses saved grants or derives exact first-deployment preset
+requests when the Installation ceiling allows the stock executable. Revisions
+store separate network and injection policies. [Source status](../reference/credential-sources.md#implementation-status)
 
 `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
 Legacy protected execution rejects nonempty additions at save, deploy, and
 live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
-A repository-only Proxy permits a model exception with no repositories and one ready
-Gateway static Harness Source. Managed revisions block nonempty
-edits and live apply. Protected dedicated Codex admits the Sandbox-approved
+Managed credential revisions block live policy application. Protected dedicated Codex admits the Sandbox-approved
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
 version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
-Both protected Codex compilers validate the revision artifact map.
-`openshell-codex-artifacts.ts` excludes ambient defaults. The Sandbox checks
-workspace enrollment against the validated Agent-owned setup binding and returns
-the immutable policy in `SandboxResourceRef.proxyWiring`. The proxy checks the
-map, auxiliary rule and loaded policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
-requires permissions and Namespace opt-in. Admission passes saved or deployed
-`repositoryCredentials`. Binding, deploy and provisioning refuse additions or
-defaults targeting `github.com`, its subdomains or IP addresses. Deploy and
-binding-preserving updates check SandboxPolicy `read` before naming saved additions.
+Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
+excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
+immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
+policy. Binding, deploy and provisioning reject general network grants targeting
+`github.com`, its subdomains or IP addresses when protected Git owns the route.
 
-[`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds repository rules to the credential-only Provider. OpenShell alone enforces
-Git, issue and PR reads and [PR creation](../reference/repository-credentials/access-levels.md#pull-request-creation).
-The Git middleware selects no admitted host, so no OCE service is in the request
-path. Request bodies are
-not inspected ([known limits](../reference/repository-credentials/access-levels.md#known-limits)).
+`packages/occ/src/agent-deployment-admission.ts:prepareGitHubRepository` refuses
+a separate repository network policy before Source enrollment. OCC derives
+Repository grants from Agent selections, the registry, the repository ceiling,
+and verified Source identities. `admitCredentialPolicy` saves public requests
+separately from credential injection when the Sandbox ceiling permits
+`/usr/bin/curl` to reach `api.github.com:443`. `openshell-staged-credential-policy.ts:stagedCredentialPolicies`
+enforces `GET /repos/{owner}/{repository}` for each covered grant. The Worker
+retains this public rule during Git Source withdrawal.
+[Public repository metadata](../reference/repository-credentials/access-levels.md#public-repository-metadata)
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -109,27 +106,19 @@ of pending applications. The Worker records the expected provider version
 and settles the application as `applied` or `failed`. Deleting the Agent
 removes its policy and exact IAM access.
 
-The [editor](../reference/sandbox-policies.md#repository-network-policy) shows grants
-and the Namespace ceiling. Save before deploy. Initial `[]` denies all. Omission
-retains grants without returning them. For `[]`, OCC checks SandboxPolicy read
-before lookup. A reader can withdraw after Driver loss with both lists empty.
+For the separate Sandbox policy list, omission preserves saved grants and an
+explicit `[]` denies all. OCC checks SandboxPolicy `read` before looking up the
+list for an empty PUT. PUT uses Read Committed to observe revocations during
+IAM lock waits. Live application refuses explicit repository lists.
 
-PostgreSQL saves an explicit list at Read Committed. The PUT starts that
-transaction before OCC waits for the IAM configuration lock, and the
-authorization checks see revocations committed during the wait.
-
-`apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
-uses the GET hint and Namespace limits. Refresh updates version and limits.
-Refresh and rejected saves preserve drafts while saved grants match. Otherwise, discard them. PUT validates the list and the editor checks
-the returned Agent, Namespace, version and grants. Confirm deny-all and withdrawal.
-After unscoped deployment, save policy on a new Agent before deploy. A compatible
-controller and Worker must stop an unreadable revision.
-
-Deployment rechecks the selected Repo scope, proxy and Driver identities across
-asynchronous validation before accessing credentials and inserting a revision.
-Migration 0087 binds the snapshot to the exact saved policy version, grants
-and identity. Older Workers refuse its reader marker. The Worker rechecks
-the policy before dispatch. An explicit list blocks live application.
+On the Source-backed path, an authorized operator edits Git access in the Agent
+draft. Removing the selections requests withdrawal from the active revision
+and leaves independently admitted model access in place. OCC and the Worker
+reject earlier unscoped Git history through `supportsScopedRepositoryHistory`.
+A supported standalone model-only history can add Git after Stop.
+Deployment rechecks the scope and enforcing Driver identities before saving
+the revision. Git uses a repository-scoped HTTPS credential helper with
+OpenShell's placeholder.
 
 ### 2. Freeze deployment or enqueue live application
 
@@ -273,6 +262,22 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-26 04:30: Trace public metadata routes derived from Repository grants. (authoring-run/7d89351c-291e-4e5a-828d-3c7c81cdb253 - 28b1973112c415befd20b168336bbfaa6cbc09fb)
+
+- 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
+
+- 2026-11-23 20:29: Trace Agent API limits. (authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef - 9c5e29d947)
+
+- 2026-11-23 22:52: Trace Agent action filters. (authoring-run/0fa0ac1a-8ca1-46b3-896e-de8b1a400b39 - e01544b5df)
+
+- 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
+
+- 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
+
+- 2026-11-23 18:58: Explain native REST grants. (authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9 - fc2ffba308)
+
+- 2026-11-23 17:24: Document scoped issue creation. (authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69 - c97a1ab0938f8aac3880ad68bc5feaccd118820a)
 
 - 2026-11-23: CLI file apply.
 

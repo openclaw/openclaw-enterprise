@@ -5,6 +5,7 @@ import {
   type Configuration,
   type ConfigurationDriver,
   type ConfigurationValidationOptions,
+  type HarnessExecutionMode,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
   type ResourceRef,
@@ -101,6 +102,7 @@ interface ConfigurationOperationsDependencies {
     secretBindings: SecretBindings,
   ) => void;
   readonly ownedSecretDriver: SecretOperations["ownedSecretDriver"];
+  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly nextIdentifier: (kind: "configuration") => string;
   readonly timestamp: () => string;
@@ -144,6 +146,21 @@ export function storedSecretBindings(input: unknown): SecretBindings {
   } catch {
     throw new ScopeViolationError(
       "Secret bindings require supported exact sources and non-reserved environment destinations.",
+    );
+  }
+}
+
+/** TokenService export is supported only by a separate Gateway workload. */
+export function requireDedicatedGatewaySources(
+  bindings: SecretBindings | undefined,
+  executionMode: HarnessExecutionMode,
+): void {
+  if (
+    executionMode !== "dedicated" &&
+    Object.values(bindings ?? {}).some(({ source }) => source.kind === "credential_source")
+  ) {
+    throw new ResourceStateConflictError(
+      "Gateway Credential Source bindings require dedicated execution.",
     );
   }
 }
@@ -660,13 +677,37 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     principalId: string,
     namespaceId: string,
     bindings: SecretBindings,
-  ): Promise<readonly Secret[]> {
+  ): Promise<{
+    readonly secrets: readonly Secret[];
+    readonly gatewayTokenServiceInstanceId?: string;
+  }> {
     const secrets = new Map<string, Secret>();
+    let gatewayTokenServiceInstanceId: string | undefined;
     for (const { source } of Object.values(bindings)) {
       if (source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Secret references cannot cross Namespaces.");
       }
       await authorize(principalId, "operate", source);
+      if (source.kind === "credential_source") {
+        const selected = await state.credentialSources.lockCredentialSource(namespaceId, source.id);
+        if (!selected) {
+          throw new ScopeViolationError(
+            "The Credential Source does not belong to the exact Namespace.",
+          );
+        }
+        if (
+          selected.ownerCapability !== "token_service" ||
+          selected.type !== "static" ||
+          selected.state !== "ready"
+        ) {
+          throw new ResourceStateConflictError(
+            "Gateway bindings require a ready static TokenService Credential Source.",
+          );
+        }
+        deps.ownedTokenServiceDriver(selected.tokenServiceInstanceId);
+        gatewayTokenServiceInstanceId = selected.tokenServiceInstanceId;
+        continue;
+      }
       const secret = await state.secrets.lockSecret(namespaceId, source.id);
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
@@ -674,7 +715,10 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
       deps.ownedSecretDriver(secret.driverId, () => new SecretBindingDriverError());
       secrets.set(secret.id, secret);
     }
-    return Object.freeze([...secrets.values()]);
+    return Object.freeze({
+      secrets: Object.freeze([...secrets.values()]),
+      ...(gatewayTokenServiceInstanceId === undefined ? {} : { gatewayTokenServiceInstanceId }),
+    });
   }
 
   return {

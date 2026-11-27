@@ -17,7 +17,7 @@ import {
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { grantConfiguredNamespaceRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
@@ -68,7 +68,7 @@ const ACCESS_FROM_PRESET =
 const MEMBER_CREDENTIAL_ACCESS =
   "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
 const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
+  "The Agent was created as a draft. Deploy it from its page to give it access to its model and channel credentials.";
 
 // Every console API answer, as "METHOD path status".
 function apiResponses(page: Page, origin: string) {
@@ -111,6 +111,10 @@ async function setup(t: TestContext) {
 // Start from the default Preset with the Namespace's model Secret and a manual model ID.
 async function fillDefaultPreset(page: Page, secret: SecretWire, name: string) {
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await fillDefaultPresetFields(page, secret, name);
+}
+
+async function fillDefaultPresetFields(page: Page, secret: SecretWire, name: string) {
   await page.getByLabel("Agent name", { exact: true }).fill(name);
   await selectSecret(page, "API key Secret", secret);
   const model = page.getByLabel("Model ID", { exact: true });
@@ -795,14 +799,23 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   const rolesPath = `${fixture.origin}/namespaces/${namespace.id}/iam/roles`;
   await page.route(rolesPath, unavailable);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
-  await fillDefaultPreset(page, secret, "Member Agent");
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   const retryPermissions = page.getByRole("button", {
     name: "Retry permission check",
     exact: true,
   });
   await waitForEnabled(retryPermissions);
+  const namespaceCapabilities = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/agent-capabilities`,
+  );
   await retryPermissions.click();
   await retryPermissions.waitFor({ state: "hidden" });
+  // The Namespace capability answer confirms this Preset uses a Secret. Until permission is
+  // known, the form cannot choose between the Secret and Credential Source paths.
+  assert.equal((await namespaceCapabilities).status(), 200);
+  await fillDefaultPresetFields(page, secret, "Member Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   // An outage is not a refusal: the grant is unconfirmed and can be retried (finding 2113).
   await page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED }).waitFor();
@@ -831,7 +844,7 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
 });
 
 const ADMINISTRATOR_GRANT_REQUEST = "req_00000000-0000-4000-8000-000000002543";
-const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} ${ADMINISTRATOR_ACCESS_DENIED} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
+const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} ${ADMINISTRATOR_ACCESS_DENIED} Retry credential access, or open the saved Agent and check access to its model and channel credentials. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
 
 test("an administrator's refused credential grant keeps the retry and the API's answer", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
@@ -968,21 +981,17 @@ test("a member without Secret create sees the inline Create Secret action disabl
   // A forced click skips the disabled check: choosing the action still opens nothing.
   await action.click({ force: true });
   assert.equal(await page.getByRole("dialog").count(), 0);
-  // The Configure Slack drawer's token fields get the same answer (finding 2451).
+  // Slack credentials use Credential Sources independently of the model Secret picker.
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Configure Slack" });
-  await drawer.getByLabel("Slack app token", { exact: true }).fill("no matching Secret");
-  const drawerAction = drawer.getByRole("option", {
-    name: `Create new Secret... ${denial}`,
-    exact: true,
-  });
-  await drawerAction.waitFor();
-  assert.equal(await drawerAction.getAttribute("aria-disabled"), "true");
-  // Its hints offer no Secret create either (finding 2483).
+  await drawer.getByLabel("Slack app token", { exact: true }).waitFor();
+  assert.equal(await drawer.getByText("Create new Secret...", { exact: true }).count(), 0);
   await drawer
-    .getByText("Choose existing Slack token Secrets before creating the Agent.", { exact: true })
+    .getByText(
+      "Choose ready static Credential Sources or add new credentials for the Slack bot and app tokens. An enabled Slack channel requires both tokens.",
+      { exact: true },
+    )
     .waitFor();
-  assert.equal(await drawer.getByText(/or create/).count(), 0);
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("POST ") && answer.includes("/secrets")),
     [],
@@ -1129,25 +1138,14 @@ test("Create Agent's Secret fields refuse a readable Secret the member cannot op
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByLabel("API key Secret", { exact: true }).press("Escape");
 
-  // The Slack token fields in the Channels drawer list both the same way, and its hint offers no
-  // Secret create.
+  // Namespace Secrets remain valid model inputs but never appear in Slack's Source pickers.
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Configure Slack" });
   for (const label of ["Slack app token", "Slack bot token"]) {
-    const option = await operateDeniedSecretOption(dialog, label, spare);
-    await option.click({ force: true });
-    await deniedCreateSecretOption(dialog, label, NEW_SECRET_OPERATE_DENIED);
-    await dialog.getByLabel(label, { exact: true }).press("Escape");
+    const picker = dialog.getByLabel(label, { exact: true });
+    await picker.waitFor();
+    assert.equal(await picker.locator(`option[value="${spare.id}"]`).count(), 0);
   }
-  await dialog
-    .getByText("Choose existing Slack token Secrets before creating the Agent.", { exact: true })
-    .waitFor();
-  assert.equal(
-    await dialog
-      .getByText("Secret selected. Apply channel settings, then Create Agent binds it.")
-      .count(),
-    0,
-  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
 
   // One answer served every field, and nothing was written.
@@ -1274,7 +1272,7 @@ test("a Secret created inline that the member cannot operate is not staged", asy
 // (finding 2492). Its operate is per Secret (one readable Secret is denied), so the choice is
 // listed disabled with the reason, and a typed key is refused before any write.
 test("a member whose Secret operate covers only some Secrets cannot save a typed model key", async (t) => {
-  const { fixture, namespace, spare, member, answerPath } = await operateSomeSetup(t);
+  const { fixture, namespace, member, answerPath } = await operateSomeSetup(t);
   const preset = await createStandardPreset(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
@@ -1330,27 +1328,10 @@ test("a member whose Secret operate covers only some Secrets cannot save a typed
   assert.equal((await failedRead).status(), 503);
   await refusal.waitFor();
   assert.deepEqual(writes(), []);
-  // While reads still fail, a Slack token field keeps the last answer's marks, and asks again
-  // rather than reusing the failed read.
-  const failedReads = () => answers.filter((answer) => answer === `GET ${answerPath} 503`).length;
-  await page.getByRole("button", { name: "Configure Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Configure Slack" });
-  const botToken = dialog.getByLabel("Slack bot token", { exact: true });
-  await operateDeniedSecretOption(dialog, "Slack bot token", spare);
-  await deniedCreateSecretOption(dialog, "Slack bot token", NEW_SECRET_OPERATE_DENIED);
-  await waitForCondition(async () => failedReads() >= 2, "the field reads the answer again");
-  await botToken.press("Escape");
-
   // An administrator grants Secret operate across the Namespace, which covers a new Secret too.
-  // The next answer read replaces the marks: the spare key is choosable again.
+  // The next preflight can save the typed model key.
   await page.unroute(answerUrl, unavailable);
   grantMember(fixture, "member-operate-some", [["operate", "secret"]]);
-  await botToken.fill(spare.name);
-  const spareOption = dialog.getByRole("option", { name: spare.name, exact: true });
-  await spareOption.waitFor();
-  assert.equal(await spareOption.getAttribute("aria-disabled"), null);
-  await botToken.press("Escape");
-  await dialog.getByRole("button", { name: "Cancel" }).click();
   // The retry reads the answer again, saves the key as a Secret, and Agent create binds it.
   const createdResponse = responseTo(
     page,

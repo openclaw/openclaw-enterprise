@@ -23,11 +23,10 @@ import {
   createControllerWorker,
   type ControllerWorkerOptions,
 } from "../../apps/controller/src/worker.ts";
-import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import type { createTestSecretDriver as runtimeSecretFixture } from "../helpers/secret-driver.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -41,7 +40,6 @@ interface FixtureDrivers {
   repoDriver?: InstallationRuntimeDrivers["repositoryPolicy"];
   pluginDriver?: NonNullable<InstallationRuntimeDrivers["pluginDrivers"]>[number] | undefined;
   sandboxDriver?: InstallationRuntimeDrivers["sandboxDriver"];
-  credentialGatewayDriver?: InstallationRuntimeDrivers["credentialGatewayDriver"];
 }
 
 type WorkerEventListener = NonNullable<ControllerWorkerOptions["emit"]>;
@@ -53,7 +51,6 @@ type WorkerStatementHook = (
 ) => void | Promise<void>;
 
 interface FixtureOptions extends Partial<FixtureDrivers> {
-  slackFetch?: typeof fetch;
   nativeAdmin?: boolean;
   nativeAdminDomain?: string;
   beforeWorkerStatement?: WorkerStatementHook;
@@ -160,7 +157,6 @@ function installationDrivers({
   repoDriver,
   pluginDriver,
   sandboxDriver,
-  credentialGatewayDriver,
 }: FixtureDrivers): InstallationRuntimeDrivers {
   return {
     // The fixture injects Drivers directly and omits loader-only definitions and a logging level.
@@ -176,22 +172,6 @@ function installationDrivers({
                 type: "github" as const,
                 configuration: { registryPath: "/unused/provisioning/registry.json" },
                 drivers: { repo: repoDriver.id },
-              },
-            ]),
-        ...(credentialGatewayDriver === undefined
-          ? []
-          : [
-              {
-                id: "provisioning-credential-gateway",
-                type: "openshell" as const,
-                configuration: {
-                  endpoint: "http://127.0.0.1:8080",
-                  insecureTransport: "network-policy" as const,
-                },
-                drivers: {
-                  sandbox: sandboxDriver!.id,
-                  credential_gateway: credentialGatewayDriver.id,
-                },
               },
             ]),
       ],
@@ -221,25 +201,13 @@ function installationDrivers({
                 configuration: {},
               },
             }),
-        ...(credentialGatewayDriver === undefined
-          ? {}
-          : {
-              credential_gateway: {
-                id: credentialGatewayDriver.id,
-                implementation: credentialGatewayDriver.implementation,
-                configuration: {},
-              },
-            }),
       },
     } as unknown as InstallationRuntimeDrivers["installation"],
     computeDriver,
     configurationDriver,
     secretDriver,
-    // This PostgreSQL workflow supplies an explicit Driver with mocked Slack
-    // transport. It does not prove Envoy availability or network enforcement.
-    channelDrivers: [{ provider: "slack", driver: new SlackChannelDriver(globalThis.fetch) }],
+    channelDrivers: [],
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-    ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     ...(repoDriver === undefined
       ? {}
       : {
@@ -307,20 +275,6 @@ export async function createProvisioningFixture<
     claimProvisioningWork,
   }: FixtureDependencies,
 ) {
-  // Keep real admission and Secret access; only Slack's external response is a fixture.
-  const originalFetch = globalThis.fetch;
-  context.mock.method(globalThis, "fetch", (async (url, init) => {
-    if (String(url) === "https://slack.com/api/auth.test") {
-      assert.match(
-        (init as { headers: { authorization: string } }).headers.authorization,
-        /^Bearer xoxb-/,
-      );
-      return options.slackFetch === undefined
-        ? Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" })
-        : options.slackFetch(url, init);
-    }
-    return originalFetch(url, init);
-  }) satisfies typeof originalFetch);
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
   const state = new PostgresPlatformState(pool);
   await ensureProvisioningBootstrap(context, state);
@@ -344,7 +298,6 @@ export async function createProvisioningFixture<
     repoDriver: options.repoDriver,
     pluginDriver: options.pluginDriver,
     sandboxDriver: options.sandboxDriver,
-    credentialGatewayDriver: options.credentialGatewayDriver,
   });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
   let nativeAdminSettings: Pick<PostgresDevelopmentConfig, "nativeAdmin" | "gatewayApiKeyPath"> = {

@@ -2,6 +2,49 @@
 
 TokenService owns a managed static Source and its credential. OCC controls who may create, bind, update, or delete it. This example uses an OpenAI model; see [implementation status](../credential-sources.md#implementation-status) for provider coverage and work still in progress.
 
+## Console
+
+Open **Credentials**, select a Namespace, and select **Create Credential Source**. Choose **OpenAI API key**, **Codex PAT**, **Static credential**, or an approved static Connection Template; then enter the Source name and write-only value. Plain static includes no model preset or Template. Creation and usable Template discovery require Credential Source `create` in the Namespace. If Template discovery fails for another reason, built-in choices remain available; the API checks permission and TokenService support on submission. A `409` can occur after custody begins. Refresh the inventory; if the Source is absent, ask an operator to check the credential owner before retrying. For OAuth choices, see [connect an account](../connection-templates.md#connect-an-account).
+
+In Create Agent, **Model credential** lists ready static model Sources with a matching preset and no Template association. The draft Credentials tab offers the same compatible Sources. Agent save checks exact Source `operate`; listing establishes only `read`. Console refuses unsupported configured OpenClaw destinations. For Codex, deployment checks the effective Harness destination. When using an OpenAI Source, if the Installation default differs, set the Harness destination override to Provider base URL `https://api.openai.com/v1` and Provider protocol **Responses**. A Codex PAT Source uses a fixed destination. When Console can read its public preset, it excludes the previous model provider override and disables new model provider overrides. If the Agent has an active revision, complete Stop before deploying a managed Source from the saved draft.
+
+## Native model requests
+
+### OpenAI API key
+
+On first deploy, a Dedicated Agent with no saved grant for the destination uses
+the preset’s exact requests if the Installation ceiling permits its stock executable.
+OpenClaw uses `/usr/local/bin/node`. Codex requires exactly one qualified Codex binary.
+For a custom OpenClaw runtime, save an exact grant for its actual executable.
+
+For the static OpenAI API-key preset, the temporary transport exception covers
+`POST api.openai.com:443/v1/responses`. Dedicated Codex with standalone web
+search also permits the fixed executable to send `POST api.openai.com:443/v1/alpha/search`.
+A matching plaintext request can receive the API key until native substitution
+enforces HTTPS.
+
+### Codex PAT
+
+The native Proxy has a temporary transport exception for manually enrolled and
+ServiceAccount-issued Codex PATs. It can inject the PAT into a matching plaintext
+HTTP request on port 443. When the Agent has no saved network rule, first deploy admits only the preset
+requests that the Installation ceiling permits for one stock Codex executable.
+All seven must be authorized. The PAT binding permits these seven method and path combinations:
+
+| Host              | Method | Path                                           |
+| ----------------- | ------ | ---------------------------------------------- |
+| `auth.openai.com` | GET    | `/api/accounts/v1/user-auth-credential/whoami` |
+| `chatgpt.com`     | GET    | `/backend-api/codex/models`                    |
+| `chatgpt.com`     | POST   | `/backend-api/codex/responses`                 |
+| `chatgpt.com`     | GET    | `/backend-api/wham/accounts/check`             |
+| `chatgpt.com`     | GET    | `/backend-api/wham/config/bundle`              |
+| `chatgpt.com`     | GET    | `/backend-api/wham/settings/user`              |
+| `chatgpt.com`     | GET    | `/backend-api/wham/usage`                      |
+
+Remove the exception once OpenShell enforces HTTPS during substitution and a
+native test verifies that a matching plaintext request cannot receive the PAT.
+OpenShell already [reports the transport scheme to middleware](https://github.com/ai-openshell/openshell/pull/4397).
+
 ## Register a source
 
 In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` with `credential_source:create`:
@@ -11,17 +54,35 @@ In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` wi
   "name": "Model access",
   "type": "static",
   "config": { "provider_preset": "openai" },
-  "secret": { "opaque": "<credential>" }
+  "secret": "<credential>"
 }
 ```
 
-`secret` is write-only and accepts one nonempty credential. Its field name does not grant destination authority. The optional `config.provider_preset` associates the Source with an approved provider; without it the Source cannot authorize a model destination. The response contains sanitized metadata, `ownerCapability: "token_service"`, and `secrets: {}`. OCC does not store a Namespace Secret reference or return the credential.
+To associate a Source with a Connection Template, supply `connectionTemplateId` in the POST. OCC checks create authority and requires a ready Namespace, then accepts a `static_bearer` Template available Installation-wide or in that Namespace. A malformed ID or unsupported version field returns `400`; an unavailable or foreign Template returns `404`; a different mode returns `409`. OCC rejects an invalid selection before TokenService takes custody.
 
-If the private-store write cannot be confirmed, registration can fail while leaving orphaned material. A failure after TokenService commits can leave a Source without its creator IAM grant. The private store cannot list orphaned material. See the [custody flow](../../flows/token-service-static-custody.md) for failure handling.
+Omit `connectionTemplateId` for a Source that uses a Harness provider preset, as in the example above. A Template-associated Source cannot also use `config.provider_preset`; POST or PATCH returns `409` before changing custody or configuration.
+
+`secret` is write-only and accepts one nonempty credential. Its field name does not grant destination authority. The optional `config.provider_preset` associates the Source with an approved provider; without it the Source cannot authorize a model destination. The response contains sanitized Source metadata. OCC does not store a Namespace Secret reference or return the credential.
+
+If the private-store write cannot be confirmed, registration can fail while leaving orphaned material. A failure after TokenService commits can leave a Source without its creator IAM grant. See the [OCC custody flow](../../flows/token-service-static-custody.md) for failure handling.
+
+### Preview OpenShell custody
+
+A development Installation can select `drivers.token_service: { id: openshell, configuration: {} }` and add `token_service: openshell` to the selected OpenShell Backend's `drivers`. Use the bundled Kubernetes Compute and OpenShell Sandbox and Credential Proxy. Configure one fixed HTTPS Gateway endpoint with authenticated management access. Direct Provider attachment uses that management connection. Configure separate operator mTLS only for authorized control-plane callers that need to read the credential.
+
+Use a Gateway that keeps its Provider records and credentials in its own database. OCC requires an active built-in `default` Workspace UUID and exactly one advertised credential driver: `openshell-driver-db-credstore` of type `openshell/openshell-driver-db-credstore`. TokenService rechecks the store identity before Workspace operations. The management identity must be able to read Gateway info and the default Workspace. PostgreSQL stores each Source's private Workspace and Provider IDs. TokenService stores the credential in that Provider, which Proxy attaches directly.
+
+The preview accepts static credentials, including Sources without a model preset, `openai` API keys, and `codex-pat` credentials. OAuth and GitHub App Sources and client registrations are unsupported. Custody uses one Provider per Source, independent of the consumer's environment. Admission accepts Bearer bindings and refuses other presentations. The Sandbox maps the Provider's native placeholder to the binding's environment at launch. One Sandbox cannot bind the same native Source more than once because OpenShell cannot issue distinct placeholders for those bindings. An earlier preview profile cannot be used or updated, but it can be withdrawn and its Source deleted.
+
+Console and hosted Apps discovery need to resolve a PAT outside the Sandbox. Configure separate operator mTLS before using those paths; native Agent attachment does not require credential export.
+
+Credentials must not exceed 8,192 UTF-8 bytes. TokenService rejects a larger credential before creating or changing Gateway resources. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
+
+At `5c41b32aa`, a live Dedicated OpenClaw Agent completed an OpenAI model turn; the run observed a synthetic replacement, confirmed withdrawal, and deleted the Source. Live Codex PAT authentication and Plugin execution with OpenShell custody remain unverified. [Verification record](https://github.com/openclaw/openclaw-enterprise/pull/7349)
 
 ## Deploy an Agent with the source
 
-This development integration is not production-qualified. Before starting, select OCC TokenService and an OpenShell Sandbox registration that also exposes `credential_proxy_delivery`; see [supported Driver selections](../drivers/selection.md#supported-selections). Selecting legacy `drivers.credential_proxy` makes the policy PUT below return `409`; omit that selection. This path admits exactly one Source and no repository credentials.
+Use a development Installation with the same TokenService that enrolled the Source. For OpenShell custody, keep the [preview selections](#preview-openshell-custody) above. For OCC custody, use OCC TokenService and an OpenShell Sandbox registration that exposes `credential_proxy_delivery`. Omit the legacy `drivers.credential_proxy` selection, which causes the policy PUT below to return `409`. This example uses one model Source and no Repository credentials. OpenShell custody accepts distinct static Sources but not GitHub App Sources, and one Sandbox can bind each native Source only once. OCC custody also supports eligible Git and OAuth Plugin bindings. See [current support](../credential-sources.md#implementation-status) and [supported Driver selections](../drivers/selection.md#supported-selections).
 
 This example covers dedicated OpenClaw. Codex requires a separate Configuration; see [implementation status](../credential-sources.md#implementation-status) for coverage.
 
@@ -74,7 +135,7 @@ This example covers dedicated OpenClaw. Codex requires a separate Configuration;
    ```
 
 3. The deploying caller needs `agent:deploy` and `credential_source:operate` on the Source. With OCC-managed transactional Native IAM, deployment creates a missing exact Agent service-principal grant when the caller can operate the Source. Otherwise, grant the Agent service principal `credential_source:operate` before deployment.
-4. Save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
+4. If the OpenClaw runtime uses a different executable, save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
 
    ```json
    {
@@ -98,14 +159,20 @@ The [implementation status](../credential-sources.md#implementation-status) list
 
 ## Read and list sources
 
-Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable.
+Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable. POST, PATCH, GET, and list return `connectionTemplateId` when a static association exists. They do not return a Template version. Updating the Template preserves the Source association; PATCH cannot change the associated ID. Plugin admission checks the Template's current version; see [implementation status](../credential-sources.md#implementation-status) for slot and delivery limits.
 
 ## Update a source
 
-Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset; `config: {}` removes it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Repeating the same preset while replacing the credential does not change policy. Credential replacement is allowed while an active Agent revision uses the Source. After TokenService commits the replacement, it notifies the selected Credential Proxy. The native Proxy updates an existing Provider; it does not create one if none exists. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE`; the Source remains ready and the replacement stays in custody. Use [manual credential delivery retry](../credential-sources.md#retry-credential-delivery) to deliver the retained replacement without sending the secret again. See the [lifecycle flow](../../flows/credential-source-lifecycle.md#deliver-source-updates) for execution.
+Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset. Use `config: {}` to remove it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. You can replace a credential while an active Agent revision uses the Source.
+
+For OCC custody, TokenService commits the replacement and notifies the Credential Proxy. The Proxy updates existing delivery Providers. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE` and the replacement stays in custody. Use [manual credential delivery retry](../credential-sources.md#retry-credential-delivery) to deliver it without resending the secret.
+
+For OpenShell custody, TokenService updates the Source's Workspace Provider. OpenShell propagates the change to attached Sandboxes. A successful manual push confirms that OCC can read the Provider metadata. Verify delivery by checking the running Sandbox. See the [Source update flow](../../flows/credential-source-lifecycle.md#deliver-source-updates).
 
 ## Delete a source
 
-DELETE requires `credential_source:delete` and returns `409` while blocking references remain. OCC marks the Source `deleting`. If an OpenShell Credential Proxy is selected, OCC asks it to retire its owned Provider and profile before TokenService removes the Source and credential from custody. If Proxy retirement fails, DELETE returns `503` and retains the Source and credential for retry. Success returns `204` after Source removal and completion audit. An uncertain removal can leave the Source in `deleting` for retry. If removal succeeds but the completion audit fails, the Source remains gone; retry returns `403` or `404` depending on the caller's remaining authority.
+DELETE requires `credential_source:delete` and returns `409` while blocking references remain. OCC marks the Source `deleting`. With OCC custody and the OpenShell Credential Proxy, the Proxy retires its delivery Provider and profile before TokenService removes the credential. If Proxy retirement fails, DELETE returns `503` and retains the Source and credential for retry. With OpenShell custody, TokenService deletes the Source's own Workspace Provider and profile.
+
+Success returns `204` after Source removal and completion audit. An uncertain removal can leave the Source in `deleting` for retry. If removal succeeds but the completion audit fails, the Source remains gone. A retry returns `403` or `404` depending on the caller's remaining authority.
 
 If an Installation restarts without the Proxy selected, deletion follows the no-Proxy path. A previously retained Provider copy can remain after Source deletion.

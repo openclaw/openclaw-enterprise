@@ -29,7 +29,6 @@ type StoredAgent = {
   plugins?: unknown;
   pluginApprovers?: unknown;
   repositoryAccess?: unknown;
-  repositoryBindings?: unknown;
   configurationReadError?: unknown;
 };
 export type StoredDeployment = Omit<
@@ -111,7 +110,6 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   agentPlugins?: AgentWire["plugins"];
   agentPluginApprovers?: AgentWire["pluginApprovers"];
   repositoryAccess?: AgentWire["repositoryAccess"];
-  repositoryBindings?: AgentWire["repositoryBindings"];
   workspaceFiles?: Readonly<Record<string, string>>;
   pluginCapabilities?: { driver: unknown };
   policyState?: string;
@@ -123,6 +121,7 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   deploymentLastAttempt?: NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"];
   candidateDeploymentWarnings?: AgentDeploymentStatusWire["warnings"];
   candidateActivates?: boolean;
+  candidateFailsOnPoll?: true;
   emptyAgents?: boolean;
   unreadableAgentConfiguration?: string;
   unreadableRevisionConfiguration?: string;
@@ -150,12 +149,6 @@ function property(value: unknown, key: string): unknown {
 }
 function optionalProperty(value: unknown, key: string): unknown {
   return value === null || value === undefined ? undefined : property(value, key);
-}
-function repositoryBindings(value: unknown): readonly unknown[] {
-  if (!Array.isArray(value)) {
-    throw new TypeError("Invalid preview repository bindings");
-  }
-  return value;
 }
 function spreadProperties(value: unknown): Record<string, unknown> {
   const boxed: unknown = Object(value);
@@ -271,9 +264,6 @@ export function createAgentLifecycle(
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
-    ...(scenario.repositoryBindings
-      ? { repositoryBindings: structuredClone(scenario.repositoryBindings) }
-      : {}),
   };
   for (const [name, content] of Object.entries(scenario.workspaceFiles ?? {})) {
     files.set(`${agent.id}/${name}`, content);
@@ -343,20 +333,29 @@ export function createAgentLifecycle(
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
       ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
-      ...(optionalProperty(owner.repositoryBindings, "length")
+      ...(isRecord(owner.repositoryAccess) &&
+      Array.isArray(owner.repositoryAccess.repositories) &&
+      owner.repositoryAccess.repositories.length
         ? {
             repositoryCredentials: {
               driver: { id: "github-demo", implementation: "github" },
               deadlineWallMs: Date.parse(createdAt) + 3600000,
-              bindings: repositoryBindings(owner.repositoryBindings).map((binding) => ({
-                ...spreadProperties(binding),
-                backendId: "github-demo",
-                grant: {
-                  providerInstanceId: "github-demo",
-                  repositoryId: `demo-${property(binding, "repositoryRef")}`,
-                  grantId: `demo-${property(binding, "repositoryRef")}-${property(binding, "profile")}`,
-                },
-              })),
+              bindings: owner.repositoryAccess.repositories.map((binding: unknown) => {
+                const repositoryRef = property(binding, "repositoryRef");
+                const profile =
+                  optionalProperty(binding, "profile") ??
+                  property(owner.repositoryAccess, "defaultProfile");
+                return {
+                  repositoryRef,
+                  profile,
+                  backendId: "github-demo",
+                  grant: {
+                    providerInstanceId: "github-demo",
+                    repositoryId: `demo-${repositoryRef}`,
+                    grantId: `demo-${repositoryRef}-${profile}`,
+                  },
+                };
+              }),
             },
           }
         : {}),
@@ -441,8 +440,8 @@ export function createAgentLifecycle(
             ? deploymentError(candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
-        // The next status poll records success and selects v7 for service.
-        ...(scenario.candidateActivates ? { reads: 0 } : {}),
+        // The first read is pending, and the next poll records the configured outcome.
+        ...(scenario.candidateActivates || scenario.candidateFailsOnPoll ? { reads: 0 } : {}),
       });
     }
   }
@@ -461,7 +460,7 @@ export function createAgentLifecycle(
     delete agent.harnessAuth;
     delete agent.plugins;
     delete agent.pluginApprovers;
-    delete agent.repositoryBindings;
+    delete agent.repositoryAccess;
     agent.configurationReadError = {
       code: "SAVED_CONFIGURATION_UNREADABLE",
       field: scenario.unreadableAgentConfiguration,
@@ -732,10 +731,18 @@ export function createAgentLifecycle(
         }
       }
       if (deployment.reads !== undefined && ++deployment.reads > 1) {
-        deployment.status = "succeeded";
+        delete deployment.reads;
         deployment.progress = null;
-        saved.desiredRuntimeState = "running";
-        saved.activeRevisionId = deployment.deploymentId;
+        if (scenario.candidateFailsOnPoll && deployment.deploymentId === candidateRevisionId) {
+          deployment.status = "failed";
+          deployment.error ??= deploymentError(
+            revisions.get(candidateRevisionId)?.createdAt ?? createdAt,
+          );
+        } else {
+          deployment.status = "succeeded";
+          saved.desiredRuntimeState = "running";
+          saved.activeRevisionId = deployment.deploymentId;
+        }
       }
       const { reads: _reads, cleanupReads: _cleanupReads, ...status } = deployment;
       return response(status);

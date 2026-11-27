@@ -15,8 +15,14 @@ export interface RequiredPermission {
     | "provisioning_work"
     | "gateway_managed_mode_disabled"
     | "gateway_managed_mode_changed"
+    | "github_app_client_selection"
+    | "github_app_source_for_deployment"
+    | "github_app_source_missing"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
+    | "selected_plugin_source"
+    | "managed_plugin_discovery"
+    | "plugin_source_choices"
     | "read_logs_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
@@ -60,10 +66,8 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ];
     case "recoverAgentFirstDeployment":
       return [requirement("deploy", "agent"), requirement("read", "configuration")];
-    case "disconnectNamespaceConnection":
+    case "deleteCredentialSource":
       return [primary("requested", "unless_consent_owner")];
-    case "listNamespaceConnections":
-      return [primary(), requirement("read", "credential_source", "each_returned")];
     case "getAgentSandboxPolicy":
     case "getAgentSandboxRecommendations":
     case "validateAgentSandboxPolicy":
@@ -87,10 +91,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         requirement("administer", "installation", "requested", "existing_namespace"),
       ];
     case "createConfiguration":
-    case "updateConfiguration":
-    case "createCredentialSource":
-    case "updateCredentialSource": {
-      // Credential Source updates also operate on current references when they name no Secrets.
+    case "updateConfiguration": {
       const create = operationId.startsWith("create");
       return [
         primary(create ? "namespace" : "requested"),
@@ -98,16 +99,23 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ];
     }
     case "discoverAgentPlugins":
+      return [
+        primary("namespace"),
+        requirement("operate", "secret", "request_body", "selected_secret"),
+        requirement("operate", "credential_source", "request_body", "selected_plugin_source"),
+        requirement("read", "credential_source", "each_returned", "plugin_source_choices"),
+      ];
     case "discoverAgentPluginDetails":
       return [
         primary("namespace"),
         requirement("operate", "secret", "request_body", "selected_secret"),
+        requirement("operate", "credential_source", "request_body", "selected_plugin_source"),
       ];
     case "createSecret":
       return [primary("namespace")];
     case "lookupChannelDirectory":
       return [
-        requirement("operate", "secret", "request_body", "directory_lookup"),
+        requirement("operate", "credential_source", "request_body", "directory_lookup"),
         requirement("create", "agent", "namespace", "directory_lookup"),
         requirement("update", "agent", "request_body", "directory_lookup"),
         requirement("update", "configuration", "request_body", "directory_lookup"),
@@ -151,14 +159,27 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         requirement("operate", "secret", "requested", "bound_secret"),
       ];
     case "provisionAgentRuntimeCredentials":
-    case "getSavedAgentPluginPolicyCapabilities":
       return [primary(), requirement("read", "agent")];
+    case "getSavedAgentPluginPolicyCapabilities":
+      return [
+        primary(),
+        requirement("read", "agent"),
+        requirement("read", "credential_source", "each_returned", "plugin_source_choices"),
+      ];
     case "discoverSavedAgentPlugins":
+      return [
+        primary(),
+        requirement("read", "agent"),
+        requirement("operate", "secret", "requested", "authenticated_plugin_discovery"),
+        requirement("operate", "credential_source", "requested", "authenticated_plugin_discovery"),
+      ];
     case "discoverSavedAgentPluginDetails":
       return [
         primary(),
         requirement("read", "agent"),
         requirement("operate", "secret", "requested", "authenticated_plugin_discovery"),
+        requirement("operate", "credential_source", "requested", "authenticated_plugin_discovery"),
+        requirement("operate", "credential_source", "request_body", "managed_plugin_discovery"),
       ];
     case "diagnoseAgentDeployment":
     case "getAgentDeploymentRuntime":
@@ -207,7 +228,15 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         ),
       );
     }
+    if (operationId === "createAgent" || updating) {
+      permissions.push(
+        requirement("administer", "installation", "installation", "github_app_client_selection"),
+      );
+    }
     if (operationId === "validateAgentCreate") {
+      permissions.push(
+        requirement("operate", "credential_source", "request_body", "bound_credential_source"),
+      );
       return permissions;
     }
     if (provisioning) {
@@ -255,6 +284,13 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       permissions.push(
         requirement("manage_policy", "agent", "requested", "explicit_repository_network_policy"),
         requirement("update", "sandbox_policy", "requested", "explicit_repository_network_policy"),
+        requirement(
+          "operate",
+          "credential_source",
+          "requested",
+          "github_app_source_for_deployment",
+        ),
+        requirement("create", "credential_source", "namespace", "github_app_source_missing"),
       );
     }
     if (operationId === "deployAgentFirst") {
@@ -324,8 +360,8 @@ function permissionDescription(
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
       if (condition === "directory_lookup") {
-        if (resourceKind === "secret") {
-          return "Requires operate permission on the exact Secret named by secretId.";
+        if (resourceKind === "credential_source") {
+          return "Requires operate permission on the exact CredentialSource named by sourceId.";
         }
         if (action === "create") {
           return "Without an edit target, requires Agent create permission in the Namespace.";
@@ -341,6 +377,15 @@ function permissionDescription(
       if (condition === "gateway_managed_mode_changed") {
         return `Requires ${action} permission on the ${name} when the request changes the Agent's saved gatewayManagedMode setting.`;
       }
+      if (condition === "github_app_client_selection") {
+        return `Requires ${action} permission on the ${name} when selecting or changing the Agent's GitHub App Client.`;
+      }
+      if (condition === "github_app_source_for_deployment") {
+        return `Requires ${action} permission on the exact ${name} used for the Agent's saved GitHub App repository access.`;
+      }
+      if (condition === "github_app_source_missing") {
+        return `Requires ${action} permission on the ${name} collection when deployment needs to create a GitHub App Source.`;
+      }
       if (condition === "selected_secret") {
         return `Requires ${action} permission on the exact same-Namespace ${name} when a Secret reference is supplied.`;
       }
@@ -354,31 +399,28 @@ function permissionDescription(
         if (operationId === "updateConfiguration") {
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
         }
-        if (operationId === "createCredentialSource") {
-          return `Requires ${action} permission on each ${name} named in the request body secrets.`;
-        }
-        if (operationId === "updateCredentialSource") {
-          return `For a legacy Gateway update, requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
-        }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
       if (condition === "bound_credential_source") {
         if (operationId === "pushAgentCredentials") {
           return `Requires ${action} permission on each selected ${name} with an unwithdrawn Credential Proxy binding in the deployed Agent revision. OCC authorizes every selected Source before it begins delivery.`;
         }
+        if (operationId === "validateAgentCreate") {
+          return `Requires ${action} permission on each ${name} submitted at a Plugin connection.`;
+        }
         if (operationId === "createAgent") {
-          return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
+          return `Requires ${action} permission on each ${name} listed in credentialSources, named by a credential-source harnessAuth, or selected at a Plugin connection.`;
         }
         if (operationId === "updateAgent") {
-          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
+          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update. Submitting Plugin selections also checks current and submitted Plugin Sources; submitting credentialSources checks the selected Plugin Sources.`;
         }
-        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
+        return `Requires ${action} permission on each ${name} the Agent lists, names in harnessAuth, or selects at a Plugin connection.`;
       }
       if (condition === "saved_sandbox_policy_for_deployment") {
-        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions or an explicit repository network policy list, including an empty list.`;
+        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions, saved GitHub App repository access, or an explicit repository network policy list, including an empty list.`;
       }
       if (condition === "explicit_repository_network_policy") {
-        return `Requires ${action} permission on the exact ${name} when the Agent has an explicit repository network policy list, including an empty list.`;
+        return `Requires ${action} permission on the exact ${name} when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list.`;
       }
       if (condition === "saved_sandbox_policy_additions") {
         return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`;
@@ -387,7 +429,20 @@ function permissionDescription(
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
       }
       if (condition === "authenticated_plugin_discovery") {
-        return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
+        return `Requires caller and Agent ${action} permission on the bound ${name} when the selected Plugin Driver requires a discovery credential.`;
+      }
+      if (condition === "plugin_source_choices") {
+        const saved =
+          operationId === "getSavedAgentPluginPolicyCapabilities"
+            ? " A verified saved binding can identify its Source independently of those choices."
+            : "";
+        return `Credential choices include only ${name} resources with caller ${action} permission.${saved}`;
+      }
+      if (condition === "selected_plugin_source") {
+        return `Requires ${action} permission on the exact ${name} supplied for catalog or managed MCP discovery.`;
+      }
+      if (condition === "managed_plugin_discovery") {
+        return `Managed MCP discovery requires caller ${action} permission on the selected ${name}, or a currently validated saved Plugin binding with the Agent's ${action} grant.`;
       }
       if (condition === "read_logs_alternative") {
         return `Without read_logs, ${action} permission on the requested ${name} also admits the read.`;
@@ -423,7 +478,7 @@ function permissionDescription(
       operationId === "deployAgentFirst"
         ? "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. "
         : "";
-    return `${prefix}${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
+    return `${prefix}${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists or selects at a Plugin connection.`;
   }
   if (operationId === "pushAgentCredentials") {
     return `${description} The Agent service principal must still have operate permission on every selected CredentialSource.`;

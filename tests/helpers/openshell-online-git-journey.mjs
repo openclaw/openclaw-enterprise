@@ -59,7 +59,7 @@ export async function gitCommandBodies(t, pushRef) {
 export async function gitExpiryGateway(
   t,
   {
-    model,
+    model = "",
     workspace,
     sandbox,
     revisionId,
@@ -135,22 +135,24 @@ export async function gitExpiryGateway(
     retainedProfile.resource_version = "2";
   };
   const providers = {
-    [model]: {
-      type: modelSourceId ? model : "inference",
-      ...(platformProfile ? {} : { profile_workspace: workspace }),
-      metadata: {
-        workspace,
-        name: model,
-        id: "model-id",
-        resource_version: "7",
-        ...(modelSourceId && {
-          labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/credential-source-id": modelSourceId,
-          },
-        }),
+    ...(model && {
+      [model]: {
+        type: modelSourceId ? model : "inference",
+        ...(platformProfile ? {} : { profile_workspace: workspace }),
+        metadata: {
+          workspace,
+          name: model,
+          id: "model-id",
+          resource_version: "7",
+          ...(modelSourceId && {
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/credential-source-id": modelSourceId,
+            },
+          }),
+        },
       },
-    },
+    }),
   };
   if (supervisor) {
     // Stock attaches an endpointless runtime-files profile as well as the model.
@@ -430,10 +432,12 @@ export async function gitExpiryGateway(
           network_policies: {
             ...supervisor.policy.network_policies,
             [supervisor.gitRule.name]: supervisor.gitRule,
-            ["_provider_" + model.replaceAll("-", "_")]: {
-              name: "_provider_" + model.replaceAll("-", "_"),
-              endpoints: [{ host: "api.openai.com", port: 443 }],
-            },
+            ...(model && {
+              ["_provider_" + model.replaceAll("-", "_")]: {
+                name: "_provider_" + model.replaceAll("-", "_"),
+                endpoints: [{ host: "api.openai.com", port: 443 }],
+              },
+            }),
             ["_provider_" + supervisor.runtimeProvider.replaceAll("-", "_")]: {
               name: "_provider_" + supervisor.runtimeProvider.replaceAll("-", "_"),
             },

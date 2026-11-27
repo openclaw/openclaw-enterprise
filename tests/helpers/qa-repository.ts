@@ -13,7 +13,7 @@ import {
   REPOSITORY_CONTROL_SOCKET,
 } from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
-import type { deployQaAgentAndWait } from "./qa-installation.mjs";
+import type { deployQaAgentAndWait } from "./qa-agent-deployment.ts";
 import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,
@@ -1561,7 +1561,10 @@ export async function verifyQaRepository(
   }
   await f.api("PATCH", path, {
     configurationId: agent.configuration.id,
-    repositoryBindings: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],
+    },
   });
   let workFailure: unknown;
   let remoteEvidence: { commitSha?: string } | undefined;

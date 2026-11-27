@@ -941,18 +941,50 @@ test(
       }),
       { mode: 0o600 },
     );
-    const caIdentity: { uid?: unknown } = {};
+    const caSecret: { uid?: string } = {};
     context.after(async () => {
-      if (!caIdentity.uid) {
+      const caUid = caSecret.uid;
+      assert.ok(caUid, "CA Secret creation was not acknowledged");
+      const currentUid = await kubectl(
+        "get",
+        "secret",
+        caName,
+        "-n",
+        envoyNamespace,
+        "--ignore-not-found",
+        "--allow-missing-template-keys=false",
+        "-o",
+        "jsonpath={.metadata.uid}",
+      );
+      if (currentUid.trim() !== caUid) {
         return;
       }
-      const current = await resource("secret", caName, envoyNamespace).catch(() => undefined);
-      if (current && record(record(current).metadata).uid === caIdentity.uid) {
-        await kubectl("delete", "secret", caName, "-n", envoyNamespace, "--wait=false");
-      }
+      // The API must reject deletion if the Secret was replaced after the read.
+      const deleteOptions = join(tlsDirectory, "ca-secret-delete.json");
+      await writeFile(
+        deleteOptions,
+        JSON.stringify({ apiVersion: "v1", kind: "DeleteOptions", preconditions: { uid: caUid } }),
+        { mode: 0o600 },
+      );
+      await kubectl(
+        "delete",
+        `--raw=/api/v1/namespaces/${envoyNamespace}/secrets/${caName}`,
+        "-f",
+        deleteOptions,
+      );
     });
-    await kubectl("apply", "-f", caManifest);
-    caIdentity.uid = record(record(await resource("secret", caName, envoyNamespace)).metadata).uid;
+    // Only the exclusive create response can establish ownership of this Secret.
+    const created = record(JSON.parse(await kubectl("create", "-f", caManifest, "-o", "json")));
+    const { name, namespace, uid } = record(created.metadata);
+    assert.ok(
+      name === caName &&
+        namespace === envoyNamespace &&
+        typeof uid === "string" &&
+        uid.length > 0 &&
+        uid === uid.trim(),
+      "CA Secret create response did not identify the created Secret",
+    );
+    caSecret.uid = uid;
     const proxy = await createControlledChannelProxy(context);
     const peerProxy = await createControlledChannelProxy(context, {
       tls: (address) =>
@@ -978,6 +1010,7 @@ test(
     };
     const topology = await arrangeProductionTopology(context, "dedicated", slack, {
       ...selectedTopologyModelAuthentication(),
+      controlPlaneAuditEnabled: true,
       channelEgressCapacity: 2,
       channelEgress: {
         upstreamProxies: [
@@ -994,6 +1027,23 @@ test(
     const agentId = text(agent.id);
     const path = `/namespaces/${namespaceId}/agents/${agentId}`;
     const directRevisionId = text(record(topology.revision).id);
+    // The worker can replace a prepared Gateway after publishing the active revision.
+    // Wait for deployment completion before keeping a Pod name or inspecting retired slots.
+    const waitForDeployment = async (
+      request: typeof topology.request,
+      agentPath: string,
+      revisionId: string,
+    ) => {
+      await waitFor(`Gateway deployment ${revisionId} to finish`, async () => {
+        const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+        assert.equal(deployment.status, 200);
+        assert.notEqual(deployment.data.status, "failed");
+        return deployment.data.status === "succeeded";
+      });
+      const current = await request("GET", agentPath);
+      assert.equal(current.status, 200);
+      assert.equal(current.data.activeRevisionId, revisionId);
+    };
     const fleet = topology.channelEgress!;
     assert.equal(fleet.envoyNamespace, envoyNamespace);
     const harnessPolicies = async (revisionId: string) => {
@@ -1067,6 +1117,25 @@ test(
       },
     );
     assert.equal(grant.status, 201);
+    // The containment probe reads real audit records as the human test operator.
+    // Native IAM requires a direct read_audit grant for this exact Agent.
+    const auditRole = await topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/roles`, {
+      name: "Gateway upstream proxy audit reader",
+      permissions: [{ action: "read_audit", resourceKind: "agent" }],
+    });
+    assert.equal(auditRole.status, 201);
+    const auditGrant = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/iam/access-bindings`,
+      {
+        subjectKind: "identity",
+        subjectId: topology.secretApi.assignmentPrincipalId,
+        roleId: auditRole.data.id,
+        resourceKind: "agent",
+        resourceId: agentId,
+      },
+    );
+    assert.equal(auditGrant.status, 201);
     const selection = { url: proxy.url, credentialSecretId: secret.data.id };
     const saved = await topology.request("PATCH", path, { networkProxy: selection });
     assert.equal(saved.status, 200);
@@ -1103,6 +1172,8 @@ test(
       workerStopped = false;
     };
     context.after(restoreWorker);
+    // The original Pod's log stream ends at scale-down. Containment reads the replacement Pod's logs.
+    await topology.stopWorkerObservation();
     workerStopped = true;
     await kubectl(
       "scale",
@@ -1132,10 +1203,7 @@ test(
       "OCC Slack validation must not use the Agent's selected proxy.",
     );
     await restoreWorker();
-    await waitFor("proxied Slack Agent activation", async () => {
-      const current = await topology.request("GET", path);
-      return current.data?.activeRevisionId === deployed.data.id;
-    });
+    await waitForDeployment(topology.request, path, deployed.data.id);
     const revision = await topology.request("GET", `${path}/revisions/${deployed.data.id}`);
     assert.deepEqual(revision.data.networkProxy, selection);
     assert.equal(JSON.stringify(revision).includes(proxy.authorization), false);
@@ -1542,10 +1610,7 @@ test(
     );
     const peerDeploy = await topology.adminRequest("POST", `${peerPath}/deploy`);
     assert.equal(peerDeploy.status, 202);
-    await waitFor("peer Agent activation on its own proxy", async () => {
-      const current = await topology.adminRequest("GET", peerPath);
-      return current.data?.activeRevisionId === peerDeploy.data.id;
-    });
+    await waitForDeployment(topology.adminRequest, peerPath, peerDeploy.data.id);
     const peerPods = rows(
       record(
         JSON.parse(
@@ -1637,13 +1702,13 @@ test(
 
     // OCC directory traffic keeps its separate listener and must not appear at the Agent's proxy.
     const beforeDirectory = proxy.observations.length;
-    assert.ok("slackBot" in topology.secretApi);
+    const botSource = record(record(topology.slackSources).bot);
     const directory = await topology.adminRequest(
       "POST",
       `/namespaces/${namespaceId}/channel-directory/lookup`,
       {
         agentId,
-        secretId: topology.secretApi.slackBot.id,
+        sourceId: text(botSource.id),
         kind: "channels",
         ids: [channelId],
       },
@@ -1686,8 +1751,12 @@ test(
       currentGateway: string,
       extraSurfaces: string[] = [],
     ) => {
-      const audit = await topology.adminRequest("GET", `${path}/audit-events`);
+      const audit = await topology.request("GET", `${path}/audit-events`);
       assert.equal(audit.status, 200);
+      assert.ok(
+        rows(record(audit.data).events).length > 0,
+        "Expected audit records for the Agent.",
+      );
       const workerPods = await listed(
         "pods",
         topology.platformNamespace,
@@ -1870,11 +1939,7 @@ test(
     );
     const badDeploy = await topology.request("POST", `${path}/deploy`);
     assert.equal(badDeploy.status, 202);
-    await waitFor(
-      "bad-certificate Agent revision activation",
-      async () =>
-        (await topology.request("GET", path)).data?.activeRevisionId === badDeploy.data.id,
-    );
+    await waitForDeployment(topology.request, path, badDeploy.data.id);
     const badPod = await waitFor("bad-certificate Gateway readiness", async () => {
       const pods = await listed(
         "pods",
@@ -1930,10 +1995,7 @@ test(
     assert.deepEqual(retained.data.networkProxy, selection);
     const recovery = await topology.request("POST", `${path}/deploy`);
     assert.equal(recovery.status, 202);
-    await waitFor("direct Slack Agent recovery after clearing the proxy", async () => {
-      const current = await topology.request("GET", path);
-      return current.data?.activeRevisionId === recovery.data.id;
-    });
+    await waitForDeployment(topology.request, path, recovery.data.id);
     const recovered = await topology.request("GET", `${path}/revisions/${recovery.data.id}`);
     assert.equal(recovered.data.networkProxy, undefined);
     const slots = rows(

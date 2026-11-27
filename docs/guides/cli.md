@@ -11,8 +11,10 @@ To deploy through the browser, see [Create and deploy Agents in the console](../
 
 ## Connect to your Installation
 
-For a published OCE version, download the binary matching your machine from
-the [GitHub Releases page](https://github.com/openclaw/openclaw-enterprise/releases).
+Choose the release tag `v<version>` that matches your controller, then download
+the binary for your machine from the public
+[GitHub Releases page](https://github.com/openclaw/openclaw-enterprise/releases).
+You can download the binary and checksum file in a browser without signing in.
 The assets are named `occ-v<version>-<os>-<arch>` for macOS (`darwin`) and Linux,
 on `amd64` or `arm64`. Download `SHA256SUMS` from the same release and compare
 the selected binary's SHA-256 before making it executable. For example, with
@@ -51,8 +53,7 @@ the GitHub CLI:
 
 Ensure `$HOME/.local/bin` is on `PATH`. The example uses `shasum` if available
 and otherwise uses `sha256sum`. The printed CLI version should match the
-selected release. Use the release your controller runs, and upgrade `occ`
-with it: an older `occ` can misread newer API responses, such as paged Agent
+selected release. Upgrade `occ` with the controller: an older `occ` can misread newer API responses, such as paged Agent
 revision lists.
 
 To build from a trusted source checkout instead, run this from its root to
@@ -141,7 +142,7 @@ whom a key was issued for, so start each key's `--name` with the person's name, 
 | Update a Configuration and deploy again | [Agent revisions](topics/agent-revisions.md); its CLI examples also require `jq`                                                                                   |
 | Stop or delete an Agent                 | [Agent lifecycle](topics/agent.md#how-an-agent-runs) and [deletion and cleanup](../reference/agents.md#deletion)                                                   |
 | Create or replace integration Secrets   | [Namespace Secrets](../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and [Configuration bindings](../reference/configuration/secrets.md) |
-| Use a Credential Gateway                | [Credential sources](../reference/credential-sources.md), including the current OpenShell limits                                                                   |
+| Enroll a managed credential             | [Credential Sources](../reference/credential-sources.md), including TokenService, Credential Proxy and cutover status                                              |
 | Grant access to a Namespace resource    | [Namespace IAM](../reference/authorization.md#manage-namespace-policy)                                                                                             |
 | Let an Agent use a Secret               | [Grant the Agent's own identity Secret `operate`](topics/iam.md#let-an-agent-use-a-secret)                                                                         |
 | Inspect or upgrade the running fleet    | [Production image upgrades](deploy/production-upgrade.md) and the [CLI reference](../reference/cli.md)                                                             |

@@ -1,5 +1,19 @@
 # Review policy denials and change one Agent's network access
 
+## Repository access
+
+For native OpenShell Git, open the Agent draft's **Repositories** settings.
+Select its GitHub App Client, repositories, and **Read-only Git** or
+**Read/write Git** for each. Save the draft, then stop any active managed
+revision before deploying. OCC derives the Git rules from those choices.
+Clear the repository selections to withdraw running Git access.
+
+Use an Agent draft without a separate repository network policy. A manually
+saved list, including an empty list, conflicts with Source-backed Git.
+[GitHub App setup and access levels](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+
+## Network denials
+
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
@@ -130,13 +144,17 @@ version and revision ID together without `--file`.
 occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version VERSION
 ```
 
-OCC returns HTTP 202 when it queues the application. The CLI prints the policy
-record with `application.state` set to `pending`. Keep the application ID,
-revision ID and policy version from that response. Run
-`occ agent policy get AGENT_ID` and match all three fields in
-`policy.application`. Wait for that application’s state to become `applied`.
-If you lose the response or see a different application, reconcile the original
-request before submitting another change.
+OCC returns HTTP 202 when it queues the application. From the CLI’s `apply`
+output, record `application.id`, `application.revisionId` and
+`application.policyVersion`. Run `occ agent policy get AGENT_ID` and match
+those three fields in `policy.application`.
+
+Poll only while the matching application is `pending`. Stop at `applied` or
+`failed`. After a failure, check `policy.application.reason` against the
+[reason codes](../../reference/sandbox-policies.md#desired-and-applied-versions).
+The provider may have applied the policy. If the outcome is unconfirmed, the
+response was lost, or the application is missing or no longer matches,
+reconcile the original request before submitting another change.
 
 An authorized administrator can enable editing with
 `occ agent policy editing AGENT_ID --enabled=true`. Policy commands print
@@ -144,3 +162,15 @@ JSON by default. Use `-o yaml` for YAML. Policy reads show saved Agent rules
 and admitted or Driver defaults. Generated model and Git rules can still apply
 when the arrays are empty. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
 for defaults and operator ceiling inputs.
+
+## Set GitHub access before the first deployment
+
+In **Create Agent → Repository access**, choose the registered GitHub App
+Client and the repositories the dedicated Codex Agent needs. Use **Read-only
+Git** for clone and fetch. Choose **Read/write Git** when the Agent needs push
+access. These grants cover Git transport.
+
+Choose **Save Agent draft**. Confirm the saved access before deploying. If the
+Console cannot confirm it, select **Recheck saved GitHub access** and review
+the draft again. Deployment rechecks current approval and refuses a stale
+policy version. [GitHub App setup](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)

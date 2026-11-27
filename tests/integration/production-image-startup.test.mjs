@@ -48,7 +48,7 @@ function productionInstallation(adminKeyPath) {
           auth: { mode: "unauthenticated" },
           insecureTransport: "network-policy",
         },
-        drivers: { sandbox: "sandbox-openshell", credential_gateway: "openshell-credentials" },
+        drivers: { sandbox: "sandbox-openshell" },
       },
     ],
     drivers: {
@@ -104,10 +104,7 @@ function productionInstallation(adminKeyPath) {
           },
         },
       },
-      credential_gateway: {
-        id: "openshell-credentials",
-        configuration: { binaries: ["/app/bin/model-client"] },
-      },
+      token_service: { id: "occ", configuration: {} },
       sandbox: {
         id: "sandbox-openshell",
         configuration: {

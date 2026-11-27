@@ -40,6 +40,35 @@ const feedbackClass = (page: Page) =>
       node.className === "status" ? node.getAttribute("data-tone") : node.className,
     );
 
+function jsonErrorVisibility(node: HTMLTextAreaElement, actionsSelector?: string) {
+  let visibleBottom = window.innerHeight;
+  if (actionsSelector) {
+    const actions = document.querySelector(actionsSelector);
+    if (!actions) {
+      throw new Error(`Missing sticky actions: ${actionsSelector}`);
+    }
+    visibleBottom = Math.min(visibleBottom, actions.getBoundingClientRect().top);
+  }
+  const { paddingTop, lineHeight } = getComputedStyle(node);
+  const clientTop = node.getBoundingClientRect().top + node.clientTop;
+  const firstLineTop = clientTop + Number.parseFloat(paddingTop) - node.scrollTop;
+  const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
+  const diagnostic = document.getElementById("configuration-json-error")!.getBoundingClientRect();
+  return {
+    selection: [node.selectionStart, node.selectionEnd],
+    firstLineVisible:
+      node.scrollTop === 0 &&
+      firstLineTop >= Math.max(0, clientTop) &&
+      firstLineBottom <= Math.min(visibleBottom, clientTop + node.clientHeight),
+    diagnosticVisible:
+      diagnostic.height > 0 &&
+      diagnostic.top >= 0 &&
+      diagnostic.bottom <= visibleBottom &&
+      diagnostic.left >= 0 &&
+      diagnostic.right <= document.documentElement.clientWidth,
+  };
+}
+
 async function openEditor(
   page: Page,
   fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
@@ -63,7 +92,7 @@ async function leaveAndReturn(page: Page) {
   await waitForLiveControls(page, ["configuration-json"]);
 }
 
-test("Configuration keeps an out-of-range number draft until corrected before saving", async (t) => {
+test("Configuration keeps invalid drafts and reveals syntax errors on keyboard Save", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Number range feedback");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -80,13 +109,17 @@ test("Configuration keeps an out-of-range number draft until corrected before sa
   });
   await openEditor(page, fixture, namespace, agent, "corrected");
   const json = page.getByLabel("Configuration JSON", { exact: true });
-  const corrected = JSON.stringify(nativeValues("corrected"));
-  const draft = corrected.replace('"thresholds":[1,2,3]', '"thresholds":[1,1e400,3]');
-  assert.notEqual(draft, corrected);
+  const corrected = (await json.inputValue()) + "\n".repeat(100); // Scrolls even on a tall screen.
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const error = page.locator("#configuration-json-error");
+  const draft = JSON.stringify(nativeValues("corrected")).replace(
+    '"thresholds":[1,2,3]',
+    '"thresholds":[1,1e400,3]',
+  );
+  assert.ok(draft.includes("1e400"));
   await json.fill(draft);
-  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-  await page
-    .locator("#configuration-json-error")
+  await save.click();
+  await error
     .getByText("A number is too large or too small to save. Use a number closer to zero.", {
       exact: true,
     })
@@ -95,14 +128,48 @@ test("Configuration keeps an out-of-range number draft until corrected before sa
   assert.equal(await json.inputValue(), draft);
   assert.equal(patches, 0);
 
-  // The correction must reach the real Controller route and survive a separate read.
-  await json.fill(corrected);
+  // Save from the end of the draft so focus alone cannot leave the first line in view.
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 640, height: 360 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await json.fill(corrected);
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("x");
+    const syntaxDraft = await json.inputValue();
+    await page.keyboard.press("Control+End");
+    assert.ok((await json.evaluate((node) => node.scrollTop)) > 0, "first line starts offscreen");
+    await page.keyboard.press("Tab");
+    assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    await error.getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.").waitFor();
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal(await json.inputValue(), syntaxDraft);
+    assert.equal(patches, 0);
+
+    const visible = await json.evaluate(jsonErrorVisibility);
+    assert.deepEqual(
+      visible,
+      { selection: [1, 1], firstLineVisible: true, diagnosticVisible: true },
+      `the first line and the full diagnostic are visible together at ${viewport.width}×${viewport.height}`,
+    );
+
+    // Repair from the caret, without moving focus or scrolling to the diagnostic.
+    await page.keyboard.press("Delete");
+    assert.equal(await json.inputValue(), corrected);
+    assert.equal(await error.isHidden(), true);
+  }
+
+  // Persist through the real Controller and read back the saved Configuration independently.
   const savedResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
       new URL(response.url()).pathname === configurationPath,
   );
-  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
   assert.equal((await savedResponse).status(), 200);
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   assert.equal(patches, 1);
@@ -239,7 +306,41 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   // Valid JSON syntax can still contain a number that serialization would replace with null.
   const overflow = template.replace(/^\s*\{/, '{"metadata":{"thresholds":[1,-1e400,3]},');
   assert.notEqual(overflow, template);
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport);
+  // Enlarge the editor using Chromium's native resize grip before shortening the window.
+  await json.scrollIntoViewIfNeeded();
+  const beforeResize = await json.boundingBox();
+  assert.ok(beforeResize);
+  const gripX = beforeResize.x + beforeResize.width - 4;
+  const gripY = beforeResize.y + beforeResize.height - 4;
+  await page.mouse.move(gripX, gripY);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(gripX, gripY + 24, { steps: 4 });
+  } finally {
+    await page.mouse.up();
+  }
+  const resizedHeight = await json.evaluate((node) => node.getBoundingClientRect().height);
+  assert.ok(resizedHeight > beforeResize.height, "the native resize grip enlarges the editor");
+
+  // Just above the compact navigation breakpoint, the sidebar makes the error wrap.
+  const splitViewport = { width: 761, height: 513 };
+  await page.setViewportSize(splitViewport);
   await json.fill(overflow);
+  // A number-range error has no caret location. Keep the user's selection on the first line.
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("Shift+ArrowRight");
+  const editorView = (node: HTMLTextAreaElement) => ({
+    scrollTop: node.scrollTop,
+    height: node.clientHeight,
+  });
+  const beforeError = await json.evaluate(editorView);
+  const firstLineSelection = [0, 1];
+  assert.deepEqual(
+    await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    firstLineSelection,
+  );
   await model.fill("gpt-4.1");
   await model.press("Tab");
   await jsonError
@@ -249,6 +350,23 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
     .waitFor();
   assert.equal(await focusedId(page), "configuration-json");
   assert.equal(await json.inputValue(), overflow);
+  const { selection, diagnosticVisible } = await json.evaluate(
+    jsonErrorVisibility,
+    "#create-agent-form ~ .form-actions",
+  );
+  const editor = await json.boundingBox();
+  assert.deepEqual(await json.evaluate(editorView), beforeError);
+  assert.deepEqual(
+    { selection, editorTopVisible: editor !== null && editor.y >= 0, diagnosticVisible },
+    { selection: firstLineSelection, editorTopVisible: true, diagnosticVisible: true },
+    `Create Agent keeps the selection and shows the editor and number error above its actions at ${splitViewport.width}×${splitViewport.height}`,
+  );
+  await page.setViewportSize(originalViewport);
+  assert.equal(
+    await json.evaluate((node) => node.getBoundingClientRect().height),
+    resizedHeight,
+    "the editor returns to the user's chosen height when the window has room",
+  );
   for (const name of ["Choose a model from the list", "Enter model ID manually"]) {
     await page.getByRole("button", { name, exact: true }).click();
     assert.equal(await focusedId(page), "configuration-json");
@@ -283,6 +401,34 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.deepEqual(JSON.parse(await json.inputValue()), JSON.parse(template));
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
+
+  // Submit from the end of the draft. The very next key should repair the earlier typo.
+  const misplacedComma = template.replace(/^\s*\{/, "$&,");
+  assert.notEqual(misplacedComma, template);
+  const commaOffset = misplacedComma.indexOf(",");
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
+    await page.setViewportSize(viewport);
+    await json.fill(misplacedComma);
+    await json.press("Control+End");
+    await create.press("Enter");
+    await jsonError
+      .getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.", { exact: true })
+      .waitFor();
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal(await json.inputValue(), misplacedComma);
+    const visible = await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions");
+    assert.deepEqual(
+      visible,
+      { selection: [commaOffset, commaOffset], firstLineVisible: true, diagnosticVisible: true },
+      `Create Agent shows the caret line and full diagnostic above its actions at ${viewport.width}×${viewport.height}`,
+    );
+    await page.keyboard.press("Delete");
+    assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
+    assert.equal(await jsonError.isHidden(), true);
+    assert.equal(await page.getByLabel("Agent name").inputValue(), "JSON feedback Agent");
+  }
+  await page.setViewportSize(originalViewport);
 
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).

@@ -5,18 +5,19 @@ import { createSlackDirectoryField, type SlackDirectoryContext } from "./slack-d
 export function createSlackApproverField({
   context,
   label,
-  getSecretId,
+  getSourceId,
   agentId,
   getValue,
   onChange,
-  inheritedLabel = "Inherit Agent default",
+  inheritedLabel,
   allowInherit = true,
   lazyNames = false,
   directorySetup = null,
+  onDirectoryVisibilityChange,
 }: {
   context: SlackDirectoryContext;
   label: string;
-  getSecretId(): string | null | undefined;
+  getSourceId(): string | null | undefined;
   agentId?: string;
   getValue(): PluginApprovers | undefined;
   onChange(approvers: PluginApprovers | undefined): void;
@@ -24,17 +25,31 @@ export function createSlackApproverField({
   allowInherit?: boolean;
   lazyNames?: boolean;
   directorySetup?: HTMLElement | null;
+  onDirectoryVisibilityChange?(visible: boolean): void;
 }) {
+  const inheritedCopy =
+    inheritedLabel === undefined
+      ? {
+          label: "Use OpenClaw routing",
+          hint: "No default approver list is set.",
+          chosenHint: "No Slack users selected. OpenClaw routing will apply.",
+        }
+      : {
+          label: inheritedLabel,
+          hint: `${inheritedLabel}. No approver list is set at this level.`,
+          chosenHint: "Select people to replace the inherited approvers.",
+        };
+  const id = `slack-approvers-${crypto.randomUUID()}`;
+  const helper = element("p", { className: "hint", id: `${id}-hint` });
   const select = element(
     "select",
-    { "aria-label": `${label} mode` },
-    ...(allowInherit ? [element("option", { value: "inherit" }, inheritedLabel)] : []),
+    { "aria-label": `${label} mode`, "aria-describedby": helper.id },
+    ...(allowInherit ? [element("option", { value: "inherit" }, inheritedCopy.label)] : []),
     element("option", { value: "none" }, "No Slack approvers"),
     element("option", { value: "chosen" }, "Selected Slack users"),
   );
-  const helper = element("p", { className: "hint" });
   const control = element("input", {
-    id: `slack-approvers-${crypto.randomUUID()}`,
+    id,
     type: "hidden",
   });
   const picker = createSlackDirectoryField({
@@ -42,7 +57,7 @@ export function createSlackApproverField({
     kind: "users",
     control,
     label: `${label} people`,
-    getSecretId,
+    getSourceId,
     agentId,
     qualifyUsers: true,
     lazyNames,
@@ -74,8 +89,8 @@ export function createSlackApproverField({
     helper.textContent =
       current === undefined
         ? select.value === "chosen"
-          ? "Select people to replace the inherited approvers."
-          : `${inheritedLabel}. No approver list is set at this level.`
+          ? inheritedCopy.chosenHint
+          : inheritedCopy.hint
         : select.value === "none"
           ? `No Slack user can approve.${otherCount ? ` ${otherCount} other channel entries are preserved.` : ""}`
           : current.length === 0
@@ -85,6 +100,7 @@ export function createSlackApproverField({
     if (directorySetup) {
       directorySetup.hidden = picker.hidden;
     }
+    onDirectoryVisibilityChange?.(!picker.hidden);
   }
   function refresh() {
     const current = getValue();

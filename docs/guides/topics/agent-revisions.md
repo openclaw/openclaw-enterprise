@@ -235,3 +235,10 @@ wholesale. The new deployment uses current permissions and dependencies; Secret
 references do not restore earlier credential values. See the
 [Agent revision contract](../../reference/agents/deployment.md#revisions-and-deployment)
 for what it captures.
+
+If a revision removes a model, a saved OpenClaw chat may still show it.
+Run `/model default -s` in that chat to clear the saved selection. Even if
+the reset names the Agent's default, a matching `channels.modelByChannel`
+rule can select a different model. Check the rule and confirm which model
+handled a harmless turn in the same chat before sending more work.
+If you need the removed model, wait until it's available again.

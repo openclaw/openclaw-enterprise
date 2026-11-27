@@ -33,7 +33,7 @@ type PluginScenario = {
       group: "Pages/Agent detail";
       path: string;
       slack: true;
-      auth: "codex_pat";
+      auth: "oauth";
       agentPlugins: PluginDesiredState;
       agentPluginApprovers: PluginApprovers;
       pluginDiscovery: typeof pluginDiscovery;
@@ -341,7 +341,7 @@ export function pluginApproverScenarios(draft: string) {
       name: "Plugin approver inheritance",
       path: draft,
       slack: true,
-      auth: "codex_pat",
+      auth: "oauth",
       agentPlugins: structuredClone(pluginSelectionState),
       agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
       pluginCapabilities: overrideApproverCapabilities,
@@ -364,7 +364,7 @@ export function pluginApproverScenarios(draft: string) {
       name: "Plugin and tool approver overrides",
       path: draft,
       slack: true,
-      auth: "codex_pat",
+      auth: "oauth",
       agentPlugins: pluginApproverOverrides,
       agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
       pluginCapabilities: overrideApproverCapabilities,
@@ -392,7 +392,7 @@ export function pluginApproverScenarios(draft: string) {
       name: "No Slack approvers hints",
       path: draft,
       slack: true,
-      auth: "codex_pat",
+      auth: "oauth",
       agentPlugins: pluginApproverNoneHints,
       agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
       pluginCapabilities: overrideApproverCapabilities,
@@ -416,7 +416,7 @@ export function pluginApproverScenarios(draft: string) {
       name: "Preserved non-Slack approver",
       path: draft,
       slack: true,
-      auth: "codex_pat",
+      auth: "oauth",
       agentPlugins: pluginApproverPreservedHints,
       agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
       pluginCapabilities: overrideApproverCapabilities,

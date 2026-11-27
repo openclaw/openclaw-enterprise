@@ -8,7 +8,7 @@ export const DeploymentFailurePhone = story("agentsDeploymentFailed", {
   frameWidth: "390px",
   frameHeight: "844px",
 });
-export const RowNavigation = story("agentsRowNavigation");
+export const RowNavigation = story("agentsRowNavigation", { openInNewTab: true });
 export const NamespaceFocusDuringRefresh = {
   ...story("agentsNamespaceFocusDuringRefresh"),
   name: "Namespace focus during list refresh",
@@ -26,6 +26,7 @@ export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsEmptyMember = story("agentsEmptyMember");
 export const CreateBlockedByRestriction = story("agentsCreateBlockedByRestriction");
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
+export const AgentsSearchRetry = story("agentsSearchRetry", { openInNewTab: true });
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };
 export const NamespaceMissing = { ...story("namespaceMissing"), name: "Namespace unavailable" };
 export const NamespaceMissingNoneReadable = {

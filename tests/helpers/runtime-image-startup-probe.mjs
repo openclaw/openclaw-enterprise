@@ -12,7 +12,7 @@ import {
   EMBEDDED_GATEWAY_OWNER_STARTUP,
   embeddedGatewayRecoveryPreamble,
 } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
-import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
 import { changeSignal, followContainer } from "./docker-follow.ts";
 import {
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
@@ -148,6 +148,7 @@ function startupProbeWrapper(kind, gatewayManagedMode) {
         "OPENCLAW_GATEWAY_PORT=8080",
         "OPENCLAW_GATEWAY_PASSWORD=openclaw-runtime-probe-password",
         "OPENCLAW_STATE_DIR=/home/node/.openclaw",
+        "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF=1",
         "APP_SERVER_URL=ws://127.0.0.1:4500",
         `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
         ...status,
@@ -197,6 +198,7 @@ function startupProbeWrapper(kind, gatewayManagedMode) {
       "OPENCLAW_GATEWAY_PORT=8080",
       "OPENCLAW_GATEWAY_PASSWORD=openclaw-runtime-probe-password",
       "OPENCLAW_STATE_DIR=/home/node/.openclaw",
+      "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF=1",
       `OPENCLAW_HARNESS_MODEL=${model}`,
       `OPENCLAW_HARNESS_PROVIDER=${provider}`,
       "OPENCLAW_HARNESS_CREDENTIAL_ENV=OPENAI_API_KEY",

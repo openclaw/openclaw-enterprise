@@ -98,7 +98,7 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
           Array.isArray(source) ||
           Object.keys(source).length !== 3 ||
           !("kind" in source) ||
-          source.kind !== "secret" ||
+          (source.kind !== "secret" && source.kind !== "credential_source") ||
           !("namespaceId" in source) ||
           typeof source.namespaceId !== "string" ||
           !source.namespaceId ||
@@ -106,7 +106,9 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
           typeof source.id !== "string" ||
           !source.id
         ) {
-          throw new Error("A secret binding requires an exact Namespace-scoped Secret reference.");
+          throw new Error(
+            "A secret binding requires an exact Namespace-scoped Secret or CredentialSource reference.",
+          );
         }
         if (
           delivery !== undefined &&
@@ -123,7 +125,7 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
           name,
           Object.freeze({
             source: Object.freeze({
-              kind: "secret" as const,
+              kind: source.kind,
               namespaceId: source.namespaceId,
               id: source.id,
             }),

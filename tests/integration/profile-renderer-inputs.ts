@@ -72,7 +72,6 @@ export function codexInput(overrides: SiteOverrides = {}): SiteInput {
       ...(overrides.runtime ?? {}),
     },
     codex: {
-      modelDiscoveryCidrs: ["192.0.2.20/32"],
       ...(overrides.codex ?? {}),
     },
   };
@@ -86,14 +85,13 @@ export function managedCodexInput(overrides: SiteOverrides = {}): SiteInput {
         workspaceId: "11111111-1111-4111-8111-111111111111",
         adminSecretName: "occ-chatgpt-admin",
         adminSecretKey: "admin-key",
-        providerCidr: "192.0.2.21/32",
       },
       ...(overrides.codex ?? {}),
     },
   });
 }
 
-export function repositoryConfiguration(upstreamCidrs: string[] = ["192.0.2.30/32"]) {
+export function repositoryConfiguration() {
   return {
     enabled: true,
     authority: "prepared-git",
@@ -105,7 +103,6 @@ export function repositoryConfiguration(upstreamCidrs: string[] = ["192.0.2.30/3
     appKeySecretName: "occ-repository-app-key",
     tlsSecretName: "occ-repository-tls",
     publicCaSecretName: "occ-repository-public-ca",
-    upstreamCidrs,
   };
 }
 
@@ -123,7 +120,7 @@ export function externalSignInInput(signIn: InputRecord = {}) {
     controlPlane: {
       ...controlPlane,
       recoveryUserId: "recovery-admin_1",
-      google: { egressCidrs: ["140.82.112.0/20"] },
+      google: {},
       ...signIn,
     },
   });

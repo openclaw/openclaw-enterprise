@@ -3,7 +3,7 @@ import type { InitialWorkspaceFileName } from "./workspace-setup.ts";
 // Rendered from OpenClaw 82b682c627ba8bfc2c2bd51cf46ad8f51c583857
 // docs/reference/templates, matching src/agents/workspace.ts.
 // Keep the pin, content, and identity together when updating the runtime release.
-export const WORKSPACE_DEFAULTS_VERSION = "2026.11.5";
+export const WORKSPACE_DEFAULTS_VERSION = "2026.11.10";
 // SHA-256 of UTF-8 JSON.stringify([name, content][]), in the order below.
 export const WORKSPACE_DEFAULTS_ID: string =
   "bd94dcafd93db4500bf1c427c5a91131cb27a6947e3a33af3daa86df97f38da9";

@@ -102,7 +102,7 @@ describes the response OCC prepared. If its append fails, the hook logs
 handler still owns its own permission checks and any audit record for a change.
 If a separate authorization-denial record fails to save on a covered route,
 the API logs the write failure and usually sends the selected refusal.
-A [device login scope denial](credential-source-refresh.md) requires its own
+A [device login scope denial](credential-source-lifecycle.md#device-authorization-and-configuration) requires its own
 record and returns HTTP `503` if that write fails. A permission denial that
 uses HTTP `404` to conceal a resource still records outcome `denied`.
 

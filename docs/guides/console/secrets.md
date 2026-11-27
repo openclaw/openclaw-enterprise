@@ -1,6 +1,6 @@
 # Manage Secrets in the console
 
-Open **Credentials** in the sidebar. The **Secrets** tab opens first. Select a Namespace. Search by name or ID,
+Open **Credentials** in the sidebar and select a Namespace. In the Secret library, search by name or ID,
 or select **Refresh** to reload metadata. The list contains only Secrets you may
 read. Values are never returned. A ready Namespace is required to create or
 replace a value; ask an administrator for the exact operation permissions.
@@ -38,6 +38,8 @@ absent. Configurations, CredentialSources, and pending provisioning
 requests show their IDs; manage those references through their supported APIs or
 CLI commands. Hidden consumers appear as a count, and incomplete results are
 marked. Ask an administrator to inspect references you cannot read.
+
+After following an Agent link, use the keyboard shortcut for browser Back to return to the filtered list; if the Secret is still visible after the list is checked again, it receives focus, and Enter reopens it.
 
 A Secret link on an Agent page opens that Secret here, also when you must sign
 in first. A link to a Secret that is not in your list opens nothing. A note says
