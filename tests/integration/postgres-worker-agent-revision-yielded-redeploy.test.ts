@@ -319,11 +319,7 @@ revisionTest(
     // The other Agent's deployment runs while the replacement waits for the drain.
     const otherPass = await waitFor(
       "another Agent's pass while the replacement is deferred",
-      async () =>
-        events.find(
-          ({ event, workId, at }) =>
-            event === "worker.completed" && workId === busy.idempotencyKey && at > yielded.at,
-        ),
+      async () => workPasses(events, busy).find(({ at }) => at > yielded.at),
     );
     assert.equal(Object.hasOwn(otherPass, "predecessorStoppingAtMs"), false);
     const done = await fixture.work(replacement, "succeeded", 30_000);
@@ -592,12 +588,18 @@ revisionTest(
   async (fixture) => {
     const owner = await fixture.agent("drain-predecessor-early", { executionMode: "dedicated" });
     const driver = drainingExclusiveCompute(fixture, { drainMs: 4_000 });
-    await fixture.start(driver.compute);
+    const events: WorkerEvent[] = [];
+    await fixture.start(driver.compute, {
+      emit: (event) => events.push(checkedWorkerEvent(event)),
+    });
     const first = await fixture.revision(owner, 1);
     await fixture.work(first, "succeeded");
     await denyDeploy(fixture, owner);
     const replacement = await fixture.revision(owner, 2);
     await assertWorkEnds(fixture, replacement, "failed_permanent", "AUTHORIZATION_DENIED");
+    const passes = await completedPasses(events, replacement, "permanent");
+    const refusal = required(passes.find(({ code }) => code === "AUTHORIZATION_DENIED"));
+    assert.equal(Object.hasOwn(refusal, "predecessorStoppingAtMs"), false);
     assert.equal(driver.stopCalls(first), 0, "the serving revision is not stopped");
     assert.ok(driver.running.has(first.id));
     assert.equal(

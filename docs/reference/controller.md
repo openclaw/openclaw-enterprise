@@ -158,16 +158,18 @@ The worker emits fixed operational event classes through the same logger:
   far, `readinessWaitMs` from the first unready observation to the first ready
   one (or to now while pending), `activationMs` from the ready observation to
   completion, and `elapsedMs` since admission. Totals cover the passes this
-  worker process ran; a restart starts them again. The optional
-  `predecessorStoppingAtMs` is the database-recorded Unix timestamp, in
-  milliseconds, when the predecessor entered `stopping`, before credential
-  shutdown or workload stop. The worker includes it only after observing a
-  successful transaction for that predecessor and candidate. It can predate a
-  retry or retarget. It is absent on a first deployment and can be absent after
-  a worker restart until the stop is observed again. It is not a duration,
-  transaction commit time, or proof of downtime or actual workload stop. The
-  field stays in the local log and is not exported as a metric. Maintenance,
-  cleanup, and stop work carry no deployment timing.
+  worker process ran. A restart resets them. Maintenance, cleanup, and stop
+  work carry no deployment timing.
+
+  On a replacement, `predecessorStoppingAtMs` gives the Unix time in milliseconds
+  when the database first recorded the old revision entering the
+  [stopping phase](agents/planned-replacement.md#common-stop-boundary). The Worker
+  logs it after observing a successful transaction for that pair of revisions.
+  If another deployment takes over the same stop, it reports the original time.
+  A first deployment omits the field. A restart or an evicted timing record can
+  also leave it absent until the Worker observes the stop again. Use independent
+  probes to measure downtime. The workload may still be running at this timestamp.
+
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
   credentials. A deployment pass that cannot read its stored refusal adds the work
   identity and `cause`, then leaves its claim to lease recovery. An unreadable
