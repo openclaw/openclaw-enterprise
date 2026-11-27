@@ -111,6 +111,22 @@ Replace only `1e400` with `2`. Save or create, then inspect the Configuration fo
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
 
+## Correct a Create Agent Configuration syntax error
+
+Open **Pages → Create Agent → Invalid Configuration JSON**
+(`createInvalidConfiguration`). Tab to **Reset template**, press Enter, and
+confirm the discard prompt to restore the valid draft. Reopen **Advanced
+settings** if needed and focus **Configuration JSON**. Press Ctrl+Home and type
+`x` before the opening brace. Press Ctrl+End, then tab through the controls to
+**Create Agent** and press Enter.
+
+Check that the error reports line 1, column 1 and the editor has focus with the
+caret immediately before the visible `x`. Press Delete once. The editor must
+match the restored draft exactly, the error must clear, and the other form
+fields must stay unchanged. Repeat in a short desktop window and at phone
+width. If the editor and error cannot fit together, check that the caret stays
+visible. Leave the corrected draft unsaved.
+
 ## Inspect, save, and withdraw repository grants
 
 Open **Inspect Namespace repository limits** in **Pages / Agent detail**. Open

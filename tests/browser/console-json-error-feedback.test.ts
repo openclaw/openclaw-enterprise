@@ -343,6 +343,18 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
 
+  // Submit from the end of the draft. The very next key should repair the earlier typo.
+  const misplacedComma = template.replace("{", "{,");
+  await json.fill(misplacedComma);
+  await json.press("Control+End");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).press("Enter");
+  assert.equal(await focusedId(page), "configuration-json");
+  assert.equal(await json.inputValue(), misplacedComma);
+  await page.keyboard.press("Delete");
+  assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
+  assert.equal(await jsonError.isHidden(), true);
+  assert.equal(await page.getByLabel("Agent name").inputValue(), "JSON feedback Agent");
+
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).
   const values = JSON.parse(template);
