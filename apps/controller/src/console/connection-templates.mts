@@ -5,11 +5,10 @@ import type {
   Namespace,
   StaticKeyDestination,
 } from "@openclaw-enterprise/contracts";
+import { isOAuthTemplate, type OAuthTemplate } from "./credential-consent.mjs";
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
   openCredentialClientRegistration,
-  isOAuthTemplate,
-  type OAuthTemplate,
   availabilityLabel,
   availableInNamespace,
   oauthClients,
@@ -240,7 +239,7 @@ export function renderConnectionTemplates(
               scope,
               oauth ? "OAuth" : "Static Bearer",
               oauth
-                ? template.current.issuer
+                ? `${template.current.issuer} · ${template.current.issuerVerification ? "Verified" : "Unverified"}`
                 : `${template.current.destinations.length} ${template.current.destinations.length === 1 ? "destination" : "destinations"}`,
               String(template.current.version),
             ],
@@ -501,6 +500,13 @@ export function openConnectionTemplateEditor(
   const oauthFields = element(
     "fieldset",
     { className: "connection-template-fields" },
+    oauthVersion && !oauthVersion.issuerVerification
+      ? element(
+          "p",
+          { className: "hint" },
+          "This OAuth Template is unverified and cannot be used for consent. Save a new version to verify its endpoints against the issuer’s metadata.",
+        )
+      : null,
     field({ label: "OAuth configuration", control: mode }),
     manual,
     remote,
@@ -738,7 +744,8 @@ export function openConnectionTemplateEditor(
           ? saved.current.mode !== "static_bearer" ||
             destinationKeys(saved.current.destinations) !== destinationKeys(staticValues)
           : !isOAuthTemplate(saved) ||
-            saved.current.issuer !== ("issuer" in body ? body.issuer : undefined))
+            saved.current.issuer !== ("issuer" in body ? body.issuer : undefined) ||
+            !saved.current.issuerVerification)
       ) {
         throw Error("Unconfirmed connection template");
       }

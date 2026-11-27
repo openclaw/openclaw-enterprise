@@ -1702,13 +1702,13 @@ test(
 
     // OCC directory traffic keeps its separate listener and must not appear at the Agent's proxy.
     const beforeDirectory = proxy.observations.length;
-    assert.ok("slackBot" in topology.secretApi);
+    const botSource = record(record(topology.slackSources).bot);
     const directory = await topology.adminRequest(
       "POST",
       `/namespaces/${namespaceId}/channel-directory/lookup`,
       {
         agentId,
-        secretId: topology.secretApi.slackBot.id,
+        sourceId: text(botSource.id),
         kind: "channels",
         ids: [channelId],
       },

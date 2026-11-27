@@ -11,6 +11,7 @@ import {
   agentPods,
   chatTurn,
   deployAgent,
+  idHash,
   readyGateway,
   stopAgent,
   type CodexAdmission,
@@ -23,6 +24,7 @@ import {
   run,
   waitFor,
   waitForChannelProxyReadiness,
+  type ChannelProxyDeployment,
   type SmokeStep,
 } from "./process.ts";
 import { kubectl, modelEvents, wireField, type SmokeStack } from "./setup.ts";
@@ -163,7 +165,10 @@ async function proxyServer(
 }
 
 interface Installation {
-  drivers: { compute: { configuration: { runtime: { channelEgress: Record<string, unknown> } } } };
+  drivers: {
+    compute: { configuration: { runtime: { channelEgress: Record<string, unknown> } } };
+    token_service?: { id: "occ"; configuration: Record<string, never> };
+  };
 }
 interface Values {
   channelEgress: Record<string, unknown>;
@@ -214,6 +219,7 @@ async function configureInstallation(
   }));
   Object.assign(egress, { upstreamProxies, proxyTrust: trust });
   Object.assign(values.channelEgress, { upstreamProxies, proxyTrust: trust });
+  installation.drivers.token_service = { id: "occ", configuration: {} };
   const data = JSON.stringify(installation);
   await writeFile(installationPath, data, { mode: 0o600 });
   await kubectlPatch(
@@ -452,30 +458,36 @@ async function configureApiTrust(stack: SmokeStack, ca: string, smokeStep: Smoke
   );
 }
 
-async function grantSecret(
+async function grantCredential(
   stack: SmokeStack,
   admission: CodexAdmission,
+  kind: "secret" | "credential_source",
   value: string,
   label: string,
 ) {
   const base = `/namespaces/${stack.namespaceId}`;
-  const secret = await stack.api("POST", `${base}/secrets`, {
-    name: `smoke-${label}-${randomUUID()}`,
-    value,
-  });
+  const name = `smoke-${label}-${randomUUID()}`;
+  const credential =
+    kind === "secret"
+      ? await stack.api("POST", `${base}/secrets`, { name, value })
+      : await stack.api("POST", `${base}/credential-sources`, {
+          name,
+          type: "static",
+          secret: value,
+        });
   const agent = await stack.api("GET", `${base}/agents/${admission.agent.id}`);
   const role = await stack.api("POST", `${base}/iam/roles`, {
     name: `Smoke ${label} ${randomUUID()}`,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+    permissions: [{ action: "operate", resourceKind: kind }],
   });
   await stack.api("POST", `${base}/iam/access-bindings`, {
     subjectKind: "identity",
     subjectId: wireField(agent, "servicePrincipalId"),
     roleId: wireField(role, "id"),
-    resourceKind: "secret",
-    resourceId: wireField(secret, "id"),
+    resourceKind: kind,
+    resourceId: wireField(credential, "id"),
   });
-  return { id: wireField(secret, "id") as string, ref: wireField(secret, "ref") };
+  return { id: wireField(credential, "id") as string, ref: wireField(credential, "ref") };
 }
 
 function codexNetworkPolicy(configuration: unknown): unknown {
@@ -498,17 +510,23 @@ async function enableSlack(
   )) as { values: unknown; secretBindings?: Record<string, unknown> };
   const harnessPolicy = structuredClone(codexNetworkPolicy(configuration.values));
   const bindings = { ...configuration.secretBindings };
-  let botSecretId = "";
+  let botSourceId = "";
   for (const [name, value] of [
     ["SLACK_APP_TOKEN", `xapp-1-smoke-${suffix}`],
     ["SLACK_BOT_TOKEN", `xoxb-smoke-${suffix}`],
-  ]) {
-    const secret = await grantSecret(stack, admission, value!, `${suffix}-${name!.toLowerCase()}`);
+  ] as const) {
+    const source = await grantCredential(
+      stack,
+      admission,
+      "credential_source",
+      value,
+      `${suffix}-${name.toLowerCase()}`,
+    );
     if (name === "SLACK_BOT_TOKEN") {
-      botSecretId = secret.id;
+      botSourceId = source.id;
     }
-    bindings[name!] = {
-      source: { kind: "secret", namespaceId: stack.namespaceId, id: secret.id },
+    bindings[name] = {
+      source: source.ref,
       delivery: { type: "env" },
     };
   }
@@ -532,11 +550,17 @@ async function enableSlack(
     values,
     secretBindings: bindings,
   });
-  const credential = await grantSecret(stack, admission, proxy.authorization, `${suffix}-proxy`);
+  const credential = await grantCredential(
+    stack,
+    admission,
+    "secret",
+    proxy.authorization,
+    `${suffix}-proxy`,
+  );
   await stack.api("PATCH", `${base}/agents/${admission.agent.id}`, {
     networkProxy: { url: proxy.url, credentialSecretId: credential.id },
   });
-  return { credential, botSecretId, harnessPolicy };
+  return { credential, botSourceId, harnessPolicy };
 }
 
 async function rawConnect(
@@ -657,10 +681,15 @@ async function agentAuditRows(stack: SmokeStack, agentId: string): Promise<unkno
   return rows;
 }
 
+interface ProxyDeployment {
+  admission: CodexAdmission;
+  revisionId: string;
+  readGateway: () => Promise<GatewayPod>;
+}
+
 async function containment(
   stack: SmokeStack,
-  admission: CodexAdmission,
-  revisionId: string,
+  { admission, revisionId, readGateway }: ProxyDeployment,
   credentials: string[],
   harnessPolicy: unknown,
 ) {
@@ -671,7 +700,7 @@ async function containment(
     return [value, Buffer.from(value).toString("base64"), token, decoded, password];
   });
   const base = `/namespaces/${stack.namespaceId}/agents/${admission.agent.id}`;
-  const gateway = await readyGateway(stack, admission.agent.id, revisionId);
+  const gateway = await readGateway();
   const pods = await agentPods(stack, admission.agent.id);
   const harness = pods.find(
     (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent",
@@ -728,13 +757,30 @@ async function containment(
     harnessPolicy,
     "channel proxy changed the Harness network policy",
   );
+  const gatewayData = JSON.parse(gatewayPod.stdout);
+  const gatewayEnv = gatewayData.spec.containers.flatMap(
+    (container: { env?: { name: string; valueFrom?: { secretKeyRef?: unknown } }[] }) =>
+      container.env ?? [],
+  );
+  const stagedName = `gateway-secrets-${idHash(admission.agent.id)}-${idHash(revisionId)}`;
+  for (const name of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
+    const projection = asRecord(
+      gatewayEnv.find((item: { name: string }) => item.name === name)?.valueFrom?.secretKeyRef,
+    );
+    assert.ok(projection, "Slack credentials must reference the Gateway revision's delivery copy");
+    assert.equal(projection.name, stagedName);
+    assert.equal(projection.key, name);
+    assert.equal(projection.optional ?? false, false);
+  }
   const harnessData = JSON.parse(harnessPod.stdout);
   const env = harnessData.spec.containers.flatMap(
     (container: { env?: { name: string; value?: string }[] }) => container.env ?? [],
   );
   assert.ok(
-    !env.some((item: { name: string }) => item.name === "HTTPS_PROXY"),
-    "Gateway channel proxy was injected into the Harness",
+    !env.some((item: { name: string }) =>
+      ["HTTPS_PROXY", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"].includes(item.name),
+    ),
+    "Gateway channel credentials or proxy were injected into the Harness",
   );
   const policyList = JSON.parse(policies.stdout) as {
     items: { spec: { podSelector?: { matchLabels?: Record<string, string> } } }[];
@@ -782,6 +828,7 @@ export async function proveControlledChannelProxy(
   const https = await proxyServer(address, material);
   const bad = await proxyServer(address, wrong);
   const proxies = [http, https, bad];
+  const gatewayNamespaces = new Map<string, string>();
   let scenarioError: unknown;
   let scenarioFailed = false;
   try {
@@ -791,9 +838,27 @@ export async function proveControlledChannelProxy(
       enableSlack(stack, a, "a", http),
       enableSlack(stack, b, "b", https),
     ]);
-    const [aRevision, bRevision] = await smokeStep("channel-proxy-initial-deploy", () =>
-      Promise.all([deployAgent(stack, a.agent), deployAgent(stack, b.agent)]),
+    // Keep the timing label with the Agent and revision that produced it.
+    // Read the Pod only when the scenario reaches its existing readiness check.
+    async function deploy(
+      admission: CodexAdmission,
+      context: ChannelProxyDeployment,
+    ): Promise<ProxyDeployment> {
+      const agentId = admission.agent.id;
+      const revisionId = await deployAgent(stack, admission.agent, { smokeStep, context });
+      return {
+        admission,
+        revisionId,
+        readGateway: () => readyGateway(stack, agentId, revisionId, context),
+      };
+    }
+    const [initialA, initialB] = await smokeStep("channel-proxy-initial-deploy", () =>
+      Promise.all([
+        deploy(a, "channel-proxy-initial-deploy-a"),
+        deploy(b, "channel-proxy-initial-deploy-b"),
+      ]),
     );
+    const aRevision = initialA.revisionId;
     await Promise.all([waitSocket("A"), waitSocket("B")]);
     const admissionEvents = await modelEvents();
     for (const caller of ["A", "B"]) {
@@ -828,19 +893,19 @@ export async function proveControlledChannelProxy(
     const [aGateway, bGateway] = await Promise.all([
       containment(
         stack,
-        a,
-        aRevision,
+        initialA,
         proxies.map((proxy) => proxy.authorization),
         aSetup.harnessPolicy,
       ),
       containment(
         stack,
-        b,
-        bRevision,
+        initialB,
         proxies.map((proxy) => proxy.authorization),
         bSetup.harnessPolicy,
       ),
     ]);
+    gatewayNamespaces.set(a.agent.id, aGateway.namespace);
+    gatewayNamespaces.set(b.agent.id, bGateway.namespace);
     const deniedAuthorities = [
       "example.org:443",
       "169.254.169.254:443",
@@ -855,8 +920,15 @@ export async function proveControlledChannelProxy(
       );
     const before = deniedObservations();
     const peerListener = await managedProxy(stack, bGateway);
-    await deniedTcp(stack, aGateway, peerListener.hostname, Number(peerListener.port));
-    await deniedTcp(stack, aGateway, modelAddress, 443);
+    const tcpDenials = await Promise.allSettled([
+      deniedTcp(stack, aGateway, peerListener.hostname, Number(peerListener.port)),
+      deniedTcp(stack, aGateway, modelAddress, 443),
+    ]);
+    for (const denial of tcpDenials) {
+      if (denial.status === "rejected") {
+        throw denial.reason;
+      }
+    }
     for (const authority of deniedAuthorities) {
       assert.equal(
         await rawConnect(stack, aGateway, authority),
@@ -874,7 +946,7 @@ export async function proveControlledChannelProxy(
       "POST",
       `/namespaces/${stack.namespaceId}/channel-directory/lookup`,
       {
-        secretId: aSetup.botSecretId,
+        sourceId: aSetup.botSourceId,
         kind: "channels",
         query: "smoke",
         agentId: a.agent.id,
@@ -910,7 +982,7 @@ export async function proveControlledChannelProxy(
     await waitSocket("B", bSockets);
 
     const base = `/namespaces/${stack.namespaceId}/agents/${a.agent.id}`;
-    const moved = await grantSecret(stack, a, https.authorization, "a-moved-proxy");
+    const moved = await grantCredential(stack, a, "secret", https.authorization, "a-moved-proxy");
     const runningRevision = await stack.api("GET", `${base}/revisions/${aRevision}`);
     await stack.api("PATCH", base, {
       networkProxy: { url: https.url, credentialSecretId: moved.id },
@@ -927,23 +999,27 @@ export async function proveControlledChannelProxy(
       aGateway,
       "editing the Agent replaced its running Gateway before redeploy",
     );
-    const movedRevision = await smokeStep("channel-proxy-move-deploy", () =>
-      deployAgent(stack, a.agent),
+    const movedDeployment = await smokeStep("channel-proxy-move-deploy", () =>
+      deploy(a, "channel-proxy-move-deploy-a"),
     );
-    assert.notEqual(movedRevision, aRevision, "proxy edit did not create a new revision");
+    assert.notEqual(
+      movedDeployment.revisionId,
+      aRevision,
+      "proxy edit did not create a new revision",
+    );
     await waitFor(
       "old HTTP proxy tunnels to retire",
       async () => ({ done: http.active() === 0 }),
       minute,
     );
-    const movedGateway = await readyGateway(stack, a.agent.id, movedRevision);
+    const movedGateway = await movedDeployment.readGateway();
     assert.equal(await rawConnect(stack, movedGateway, "slack.com:443"), 200);
 
     await stack.api("PATCH", base, { networkProxy: null });
     const aSocketsBeforeClear = await socketCount("A");
     const proxiesBeforeClear = proxyCounts(proxies);
-    const directRevision = await smokeStep("channel-proxy-clear-deploy", () =>
-      deployAgent(stack, a.agent),
+    const directDeployment = await smokeStep("channel-proxy-clear-deploy", () =>
+      deploy(a, "channel-proxy-clear-deploy-a"),
     );
     await waitSocket("A", aSocketsBeforeClear);
     assert.deepEqual(
@@ -951,27 +1027,32 @@ export async function proveControlledChannelProxy(
       proxiesBeforeClear,
       "cleared selection contacted an upstream proxy",
     );
-    const directGateway = await readyGateway(stack, a.agent.id, directRevision);
-    const proxyCount = https.observations.length;
+    const directGateway = await directDeployment.readGateway();
     assert.equal(
       await rawConnect(stack, directGateway, "slack.com:443"),
       200,
       "cleared selection did not restore managed direct routing",
     );
-    assert.equal(
-      https.observations.length,
-      proxyCount,
-      "cleared selection still contacted upstream proxy",
+    assert.deepEqual(
+      proxyCounts(proxies),
+      proxiesBeforeClear,
+      "cleared selection contacted an upstream proxy during the direct CONNECT check",
     );
 
-    const badCredential = await grantSecret(stack, a, bad.authorization, "a-bad-cert");
+    const badCredential = await grantCredential(
+      stack,
+      a,
+      "secret",
+      bad.authorization,
+      "a-bad-cert",
+    );
     await stack.api("PATCH", base, {
       networkProxy: { url: bad.url, credentialSecretId: badCredential.id },
     });
-    const badRevision = await smokeStep("channel-proxy-tls-control-deploy", () =>
-      deployAgent(stack, a.agent),
+    const badDeployment = await smokeStep("channel-proxy-tls-control-deploy", () =>
+      deploy(a, "channel-proxy-tls-control-deploy-a"),
     );
-    const badGateway = await readyGateway(stack, a.agent.id, badRevision);
+    const badGateway = await badDeployment.readGateway();
     assert.equal(
       await rawConnect(stack, badGateway, "slack.com:443"),
       503,
@@ -993,8 +1074,22 @@ export async function proveControlledChannelProxy(
       0,
       "credential-bearing CONNECT reached an untrusted proxy",
     );
+
+    // Restore trust on the same endpoint and verify the existing revision can use it.
+    bad.replaceCertificate(material);
+    assert.equal(
+      await rawConnect(stack, badGateway, "slack.com:443"),
+      200,
+      "trusted certificate did not restore CONNECT on the same proxy endpoint",
+    );
+    assert.ok(
+      bad.observations.some(
+        (item) => item.authority === "slack.com:443" && item.authenticated && item.forwarded,
+      ),
+      "trusted proxy saw no authenticated forwarded tunnel after certificate replacement",
+    );
     log(
-      "controlled channel proxy: two dedicated Agents, HTTP/HTTPS private CA, policy denials, OCC isolation, 407 recovery, revision edit/clear, wrong-host/untrusted TLS and credential containment passed",
+      "controlled channel proxy: two dedicated Agents, HTTP/HTTPS private CA, policy denials, OCC isolation, 407 recovery, revision edit/clear, wrong-host/untrusted TLS refusal and trusted recovery, credential containment passed",
     );
   } catch (error) {
     scenarioError = error;
@@ -1023,6 +1118,33 @@ export async function proveControlledChannelProxy(
     }
   }
   if (shutdown) {
+    const deliveryCopies = await Promise.allSettled(
+      admissions.map(async ({ agent }) => {
+        const namespace = gatewayNamespaces.get(agent.id);
+        if (namespace === undefined) {
+          return;
+        }
+        const { stdout } = await kubectl(stack, [
+          "-n",
+          namespace,
+          "get",
+          "secrets",
+          "-l",
+          `openclaw.dev/agent=${agent.id}`,
+          "-o",
+          "name",
+        ]);
+        assert.ok(
+          !stdout.split("\n").some((name) => name.startsWith("secret/gateway-secrets-")),
+          "stopping an Agent must remove its Gateway revision delivery copies",
+        );
+      }),
+    );
+    for (const result of deliveryCopies) {
+      if (result.status === "rejected") {
+        failures.push(result.reason);
+      }
+    }
     const closes = await Promise.allSettled(proxies.map((proxy) => proxy.close()));
     for (const result of closes) {
       if (result.status === "rejected") {

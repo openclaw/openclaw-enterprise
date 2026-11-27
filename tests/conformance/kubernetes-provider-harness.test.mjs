@@ -18,6 +18,8 @@ import {
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { strandsBoxResources } from "../../apps/controller/src/drivers/sandbox/strands-box-resources.ts";
+import { StrandsBoxSandboxDriver } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
 import test from "node:test";
 import {
   checkProviderEndpointRequirements,
@@ -69,16 +71,61 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   return fixture;
 }
 
-test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
+test("the Box provisioner receives the private hook launcher and requires namespace proof during workspace setup", async () => {
   const fixture = providerEndpointFixture();
-  fixture.sandbox.implementation = "strands-box";
+  const options = {
+    kubernetes: {
+      seccompProfile: "strands.json",
+      nodeSelector: { "kubernetes.io/arch": "arm64" },
+      controlPlanePeer: { namespace: "controller", podLabels: { app: "controller" } },
+    },
+    policy: { network: { endpoints: [] } },
+  };
+  const box = new StrandsBoxSandboxDriver(options, {
+    id: fixture.sandbox.id,
+    authentication: { mode: "inCluster" },
+    dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
+    routing: fixture.driver.options.gatewayRouting,
+  });
+  fixture.sandbox.implementation = box.implementation;
+  fixture.sandbox.harnessHome = box.harnessHome;
+  fixture.sandbox.validateWorkspaceSetup = box.validateWorkspaceSetup.bind(box);
   fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
-  await preparedEndpoint(fixture);
-  const command = fixture.provisions.at(-1).requirements.command;
+  await preparedEndpoint(fixture, {
+    ...authContext(fixture.revision),
+    workspaceSetup: {
+      id: "box-workspace-setup",
+      namespaceId: fixture.revision.namespaceId,
+      agentId: fixture.revision.agentId,
+      files: { "USER.md": "Initial Box workspace file" },
+      completed: false,
+    },
+  });
+  const context = fixture.provisions.at(-1);
+  const { command, labels } = context.requirements;
   const evaluation = command.lastIndexOf("-e");
   assert.ok(evaluation >= 0);
   const launcher = containerProgram({ args: command.slice(evaluation + 1) });
   assert.match(launcher, /Native hook storage must be private/u);
+  // The Box renderer consumes the setup requirement emitted by Compute.
+  const workload = strandsBoxResources(
+    context,
+    options,
+    "box-fixture",
+    labels,
+    "workload-hash",
+    digest("test-transport", 64),
+    { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
+    undefined,
+    [],
+  ).find(({ kind }) => kind === "Deployment");
+  const initializer = workload.spec.template.spec.initContainers.find(
+    ({ name }) => name === "initialize-workspace",
+  );
+  assert.deepEqual(
+    initializer.env.filter(({ name }) => name === "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF"),
+    [{ name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" }],
+  );
 });
 
 for (const implementation of ["openshell", "strands-box"]) {

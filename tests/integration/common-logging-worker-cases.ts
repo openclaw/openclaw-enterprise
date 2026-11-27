@@ -164,6 +164,37 @@ export function registerWorkerCases(): void {
     }
   });
 
+  test("worker logs the committed predecessor stop time as a numeric timestamp", () => {
+    const output = captureLogs("occ-worker");
+    const emit = createWorkerLogEmitter(output.logger);
+    const predecessorStoppingAtMs = 1_790_000_000_123;
+    const completion = {
+      event: "worker.completed",
+      operation: "agent_revision.reconcile",
+      code: "PREDECESSOR_STOP_YIELDED",
+      outcome: "pending",
+    };
+    emit({ ...completion, predecessorStoppingAtMs });
+    assert.equal(logAt(output.lines, -1).predecessorStoppingAtMs, predecessorStoppingAtMs);
+
+    for (const invalid of [
+      undefined,
+      null,
+      String(predecessorStoppingAtMs),
+      true,
+      { timestamp: predecessorStoppingAtMs },
+      0,
+      -1,
+      predecessorStoppingAtMs + 0.5,
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      emit({ ...completion, predecessorStoppingAtMs: invalid });
+      assert.equal(Object.hasOwn(logAt(output.lines, -1), "predecessorStoppingAtMs"), false);
+    }
+  });
+
   test("worker log keeps fixed codes and route fences, and drops anything shaped otherwise", () => {
     const output = captureLogs("occ-worker");
     const emit = createWorkerLogEmitter(output.logger);

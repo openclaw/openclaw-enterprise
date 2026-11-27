@@ -38,6 +38,7 @@ type ApiResponse = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "body" |
   data: unknown;
 };
 type FixtureOptions = DeviceIssuerOptions & {
+  oauthIssuer?: import("../../packages/occ/src/controller-composition.ts").ControllerOptions["oauthIssuer"];
   logger?: OccLogger;
   auditSink?: InMemoryAuditSink;
   native?: boolean;
@@ -55,6 +56,7 @@ export async function createFixture(
     native = false,
     ceiling,
     gatewayClient,
+    oauthIssuer,
     ...issuerOptions
   }: FixtureOptions = {},
 ) {
@@ -108,6 +110,7 @@ export async function createFixture(
         }
       : {}),
     auditSink,
+    ...(oauthIssuer === undefined ? {} : { oauthIssuer }),
     secretDriver,
     logger,
     now: () => new Date(clock.wallNow()),

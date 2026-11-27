@@ -51,8 +51,8 @@ export function enabledChannelEntries(
 }
 
 /**
- * Each listed channel's credential references need a Configuration Secret binding of that name
- * where the Compute delivers channel credentials only from bindings, as Kubernetes Compute does.
+ * Each listed channel's references need a Configuration binding of that name where Compute
+ * delivers channel values only from bindings. Active Slack credential inputs require a Source.
  * A reference is an env SecretRef's `id`, each `${NAME}` the runtime substitutes in a string
  * without a `:-fallback`, and in a secret-input field (`CHANNEL_SECRET_INPUTS`) also a `${NAME}`
  * with one and a `$NAME` value (`environment-references.ts`): an unbound name is never set there,
@@ -67,10 +67,14 @@ export function enabledChannelEntries(
 export function requireChannelSecretBindings(
   configuration: Readonly<OpenClawConfigurationDocument>,
   providers: readonly string[],
-  bound: (name: string) => boolean,
+  bound: (name: string, requiresSource: boolean) => boolean,
   createError: SettingError,
 ): void {
   const channels = asRecord(configuration.channels) ?? {};
+  const policy = slackPolicyReferenceRefusal(channels.slack, "channels.slack");
+  if (policy !== undefined) {
+    throw createError(policy.path, policy.requirement);
+  }
   for (const provider of providers) {
     const refusal = channelReferenceRefusal(
       channels[provider],
@@ -78,6 +82,7 @@ export function requireChannelSecretBindings(
       [],
       Object.hasOwn(CHANNEL_SECRET_INPUTS, provider) ? CHANNEL_SECRET_INPUTS[provider] : undefined,
       bound,
+      provider === "slack",
     );
     if (refusal !== undefined) {
       throw createError(refusal.path, refusal.requirement);
@@ -89,6 +94,62 @@ export function requireChannelSecretBindings(
   if (slack !== undefined) {
     throw createError(slack.path, slack.requirement);
   }
+}
+
+// Reject references in Slack policy selections before the credential binding scan.
+// Channel identifiers are map keys, which the generic walk does not visit.
+function slackPolicyReferenceRefusal(value: unknown, path: string) {
+  const slack = asRecord(value);
+  const accounts = [
+    { settings: slack, path },
+    ...Object.entries(asRecord(slack?.accounts) ?? {}).map(([id, settings]) => ({
+      settings: asRecord(settings),
+      path: keyedSettingPath(`${path}.accounts`, id),
+    })),
+  ];
+
+  function selectionReference(selection: unknown): boolean {
+    if (typeof selection === "string") {
+      return selection.includes("${") || secretInputShorthandName(selection) !== undefined;
+    }
+    const ref = asRecord(selection);
+    return typeof ref?.source === "string" && typeof ref.id === "string";
+  }
+
+  function userListRefusal(selection: unknown, path: string) {
+    const index = Array.isArray(selection) ? selection.findIndex(selectionReference) : -1;
+    if (index !== -1 || selectionReference(selection)) {
+      return {
+        path: index === -1 ? path : `${path}[${index}]`,
+        requirement: "must use a literal Slack user ID",
+      };
+    }
+    return undefined;
+  }
+
+  for (const { settings, path } of accounts) {
+    const directMessage = userListRefusal(settings?.allowFrom, `${path}.allowFrom`);
+    if (directMessage !== undefined) {
+      return directMessage;
+    }
+    const channels = settings?.channels;
+    if (selectionReference(channels)) {
+      return { path: `${path}.channels`, requirement: "must use literal Slack channel IDs" };
+    }
+    for (const [id, channel] of Object.entries(asRecord(channels) ?? {})) {
+      if (selectionReference(id)) {
+        return { path: `${path}.channels`, requirement: "must use literal Slack channel IDs" };
+      }
+      const users = userListRefusal(
+        asRecord(channel)?.users,
+        `${keyedSettingPath(`${path}.channels`, id)}.users`,
+      );
+      if (users !== undefined) {
+        return users;
+      }
+    }
+  }
+  return undefined;
 }
 
 const configuredValue = (value: unknown): boolean =>
@@ -181,19 +242,21 @@ function slackTokenRefusal(
   return undefined;
 }
 
-const unboundRequirement = (name: string): string => {
+const unboundRequirement = (name: string, requiresSource: boolean): string => {
   // Plain names show as written; any other env SecretRef id is quoted and shortened, so the
   // message keeps its cap.
   const written =
     name.length <= 32 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : quotedSettingKey(name, 32);
-  return `references ${written} without a Configuration Secret binding: bind ${written} in secretBindings to an environment-backed Secret, or remove the reference`;
+  return requiresSource
+    ? `references ${written} without a Credential Source binding: bind ${written} to a Credential Source in secretBindings, or remove the reference`
+    : `references ${written} without a Configuration binding: bind ${written} in secretBindings, or remove the reference`;
 };
 
 // The text the runtime keeps as written may be the credential itself, so the refusal shows it only
 // when it is a lowercase `${name}`, the realistic mistake (finding 2485: a mixed-case token such
 // as `${Zr9k…}` is never shown), or only the name of `${NAME-text}`; otherwise it names the form.
 function unsubstitutedRequirement(literal: string): string {
-  const bind = "bound to a Secret in secretBindings";
+  const bind = "bound to a stored credential in secretBindings";
   if (/^\$\{[a-z_][a-z0-9_]{0,28}\}$/.test(literal)) {
     return `contains ${literal}, which the runtime does not substitute: use an uppercase \${NAME} ${bind}, or escape literal text as $\${NAME}`;
   }
@@ -227,10 +290,13 @@ function channelReferenceRefusal(
   path: string,
   keys: readonly (string | number)[],
   fields: SecretInputFields | undefined,
-  bound: (name: string) => boolean,
+  bound: (name: string, requiresSource: boolean) => boolean,
+  slack: boolean,
+  enabled = true,
 ): { readonly path: string; readonly requirement: string } | undefined {
+  const secretInput = isSecretInput(keys, fields);
+  const requiresSource = slack && secretInput && enabled;
   if (typeof value === "string") {
-    const secretInput = isSecretInput(keys, fields);
     const literal = secretInput ? unsubstitutedReference(value) : undefined;
     if (literal !== undefined) {
       return { path, requirement: unsubstitutedRequirement(literal) };
@@ -241,8 +307,10 @@ function channelReferenceRefusal(
     const name = [
       ...environmentReferenceNames(value, { fallbacks: secretInput }),
       ...(shorthand === undefined ? [] : [shorthand]),
-    ].find((reference) => !bound(reference));
-    return name === undefined ? undefined : { path, requirement: unboundRequirement(name) };
+    ].find((reference) => !bound(reference, requiresSource));
+    return name === undefined
+      ? undefined
+      : { path, requirement: unboundRequirement(name, requiresSource) };
   }
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
@@ -252,6 +320,8 @@ function channelReferenceRefusal(
         [...keys, index],
         fields,
         bound,
+        slack,
+        enabled,
       );
       if (refusal !== undefined) {
         return refusal;
@@ -267,9 +337,9 @@ function channelReferenceRefusal(
     record.source === "env" &&
     typeof record.id === "string" &&
     record.id.length > 0 &&
-    !bound(record.id)
+    !bound(record.id, requiresSource)
   ) {
-    return { path, requirement: unboundRequirement(record.id) };
+    return { path, requirement: unboundRequirement(record.id, requiresSource) };
   }
   for (const [key, item] of Object.entries(record)) {
     const refusal = channelReferenceRefusal(
@@ -278,6 +348,9 @@ function channelReferenceRefusal(
       [...keys, key],
       fields,
       bound,
+      slack,
+      enabled &&
+        !(keys.length === 1 && keys[0] === "accounts" && asRecord(item)?.enabled === false),
     );
     if (refusal !== undefined) {
       return refusal;

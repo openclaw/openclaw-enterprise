@@ -144,7 +144,7 @@ provider acceptance or runtime readiness. See
 
 Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
-If model/Slack Secret grants fail after Agent creation,
+If a legacy model Secret grant fails after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 The same action is safe if the Console saved the Agent but could not confirm its service
 principal. It checks the saved Agent before granting access, without creating another Agent.
@@ -208,7 +208,7 @@ Combine approved repositories and Slack on one Codex Dedicated Agent with
 
 ## Initial runtime credentials
 
-Select model authentication and bind Slack tokens as Namespace Secrets. When
+Select model authentication and bind Slack tokens as Credential Sources. When
 Compute requires them, OCC creates missing transport credentials before saving the first
 version; supported Dedicated provisioning does so during creation.
 Neither path creates the selected `harnessAuth` model credential or channel tokens.
@@ -233,16 +233,12 @@ retries reread status. After a lost deployment reply, read version
 history. Created Secrets remain after later storage or audit failure. Missing
 credentials after an earlier Agent revision require investigation, not regeneration.
 
-On the **Credentials** tab, Slack token fields use the same Secret picker as
-creation; [Channel Secrets](../../guides/console/channels-and-credentials.md#channel-secrets)
-lists the save requirements. The browser never reads saved token values.
-
-Saving writes only Configuration `secretBindings` and exact IAM bindings for
-the changed Secret references. It reuses only Roles with the required permission
-set. Unchanged token bindings are preserved.
-Tokens are never stored in local storage, URLs, or native Configuration values.
-A stored channel Secret confirms storage and binding only; it does not prove
-provider acceptance, runtime readiness, or a channel connection.
+On the **Credentials** tab, Slack fields select ready static Credential Sources.
+[Channel credentials](../../guides/console/channels-and-credentials.md#channel-credentials)
+lists the save requirements. Saving writes canonical Source references in Configuration
+`secretBindings` and preserves unchanged bindings. Deploy admission delegates exact Source use
+to the Agent service principal. The browser never reads saved values. A saved binding does not
+prove provider acceptance, runtime readiness, or a channel connection.
 
 <span id="deploy-a-saved-draft"></span>
 
@@ -251,7 +247,7 @@ provider acceptance, runtime readiness, or a channel connection.
 ## Deploy a new version
 
 Open **Open draft** and select **Deploy new version** after storing
-credentials, saving channel Secret bindings, and selecting harness authentication.
+credentials, saving channel Credential Source bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
 deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
 not redeploy or roll back viewed snapshots. Each accepted deployment creates a new

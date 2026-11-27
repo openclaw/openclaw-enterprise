@@ -301,7 +301,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
       kind: "invalid-json",
       offset,
       message: fix
-        ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
+        ? `Invalid JSON at ${where}: ${fix("there")}.`
         : `Invalid JSON at ${where}. Enter a valid JSON object.`,
     };
   }

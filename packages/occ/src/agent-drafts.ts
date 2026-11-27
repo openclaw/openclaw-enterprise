@@ -8,6 +8,7 @@ import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   storedSecretBindings,
   rejectCrossNamespaceSecretSources,
+  requireDedicatedGatewaySources,
 } from "./configuration-operations.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
@@ -479,12 +480,9 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       );
       rejectDraftRepositorySources(sources);
       const agentId = dependencies.nextAgentId();
-      await dependencies.authorizeBindings(
-        state,
-        principalId,
-        namespace.id,
-        storedSecretBindings(existingConfiguration.secretBindings),
-      );
+      const configurationBindings = storedSecretBindings(existingConfiguration.secretBindings);
+      requireDedicatedGatewaySources(configurationBindings, executionMode);
+      await dependencies.authorizeBindings(state, principalId, namespace.id, configurationBindings);
       await authorizeNetworkProxySecret(
         state,
         dependencies.authority,
@@ -675,6 +673,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       // The form saves the Configuration first, so its content rules answer first, in
       // createConfiguration's order.
       rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
+      requireDedicatedGatewaySources(secretBindings, executionMode);
       const configurationDriver = dependencies.configurationDriver();
       // Use one unsaved Configuration for Driver admission and Agent topology checks.
       const configuration: Configuration = Object.freeze({
@@ -885,6 +884,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       // Configuration write (or naming another Configuration) can replace them, so loosening this
       // would not unblock the Agent. SecretBindingDriverError names that fix.
       const secretBindings = storedSecretBindings(configuration.secretBindings);
+      requireDedicatedGatewaySources(secretBindings, input.executionMode ?? agent.executionMode);
       await dependencies.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
       const selectedProxy = requestedProxy === undefined ? agent.networkProxy : requestedProxy;

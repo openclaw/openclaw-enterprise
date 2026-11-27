@@ -9,6 +9,8 @@ import {
 
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 
+import { limitRepositoryApi } from "../repo/access/delivery.ts";
+import { githubPullRequestCreationRequest } from "../repo/github/access/registry.ts";
 import {
   OPEN_SHELL_PROXY_CREDENTIAL_RULE_PREFIX,
   type OpenShellCredentialRoute,
@@ -82,7 +84,25 @@ export function narrowOpenShellRepositoryRoutes(
     binding.projection.presentation !== "github_repository" ||
     binding.projection.environment !== "GITHUB_TOKEN" ||
     !grants ||
-    !isDeepStrictEqual(injection?.allowedRequests, openShellRepositoryCredentialRequests(grants))
+    !injection
+  ) {
+    throw new Error("The admitted repository credential policy is unsupported.");
+  }
+  // The Worker revalidates current Source authority. This boundary checks the frozen tuple.
+  const publication = grants.flatMap(({ repository, access, apiLimits }) => {
+    if (limitRepositoryApi(apiLimits, "pull_requests", true, access === "write") !== "write") {
+      return [];
+    }
+    const request = githubPullRequestCreationRequest(repository);
+    return injection.allowedRequests.some((allowed) => isDeepStrictEqual(request, allowed))
+      ? [request]
+      : [];
+  });
+  if (
+    !isDeepStrictEqual(injection.allowedRequests, [
+      ...openShellRepositoryCredentialRequests(grants),
+      ...publication,
+    ])
   ) {
     throw new Error("The admitted repository credential policy is unsupported.");
   }
@@ -102,8 +122,23 @@ export function narrowOpenShellRepositoryRoutes(
     if (route.protocol !== "rest") {
       throw new Error("The repository credential needs a REST network rule.");
     }
-    const rules = rulesByPath.get(route.path);
     const allowed = route.rules[0]?.allow;
+    if (
+      publication.some(
+        ({ binary, host, requestPolicy }) =>
+          route.binary === binary &&
+          route.host === host &&
+          route.port === 443 &&
+          route.path === requestPolicy.path &&
+          route.rules.length === 1 &&
+          allowed?.method === requestPolicy.method &&
+          allowed.path === requestPolicy.path,
+      )
+    ) {
+      // TODO: Require HTTPS and the socket-opening executable when OpenShell supports them.
+      return route;
+    }
+    const rules = rulesByPath.get(route.path);
     if (
       !rules ||
       route.host !== "github.com" ||

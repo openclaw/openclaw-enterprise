@@ -1575,6 +1575,8 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data[].current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1642,6 +1644,11 @@ Example response
           }
         ],
         "issuer": "https://accounts.example.com",
+        "issuerVerification": {
+          "tokenEndpointAuthMethods": [
+            "client_secret_basic"
+          ]
+        },
         "mode": "manual",
         "scopes": [
           "profile.read"
@@ -1777,6 +1784,8 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1833,6 +1842,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2028,6 +2042,8 @@ Get one connection template
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2084,6 +2100,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2212,6 +2233,8 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2268,6 +2291,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2343,8 +2371,7 @@ Example response
       "issuer": "https://accounts.example.com",
       "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
+      "tokenEndpointAuthMethod": "client_secret_basic"
     }
   ],
   "meta": {
@@ -2383,9 +2410,7 @@ Register an OAuth or GitHub App credential client
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `kind` | `"oauth2"` | Yes | — |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
 **`kind: "github-app"`**
 
@@ -2406,8 +2431,7 @@ Example request
   "issuer": "https://accounts.example.com",
   "kind": "oauth2",
   "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-  "tokenEndpointAuthMethod": "client_secret_basic",
-  "tokenUrl": "https://accounts.example.com/token"
+  "tokenEndpointAuthMethod": "client_secret_basic"
 }
 ```
 
@@ -2446,8 +2470,7 @@ Example response
     "issuer": "https://accounts.example.com",
     "kind": "oauth2",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
+    "tokenEndpointAuthMethod": "client_secret_basic"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2571,8 +2594,7 @@ Example response
     "issuer": "https://accounts.example.com",
     "kind": "oauth2",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
+    "tokenEndpointAuthMethod": "client_secret_basic"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2628,6 +2650,8 @@ List connection templates available in this Namespace
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data[].current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2694,6 +2718,11 @@ Example response
           }
         ],
         "issuer": "https://accounts.example.com",
+        "issuerVerification": {
+          "tokenEndpointAuthMethods": [
+            "client_secret_basic"
+          ]
+        },
         "mode": "manual",
         "scopes": [
           "profile.read"
@@ -2837,9 +2866,7 @@ List OAuth clients eligible for a connection template in this Namespace
 | `data[].issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].kind` | `"oauth2"` | Yes | — |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `data[].tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -2865,8 +2892,7 @@ Example response
       "issuer": "https://accounts.example.com",
       "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
+      "tokenEndpointAuthMethod": "client_secret_basic"
     }
   ],
   "meta": {
@@ -4450,7 +4476,7 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/stop`](#post-namespacesnamespaceidagentsagentidstop) | Stop one Agent and keep its saved Agent revision and persistent state |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#get-namespacesnamespaceidagentsagentidworkspacefilesname) | Read an allowed workspace file from one active Agent |
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#put-namespacesnamespaceidagentsagentidworkspacefilesname) | Create or replace an allowed workspace file for one active Agent |
-| [`POST /namespaces/{namespaceId}/channel-directory/lookup`](#post-namespacesnamespaceidchanneldirectorylookup) | Search a channel directory using an authorized Namespace Secret |
+| [`POST /namespaces/{namespaceId}/channel-directory/lookup`](#post-namespacesnamespaceidchanneldirectorylookup) | Search a channel directory using an authorized Credential Source |
 | [`GET /native-admin/return/{agentKey}`](#get-nativeadminreturnagentkey) | Resolve an authorized Agent from a copied native chat link |
 
 #### `POST /agents/{agentId}/chat`
@@ -9799,15 +9825,15 @@ Example response
 
 <span id="post-namespacesnamespaceidchanneldirectorylookup"></span>
 
-Search a channel directory using an authorized Namespace Secret
+Search a channel directory using an authorized Credential Source
 
 **Operation ID:** `lookupChannelDirectory`
 
-**Permissions:** Requires operate permission on the exact Secret named by secretId. Without an edit target, requires Agent create permission in the Namespace. With agentId, requires update permission on that exact Agent. With configurationId, requires update permission on that exact Configuration.
+**Permissions:** Requires operate permission on the exact CredentialSource named by sourceId. Without an edit target, requires Agent create permission in the Namespace. With agentId, requires update permission on that exact Agent. With configurationId, requires update permission on that exact Configuration.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `operate` | `secret` | `request_body` |
+| `operate` | `credential_source` | `request_body` |
 | `create` | `agent` | `namespace` |
 | `update` | `agent` | `request_body` |
 | `update` | `configuration` | `request_body` |
@@ -9831,7 +9857,7 @@ Example request
 {
   "kind": "channels",
   "query": "engineering",
-  "secretId": "sec_123e4567-e89b-42d3-a456-426614174000"
+  "sourceId": "cs_123e4567-e89b-42d3-a456-426614174000"
 }
 ```
 

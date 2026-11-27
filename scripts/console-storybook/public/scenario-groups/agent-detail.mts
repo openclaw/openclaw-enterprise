@@ -94,6 +94,7 @@ type AgentDetailScenario = {
   observabilityDenied?: true;
   candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
   candidateActivates?: true;
+  candidateFailsOnPoll?: true;
   deploymentLastAttempt?: NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"];
   bootstrapFailure?: true;
   cleanupStatus?: "queued";
@@ -288,6 +289,11 @@ export function createAgentDetailScenarios({
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
 
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
+  const googleWorkspaceEntry = {
+    id: "occ-plugin:google@1.0.0",
+    name: "Google Workspace",
+    tools: [],
+  };
 
   const slackTool = {
     id: "slack_search_public",
@@ -1417,11 +1423,10 @@ export function createAgentDetailScenarios({
       },
       draftSourcesOperateDenied: {
         group: "Pages/Agent detail",
-        name: "Version draft, editor cannot operate a bound Secret",
+        name: "Version draft, editor cannot operate a bound Credential Source",
         path: `${draft}&tab=configuration`,
         deployed: true,
         slack: true,
-        secretOperateDenied: ["sec_demo_slack_app_token", "sec_demo_slack_bot_token"],
         agentPermissionSummary: {
           update: true,
           deploy: false,
@@ -1431,12 +1436,12 @@ export function createAgentDetailScenarios({
           configurationUpdate: true,
           configurationRead: true,
           configurationSecretsOperate: false,
-          configurationSecretsOperateDeniedBindings: [],
+          configurationSecretsOperateDeniedBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
           agentSourcesOperate: false,
           sandboxPolicyRead: false,
         },
         description:
-          "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
+          "The permission answer allows Agent and Configuration update but not operate on Credential Sources the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
         steps: [
           "Read the notice: Version draft · read-only with your access.",
           "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
@@ -1490,6 +1495,26 @@ export function createAgentDetailScenarios({
           "Close and reopen the picker. Calendar's saved policy is unchanged. Repeat from Reset story to inspect the skipped prefetch again.",
         ],
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
+      },
+      pluginsSearchWhileLoading: {
+        ...slackMcpBase,
+        name: "Keep the plugin search while the catalog loads",
+        path: draft,
+        credentialSources: [],
+        pluginDiscovery: {
+          ...slackMcpBase.pluginDiscovery,
+          pages: {
+            initial: { plugins: [googleWorkspaceEntry, slackEntry], nextCursor: null },
+          },
+        },
+        rules: [{ suffix: "/plugins/capabilities", method: "GET", delayMs: 10_000, once: true }],
+        description:
+          "Type a search before the catalog is available, then close the picker. When you reopen it, the results match what you typed.",
+        steps: [
+          "Select Plugins. While the catalog check is pending, open Configure plugins, type Workspace in Search plugins, and choose Done.",
+          "Wait about 10 seconds for the catalog check to finish, then reopen Configure plugins. Search plugins still shows Workspace, and the only result is Google Workspace.",
+        ],
+        gap: "The Agent, capabilities, and searchable catalog are simulated.",
       },
       slackMcpTools: {
         ...slackMcpBase,
@@ -1559,6 +1584,15 @@ export function createAgentDetailScenarios({
         description:
           "Review the compatible simulated MCP Template, the first eligible OAuth Client selected by default, and its preselected scopes in the same account consent dialog used by Create Agent.",
         gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
+      },
+      pluginAccountConsentMultipleClients: {
+        ...accountConsent,
+        oauthCatalog: "plugin-consent-multiple-clients",
+        name: "Choose an eligible OAuth Client",
+        description:
+          "The first eligible Client is selected automatically. Choosing another Client preserves that explicit selection for consent.",
+        steps: ["Choose Support alternate and confirm it remains selected."],
+        gap: "Client eligibility is simulated. This does not complete OAuth or create a Source.",
       },
       pluginAccountConsentNoClients: {
         ...accountConsent,
@@ -1631,7 +1665,7 @@ export function createAgentDetailScenarios({
         pluginDiscovery: {
           pages: {
             initial: {
-              plugins: [{ id: "occ-plugin:google@1.0.0", name: "Google Workspace", tools: [] }],
+              plugins: [googleWorkspaceEntry],
               nextCursor: null,
             },
           },
@@ -1643,8 +1677,8 @@ export function createAgentDetailScenarios({
           click("Connect account"),
         ],
         description:
-          "An Installation admin sees the existing Google OAuth Template that needs a client and can configure it instead of creating a duplicate. Connect stays unavailable until a client is assigned.",
-        gap: "Template and permission responses are simulated. This does not register an OAuth client or start consent.",
+          "An Installation administrator sees the unverified Google starter and can edit it instead of creating a duplicate. Consent remains unavailable until a verified version and eligible client exist.",
+        gap: "Template verification and permission responses are simulated. This does not contact Google, register an OAuth client, or start consent.",
       },
       slackMcpSavedToolsUnavailable: {
         ...slackMcpBase,
@@ -1713,12 +1747,12 @@ export function createAgentDetailScenarios({
           { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
         ],
         description:
-          "The selected bot Secret resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one shows their name and handle and saves a team-qualified selector.",
+          "The selected bot Credential Source resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one shows their name and handle and saves a team-qualified selector.",
         steps: [
           "Switch to another browser tab and return. The open query and results remain while Agent access is checked.",
           "Move focus to another Console control to close the list, then focus the search field to reopen it.",
         ],
-        gap: "The fixture simulates directory data; it does not contact Slack or read a real Secret.",
+        gap: "The fixture simulates directory data; it does not contact Slack or read a real credential.",
       },
       pluginApproversDirectoryUnavailable501: {
         group: "Pages/Agent detail",
@@ -1764,6 +1798,40 @@ export function createAgentDetailScenarios({
         steps: [
           "Select Plugins. At 390 px, focus the tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
         ],
+      },
+      nativeSlackSigningBinding: {
+        group: "Pages/Agent detail",
+        name: "Add a Slack signing credential Source with Configuration",
+        path: `${draft}&tab=configuration`,
+        slack: true,
+        actions: [
+          click("Edit Configuration"),
+          {
+            selector: "#configuration-json",
+            value: JSON.stringify(
+              {
+                agents: { defaults: { model: "codex/gpt-5" } },
+                channels: {
+                  slack: {
+                    enabled: true,
+                    mode: "http",
+                    botToken: "${SLACK_BOT_TOKEN}",
+                    signingSecret: "${SLACK_SIGNING_SECRET}",
+                  },
+                },
+              },
+              null,
+              2,
+            ),
+          },
+          {
+            selector: "#slack-binding-slack-signing-secret",
+            value: "cs_00000000-0000-4000-8000-000000000043",
+          },
+        ],
+        description:
+          "The draft JSON introduces SLACK_SIGNING_SECRET. Select a ready static Credential Source before saving the Configuration and its binding together.",
+        gap: "This preview simulates Source metadata and editor state. It does not prove persistence or Slack delivery.",
       },
       invalidConfiguration: {
         group: "Pages/Agent detail",
@@ -2625,16 +2693,9 @@ export function createAgentDetailScenarios({
         name: "Deployment fails while watching",
         path: `${candidateVersion}&tab=deployment`,
         deployed: true,
-        candidateDeploymentStatus: "failed",
+        candidateDeploymentStatus: "running",
+        candidateFailsOnPoll: true,
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-        // Show the in-progress record on arrival, then let the next poll read the failed record.
-        rules: [
-          {
-            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
-            once: true,
-            data: { status: "running", progress: null, error: null, warnings: [] },
-          },
-        ],
         description:
           "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
         steps: [
@@ -2805,6 +2866,24 @@ export function createAgentDetailScenarios({
           "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
         ],
         gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
+      deploymentFailedGatewayCredentialDelivery: {
+        group: "Pages/Agent detail",
+        name: "New version failed, Gateway credential delivery refused",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+          message:
+            "The selected Compute Driver refused Gateway credential delivery. Ask a platform operator to check the worker diagnostic, then correct the credential bindings and deploy again.",
+        },
+        description: "v7 failed because Compute refused Gateway credential delivery.",
+        steps: [
+          "Read the failure code and the operator's next step.",
+          "Open v7 Logs and confirm v7 remains selected; no deployment is submitted.",
+        ],
+        gap: "This simulated failure proves Console presentation and navigation, not credential delivery.",
       },
       deploymentFailedStoredInconsistent: {
         group: "Pages/Agent detail",

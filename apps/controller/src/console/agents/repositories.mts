@@ -702,7 +702,7 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Read-only Git permits clone and fetch. Read/write Git also permits push. Neither option grants GitHub REST or pull request access."
+      ? "Read-only Git allows cloning and fetching. Read/write Git also allows pushing. Opening pull requests requires Read/write Git, pull request write permission from the GitHub App and Credential Source, and repository policy approval. The Agent must be able to read every repository in the Source. Repository policy can allow public metadata reads for selected repositories without credentials. Pull request creation is the only authenticated GitHub REST operation this policy can grant."
       : "After deploying with access profiles, you need a new Agent to switch to Per-repository access.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
@@ -857,7 +857,8 @@ export function createRepositoryFields(
     } else {
       const name = nextSearchChoice()?.dataset.searchName;
       const summary = state.selected.size ? `${state.selected.size} selected` : "";
-      setText(searchAction, name ? `Enter selects ${name}` : summary);
+      const hint = name ? `In search, Enter selects ${name}` : "";
+      setText(searchAction, summary && hint ? `${summary} in total. ${hint}` : summary || hint);
     }
   }
   function renderResults() {
@@ -944,6 +945,11 @@ export function createRepositoryFields(
             : null,
         ),
       );
+      checkbox.addEventListener("focus", () => {
+        if (checkbox.matches(":focus-visible")) {
+          row.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
       checkbox.addEventListener("keydown", (event) => {
         if (!["ArrowUp", "ArrowDown"].includes(event.key)) {
           return;

@@ -14,6 +14,7 @@ import {
   type DeviceIssuerOptions,
 } from "../helpers/device-token-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   MEMBER_WRITE,
@@ -132,12 +133,86 @@ async function signInReady(page: Page, advanceApiClock: (ms: number) => void) {
     .waitFor();
 }
 
+test("Credentials keeps an in-flight Codex sign-in and offers a fresh login after Source creation", async (t) => {
+  let apiClockAheadMs = 0;
+  const { fixture, namespace } = await createOAuthConsoleNamespace(t, "Source Codex sign-in", {
+    now: () => new Date(Date.now() + apiClockAheadMs),
+  });
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  await page.getByRole("button", { name: "Create Credential Source", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
+  const choice = dialog.getByLabel("Preset or Connection Template", { exact: true });
+  await choice.selectOption("builtin:codex-oauth");
+  const startPath = `/namespaces/${namespace.id}/agents/device-authorizations`;
+  // The actual API starts the login; hold only its response to exercise the write guard.
+  const held = await holdRequests(t, page, `**${startPath}`, {
+    method: "POST",
+    once: true,
+    afterServer: true,
+  });
+  await dialog.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  assert.equal((await held.requested)?.status(), 200);
+  assert.equal(await choice.isDisabled(), true);
+  await page.goBack();
+  await page.waitForURL(`**/console/secrets?namespace=${namespace.id}`);
+  assert.equal(await dialog.isVisible(), true);
+  held.release();
+  await dialog
+    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .waitFor();
+  apiClockAheadMs += DEVICE_POLL_MS;
+  await page.clock.fastForward(DEVICE_POLL_MS);
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await sourceCount(fixture, namespace.id), 1);
+  await page.getByRole("button", { name: "Create Credential Source", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
+  await dialog
+    .getByLabel("Preset or Connection Template", { exact: true })
+    .selectOption("builtin:codex-oauth");
+  await dialog.getByRole("button", { name: "Sign in with OAuth", exact: true }).waitFor();
+  assert.equal(
+    await dialog.getByRole("button", { name: "Clear selection", exact: true }).count(),
+    0,
+  );
+
+  // Let the real API start a second login, then lose its reply. That login cannot safely be
+  // repeated, but it must not block independent credential creation in the same dialog.
+  let starts = 0;
+  await page.route(`**${startPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    starts += 1;
+    assert.equal((await route.fetch()).status(), 200);
+    await route.abort("failed");
+  });
+  await dialog.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  await dialog.getByText("Sign-in may have started", { exact: false }).waitFor();
+  const recoveredChoice = dialog.getByLabel("Preset or Connection Template", { exact: true });
+  assert.equal(await recoveredChoice.isEnabled(), true);
+  await recoveredChoice.selectOption("plain");
+  await dialog.getByLabel("Credential value", { exact: true }).waitFor();
+  await recoveredChoice.selectOption("builtin:codex-oauth");
+  assert.equal(
+    await dialog
+      .getByRole("button", { name: "Sign in with OAuth", exact: true })
+      .getAttribute("aria-disabled"),
+    "true",
+  );
+  assert.equal(starts, 1);
+});
+
 test("Codex OAuth console saves and reuses a Source for Agent creation and plugin editing", async (t) => {
   let apiClockAheadMs = 0;
   const advanceApiClock = (ms: number) => {
     apiClockAheadMs += ms;
   };
   let approved = false;
+  const externalIssuer = "https://issuer.example.test";
   const { fixture, namespace, issuer, owner } = await createOAuthConsoleNamespace(
     t,
     "OAuth console",
@@ -145,6 +220,14 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
       provisionedPeople: [],
       agentProvisioning: true,
       now: () => new Date(Date.now() + apiClockAheadMs),
+      oauthIssuer: fixtureOAuthIssuer(
+        {
+          issuer: externalIssuer,
+          authorizationUrl: `${externalIssuer}/authorize`,
+          tokenUrl: `${externalIssuer}/token`,
+        },
+        ["none"],
+      ),
     },
     { approve: async () => approved },
   );
@@ -507,7 +590,6 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
   }
   // A Template OAuth Source is a valid readable OAuth credential, but it does not carry the
   // built-in Codex consent needed to authenticate this model provider.
-  const externalIssuer = "https://issuer.example.test";
   const template = await fixture.request("POST", "/connection-templates", {
     body: {
       namespaceId: namespace.id,
@@ -527,7 +609,6 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
       kind: "oauth2",
       namespaceId: namespace.id,
       issuer: externalIssuer,
-      tokenUrl: `${externalIssuer}/token`,
       displayName: "External account client",
       clientId: "public-fixture-client",
       tokenEndpointAuthMethod: "none",

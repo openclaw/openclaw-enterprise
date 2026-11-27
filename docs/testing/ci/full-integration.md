@@ -37,7 +37,9 @@ runs do not count toward scheduled coverage.
 First-attempt scheduled and manual `all` runs can [reuse qualified CI results](#results-and-limits).
 Other selected lanes run fresh. Dispatch Preflight checks environment policy;
 Full Integration Aggregate requires selected results.
-QA waits for Slack to finish, including after Slack failure.
+After preflight, the Shipped Installation QA Matrix and Slack Live can run in
+parallel on ordinary `main` runs. Release QA shares the Slack Live queue, which
+prevents overlap with Slack Live and serializes Slack jobs across runs.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
 
