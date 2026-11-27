@@ -321,7 +321,11 @@ export function namespaceListClient(
         apiVersion: "v1",
         kind: "NamespaceList",
         items: items
-          .filter(({ metadata }) => metadata?.labels?.[key] === value)
+          .filter(({ metadata }) =>
+            value === undefined
+              ? Object.hasOwn(metadata?.labels ?? {}, key)
+              : metadata?.labels?.[key] === value,
+          )
           .map((item) => structuredClone(item)),
       };
     },

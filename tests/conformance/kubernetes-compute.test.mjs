@@ -212,7 +212,6 @@ import {
   validateProjectedServicePrincipalTokens,
 } from "./kubernetes-model-admission-cases.ts";
 import {
-  adoptedSplitLayoutNamespaces,
   checkAdoptedSplitLayoutPlacement,
   checkAdoptedSplitLayoutResolution,
   checkDedicatedHarnessPlacementAdmission,
@@ -221,9 +220,11 @@ import {
   checkNamespaceNames,
   checkSharedTenantPreparationOwnership,
   checkSharedWorkspaceClaimOwnership,
-  namespaceListClient,
 } from "./kubernetes-namespace-placement-cases.ts";
 import {
+  checkAdoptedNamespaceDeletion,
+  checkTenantLabelRefusal,
+  checkGatewayDeletionAfterDataPlaneLoss,
   checkSandboxCleanupBeforeNamespaceDeletion,
   checkNamespaceDeletionPermissionHint,
   checkRepositoryWorkloadPermissionHint,
@@ -3562,80 +3563,15 @@ test(
   checkAdoptedSplitLayoutResolution,
 );
 
-test("an adopted split-layout storage namespace passes preflight and is deleted with its Namespace", async () => {
-  const { adopted, relabelled } = adoptedSplitLayoutNamespaces();
-  let present = true;
-  const deleted = [];
-  const driver = new KubernetesComputeDriver(options());
-  driver.apiClients = Promise.resolve({
-    version: {
-      async getCode() {
-        return { gitVersion: "v1.35.0" };
-      },
-    },
-    core: {
-      async listNamespace(request) {
-        if (request.labelSelector === "openclaw.dev/gateway-namespace") {
-          return { items: present ? [structuredClone(adopted)] : [] };
-        }
-        return namespaceListClient(present ? [adopted, relabelled] : [relabelled]).listNamespace(
-          request,
-        );
-      },
-      async readNamespace({ name }) {
-        if (present && name === adopted.metadata.name) {
-          return structuredClone(adopted);
-        }
-        throw Object.assign(new Error("Not found"), { statusCode: 404 });
-      },
-      async deleteNamespace(request) {
-        deleted.push(request);
-        present = false;
-      },
-    },
-    objects: {},
-  });
-  // The startup preflight refuses only storage namespaces without the tenant label.
-  assert.deepEqual(await driver.preflight(), { warnings: [] });
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: true,
-  });
-  // Deleting the adopted namespace removes the Gateway state and Secrets it holds; the old
-  // Harness namespace no longer belongs to the tenant and is left to the adopt finalize step.
-  assert.deepEqual(deleted, [
-    { name: adopted.metadata.name, body: { preconditions: { uid: adopted.metadata.uid } } },
-  ]);
-});
+test(
+  "an adopted split-layout storage namespace passes preflight and is deleted with its Namespace",
+  checkAdoptedNamespaceDeletion,
+);
 
-test("the two-cluster profile still refuses a tenant-labelled control namespace", async () => {
-  const { adopted } = adoptedSplitLayoutNamespaces();
-  const driver = new KubernetesComputeDriver(twoClusterOptions());
-  driver.apiClients = Promise.resolve({
-    core: {
-      async listNamespace() {
-        return { items: [] };
-      },
-      async readNamespace({ name }) {
-        if (name === adopted.metadata.name) {
-          return structuredClone(adopted);
-        }
-        throw Object.assign(new Error("Not found"), { statusCode: 404 });
-      },
-      async deleteNamespace() {
-        assert.fail("a mislabelled control namespace must not be deleted");
-      },
-    },
-  });
-  driver.executionApiClients = driver.apiClients;
-  // Adoption applies to single-cluster tenants only; the separate control target keeps its
-  // storage-only labels, so a tenant label there is foreign ownership.
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: false,
-    failure: "permanent",
-  });
-});
+test(
+  "the two-cluster profile still refuses a tenant-labelled control namespace",
+  checkTenantLabelRefusal,
+);
 
 test(
   "Kubernetes namespace deletion waits for Sandbox namespace cleanup",
@@ -3747,81 +3683,10 @@ test(
   checkSharedWorkspaceClaimOwnership,
 );
 
-test("Namespace deletion removes only its owned Gateway target after data-plane loss", async () => {
-  for (const external of [false, true]) {
-    for (const foreign of [false, true]) {
-      const calls = [];
-      const driver = new KubernetesComputeDriver(twoClusterOptions());
-      let gateway = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
-      gateway.metadata.uid = "owned-gateway-namespace-uid";
-      if (foreign) {
-        gateway.metadata.annotations["openclaw.dev/namespace-id"] = "ns_other";
-      }
-      const target = gateway.metadata.name;
-      // Exercise the actual delete lifecycle with an absent managed target or an
-      // external namespace whose logical claim is gone. Never delete that external namespace.
-      driver.apiClients = Promise.resolve({
-        core: {
-          async listNamespace() {
-            return { items: [] };
-          },
-          async readNamespace({ name }) {
-            if (name === target && gateway !== undefined) {
-              return structuredClone(gateway);
-            }
-            if (external && name === "customer-support") {
-              return { apiVersion: "v1", kind: "Namespace", metadata: { name } };
-            }
-            throw Object.assign(new Error("Not found"), { statusCode: 404 });
-          },
-          async deleteNamespace({ name, body }) {
-            assert.equal(name, target);
-            assert.equal(body.preconditions.uid, gateway.metadata.uid);
-            calls.push("delete-gateway");
-            gateway = undefined;
-          },
-        },
-      });
-      driver.executionApiClients = driver.apiClients;
-      const { reconcileNamespaceLifecycle } =
-        await import("../../packages/occ/src/namespace-lifecycle.ts");
-      const result = await reconcileNamespaceLifecycle(
-        driver,
-        [
-          {
-            id: "provider",
-            hooks: {
-              async ensureNamespace() {
-                assert.fail("Deletion must not run setup.");
-              },
-              async deleteNamespace() {
-                calls.push("provider-cleanup");
-                return { namespaceId: tenant.id, namespaceDeleted: true };
-              },
-            },
-          },
-        ],
-        {
-          ...tenant,
-          status: "deleting",
-          ...(external ? { existingNamespace: "customer-support" } : {}),
-        },
-        "deleted",
-        new AbortController().signal,
-        () => {},
-      );
-      assert.deepEqual(result, {
-        namespaceId: tenant.id,
-        namespaceDeleted: !foreign,
-        ...(foreign ? { failure: "permanent" } : {}),
-      });
-      assert.deepEqual(
-        calls,
-        foreign ? [] : external ? ["delete-gateway"] : ["provider-cleanup", "delete-gateway"],
-      );
-    }
-  }
-});
+test(
+  "Namespace deletion removes only its owned Gateway target after data-plane loss",
+  checkGatewayDeletionAfterDataPlaneLoss,
+);
 
 test(
   "native Gateway listeners cannot overlap the private runtime status port",

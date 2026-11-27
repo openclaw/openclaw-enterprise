@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import type { TestContext } from "node:test";
 
 import type { Namespace, SandboxDriver } from "@openclaw-enterprise/contracts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
@@ -24,6 +25,7 @@ import {
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { twoClusterOptions } from "./kubernetes-gateway-routing-cases.ts";
 import {
+  adoptedSplitLayoutNamespaces,
   namespaceListClient,
   previousTenantNamespaceName,
 } from "./kubernetes-namespace-placement-cases.ts";
@@ -65,6 +67,137 @@ function sandboxDeletion(
       new AbortController().signal,
       () => {},
     );
+}
+
+const deletingTenant: Namespace = { ...tenant, status: "deleting" };
+const removed = { namespaceId: tenant.id, namespaceDeleted: true };
+const refused = { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" };
+
+type Core = InstanceType<KubernetesSdk["CoreV1Api"]>;
+type DeleteRequest = Parameters<Core["deleteNamespace"]>[0];
+// Strings record read observations. Tuples record every attempted side effect in call order.
+type NamespaceTrace = (
+  string | [string, DeleteRequest] | ["provider setup" | "provider cleanup"]
+)[];
+
+function namespacePlane(
+  plane: "tenant" | "control" | "execution",
+  items: Parameters<typeof namespaceListClient>[0][number][],
+  trace: NamespaceTrace,
+) {
+  return {
+    ...namespaceListClient(items),
+    async readNamespace({ name }: { name: string }) {
+      const item = items.find(({ metadata }) => metadata?.name === name);
+      trace.push(`${plane} ${name} ${item ? "hit" : "miss"}`);
+      if (!item) {
+        throw Object.assign(new Error("Not found"), { statusCode: 404 });
+      }
+      return structuredClone(item);
+    },
+    async deleteNamespace(request: DeleteRequest) {
+      trace.push([plane, structuredClone(request)]);
+      const index = items.findIndex(({ metadata }) => metadata?.name === request.name);
+      const uid = items[index]?.metadata?.uid;
+      assert.ok(uid);
+      assert.equal(request.body?.preconditions?.uid, uid);
+      items.splice(index, 1);
+    },
+  };
+}
+
+function uidDelete({ name, uid }: { name: string; uid?: string | undefined }) {
+  assert.ok(uid);
+  return { name, body: { preconditions: { uid } } };
+}
+
+export async function checkAdoptedNamespaceDeletion(t: TestContext) {
+  const { adopted, relabelled } = adoptedSplitLayoutNamespaces();
+  const items = [adopted, relabelled];
+  const trace: NamespaceTrace = [];
+  const core = namespacePlane("tenant", items, trace);
+  const list = t.mock.method(core, "listNamespace");
+  const version = { getCode: async () => ({ gitVersion: "v1.35.0" }) };
+  const driver = new KubernetesComputeDriver(options());
+  Object.assign(driver, { apiClients: Promise.resolve({ core, version }) });
+
+  assert.deepEqual(await driver.preflight(), { warnings: [] });
+  const [preflight] = list.mock.calls;
+  assert.equal(preflight?.arguments[0]?.labelSelector, "openclaw.dev/gateway-namespace");
+  assert.deepEqual((await preflight?.result)?.items, [adopted]);
+  assert.deepEqual(await driver.deleteNamespace(deletingTenant), removed);
+  assert.deepEqual(trace.filter(Array.isArray), [["tenant", uidDelete(adopted.metadata)]]);
+  assert.deepEqual(items, [relabelled]);
+}
+
+function gatewayDeletionFixture(external = false) {
+  const driver = new KubernetesComputeDriver(twoClusterOptions());
+  const gateway = driver["gatewayNamespaceManifest"]({ namespaceId: tenant.id });
+  gateway.metadata.uid = "owned-gateway-namespace-uid";
+  const customer = { apiVersion: "v1", kind: "Namespace", metadata: { name: "customer-support" } };
+  const trace: NamespaceTrace = [];
+  const control = namespacePlane("control", [gateway], trace);
+  const execution = namespacePlane("execution", external ? [customer] : [], trace);
+  Object.assign(driver, {
+    apiClients: Promise.resolve({ core: control }),
+    executionApiClients: Promise.resolve({ core: execution }),
+  });
+  return { driver, gateway, trace };
+}
+
+function eligibilityReads(gateway: string, external = false) {
+  const missing = `execution ${kubernetesNamespaceName(tenant.id)} miss`;
+  return [external ? "execution customer-support hit" : missing, `control ${gateway} hit`];
+}
+
+export async function checkTenantLabelRefusal() {
+  const { driver, gateway, trace } = gatewayDeletionFixture();
+  gateway.metadata.labels = { ...gateway.metadata.labels, "openclaw.dev/namespace": tenant.id };
+
+  assert.deepEqual(await driver.deleteNamespace(deletingTenant), refused);
+  assert.deepEqual(trace, eligibilityReads(gateway.metadata.name));
+}
+
+export async function checkGatewayDeletionAfterDataPlaneLoss(t: TestContext) {
+  for (const external of [false, true]) {
+    for (const foreign of [false, true]) {
+      const { driver, gateway, trace } = gatewayDeletionFixture(external);
+      const { metadata } = gateway;
+      if (foreign) {
+        metadata.annotations = { ...metadata.annotations, "openclaw.dev/namespace-id": "ns_other" };
+      }
+      const eligibility = t.mock.method(driver, "checkNamespaceDeletion");
+      const hooks = {
+        async ensureNamespace(): Promise<never> {
+          trace.push(["provider setup"]);
+          assert.fail("Deletion must not run setup.");
+        },
+        async deleteNamespace() {
+          trace.push(["provider cleanup"]);
+          return { ...removed };
+        },
+      };
+      const result = await reconcileNamespaceLifecycle(
+        driver,
+        [{ id: "provider", hooks }],
+        external ? { ...deletingTenant, existingNamespace: "customer-support" } : deletingTenant,
+        "deleted",
+        new AbortController().signal,
+        () => assert.ok(!foreign, "Foreign ownership must stop at eligibility"),
+      );
+      assert.equal(eligibility.mock.callCount(), 1);
+      assert.deepEqual(result, foreign ? refused : removed);
+      // Eligibility must inspect both targets before OCC lets the provider or Compute delete.
+      const reads = eligibilityReads(metadata.name, external);
+      assert.deepEqual(foreign ? trace : trace.slice(0, reads.length), reads);
+      if (foreign) {
+        continue;
+      }
+      const deletion = ["control", uidDelete(metadata)];
+      const expected = external ? [deletion] : [["provider cleanup"], deletion];
+      assert.deepEqual(trace.filter(Array.isArray), expected);
+    }
+  }
 }
 
 export async function checkSandboxCleanupBeforeNamespaceDeletion() {
@@ -141,10 +274,7 @@ export async function checkSandboxCleanupBeforeNamespaceDeletion() {
   assert.equal(present, true);
   assert.deepEqual(calls, ["sandbox-cleanup"]);
 
-  assert.deepEqual(await remove(), {
-    namespaceId: tenant.id,
-    namespaceDeleted: true,
-  });
+  assert.deepEqual(await remove(), removed);
   assert.deepEqual(calls, ["sandbox-cleanup", "sandbox-cleanup", "kubernetes-delete"]);
 }
 
