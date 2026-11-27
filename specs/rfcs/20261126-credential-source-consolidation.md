@@ -65,9 +65,12 @@ For every selection, OCC checks the caller's exact `credential_source:operate` a
 Worker resolves the Sources required by the admitted embedded revision through
 their selected TokenService. Kubernetes Compute stages the usable values in the
 revision's Gateway Secret and starts OpenClaw with its existing credential
-inputs. The current embedded model authentication uses a static Source for the
-API key. OpenClaw calls its configured model endpoint directly. Gateway and
-Harness share the Pod, so use this mode for testing.
+inputs. Deployment admission checks exact Source access and accepts only ready
+static Sources for direct embedded model and Gateway bindings. OAuth and
+GitHub App Sources cannot be delivered by this path. Dedicated execution still
+owns managed Plugin and native Git credential injection. OpenClaw calls its
+configured model endpoint directly. Gateway and Harness share the Pod, so use
+this mode for testing.
 
 Compute uses the same authorization, reuse, and cleanup checks as Gateway
 startup delivery. TokenService keeps custody of the Source. A new managed
