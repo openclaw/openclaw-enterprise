@@ -62,15 +62,14 @@ selection. Successful Helm work is not repeated. A replacement revision cannot p
 if redeployment is necessary, preserve this incomplete evidence and verify that
 separate recovery. The helper neither redeploys Agents nor rolls back the control plane.
 
-Read `native-command-failures.tsv` for failed scale, Helm or rollout commands:
-rows retain the operation, component (`api`, `worker`, `release`) and exit code.
-Client failures do not establish whether requests took effect; other failures
-may leave no row. Reconcile live state before resuming.
-
-Both Deployments are validated before stopping either. Later UID/version/replica
-conflicts can leave the API stopped. Reconcile
+Inspect `native-command-failures.tsv` for scale, Helm or rollout failures,
+operation, component (`api`, `worker`, `release`) and exit code. Missing rows or
+client errors do not establish effects. Inspect `quiescence-<component>-preview.err`.
+Preview refusal stops no OCC writer in this attempt. Earlier Agent Stops may have
+succeeded. Preserve the original `channel-agent-operations.json` and reconcile
+unknown operations. Before resume, compare
 `current-<component>-deployment.json` and `quiescence-<component>-patch.json`
-against live state before resuming.
+with live Deployments. Later UID/version/replica conflicts can leave the API stopped.
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
 Helm status/history, initialization Job/Pod outcomes and the database;

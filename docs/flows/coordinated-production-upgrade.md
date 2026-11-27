@@ -236,14 +236,15 @@ remain operator attestations.
 ### 3. Quiesce writers and run the candidate release
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. Before either stop, check named patch permission for
-running workers. Refuse denial and warn on inconclusive review.
-While the worker runs, refuse inventory drift, including on resume. Restore stopped
-API access under exclusive maintenance ownership before retry.
-Skip stopped writers. Stopped workers lack prospective checks.
-Sequential patches test UID, resource version and replicas. Conflicts can leave
-the API stopped. Verify Pod absence and original Deployments at zero. Operators
-stop other writers/autoscalers and keep nodes reachable.
+Validate both Deployments. Before channel Agent Stop, check running Worker patch permission
+and preview each running writer’s stop. Recheck running Worker permission and
+inventory before shutdown, including on resume. Refuse denial or drift. Warn on
+inconclusive permission checks. With both writers running, preview the Worker
+patch before stopping the API. Require zero replicas from `kubectl patch --dry-run=server`.
+Skip stopped writers. Sequential patches test UID, resource version and replicas.
+Conflicts can leave the API stopped. Restore access under exclusive maintenance.
+Verify both original Deployments have zero replicas and no Pods.
+Stop other writers/autoscalers. Keep nodes reachable.
 Separate mode rechecks Secret identities before stopping writers and again
 before recording their stopped UIDs and generations. It exits 3.
 `apply_database_migration` requires approval for irreversible SQL.
