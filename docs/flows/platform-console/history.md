@@ -8,6 +8,14 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
+
+- 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
+
+- 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
+
 - 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
 - 2026-11-05 19:21: Record automatic Git SHA detection for local controller builds. (authoring-run/b294b13a-1a99-4f9a-8377-d76d11bfe62f - 0351eb77180fbeea7c70114af7c8937a521b90b4)
 - 2026-11-05 22:43: Unconfirmed status. (authoring-run/104e0ca4-86db-492b-af14-750b4ea079f1 - 346f0db69fb93eb462822c7f5a7f600081f10847)

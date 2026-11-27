@@ -104,7 +104,9 @@ export function createNetworkProxyFields({
     element(
       "p",
       { className: "hint" },
-      "For Basic authentication, select a Secret containing Basic <base64(username:password)>. Proxy credentials are separate from channel credentials.",
+      "For Basic authentication, select a Secret containing Basic <base64(username:",
+      element("wbr"),
+      "password)>. Proxy credentials are separate from channel credentials.",
     ),
     remove,
     validation,

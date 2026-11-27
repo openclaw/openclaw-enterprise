@@ -400,7 +400,9 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
       const agentId = id("agt", 3 + index);
       const originalRevisionId = id("rev", 5 + index);
       const deploymentId = id("rev", 7 + index);
+      const configurationId = id("cfg", 3 + index);
       const base = `/namespaces/${namespaceId}/agents/${agentId}`;
+      const configurationPath = `/namespaces/${namespaceId}/configurations/${configurationId}`;
       return {
         index,
         agentId,
@@ -413,7 +415,22 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
           status: "active",
           desiredRuntimeState: "running",
           activeRevisionId: originalRevisionId,
+          configurationId,
         },
+        configuration: {
+          id: configurationId,
+          namespaceId,
+          kind: "agent",
+          generation: 1,
+          values: {} as Record<string, unknown>,
+          secretBindings: {
+            MODEL_KEY: {
+              source: { kind: "secret", namespaceId, id: id("sec", 3 + index) },
+              delivery: { type: "env" },
+            },
+          } as Record<string, unknown>,
+        },
+        configurationRead: `GET ${configurationPath}`,
         revisionRead: `GET ${base}/revisions/${originalRevisionId}`,
         stopWrite: `POST ${base}/stop?expectedActiveRevisionId=${originalRevisionId}`,
         deployWrite: `POST ${base}/deploy`,
@@ -460,6 +477,10 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
         outgoing
           .writeHead(status, { "content-type": "application/json" })
           .end(JSON.stringify({ data, meta: { requestId: "fixture" } }));
+      const configuration = targets.find((target) => wire === target.configurationRead);
+      if (configuration) {
+        return send(configuration.configuration);
+      }
       const selected = targets.find(({ base }) => incoming.url?.startsWith(base));
       if (!selected) {
         return outgoing.writeHead(404).end();
@@ -539,6 +560,35 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
     async (t) => {
       const f = await lifecycleFixture(t);
       const [first, second] = f.targets;
+      // The upgrade retires active Slack credential bindings. An ordinary policy
+      // setting and a dormant account may retain their existing Secret bindings.
+      first.configuration.values.channels = {
+        slack: {
+          enabled: true,
+          appToken: "${SLACK_APP}",
+          botToken: { source: "env", id: "SLACK_BOT" },
+          replyToMode: "${SLACK_REPLY_MODE}",
+          accounts: { paused: { enabled: false, signingSecret: "${PAUSED_SLACK_SIGNING}" } },
+        },
+      };
+      Object.assign(first.configuration.secretBindings, {
+        SLACK_APP: {
+          source: { kind: "credential_source", namespaceId, id: id("cs", 5) },
+          delivery: { type: "env" },
+        },
+        SLACK_BOT: {
+          source: { kind: "credential_source", namespaceId, id: id("cs", 6) },
+          delivery: { type: "env" },
+        },
+        SLACK_REPLY_MODE: {
+          source: { kind: "secret", namespaceId, id: id("sec", 8) },
+          delivery: { type: "env" },
+        },
+        PAUSED_SLACK_SIGNING: {
+          source: { kind: "secret", namespaceId, id: id("sec", 9) },
+          delivery: { type: "env" },
+        },
+      });
       await f.run("stop");
       await f.run("deploy");
       assert.deepEqual(
@@ -562,6 +612,28 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
       );
     },
   );
+
+  await t.test("a later legacy Slack binding refuses before any Agent Stop", async (t) => {
+    const f = await lifecycleFixture(t);
+    const [, later] = f.targets;
+    // The earlier target's unrelated model Secret remains valid. The later target's
+    // enabled Slack reference is bound to an old public Namespace Secret.
+    later.configuration.values = {
+      channels: { slack: { enabled: true, botToken: { source: "env", id: "SLACK_BOT" } } },
+    };
+    later.configuration.secretBindings.SLACK_BOT = {
+      source: { kind: "secret", namespaceId, id: id("sec", 8) },
+      delivery: { type: "env" },
+    };
+    await assert.rejects(f.run("stop"), /public Namespace Secret.*recreate.*Credential Sources/);
+    assert.equal(
+      f.requests.some((wire) => wire.startsWith("POST")),
+      false,
+    );
+    assert.ok(f.requests.includes(later.configurationRead));
+    const journal = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.ok(journal.targets.every((target: { stop: string }) => target.stop === "unsent"));
+  });
 
   for (const kind of ["missing-overrides", "missing-revision"] as const) {
     await t.test(`a later Agent with ${kind} prevents every Stop and Deploy request`, async (t) => {

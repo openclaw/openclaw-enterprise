@@ -1,11 +1,9 @@
 # Agent plugins
 
-Plugin selections belong to an Agent, independently of its reusable
-[Configuration](configuration.md). Changes apply on its next successful deployment.
-New Agents have no selected plugins. Nonempty selections require a [Driver](drivers/plugin.md)
-for the Agent's Harness. OCC checks policy before saving and performs
-[additional checks at startup](#failures-and-boundaries).
-[Configure Agent plugins](../guides/topics/plugins-configure.md)
+An Agent starts without plugins. Its selections are independent of its reusable
+[Configuration](configuration.md) and apply on the next successful deployment.
+Selections require a [Plugin Driver](drivers/plugin.md) for the Harness. OCC
+checks policy before saving and [at startup](#failures-and-boundaries).
 
 ## Current support
 
@@ -14,6 +12,10 @@ Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].e
 [Slack](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) discovers tools through `tools/list`.
 Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 Gateway approval names the selected MCP server and tool, without arguments. Direct scripts bypass approval.
+Live [Slack OAuth qualification](https://github.com/openclaw/openclaw-enterprise/pull/4673)
+covered a selected search through an Agent and an OpenShell denial for an
+unselected direct tool request. Static Slack MCP and Google OAuth live execution
+remain separate proof boundaries.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -36,10 +38,9 @@ The new policy paths still need
 [real Agent verification](../testing/plugins.md#current-proof-notes). There is
 no bundled Claude PluginDriver.
 
-**Experimental** OAuth discovery uses the saved credential source after
+Codex app discovery resolves a TokenService Source after
 [device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
-The Credential Gateway supplies a usable access token; closing the login session
-does not remove plugin-editing access.
+Closing the session preserves Plugin-editing access.
 
 ## Lifecycle
 
@@ -89,6 +90,8 @@ default plugin approver policy (even an empty list), even when a PluginDriver is
 selected.
 
 ## HTTP operations
+
+See [Plugin Source selection and delivery limits](credential-sources.md#bind-a-source-to-an-agent).
 
 Plugin selections and default approvers use Agent create/update. There are no
 separate plugin resources or install, delete, policy-mutation or tool-invocation
@@ -223,11 +226,8 @@ runtime compatibility needs the opt-in Kubernetes proof in
 [Agent plugin testing](../testing/plugins.md): a real Agent turn, then a later
 deployment that disables or removes the selection and leaves another Agent unchanged.
 
-This page owns the nested plugin wire contract. The
-[generated API reference](api.md) summarizes routes and top-level schemas;
-[request schemas](../../packages/contracts/src/api/common.ts) and
-[response schemas](../../packages/contracts/src/api/resources.ts) are the
-executable definitions.
+The executable schemas define [requests](../../packages/contracts/src/api/common.ts)
+and [responses](../../packages/contracts/src/api/resources.ts).
 
 ## Approval policy
 
@@ -258,13 +258,13 @@ Otherwise the gateway validates it before launch, and incompatibility prevents
 launch; see the
 [compatibility check](../flows/agent-plugin-approvals.md#3-check-the-selected-gateway-before-launch).
 
-The Console resolves display names with the selected same-Namespace bot Secret,
+The Console resolves display names with the selected same-Namespace bot Credential Source,
 which stays on the server. Selecting a person shows their name and handle; the policy
 stores their workspace-qualified Slack user ID. A saved name the Console cannot resolve
-shows **Name unavailable** and stays selected. During Agent creation, choose a Secret
+shows **Name unavailable** and stays selected. During Agent creation, choose a Source
 beside the approver field; this search-only selection does not bind it to the Agent.
 An existing Slack channel binding supplies the initial selection. Lookup requires
-Agent create or edit and Secret `operate`; operators can paste user IDs instead. The
+Agent create or edit and Source `operate`; operators can paste user IDs instead. The
 [Slack Channel Driver](drivers/slack-channel.md) describes workspace display,
 scopes, and pagination.
 

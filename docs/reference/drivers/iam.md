@@ -123,8 +123,26 @@ supported resource actions and Restrictions.
 | Valid credentials do not resolve an identity                | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
 | A known identity is denied                                  | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
 | Previously queued work is denied                            | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
-| IAM or policy storage is unavailable                        | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
+| IAM or policy storage is unavailable                        | Restore the dependency and retry reads. Check uncertain writes below. Never treat errors or malformed decisions as permission.                   |
 | Creates or startup return `503` with an `iam` configuration | Check that the Driver declares `namespacePolicyTransaction: "platform-unit-of-work"` with its configured policy and owner methods.               |
+
+For a Namespace policy write, `503 DEPENDENCY_UNAVAILABLE` alone does not
+tell you whether the write committed. If `error.message` starts with
+`The operation outcome is unknown.`, save `meta.requestId`. Do not repeat
+the write automatically.
+
+With Installation `administer` and `read` on the Namespace, [list or read the
+policy resources](../authorization.md#manage-namespace-policy). Check Role IDs
+and permissions, AccessBinding subjects, Roles and targets, or ServicePrincipal
+IDs. Repeating a create can add another resource with a new ID. The API cannot
+delete a ServicePrincipal.
+
+Current policy shows what exists now. The request ID helps trace the write.
+It cannot confirm a commit or prevent duplicates. Give the approximate time,
+caller, Namespace and any request and resource IDs to a platform operator with
+[approved database access](../../guides/topics/audit-log.md#access-and-limitations).
+Ask them to check for a successful mutation audit event. If the evidence is
+inconclusive, leave the write unresolved.
 
 ## Implementations
 

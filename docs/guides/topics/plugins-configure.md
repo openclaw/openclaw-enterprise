@@ -15,25 +15,22 @@ whose selections belonged to the Codex Driver.
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
-OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Google Workspace** and add it. Leave **Install without an account** selected
-to verify the installation with `gog --version`. To make Google API calls, choose a ready
-**Google account**, save the selection and deploy. The worker receives an
-OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
-
-The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
-`read` and `operate` on the source, and the Agent needs `operate`. If the
-package digest changes, select the account again. Clearing the slot or removing
-the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, add
+**Google Workspace** with **Install without an account** to check `gog --version`,
+or select a compatible OAuth Source to make approved Google API calls.
+Managed HTTP and MCP Plugins select a TokenService Source in their account
+slot. See [managed OpenClaw plugins](openclaw-plugins.md). The operator and
+Agent need Source `operate` permission. Clearing a slot or
+removing a Plugin applies on the next deployment; to end access sooner,
+[withdraw the binding](../../reference/credential-sources/withdrawal.md).
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
-For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
-discovery requires a bound Service Accounts token Secret under **Credentials**
-and uses it server-side; other authentication methods cannot browse the hosted
-catalog. Select **Save plugin selections**, then
-**Deploy new version**. The prior version keeps its
+For dedicated Codex browsing, the curated catalog needs no account credential.
+Hosted discovery uses a ready Codex account Source through TokenService; see
+[Codex Apps](../integrations/codex-plugins.md). Select **Save plugin selections**, then
+follow [Deploy the change](#deploy-the-change). The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
 snapshot. See the [Plugins tab guide](../console/configuration-plugins-and-files.md#plugins-tab)
 for the controls and [deployment status](../../reference/agents.md#deployment-status)
@@ -62,49 +59,46 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select an attached credential for that slot and the upstream tool names
-the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls. See
+On a dedicated OpenClaw Agent, select a ready TokenService Source for that slot
+and choose **Load tools**. Select the tools the Agent may use, then save the
+Plugin selection. The worker advertises
+those tools; the Sandbox enforces the selection for both worker and script calls. See
 [Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
-walkthrough.
-[Managed MCP plugins](../../reference/agent-plugins.md#current-support)
+walkthrough. [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
-The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
-Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
-`bearer-token` source with the package's MCP host, port, path and placeholder name.
-Reference the saved access token as its `token` Secret and set `protocol: mcp`.
-Attach the source to the Agent draft and grant the operator and Agent service
-principal `credential_source:operate` on it.
-[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
-· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+For a static bearer, register a Source through a compatible static Connection
+Template. See [Register a static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 
-Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
-set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
-them when DNS changes. Other ports need the Installation's managed egress policy.
-This setting is separate from model discovery. Worker calls use the Sandbox policy.
+For **Load tools**, verify that the OCC API can resolve and reach the MCP
+endpoint. Runtime tool calls use the Agent's Sandbox policy. The picker omits
+upstream tool names that the reviewed Plugin cannot deploy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
-can use them. An empty selection leaves the worker server disabled.
+Open **Plugins** and add the plugin. Choose a compatible account directly in the
+plugin or use **Connect account** to authorize one from an approved Connection
+Template. Switching accounts clears the plugin's tool inventory, tool selection,
+and per-tool approval overrides. Select **Load tools**, choose the tools to
+enable, and set their approvals again before you save and deploy. Loading tools
+again refreshes the inventory and preserves your selection. An empty selection
+leaves the worker server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
 **No additional approval** to run without a prompt. The request names the server and tool;
-it does not show arguments. Save and deploy the new version. A direct
+it does not show arguments. Save and [deploy the change](#deploy-the-change). A direct
 script using the same credential can call that enabled tool without Gateway approval.
 If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
-Removing the plugin keeps its independently attached
-credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
-to revoke a running version's credential access.
+Removing the Plugin does not delete its Source or change an independent Agent credential attachment. [Withdraw the Source](../../reference/credential-sources/withdrawal.md) to revoke a running version's credential access.
 
-For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
-`env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. Inspect its worker server and tool filter:
+For example, the reviewed Slack MCP server is `https://mcp.slack.com/mcp`; the
+worker receives a credential placeholder in `SLACK_MCP_TOKEN`. Select `slack_search_public` if
+the account advertises it. Inspect its worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
 ```
+
+These checks verify configuration and admission. Live Slack OAuth search and
+an unselected-tool denial were qualified in [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
+A real Slack MCP call using a static Source remains separately unverified.
 
 ## Before you start
 
@@ -172,15 +166,18 @@ export AGENT_ID='<agent-id>'
 ## Select Diffs
 
 Read the Agent's current selections and create an update that keeps them.
-The API requires `configurationId` on every Agent update and replaces the whole
-plugin map; sending only Diffs would remove any other saved selections.
+This update requires the Agent’s current `configurationId` and replaces the whole
+plugin map. A `configurationReadError` hides saved selections. Resolve it and
+read the Agent again before updating.
 
 ```bash
-occ agent get "$AGENT_ID" --output json > agent-before-plugins.json
-
-node --input-type=module <<'JS'
+occ agent get "$AGENT_ID" --output json > agent-before-plugins.json &&
+node --input-type=module <<'JS' &&
 import { readFileSync, writeFileSync } from "node:fs";
 const agent = JSON.parse(readFileSync("agent-before-plugins.json", "utf8"));
+if (Object.hasOwn(agent, "configurationReadError")) {
+  throw new Error("Resolve configurationReadError and read the Agent again.");
+}
 const plugins = {
   ...agent.plugins,
   "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
@@ -188,7 +185,6 @@ const plugins = {
 writeFileSync("agent-plugin-update.json",
   JSON.stringify({ configurationId: agent.configurationId, plugins }, null, 2) + "\n");
 JS
-
 occ agent update "$AGENT_ID" --file agent-plugin-update.json --output json
 ```
 
@@ -201,6 +197,11 @@ If other people are updating the same Agent, coordinate before submitting:
 a newer plugin map can be overwritten by the one you read.
 
 ## Deploy the change
+
+If the Agent is running and either its active revision or its draft uses managed
+credential delivery, stop it and wait until its desired runtime state is
+`stopped` and `activeRevisionId` is empty. OCC rejects replacement from
+or to managed delivery over an active revision with `409`.
 
 Deploy the Agent and keep the returned version ID:
 
@@ -248,8 +249,8 @@ Agent uses [native admin access](../deploy/native-admin.md) with
 points at the Gateway's private loopback address. Use `mode: "file"` when you
 need the rendered diff without a link.
 The [Chat Completions check](../operate/model-verification.md) reads only
-assistant text; it cannot verify that Diffs ran. The OCC console has no chat.
-Use the TUI's tool activity for this verification.
+assistant text; it cannot verify that Diffs ran. Use the TUI's tool activity
+for this verification.
 
 For `failed`, use the returned error and the
 [deployment status reference](../../reference/agents.md#deployment-status). Check

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { cp, mkdir, open, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import { renderMatrixMarkdown, type DriverMatrix } from "../../scripts/generate-compute-matrix.ts";
@@ -59,19 +59,19 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
-  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
   const quickstart = "snippets/openshell-quickstart";
-  const guides = [
-    ["deploy/local-setup", "configure-installation"],
-    ["integrations/codex-plugins", "inspect-linear-transcript"],
-  ] as const;
-  for (const [guide, script] of guides) {
-    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
-    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
-    if (guide === "deploy/local-setup") {
-      assert.ok(html.includes(`install -m 600 docs/${quickstart}/${script}.mts`));
-    }
-  }
+  const published = join(root, "dist/docs");
+  const localSetup = await readFile(
+    join(published, "guides/deploy/local-setup/index.html"),
+    "utf8",
+  );
+  assert.ok(localSetup.includes(`install -m 600 docs/${quickstart}/configure-installation.mts`));
+  const codexPlugins = await readFile(
+    join(published, "guides/integrations/codex-plugins/index.html"),
+    "utf8",
+  );
+  assert.ok(codexPlugins.includes(`href="/${quickstart}/inspect-linear-transcript.mjs"`));
+  // Preserve executable JavaScript downloads at their bookmarked URLs.
   for (const script of [
     "configure-installation",
     "inspect-linear-transcript",
@@ -84,7 +84,6 @@ test("docs build renders every authored page and preserves repository ownership"
     assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
   }
   const quickstartAssets = "assets/openshell-quickstart";
-  const published = join(root, "dist/docs");
   for (const script of ["chat", "verify-github-installation"]) {
     const asset = join(published, quickstartAssets, script + ".mjs");
     execFileSync(process.execPath, ["--check", asset], { encoding: "utf8" });
@@ -94,12 +93,17 @@ test("docs build renders every authored page and preserves repository ownership"
     join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
     "utf8",
   );
-  const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
-  assert.ok(enrollment.includes(`href="/${verifier}"`));
-  assert.ok(enrollment.includes(`installation_check=docs/${verifier}`));
+  // Existing enrollment bookmarks must lead to the guide for Source-backed Git access.
   assert.ok(
-    enrollment.includes(`installation_check:-docs/${quickstart}/verify-github-installation.mts`),
+    enrollment.includes(
+      'rel="canonical" href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',
+    ),
   );
+  const repositoryFlow = await readFile(
+    join(published, "flows/agent-repository-credentials/index.html"),
+    "utf8",
+  );
+  assert.ok(repositoryFlow.includes(`href="/${quickstartAssets}/verify-github-installation.mjs"`));
 
   // Run the shipped staging command from both trees. The published shell must copy
   // the historical download and use the same staged filename when sending a turn.
@@ -338,42 +342,119 @@ test("docs reject unsafe and duplicate page routes before touching output", asyn
   await writeFile(parent, "sibling");
   await writeFile(home, "previous build");
 
-  // Stripping .md from a README directory can escape the output or alias its home page.
-  for (const [directory, diagnostic] of [
-    ["...md", "Invalid page route /../"],
-    ["chapter/...md", "Invalid page route /chapter/../"],
-    ["..md", "Invalid page route /./"],
-    ["chapter/.md", "Invalid page route /chapter//"],
-    ["example", "Duplicate page route /example/"],
-  ] as const) {
-    const slug = directory + "/README";
-    const source = slug + ".md";
-    await mkdir(join(docs, directory), { recursive: true });
-    await writeFile(join(docs, source), "# Folder index\n");
-    pages.push(slug);
-    await writeDocsConfig(fixture, config);
-    for (const args of [["--check"], []]) {
+  const routeConfig = { ...config, redirects: [{ from: "/old/", to: "/" }] };
+  const previewParent = join(fixture, "dist/.docs-preview-ABC123");
+  await mkdir(previewParent);
+  async function assertRefused(owner: string, diagnostic: string, preview = false) {
+    const invocations = [["--check"], []];
+    if (preview) {
+      invocations.push(["--output", join(previewParent, "1")]);
+    }
+    for (const args of invocations) {
       const result = buildDocs(fixture, ...args);
-      assert.equal(result.status, 1, source);
+      assert.equal(result.status, 1, owner);
       assert.ok(result.stderr.includes(diagnostic), result.stderr);
-      assert.ok(result.stderr.includes(source), result.stderr);
-      if (directory === "example") {
+      assert.ok(result.stderr.includes(owner), result.stderr);
+      if (owner === "example/README.md") {
         assert.ok(result.stderr.includes("example.md"), result.stderr);
       }
       assert.equal(await readFile(parent, "utf8"), "sibling");
       assert.equal(await readFile(home, "utf8"), "previous build");
+      assert.deepEqual(await readdir(previewParent), []);
     }
+  }
+
+  await mkdir(join(docs, "snippets/tutorial"), { recursive: true });
+  await writeFile(join(docs, "snippets/tutorial/index.html"), "copied example");
+  const fontName = "JetBrainsMono-Regular.ttf";
+  const fontOutput = "assets/fonts/" + fontName;
+  for (const [slug, diagnostic] of [
+    ["...md/README", "Invalid page route /../"],
+    ["chapter/...md/README", "Invalid page route /chapter/../"],
+    ["..md/README", "Invalid page route /./"],
+    ["chapter/.md/README", "Invalid page route /chapter//"],
+    ["example/README", "Duplicate page route /example/"],
+    ["example/index.html/README", "Output collision at /example/index.html"],
+    ["old/index.html/child/README", "Output collision at /old/index.html"],
+    ["manifest.json", "Output collision at /manifest.json:"],
+    ["manifest.json/child", "Output collision at /manifest.json:"],
+    ["assets/site.css", "Output collision at /assets/site.css:"],
+    [fontOutput, "Output collision at /" + fontOutput + ":"],
+    ["snippets/tutorial", "Output collision at /snippets/tutorial/index.html:"],
+  ] as const) {
+    const source = slug + ".md";
+    await mkdir(dirname(join(docs, source)), { recursive: true });
+    await writeFile(join(docs, source), "# Folder index\n");
+    pages.push(slug);
+    await writeDocsConfig(fixture, routeConfig);
+    await assertRefused(source, diagnostic, slug === "manifest.json/child");
     pages.pop();
     await writeFile(join(docs, source), "---\npublished: false\n---\n# Folder index\n");
   }
 
+  await writeFile(join(docs, "assets/manual"), "manual download");
+  await mkdir(join(docs, "assets/examples/index.html"), { recursive: true });
+  const link = join(docs, "assets/linked");
+  await symlink(previewParent, link, "dir");
+  for (const [from, collision] of [
+    ["/assets/manual/intro/", "/assets/manual"],
+    ["/assets/examples/", "/assets/examples/index.html"],
+    ["/assets/linked/child/", "/assets/linked"],
+  ] as const) {
+    const withRedirect = {
+      ...routeConfig,
+      redirects: [...routeConfig.redirects, { from, to: "/" }],
+    };
+    await writeDocsConfig(fixture, withRedirect);
+    await assertRefused("redirect from " + from, "Output collision at " + collision + ":");
+  }
+  await unlink(link);
+
+  // The same route is available when the explorer (and hence its bundle) is absent.
+  pages.push("assets/scalar.js", "reference/api-explorer");
+  await mkdir(join(docs, "reference"), { recursive: true });
+  const explorer = join(docs, "reference/api-explorer.md");
+  await writeFile(explorer, "# Explorer\n");
+  await writeFile(join(docs, "assets/scalar.js.md"), "# Custom scalar page\n");
+  await writeDocsConfig(fixture, routeConfig);
+  await assertRefused("assets/scalar.js.md", "Output collision at /assets/scalar.js:");
+  pages.pop();
+  await writeFile(explorer, "---\npublished: false\n---\n# Explorer\n");
+
+  // Unclaimed directories stay usable, including beside the copied font.
+  const validDirectories = [
+    "example/index.htm",
+    "other/index.html",
+    "other/manifest.json",
+    "assets/fonts/guide",
+  ];
+  for (const directory of validDirectories) {
+    await mkdir(join(docs, directory), { recursive: true });
+    await writeFile(join(docs, directory, "README.md"), "# Nested page\n");
+    pages.push(directory + "/README");
+  }
   // Unpublished indexes do not own routes or displace the flat page.
-  await writeDocsConfig(fixture, config);
+  await writeDocsConfig(fixture, routeConfig);
   const result = buildDocs(fixture);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(
+    await readFile(join(output, fontOutput)),
+    await readFile(join(root, "scripts/docs-site/fonts", fontName)),
+  );
+  assert.match(
+    await readFile(join(output, "assets/scalar.js/index.html"), "utf8"),
+    /id="custom-scalar-page"/,
+  );
+  assert.equal(
+    await readFile(join(output, "snippets/tutorial/index.html"), "utf8"),
+    "copied example",
+  );
   const manifest: { source: string; route: string }[] = JSON.parse(
     await readFile(join(output, "manifest.json"), "utf8"),
   );
+  for (const directory of validDirectories) {
+    assert.match(await readFile(join(output, directory, "index.html"), "utf8"), /id="nested-page"/);
+  }
   const examples = manifest.filter((page) => page.route === "/example/");
   assert.equal(examples.length, 1);
   assert.equal(examples[0]?.source, "example.md");

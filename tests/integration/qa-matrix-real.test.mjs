@@ -1,16 +1,159 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
 const selected = process.env.OCC_TEST_QA_MATRIX === "1";
+
+async function verifyGatewayStartupCredentials(f, agent, stopQaAgent) {
+  const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
+  const base = `/namespaces/${agent.namespaceId}`;
+  const variable = "QA_GATEWAY_TOKEN";
+  const value = `qa-gateway-${randomUUID()}`;
+  registerQaSecret(value);
+  const source = await f.api("POST", `${base}/credential-sources`, {
+    name: `${agent.name}-gateway`,
+    type: "static",
+    secret: value,
+  });
+  const configuration = await f.api("GET", `${base}/configurations/${agent.configurationId}`);
+  await f.api("PATCH", `${base}/configurations/${configuration.id}`, {
+    values: configuration.values,
+    secretBindings: {
+      ...configuration.secretBindings,
+      [variable]: { source: source.ref, delivery: { type: "env" } },
+    },
+  });
+
+  // An actor may deploy this Agent and operate its Harness Secret, but may not
+  // operate the Gateway Source. The denied deploy must not change the revision.
+  const principal = await f.api("POST", `${base}/iam/service-principals`, {});
+  const role = await f.api("POST", `${base}/iam/roles`, {
+    name: `${agent.name}-deployer`,
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "operate", resourceKind: "agent" },
+      { action: "deploy", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+      { action: "operate", resourceKind: "secret" },
+      { action: "read", resourceKind: "credential_source" },
+    ],
+  });
+  for (const [resourceKind, resourceId] of [
+    ["agent", agent.id],
+    ["configuration", configuration.id],
+    ["secret", agent.harnessAuth.source.id],
+    ["credential_source", source.id],
+  ]) {
+    await f.api("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: role.id,
+      resourceKind,
+      resourceId,
+    });
+  }
+  const key = await f.api("POST", "/api/auth/service-keys", {
+    namespaceId: agent.namespaceId,
+    servicePrincipalId: principal.id,
+    name: `gw-${randomUUID().slice(0, 8)}`,
+  });
+  registerQaSecret(key.key);
+  const before = agent.revision.id;
+  const denied = await fetch(`${f.apiUrl}${base}/agents/${agent.id}/deploy`, {
+    method: "POST",
+    headers: { "x-api-key": key.key },
+    signal: AbortSignal.timeout(30_000),
+  });
+  assert.equal(denied.status, 403);
+  const denial = (await denied.json()).error;
+  assert.equal(denial?.code, "FORBIDDEN");
+  assert.match(denial?.message, /CredentialSource operate/);
+  assert.equal((await f.api("GET", `${base}/agents/${agent.id}`)).activeRevisionId, before);
+  await f.deployAndWait(agent);
+  // OCC IAM delegates the authorized deployer's exact Source-use grant to the
+  // Agent in the deployment transaction (RFC-0026).
+  const bindings = await f.api("GET", `${base}/iam/access-bindings`);
+  const granted = bindings.find(({ id }) => id === `binding_${agent.id}_${source.id}_operate`);
+  assert.deepEqual(
+    [granted?.subjectId, granted?.resourceKind, granted?.resourceId],
+    [agent.servicePrincipalId, "credential_source", source.id],
+  );
+
+  const gateway = await f.pod(agent, "gateway");
+  const container = gateway.spec.containers.find(({ name }) => name === "gateway");
+  const projection = container?.env?.find(({ name }) => name === variable)?.valueFrom?.secretKeyRef;
+  assert.ok(projection?.name, "Gateway Pod must reference a staged Kubernetes Secret");
+  assert.equal(projection.key, variable);
+  const stagedRevision = await f.kubectl(
+    "-n",
+    gateway.metadata.namespace,
+    "get",
+    "secret",
+    projection.name,
+    "-o",
+    'go-template={{index .metadata.labels "openclaw.dev/revision"}}',
+  );
+  assert.equal(stagedRevision.trim(), agent.revision.id);
+  const harness = await f.pod(agent, "agent");
+  assert.equal(
+    harness.spec.containers.some(({ env }) => env?.some(({ name }) => name === variable)),
+    false,
+    "the dedicated Harness must not receive the Gateway credential",
+  );
+
+  // PID 1 is tini. Read only the running native OpenClaw Gateway child's
+  // environment, and return only a digest through kubectl.
+  const script = String.raw`
+    const fs = require("node:fs");
+    const crypto = require("node:crypto");
+    const pids = fs.readdirSync("/proc").filter((pid) => {
+      if (!/^\d+$/.test(pid)) { return false; }
+      try {
+        return fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").startsWith("openclaw-gateway");
+      } catch {
+        return false;
+      }
+    });
+    if (pids.length !== 1) { throw new Error("Expected one running native Gateway process"); }
+    const prefix = process.argv[1] + "=";
+    const entry = fs.readFileSync("/proc/" + pids[0] + "/environ", "utf8").split("\0").find((item) => item.startsWith(prefix));
+    process.stdout.write(entry ? crypto.createHash("sha256").update(entry.slice(prefix.length)).digest("hex") : "missing");
+  `;
+  const observed = await f.execRole(agent, "gateway", ["node", "-e", script, variable]);
+  assert.equal(observed.stdout.trim(), createHash("sha256").update(value).digest("hex"));
+  await stopQaAgent(f, agent);
+  await f.waitFor(
+    "stopped revision Gateway credential Secret removal",
+    async () =>
+      !(
+        await f.kubectl(
+          "-n",
+          gateway.metadata.namespace,
+          "get",
+          "secret",
+          projection.name,
+          "--ignore-not-found",
+          "-o",
+          "name",
+        )
+      ).trim(),
+  );
+  await f.record("gateway-startup-credentials", {
+    agentId: agent.id,
+    revisionId: agent.revision.id,
+    sourceId: source.id,
+    nativeGatewayReceivedCredential: true,
+    stagedSecretRemoved: true,
+  });
+}
 
 async function verifyAgentAudit(f, agent) {
   const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
@@ -200,14 +343,41 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
-    if (selection.gitModel) {
-      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+    if (selection.optionalPluginWithdrawal) {
+      const { verifyOpenShellOptionalPluginWithdrawal } =
+        await import("../helpers/openshell-optional-plugin-withdrawal.ts");
       await stage(
         context,
-        "kubernetes/Codex/OpenShell",
-        "fresh Gateway model delivery with and without Git access",
-        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
-        "openshell-git-model",
+        "kubernetes/OpenClaw/OpenShell",
+        "optional Slack withdrawal preserves other native bindings and Source custody",
+        () => verifyOpenShellOptionalPluginWithdrawal(context),
+        "openshell-optional-plugin-withdrawal",
+      );
+    }
+    if (selection.tokenServiceAgent) {
+      await stage(
+        context,
+        "kubernetes/OpenClaw/OpenShell",
+        "native Source custody, dedicated model turn, rotation and withdrawal",
+        async () => {
+          const env = { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" };
+          // The parent test runner marks its worker with this variable. Passing it to a new
+          // node --test process makes Node suppress the child suite as a recursive run.
+          delete env.NODE_TEST_CONTEXT;
+          const result = await promisify(execFile)(
+            process.execPath,
+            ["--test", "tests/integration/openshell-token-service-agent-real.test.ts"],
+            {
+              env,
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /\btests 1(?:\r?\n|$)/);
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "openshell-token-service-agent",
       );
     }
     if (selection.oidcAgentChat) {
@@ -330,6 +500,17 @@ test(
                     .every((cell) => cell.scenarios.every((scenario) => scenario === "http-chat")),
                 },
               );
+              if (
+                selection.cells.some(
+                  (cell) =>
+                    cell.installation === installation &&
+                    cell.scenarios.includes("gateway-startup-credentials"),
+                )
+              ) {
+                // The Sandbox-none launcher does not select TokenService. Qualify
+                // the supported OCC owner on this run-owned installation only.
+                fixture.configuration.drivers.token_service = { id: "occ", configuration: {} };
+              }
               await prepareQaPluginCatalogs(fixture);
               return fixture;
             },
@@ -587,6 +768,15 @@ test(
                   ]);
                 } else {
                   scenarios.push(
+                    [
+                      "gateway-startup-credentials",
+                      async (agent, step) => {
+                        await step(
+                          "Source authorization, native Gateway delivery and revision cleanup",
+                          () => verifyGatewayStartupCredentials(f, agent, stopQaAgent),
+                        );
+                      },
+                    ],
                     [
                       "git-write",
                       async (agent, step) => {

@@ -337,7 +337,6 @@ test(
       async (t) => {
         const { agent, revision } = await seedSessionRevision(store);
         const invalidDrafts = {
-          "bindings are empty": [],
           "repository reference ends with a newline": [
             { repositoryRef: "source\n", profile: "git-read" },
           ],
@@ -354,8 +353,8 @@ test(
           await t.test(`draft: ${name}`, async () => {
             await assert.rejects(
               pool.query<never, [agentId: string, bindings: string]>(
-                "UPDATE occ.agents SET repository_bindings = $2::jsonb WHERE id = $1",
-                [agent.id, JSON.stringify(bindings)],
+                "UPDATE occ.agents SET repository_access = $2::jsonb WHERE id = $1",
+                [agent.id, JSON.stringify({ defaultProfile: "git-write", repositories: bindings })],
               ),
               { code: "23514" },
             );

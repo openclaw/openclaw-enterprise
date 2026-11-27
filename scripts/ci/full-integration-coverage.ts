@@ -24,8 +24,12 @@ type TerminalEvent = {
   };
 };
 
+export function runsFullIntegration(workflow: string | undefined): boolean {
+  return workflow === "Full Integration" || workflow === "Release OCE";
+}
+
 export function recordsCoverage(workflow: string | undefined): boolean {
-  return workflow === "CI" || workflow === "Full Integration";
+  return workflow === "CI" || runsFullIntegration(workflow);
 }
 
 function isTestId(value: unknown): value is number {

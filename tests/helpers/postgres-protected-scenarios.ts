@@ -4,8 +4,13 @@ import type { TestContext } from "node:test";
 import pg from "pg";
 import { Check } from "typebox/value";
 
-import type { Agent, EgressInstallation, Namespace } from "../../packages/contracts/src/index.ts";
-import { AgentSchema, CredentialSourceSchema } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  Agent,
+  EgressInstallation,
+  Namespace,
+  SecretReference,
+} from "../../packages/contracts/src/index.ts";
+import { AgentSchema } from "../../packages/contracts/src/api/resources.ts";
 import type { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
 import type { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { attempt, type StoredSendReceipt } from "../../packages/occ/src/egress-send-receipts.ts";
@@ -24,16 +29,16 @@ type WireRequest = (
   options?: { body?: unknown },
 ) => Promise<{ status: number; body: unknown; data: unknown }>;
 type SourceAdmissionInput = {
-  app: { request: WireRequest };
+  app: { request: WireRequest; controller: OpenClawController; principal: { id: string } };
   agent: Pick<Agent, "id" | "configurationId">;
   namespace: Pick<Namespace, "id">;
   path: string;
+  secret: { ref: SecretReference };
   origin: string;
   countSecretReads(): number;
 };
 type LostDispatchOptions = {
   proxyDriverId?: string;
-  preparedGitHub?: object;
   admitSource?: (
     input: SourceAdmissionInput,
   ) => Promise<{ agent: { id: string }; source: { id: string } }>;
@@ -142,10 +147,15 @@ export async function postgresEgressFixture(
     appFactory: postgresApp,
     transportDatabaseUrl,
   });
-  const { agent, source, observed, pool } = fixture;
+  const { agent, observed, pool } = fixture;
   assert.ok(pool instanceof pg.Pool);
   assert.ok(Check(AgentSchema, agent));
-  assert.ok(Check(CredentialSourceSchema, source));
+  assert.ok(isRecord(fixture.source) && typeof fixture.source.id === "string");
+  const sourceId = fixture.source.id;
+  const source = await fixture.controller.transact((unit) =>
+    unit.credentialSources.findCredentialSource(fixture.namespace.id, sourceId),
+  );
+  assert.ok(source && source.ownerCapability !== "token_service", "historical Source record");
   assert.ok("evidence" in observed && supervisorEvidence(observed.evidence));
 
   const { namespaceId, agentId, revisionId } = fixture.installation.plan.execution;

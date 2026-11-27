@@ -44,8 +44,6 @@
     "test:conformance": "node scripts/verify-workspace-boundary.ts && node --test 'tests/conformance/*.test.{mjs,ts}'",
     "test:integration": "node scripts/verify-workspace-boundary.ts && node --test 'tests/integration/*.test.{mjs,ts}'",
     "test:console-browser": "node --test 'tests/browser/*.test.{mjs,ts}'",
-    "test:external-git-conversation": "OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION=1 node --test --test-name-pattern=\"a capable external Driver reduces Git\" tests/integration/postgres-external-protected-git.test.ts",
-    "test:standing-git-conversation": "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION=1 node --test tests/integration/postgres-openshell-standing-repository-set.test.ts",
     "test:postgres": "node scripts/verify-workspace-boundary.ts && node --test --test-concurrency=1 'tests/integration/postgres-*.test.{mjs,ts}'",
     "docs:build": "node scripts/docs-site/build.ts && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
     "docs:dev": "node scripts/docs-site/serve.ts --watch",
@@ -71,7 +69,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@stylistic/eslint-plugin": "5.10.0",
+    "@stylistic/eslint-plugin": "6.0.1",
     "@types/node": "26.6.6",
     "@types/pg": "8.23.1",
     "@typescript/native": "npm:typescript@7.0.2",

@@ -1,13 +1,13 @@
 import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { Static } from "typebox";
 import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
-import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import {
   WORKSPACE_DEFAULTS_ID,
   type AgentDeploymentDiagnosticsResponse,
@@ -24,6 +24,10 @@ import {
   type CreateConfigurationBody,
   type CreateNamespaceBody as CreateNamespaceBodySchema,
   type CreateSecretBody,
+  type CredentialSourceResponse,
+  type CredentialWithdrawalResponse,
+  type RegisterTokenServiceSourceBody,
+  type UpdateTokenServiceSourceBody,
   type ErrorResponse,
   type HarnessExecutionMode,
   type IAMAccessBindingListResponse,
@@ -31,6 +35,7 @@ import {
   type SecretResponse,
   type UpdateAgentBody,
   type UpdateConfigurationBody,
+  type UpdateSecretBody,
 } from "../../packages/contracts/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { inlineProbeCommand } from "../helpers/kubernetes-real.ts";
@@ -99,6 +104,8 @@ type AgentWithSecrets = AgentResponse["data"] & {
   modelSecretId: string;
   boundSecretId?: string;
   boundSecretValue?: string | undefined;
+  gatewaySource?: CredentialSourceResponse["data"];
+  gatewaySourceValue?: string;
 };
 type Revision = AgentRevisionResponse["data"];
 type RuntimeImagesResponse = Static<typeof AgentRuntimeImagesResponse>;
@@ -115,8 +122,11 @@ type RequestPayload =
   | CreateAgentBody
   | CreateConfigurationBody
   | CreateSecretBody
+  | RegisterTokenServiceSourceBody
+  | UpdateTokenServiceSourceBody
   | UpdateAgentBody
   | UpdateConfigurationBody
+  | UpdateSecretBody
   | AgentRuntimeCredentialsBody;
 type WorkspaceFiles = Record<string, string>;
 type DnsAnswer = { address: string };
@@ -171,7 +181,7 @@ test(
       import("../../apps/controller/src/composition/development-postgres.ts"),
       import("../../apps/controller/src/composition/installation-config.ts"),
       import("../../apps/controller/src/worker.ts"),
-      import("../helpers/auth-session.mjs"),
+      import("../helpers/auth-session.ts"),
     ]);
 
     const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
@@ -252,6 +262,7 @@ test(
       ...installation,
       drivers: {
         ...installation.drivers,
+        token_service: { id: "occ", configuration: {} },
         compute: {
           ...installation.drivers.compute,
           configuration: {
@@ -269,12 +280,19 @@ test(
         },
       },
     };
+    const installationSecretNamespace = `oce-api-secrets-${hash(randomUUID())}`;
     // Each API and worker process installs its own token issuers, including after a failed start.
-    async function loadDrivers() {
+    async function loadDrivers(includeTokenService = true) {
+      const { token_service: _tokenService, ...withoutTokenService } = configuration.drivers;
       const drivers = await loadInstallationConfiguration({
         mode: "development",
-        environment: {},
-        startupConfiguration: { configuration, logging: { level: "info" } },
+        environment: { OCC_INSTALLATION_SECRET_NAMESPACE: installationSecretNamespace },
+        startupConfiguration: {
+          configuration: includeTokenService
+            ? configuration
+            : { ...configuration, drivers: withoutTokenService },
+          logging: { level: "info" },
+        },
       });
       assert.ok(drivers);
       return drivers;
@@ -309,6 +327,7 @@ test(
       await deleteNamespaces(
         ...new Set([
           existingName,
+          installationSecretNamespace,
           ...placements.values(),
           ...namespaceIds.map(kubernetesNamespaceName),
         ]),
@@ -361,11 +380,14 @@ test(
       );
       const before = await resource("namespace", legacyName);
       await assert.rejects(async () => {
-        const unexpected = await composePostgresDevelopment(developmentConfig, await loadDrivers());
+        const unexpected = await composePostgresDevelopment(
+          developmentConfig,
+          await loadDrivers(false),
+        );
         await unexpected.close();
       }, /Existing split-layout Gateway storage/);
       const rejectedWorker = createControllerWorker({
-        drivers: await loadDrivers(),
+        drivers: await loadDrivers(false),
         pool: new pg.Pool({ connectionString: databaseUrl, max: 2 }),
         emit: () => {},
       });
@@ -381,6 +403,8 @@ test(
     } finally {
       await kubectl("delete", "namespace", legacyName, "--wait=true");
     }
+    // The OCC TokenService uses the selected Secret Driver's installation-private store.
+    await kubectl("create", "namespace", installationSecretNamespace);
     const apiDrivers = await loadDrivers();
     const app = await composePostgresDevelopment(developmentConfig, apiDrivers);
     lifecycle.app = app;
@@ -535,15 +559,22 @@ test(
       );
       assert.equal(bindings.status, 200, JSON.stringify(bindings.error));
       assert.ok(bindings.data);
-      for (const secretId of [agent.modelSecretId, agent.boundSecretId].filter(Boolean)) {
+      for (const [kind, id] of [
+        ["secret", agent.modelSecretId],
+        ["secret", agent.boundSecretId],
+        ["credential_source", agent.gatewaySource?.id],
+      ] as const) {
+        if (id === undefined) {
+          continue;
+        }
         const grant: IAMAccessBindingListResponse["data"][number] | undefined = bindings.data.find(
-          ({ id }) => id === `binding_${agent.id}_${secretId}_operate`,
+          ({ id: bindingId }) => bindingId === `binding_${agent.id}_${id}_operate`,
         );
         assert.ok(grant && "resourceKind" in grant);
         assert.deepEqual(
           [grant.subjectId, grant.resourceKind, grant.resourceId],
-          [agent.servicePrincipalId, "secret", secretId],
-          `${agent.id}: deploy grants its Agent operate on Secret ${secretId}`,
+          [agent.servicePrincipalId, kind, id],
+          `${agent.id}: deploy grants its Agent operate on ${kind} ${id}`,
         );
       }
     }
@@ -603,6 +634,8 @@ test(
       assert.ok(secret.data);
       let boundSecret: SecretResponse["data"] | undefined;
       let boundSecretValue: string | undefined;
+      let gatewaySource: CredentialSourceResponse["data"] | undefined;
+      let gatewaySourceValue: string | undefined;
       if (options.boundSecret === true) {
         boundSecretValue = `bound-secret-${randomUUID()}`;
         const response = await request<SecretResponse>(
@@ -616,6 +649,15 @@ test(
         assert.equal(response.status, 201, JSON.stringify(response.error));
         assert.ok(response.data);
         boundSecret = response.data;
+        gatewaySourceValue = `gateway-source-${randomUUID()}`;
+        const registered = await request<CredentialSourceResponse>(
+          "POST",
+          `/namespaces/${namespaceId}/credential-sources`,
+          { name: `${label} Gateway source`, type: "static", secret: gatewaySourceValue },
+        );
+        assert.equal(registered.status, 201, JSON.stringify(registered.error));
+        assert.ok(registered.data);
+        gatewaySource = registered.data;
       }
       const baseValues = {
         gateway: {
@@ -696,7 +738,7 @@ test(
         );
       }
       if (boundSecret !== undefined) {
-        // Configuration save refuses channel credentials without Secret bindings, naming the
+        // Configuration save refuses channel credentials without Source bindings, naming the
         // setting and the binding, before any deployment (finding 2319).
         const missingConfiguration = await request(
           "PATCH",
@@ -706,13 +748,13 @@ test(
         assert.equal(
           missingConfiguration.status,
           400,
-          `${label} before channel Secret bindings: ${JSON.stringify(missingConfiguration.error)}`,
+          `${label} before channel Source bindings: ${JSON.stringify(missingConfiguration.error)}`,
         );
         assert.ok(missingConfiguration.error);
         assert.equal(missingConfiguration.error.code, "INVALID_REQUEST");
         assert.match(
           missingConfiguration.error.message,
-          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
+          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Credential Source binding: /,
         );
         // This k3d fixture has no runtime.channelEgress proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
@@ -727,6 +769,7 @@ test(
                 source: boundSecret.ref,
                 delivery: { type: "env" },
               },
+              GATEWAY_SENTINEL: { source: gatewaySource!.ref, delivery: { type: "env" } },
             },
           },
         );
@@ -736,6 +779,9 @@ test(
         ...created.data,
         modelSecretId: secret.data.id,
         ...(boundSecret === undefined ? {} : { boundSecretId: boundSecret.id, boundSecretValue }),
+        ...(gatewaySource === undefined
+          ? {}
+          : { gatewaySource, gatewaySourceValue: gatewaySourceValue! }),
       };
     }
 
@@ -768,6 +814,61 @@ test(
         },
         runtimeImage === undefined ? 120_000 : 240_000,
       );
+    }
+
+    async function readyGatewayPod(
+      namespaceId: string,
+      agentId: string,
+      revisionId: string,
+    ): Promise<Pod> {
+      return waitFor(`Gateway ${agentId} revision ${revisionId} Pod`, async () =>
+        (await resources("pods", placementOf(namespaceId))).find(
+          ({ metadata, status }) =>
+            metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+            metadata.labels?.["openclaw.dev/agent"] === agentId &&
+            metadata.labels?.["openclaw.dev/revision"] === revisionId &&
+            status.conditions?.some(
+              ({ type, status: conditionStatus }) => type === "Ready" && conditionStatus === "True",
+            ),
+        ),
+      );
+    }
+    async function startupEnvironmentDigest(
+      namespaceId: string,
+      pod: Pod,
+      variable: string,
+    ): Promise<string> {
+      const script = String.raw`
+        const fs = require("node:fs");
+        const crypto = require("node:crypto");
+        const pids = process.argv[2] === "native" ? fs.readdirSync("/proc").filter((pid) => {
+          if (!/^\d+$/.test(pid)) { return false; }
+          try {
+            return fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").startsWith("openclaw-gateway");
+          } catch {
+            return false;
+          }
+        }) : ["1"];
+        if (pids.length !== 1) { throw new Error("Expected one running Gateway process"); }
+        const prefix = process.argv[1] + "=";
+        const entry = fs.readFileSync("/proc/" + pids[0] + "/environ", "utf8").split("\0").find((item) => item.startsWith(prefix));
+        process.stdout.write(entry ? crypto.createHash("sha256").update(entry.slice(prefix.length)).digest("hex") : "missing");
+      `;
+      return kubectlRead(
+        "exec",
+        pod.metadata.name,
+        "--namespace",
+        placementOf(namespaceId),
+        "--",
+        "node",
+        "-e",
+        script,
+        variable,
+        runtimeImage === undefined ? "fixture" : "native",
+      );
+    }
+    function digest(value: string): string {
+      return createHash("sha256").update(value).digest("hex");
     }
 
     const first = await createAgent(primaryNamespaceId, "first");
@@ -952,11 +1053,16 @@ test(
           const deployment = await resource("deployment", revisionName(candidate), placement);
           assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(agent.id));
           if (agent.boundSecretValue !== undefined) {
-            assert.deepEqual(Object.keys(candidate.secretBindings ?? {}), ["BOUND_SENTINEL"]);
+            assert.deepEqual(Object.keys(candidate.secretBindings ?? {}), [
+              "BOUND_SENTINEL",
+              "GATEWAY_SENTINEL",
+            ]);
             const harnessContainer = deployment.spec.template.spec.containers[0];
             assert.ok(harnessContainer?.env);
             assert.equal(
-              harnessContainer.env.some((entry) => entry.name === "BOUND_SENTINEL"),
+              harnessContainer.env.some(
+                (entry) => entry.name === "BOUND_SENTINEL" || entry.name === "GATEWAY_SENTINEL",
+              ),
               false,
               "dedicated Harness must not receive gateway Secret bindings",
             );
@@ -966,6 +1072,13 @@ test(
               placementOf(namespaceId),
             );
             const gatewayContainer = gatewayDeployment.spec.template.spec.containers[0];
+            assert.equal(
+              gatewayDeployment.spec.template.spec.containers
+                .slice(1)
+                .some(({ env }) => env?.some(({ name }) => name === "GATEWAY_SENTINEL")),
+              false,
+              "Gateway startup credentials must not reach other containers",
+            );
             const projection = gatewayContainer?.env?.find(
               (entry) => entry.name === "BOUND_SENTINEL",
             );
@@ -976,29 +1089,60 @@ test(
               secretRef.name,
               "Configuration Secret bindings must render a concrete Kubernetes Secret name",
             );
-            const pod = await waitFor(`bound Secret gateway ${agent.id} Pod`, async () =>
-              (await resources("pods", placementOf(namespaceId))).find(
-                ({ metadata, status }) =>
-                  metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-                  metadata.labels?.["app.kubernetes.io/name"] === gatewayName(agent.id) &&
-                  status.conditions?.some(
-                    ({ type, status: conditionStatus }) =>
-                      type === "Ready" && conditionStatus === "True",
-                  ),
-              ),
+            const sourceProjection = gatewayContainer?.env?.find(
+              (entry) => entry.name === "GATEWAY_SENTINEL",
+            )?.valueFrom?.secretKeyRef;
+            assert.ok(sourceProjection?.name);
+            assert.notEqual(
+              sourceProjection.name,
+              secretRef.name,
+              "canonical Namespace Secrets must remain direct references",
             );
-            const script = `const expected=${JSON.stringify(agent.boundSecretValue)};process.stdout.write(process.env.BOUND_SENTINEL===expected?"matched":"missing")`;
-            const observedSecret = await kubectlRead(
-              "exec",
-              pod.metadata.name,
-              "--namespace",
+            const staged = await resource(
+              "secret",
+              sourceProjection.name,
               placementOf(namespaceId),
-              "--",
-              "node",
-              "-e",
-              script,
             );
-            assert.equal(observedSecret, "matched");
+            assert.deepEqual(Object.keys(staged.data), ["GATEWAY_SENTINEL"]);
+            assert.equal(
+              digest(Buffer.from(staged.data.GATEWAY_SENTINEL!, "base64").toString()),
+              digest(agent.gatewaySourceValue!),
+            );
+            const versions = JSON.parse(
+              staged.metadata.annotations?.["openclaw.dev/gateway-source-versions"] ?? "{}",
+            );
+            assert.equal(typeof versions.GATEWAY_SENTINEL, "string");
+            assert.ok(versions.GATEWAY_SENTINEL.length > 0);
+            assert.equal(staged.metadata.labels?.["openclaw.dev/revision"], candidate.id);
+            // Ordinary workload identities cannot read the copy or create workloads that mount it.
+            const prohibitedCapabilities: readonly (readonly [string, string])[] = [
+              ["get", `secrets/${sourceProjection.name}`],
+              ["create", "pods"],
+              ["create", "deployments.apps"],
+            ];
+            for (const account of [gatewayName(agent.id), agentName(agent.id)]) {
+              for (const [verb, resourceName] of prohibitedCapabilities) {
+                const denied: string = await kubectl(
+                  "auth",
+                  "can-i",
+                  verb,
+                  resourceName,
+                  "--namespace",
+                  placementOf(namespaceId),
+                  `--as=system:serviceaccount:${placementOf(namespaceId)}:${account}`,
+                ).catch(({ stdout }: { stdout: string }) => stdout);
+                assert.equal(denied.trim(), "no", `${account} must not ${verb} ${resourceName}`);
+              }
+            }
+            const pod = await readyGatewayPod(namespaceId, agent.id, candidate.id);
+            assert.equal(
+              await startupEnvironmentDigest(namespaceId, pod, "BOUND_SENTINEL"),
+              digest(agent.boundSecretValue),
+            );
+            assert.equal(
+              await startupEnvironmentDigest(namespaceId, pod, "GATEWAY_SENTINEL"),
+              digest(agent.gatewaySourceValue!),
+            );
           }
         } else {
           assert.equal(await missing("deployment", revisionName(candidate), placement), true);
@@ -1031,6 +1175,200 @@ test(
           );
         }
       }),
+    );
+
+    // A Source update does not change the running Gateway. Revoke the exact Agent grant
+    // after admission, then prove the Worker cannot stage or mutate a replacement Gateway.
+    const original = admitted[5];
+    const originalPod = await readyGatewayPod(primaryNamespaceId, boundSecretAgent.id, original.id);
+    const originalGateway = await resource(
+      "deployment",
+      gatewayName(boundSecretAgent.id),
+      placementOf(primaryNamespaceId),
+    );
+    const originalSourceRef = originalGateway.spec.template.spec.containers[0]!.env!.find(
+      ({ name }) => name === "GATEWAY_SENTINEL",
+    )!.valueFrom!.secretKeyRef!;
+    const originalStage = await resource(
+      "secret",
+      originalSourceRef.name!,
+      placementOf(primaryNamespaceId),
+    );
+    const originalVersion = JSON.parse(
+      originalStage.metadata.annotations?.["openclaw.dev/gateway-source-versions"] ?? "{}",
+    ).GATEWAY_SENTINEL;
+    const replacementValue = `gateway-source-${randomUUID()}`;
+    const sourceUpdate = await request<CredentialSourceResponse>(
+      "PATCH",
+      `/namespaces/${primaryNamespaceId}/credential-sources/${boundSecretAgent.gatewaySource!.id}`,
+      { secret: replacementValue },
+    );
+    assert.equal(sourceUpdate.status, 200, JSON.stringify(sourceUpdate.error));
+    assert.equal(
+      await startupEnvironmentDigest(primaryNamespaceId, originalPod, "GATEWAY_SENTINEL"),
+      digest(boundSecretAgent.gatewaySourceValue!),
+    );
+    // A bare Pod replacement reuses the Source stage for this running revision. Canonical
+    // Namespace Secret refs remain direct, so the replacement sees their current value.
+    const updatedCanonicalValue = `bound-secret-${randomUUID()}`;
+    const canonicalUpdate = await request<SecretResponse>(
+      "PATCH",
+      `/namespaces/${primaryNamespaceId}/secrets/${boundSecretAgent.boundSecretId!}`,
+      { value: updatedCanonicalValue },
+    );
+    assert.equal(canonicalUpdate.status, 200, JSON.stringify(canonicalUpdate.error));
+    await kubectl(
+      "delete",
+      "pod",
+      originalPod.metadata.name,
+      "--namespace",
+      placementOf(primaryNamespaceId),
+      "--wait=false",
+    );
+    const replacementPod = await waitFor(
+      "bare replacement of the Source-bound Gateway Pod",
+      async () => {
+        const pod = await readyGatewayPod(primaryNamespaceId, boundSecretAgent.id, original.id);
+        return pod.metadata.uid !== originalPod.metadata.uid ? pod : undefined;
+      },
+      180_000,
+    );
+    assert.equal(
+      (await resource("secret", originalSourceRef.name!, placementOf(primaryNamespaceId))).metadata
+        .uid,
+      originalStage.metadata.uid,
+    );
+    assert.equal(
+      await startupEnvironmentDigest(primaryNamespaceId, replacementPod, "GATEWAY_SENTINEL"),
+      digest(boundSecretAgent.gatewaySourceValue!),
+    );
+    assert.equal(
+      await startupEnvironmentDigest(primaryNamespaceId, replacementPod, "BOUND_SENTINEL"),
+      digest(updatedCanonicalValue),
+    );
+    await worker.stop();
+    delete lifecycle.worker;
+    delete lifecycle.workerPool;
+    const refused = await deploy(primaryNamespaceId, boundSecretAgent.id);
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/namespaces/${primaryNamespaceId}/iam/access-bindings/binding_${boundSecretAgent.id}_${boundSecretAgent.gatewaySource!.id}_operate`,
+      headers: {
+        ...authenticatedHeaders(session),
+        origin: authBaseURL,
+        host: new URL(authBaseURL).host,
+      },
+    });
+    assert.equal(revoked.statusCode, 204, revoked.body);
+    worker = await startWorker();
+    await waitFor("Source-authority refusal", async () => {
+      const work = await observerPool.query<{ state: string }>(
+        "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+        [`agent_revision:${refused.id}:reconcile`],
+      );
+      return work.rows[0]?.state === "failed_permanent" ? true : undefined;
+    });
+    assert.equal(
+      await missing(
+        "secret",
+        `gateway-secrets-${hash(boundSecretAgent.id)}-${hash(refused.id)}`,
+        placementOf(primaryNamespaceId),
+      ),
+      true,
+    );
+    const unchangedGateway = await resource(
+      "deployment",
+      gatewayName(boundSecretAgent.id),
+      placementOf(primaryNamespaceId),
+    );
+    assert.equal(
+      unchangedGateway.metadata.annotations?.["openclaw.dev/agent-revision-id"],
+      original.id,
+    );
+    assert.equal(
+      (await readyGatewayPod(primaryNamespaceId, boundSecretAgent.id, original.id)).metadata.uid,
+      replacementPod.metadata.uid,
+    );
+
+    // Seed controlled persistent state for an unlaunched retry: this exact candidate staged A
+    // before the owner changed to B, but its Gateway Deployment was never applied.
+    await worker.stop();
+    delete lifecycle.worker;
+    delete lifecycle.workerPool;
+    const redeployed = await deploy(primaryNamespaceId, boundSecretAgent.id);
+    const candidateStageName = `gateway-secrets-${hash(boundSecretAgent.id)}-${hash(redeployed.id)}`;
+    const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
+      { mode: "kubeconfig", kubeconfigPath, context: kubernetesContext },
+      () => new Error("The controlled fixture Kubernetes client configuration is invalid."),
+    );
+    const core = new sdk.CoreV1Api(clientConfiguration);
+    let seeded: InstanceType<KubernetesSdk["V1Secret"]>;
+    try {
+      seeded = await core.createNamespacedSecret({
+        namespace: placementOf(primaryNamespaceId),
+        body: {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: {
+            name: candidateStageName,
+            namespace: placementOf(primaryNamespaceId),
+            labels: { ...originalStage.metadata.labels, "openclaw.dev/revision": redeployed.id },
+            annotations: {
+              ...originalStage.metadata.annotations,
+              "openclaw.dev/revision-id": redeployed.id,
+            },
+          },
+          type: "Opaque",
+          data: { GATEWAY_SENTINEL: originalStage.data.GATEWAY_SENTINEL! },
+        },
+      });
+    } catch {
+      // SDK errors can include the private request body. Keep the fixture error sanitized.
+      throw new Error("Could not seed the controlled prior Gateway credential stage.");
+    }
+    assert.ok(seeded.metadata?.uid && seeded.metadata.resourceVersion);
+    assert.equal(seeded.metadata.labels?.["openclaw.dev/revision"], redeployed.id);
+    assert.ok(
+      JSON.parse(seeded.metadata.annotations?.["openclaw.dev/gateway-source-versions"] ?? "{}")
+        .GATEWAY_SENTINEL === originalVersion,
+    );
+    assert.equal(
+      digest(Buffer.from(seeded.data?.GATEWAY_SENTINEL ?? "", "base64").toString()),
+      digest(boundSecretAgent.gatewaySourceValue!),
+    );
+    worker = await startWorker();
+    await waitForActive(primaryNamespaceId, boundSecretAgent.id, redeployed.id);
+    const newGateway = await resource(
+      "deployment",
+      gatewayName(boundSecretAgent.id),
+      placementOf(primaryNamespaceId),
+    );
+    const newSourceRef = newGateway.spec.template.spec.containers[0]!.env!.find(
+      ({ name }) => name === "GATEWAY_SENTINEL",
+    )!.valueFrom!.secretKeyRef!;
+    assert.notEqual(newSourceRef.name, originalSourceRef.name);
+    const newStage = await resource("secret", newSourceRef.name!, placementOf(primaryNamespaceId));
+    assert.equal(
+      newStage.metadata.uid,
+      seeded.metadata.uid,
+      "the retry must replace the exact existing stage",
+    );
+    assert.notEqual(newStage.metadata.resourceVersion, seeded.metadata.resourceVersion);
+    assert.equal(
+      digest(Buffer.from(newStage.data.GATEWAY_SENTINEL!, "base64").toString()),
+      digest(replacementValue),
+    );
+    const newVersion = JSON.parse(
+      newStage.metadata.annotations?.["openclaw.dev/gateway-source-versions"] ?? "{}",
+    ).GATEWAY_SENTINEL;
+    assert.ok(newVersion && newVersion !== originalVersion);
+    const newPod = await readyGatewayPod(primaryNamespaceId, boundSecretAgent.id, redeployed.id);
+    assert.equal(
+      await startupEnvironmentDigest(primaryNamespaceId, newPod, "GATEWAY_SENTINEL"),
+      digest(replacementValue),
+    );
+    await waitFor("old Gateway credential copy cleanup", () =>
+      missing("secret", originalSourceRef.name!, placementOf(primaryNamespaceId)),
     );
 
     // Use the API-deployed embedded runtime, dedicated Harness, and dedicated Gateway.
@@ -1609,7 +1947,7 @@ test(
       "retain across replacement",
     );
     await resource("deployment", revisionName(admitted[1]), placement);
-    await resource("deployment", revisionName(admitted[5]), placement);
+    await resource("deployment", revisionName(redeployed), placement);
     await resource("serviceaccount", agentName(first.id), placement);
     await assertReadyGateway(placement, first.id, primaryNamespaceId);
     await assertReadyGateway(placement, second.id, primaryNamespaceId);
@@ -1621,6 +1959,79 @@ test(
       3,
       "worker restart and replacement revisions must preserve one gateway for each running Agent",
     );
+
+    // A Gateway process cannot erase an environment value. Withdrawal must remain pending
+    // until ordinary runtime retirement; it must not silently revoke or mutate the running Pod.
+    const withdrawalPath = `/namespaces/${primaryNamespaceId}/agents/${boundSecretAgent.id}/credential-sources/${boundSecretAgent.gatewaySource!.id}`;
+    const requestedWithdrawal = await request<CredentialWithdrawalResponse>(
+      "POST",
+      `${withdrawalPath}/withdraw`,
+    );
+    assert.equal(requestedWithdrawal.status, 202, JSON.stringify(requestedWithdrawal.error));
+    assert.equal(requestedWithdrawal.data?.state, "pending");
+    const pendingWithdrawal = await waitFor(
+      "Gateway Source withdrawal retirement requirement",
+      async () => {
+        const current = await request<CredentialWithdrawalResponse>(
+          "GET",
+          `${withdrawalPath}/withdrawal`,
+        );
+        assert.equal(current.status, 200, JSON.stringify(current.error));
+        return current.data?.reason === "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT"
+          ? current.data
+          : undefined;
+      },
+    );
+    assert.equal(pendingWithdrawal.state, "pending");
+    assert.equal(
+      (await readyGatewayPod(primaryNamespaceId, boundSecretAgent.id, redeployed.id)).metadata.uid,
+      newPod.metadata.uid,
+    );
+    assert.equal(
+      (await resource("secret", newSourceRef.name!, placementOf(primaryNamespaceId))).metadata.uid,
+      newStage.metadata.uid,
+    );
+    const ordinaryStop = await request<AgentResponse>(
+      "POST",
+      `/namespaces/${primaryNamespaceId}/agents/${boundSecretAgent.id}/stop`,
+    );
+    assert.equal(ordinaryStop.status, 202, JSON.stringify(ordinaryStop.error));
+    await waitFor("stopped Gateway credential copy cleanup", () =>
+      missing("secret", newSourceRef.name!, placementOf(primaryNamespaceId)),
+    );
+    const confirmedWithdrawal = await waitFor(
+      "Gateway Source withdrawal revoked after Compute stop",
+      async () => {
+        const current = await state.read((view) =>
+          view.credentialSources.findCredentialWithdrawal(
+            primaryNamespaceId,
+            redeployed.id,
+            boundSecretAgent.gatewaySource!.id,
+          ),
+        );
+        return current?.state === "revoked" ? current : undefined;
+      },
+    );
+    assert.equal(confirmedWithdrawal.revisionId, redeployed.id);
+    const confirmation = await observerPool.query<{ actor_id: string; revision_id: string }>(
+      "SELECT actor_id, details->>'revisionId' AS revision_id FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND action='openclaw.agents.lifecycle.credentials_withdraw' AND outcome='success' AND details->>'revisionId'=$3 AND details->'credentialSourceIds' @> $4::jsonb",
+      [
+        primaryNamespaceId,
+        boundSecretAgent.id,
+        redeployed.id,
+        JSON.stringify([boundSecretAgent.gatewaySource!.id]),
+      ],
+    );
+    assert.deepEqual(confirmation.rows, [
+      { actor_id: pendingWithdrawal.requestedBy, revision_id: redeployed.id },
+    ]);
+    const survivingOwner = await request<CredentialSourceResponse>(
+      "PATCH",
+      `/namespaces/${primaryNamespaceId}/credential-sources/${boundSecretAgent.gatewaySource!.id}`,
+      { secret: replacementValue },
+    );
+    assert.equal(survivingOwner.status, 200, JSON.stringify(survivingOwner.error));
+    assert.equal(survivingOwner.data?.id, boundSecretAgent.gatewaySource!.id);
 
     if (runtimeImage === undefined) {
       // Block the fixture's native readiness using the retained workspace, then

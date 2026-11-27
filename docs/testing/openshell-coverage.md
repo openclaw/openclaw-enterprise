@@ -6,10 +6,10 @@ last_verified: "2026-11-04"
 
 # What the OpenShell Sandbox suite proves
 
-Use [OpenShell tests](openshell.md#openshell-sandbox) to run the files in
-[advisory coverage](ci/qa-advisory.md#openshell-file-coverage). They share
-[workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs).
-Unless stated otherwise, checks use the default Codex scenario.
+This page records historical [OpenShell workflow fixture](../../tests/helpers/openshell-sandbox-workflows.mjs)
+coverage. Run these scenarios only on a matching pre-cutover release. Current
+startup rejects their Credential Gateway selection; the token-echo variant also
+selects retired Credential Refresh. See [current Source verification](../reference/credential-sources.md#implementation-status).
 
 ## Gateway tool policy
 
@@ -62,13 +62,12 @@ error if evidence collection fails. Printed `ACCESS_DENIED` means the worker's
 fixed `AUTHORIZATION_DENIED` code; this spelling survives the log exporter's
 credential redaction. Queue rows print separately to avoid line clipping.
 
-## Credential source and Harness
+<a id="credential-source-and-harness"></a>
 
-Both modes compose the `openshell` Backend, Sandbox and Credential Gateway
-Drivers. The production API registers a `codex-pat` source from
-`CODEX_ACCESS_TOKEN`, or an `openai` source from `OPENAI_API_KEY`. Once `ready`,
-the tests bind the Agent with `credential_source` and grant it `operate` on the
-source, not the Secret.
+## Legacy credential Source and Harness
+
+Legacy scenarios register a PAT or API-key Source, bind it to the Agent, and
+grant the Agent `operate` on that Source.
 
 After tenant readiness, both modes require restricted Pod Security Admission to
 reject server-side dry runs of privileged and `NET_ADMIN` Pods without relabeling
@@ -277,17 +276,16 @@ installing gateway workloads. Selected Drivers create the gateway, signing key,
 and Workspace. The test checks zero persisted Agents, actual Pod readiness,
 gateway health, Workspace ownership, and distinct resources for a later Namespace.
 Prerequisites: operator-installed CRDs, RBAC and Envoy Agent routing. Retain restricted tenant PSA; OCE configures no RuntimeClass or exemption.
-They do not create the namespace-owned OpenShell gateway or Workspace.
-
-Select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane
+On a matching older release, select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane
 file environment, or QA scenario `namespace-lifecycle` with
-`OCC_TEST_QA_SANDBOX_ENV`. The advisory matrix includes the file on `main` and
-trusted `full-qa` PRs. Missing preparation fails the selected case.
+`OCC_TEST_QA_SANDBOX_ENV`. The advisory matrix still lists this file, but current
+startup rejects its legacy Gateway selection.
 After both checkpoints, the test creates a native OpenClaw Agent in each Namespace
 through the API, deploys it through the same worker and OpenShell gateway, and
 checks a real model reply through authenticated Agent routing. It deletes each
 Agent through the API before Namespace cleanup. This uses the existing OpenShell
-Credential Gateway topology; it does not prove projected workload identity.
+Credential Gateway topology, which is retired; it does not qualify the current
+credential path or prove projected workload identity.
 
 The selected file requires `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`. The QA
 entry point requires `OCC_TEST_QA_OPENAI_KEY_FILE`, `OCC_TEST_QA_OPENAI_MODEL` and

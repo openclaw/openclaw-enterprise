@@ -5,11 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import pg from "pg";
-import {
-  AGENT_RUNTIME_ENTRYPOINT,
-  NATIVE_WORKER_ENTRYPOINT,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { NATIVE_WORKER_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
@@ -34,15 +30,10 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
-import { createCredentialWithdrawalChecks } from "./sandbox-driver-credential-withdrawal-cases.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { createSandboxHarnessLifecycleChecks } from "./sandbox-driver-harness-lifecycle-cases.ts";
 import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
-import {
-  verifyDedicatedHarnessSelection,
-  verifyRejectedCredentialGatewayExecutable,
-  verifySharedBackendComposition,
-} from "./sandbox-driver-startup-composition-cases.ts";
+import { verifyDedicatedHarnessSelection } from "./sandbox-driver-startup-composition-cases.ts";
 import { createSandboxStartupGuardChecks } from "./sandbox-driver-startup-guard-cases.ts";
 import {
   buildSandboxInstallation as sandboxInstallation,
@@ -70,10 +61,6 @@ type HarnessOptions = {
 };
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 type Harness = AgentRevision["harness"];
-type CredentialGatewayFactory = Parameters<
-  typeof createCredentialWithdrawalChecks
->[0]["credentialGatewayOverProviders"];
-
 function dedicatedHarness(id: string, mode: Harness["mode"] = "dedicated"): Harness {
   return { id, version: "1.0.0", mode, overrides: {}, configuration: {} };
 }
@@ -98,21 +85,6 @@ function invalidValue(path: string, message: string): RefusalDetail[] {
   return [{ path, code: "INVALID_VALUE", message }];
 }
 
-export function credentialWithdrawalChecks(
-  credentialGatewayOverProviders: CredentialGatewayFactory,
-) {
-  return createCredentialWithdrawalChecks({
-    OpenShellCredentialRefreshDriver,
-    conformanceKubernetesOptions,
-    credentialGatewayOverProviders,
-    kubernetesObjectClient,
-    openShellDriver,
-    rejectsAtStartup,
-    runtimeSandboxFixture,
-    sandboxInstallation,
-    structuralRefusal,
-  });
-}
 export function sandboxStartupGuardChecks() {
   return createSandboxStartupGuardChecks({
     conformanceKubernetesOptions,
@@ -147,19 +119,14 @@ export const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
   storedSandbox,
 });
 export const codexHarnessChecks = createSandboxCodexHarnessChecks({
-  agentRuntimeEntrypoint: AGENT_RUNTIME_ENTRYPOINT,
   codexRequirements,
-  conformanceKubernetesOptions,
   dedicatedRevision,
-  harnessRuntimeCommand,
   namespaceContext,
   runtimeSandboxFixture,
   workspaceGatewayClient,
 });
 
-export function registerSandboxDriverStartupWiringCases(
-  credentialGatewayOverProviders: CredentialGatewayFactory,
-) {
+export function registerSandboxDriverStartupWiringCases() {
   test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
     const createdDriver = await loadInstallationFile(t, sandboxInstallation());
 
@@ -177,10 +144,6 @@ export function registerSandboxDriverStartupWiringCases(
     assert.doesNotThrow(() =>
       createControllerWorker({ pool, mode: "production", drivers: createdDriver, emit: () => {} }),
     );
-  });
-
-  test("startup composes both OpenShell members from one Backend", async (t) => {
-    await verifySharedBackendComposition(t);
   });
 
   test("startup selects native credential delivery without a legacy Credential Gateway", async (t) => {
@@ -219,12 +182,7 @@ export function registerSandboxDriverStartupWiringCases(
     }))!;
     const owner = mixed.credentialDeliveryRegistration!;
     assert.equal(owner, mixed.protectedDriver);
-    // Public main 2c78d43b admitted this fixture with the original Sandbox/Proxy capability IDs.
-    assert.equal(
-      protectedOnly.protectedDriver!.ref.configurationId,
-      "bdf2106eb75e8da13f1fe1d01fd6974adda3419e62f40880f25089cfa61cc859",
-    );
-    // Selecting native delivery must not invalidate those persisted admissions.
+    // Selecting native delivery leaves the protected registration identity stable.
     assert.deepEqual(owner.ref, protectedOnly.protectedDriver!.ref);
     const controller = new OpenClawController(
       { id: "ins_mixed", name: "Mixed", createdAt: "2026-11-20T00:00:00Z" },
@@ -242,21 +200,26 @@ export function registerSandboxDriverStartupWiringCases(
     );
   });
 
-  test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
-    await credentialWithdrawalChecks(
-      credentialGatewayOverProviders,
-    ).pairsCredentialRefreshWithGateway(t);
-  });
-
-  test("startup identifies the rejected Credential Gateway executable", (t) =>
-    verifyRejectedCredentialGatewayExecutable(t));
-
-  test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
+  test("startup refuses retired Gateway and Refresh selections", async (t) => {
+    for (const key of ["credential_gateway", "credential_refresh"]) {
+      await rejectsAtStartup(
+        t,
+        (configuration) => {
+          Object.assign(configuration.drivers, { [key]: { id: "retired", configuration: {} } });
+        },
+        new RegExp(key),
+      );
+    }
     await rejectsAtStartup(
       t,
-      (c) => Reflect.deleteProperty(c.drivers, "credential_gateway"),
-      /drivers\.credential_gateway must match the selected drivers\.credential_gateway\.id/,
+      (configuration) => {
+        Object.assign(firstBackend(configuration).drivers, { credential_gateway: "retired" });
+      },
+      /selects retired credential Drivers/,
     );
+  });
+
+  test("startup rejects an OpenShell Backend whose Sandbox is not selected", async (t) => {
     await rejectsAtStartup(
       t,
       (c) => (firstBackend(c).drivers.sandbox = "another-sandbox"),
