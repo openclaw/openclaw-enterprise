@@ -3,7 +3,7 @@ import childProcess from "node:child_process";
 import type { SpawnOptions } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { wholeNumber } from "./observations.mts";
+import { parseObservation, record, wholeNumber } from "./observations.mts";
 
 const statePath = "/home/node/.openclaw/state";
 const agentPath = "/home/node/.openclaw/agents/main/agent";
@@ -75,6 +75,17 @@ if (import.meta.main) {
   const spawn = childProcess.spawn;
   const stateVersion = schemaVersion(process.env.OCE_TEST_STATE_SCHEMA);
   const agentVersion = schemaVersion(process.env.OCE_TEST_AGENT_SCHEMA);
+  // The simulated Doctor must not confirm the launcher's targets for a different image.
+  const manifest = parseObservation(
+    readFileSync("/app/node_modules/openclaw/package.json", "utf8"),
+    record,
+  );
+  const { state, agent } = record(record(manifest.openclaw).schemaVersions);
+  assert.deepEqual(
+    { state: stateVersion, agent: agentVersion },
+    { state, agent },
+    "Check the controller's SQLite schema versions against the selected OpenClaw runtime image.",
+  );
   delete process.env.NODE_OPTIONS;
   delete process.env.OCE_TEST_STATE_SCHEMA;
   delete process.env.OCE_TEST_AGENT_SCHEMA;
