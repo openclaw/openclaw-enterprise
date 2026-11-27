@@ -40,6 +40,7 @@ import {
   type ApiRequestAuditObservation,
   type AuditEvent,
   type AuditEventKind,
+  type AuthorizationDecision,
   type AuthorizationEvidence,
   type BackendSummary,
   type ChannelDriver,
@@ -1718,9 +1719,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   function validateAuthorizationDecision(
-    decision: Awaited<ReturnType<IAMDriver["authorize"]>>,
+    decision: AuthorizationDecision | null | undefined,
     selected: IAMDriver,
-  ): void {
+  ): asserts decision is AuthorizationDecision {
     if (
       !decision ||
       typeof decision.allowed !== "boolean" ||
@@ -3812,14 +3813,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           } catch {
             throw dependencyUnavailable();
           }
-          if (
-            typeof current.allowed !== "boolean" ||
-            typeof current.reason !== "string" ||
-            current.driverId !== selected.id ||
-            !validAuthorizationEvidence(current.evidence)
-          ) {
-            throw dependencyUnavailable();
-          }
+          validateAuthorizationDecision(current, selected);
           if (!current.allowed) {
             throw new AuthorizationDeniedError(
               current.reason,
@@ -3836,15 +3830,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             );
           }
           if (scope.successorPrincipalId !== undefined) {
-            if (
-              successor === undefined ||
-              typeof successor.allowed !== "boolean" ||
-              typeof successor.reason !== "string" ||
-              successor.driverId !== selected.id ||
-              !validAuthorizationEvidence(successor.evidence)
-            ) {
-              throw dependencyUnavailable();
-            }
+            validateAuthorizationDecision(successor, selected);
             if (!successor.allowed) {
               throw new ResourceStateConflictError(
                 "The recovery account must administer the Installation.",

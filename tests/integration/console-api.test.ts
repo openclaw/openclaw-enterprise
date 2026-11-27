@@ -430,9 +430,11 @@ test("the Namespace Installation administer answer matches what Installation-wid
   };
   const interposed = t.mock.method(iamDriver, "authorize", mockAuthorize);
 
-  // Both reads refuse a denial from the wrong Driver and an allowance with a missing group ID.
+  // Invalid evidence or Driver identity makes both grants and denials untrustworthy.
   for (const [fault, caller, allowed, description] of [
     ["wrong-driver", session, false, "A mismatched IAM Driver"],
+    ["wrong-driver", undefined, true, "A mismatched IAM Driver"],
+    ["sparse-group-ids", session, false, "Sparse IAM evidence"],
     ["sparse-group-ids", undefined, true, "Sparse IAM evidence"],
   ] as const) {
     decisionFault = fault;
