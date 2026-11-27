@@ -4764,10 +4764,22 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-top: 1px solid var(--color-border);
   background: var(--color-canvas);
 }
-/* Keyboard focus scrolls a control into view above that row, not under it. Two rows of buttons
-   fit on a phone. */
+/* Keep focused controls clear of up to two sticky action rows. */
 html:has(#create-agent-form) {
-  scroll-padding-bottom: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
+  --create-action-row-space: calc(var(--control-h) + 2 * var(--space-3));
+  --create-actions-space: calc(var(--create-action-row-space) + var(--control-h) + var(--space-4));
+  scroll-padding-bottom: var(--create-actions-space);
+}
+/* Leave room for a wrapped syntax diagnostic above the sticky actions. */
+@media (max-height: 32rem) {
+  .launch-advanced #configuration-json {
+    height: max(5lh, calc(100dvh - var(--create-action-row-space) - 3lh));
+  }
+}
+@media (max-width: 520px) and (max-height: 36rem) {
+  .launch-advanced #configuration-json {
+    height: max(5lh, calc(100dvh - var(--create-actions-space) - 3lh));
+  }
 }
 .repository-customize .repository-option {
   margin-top: var(--space-4);
