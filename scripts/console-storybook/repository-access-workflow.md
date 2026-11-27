@@ -81,7 +81,7 @@ discovery denied**, which display their own status instead.
 
 ## Repository search keyboard
 
-Open **Pages / Create Agent / Exact repository names before prefix matches**
+Open **Pages / Create Agent / Repository Exact Search**
 (`pages-create-agent--repository-exact-search`). Search for `application` with
 both exact matches unchecked. Press Down Arrow to focus `omega/application`,
 then press Enter. The checkbox stays unchecked and focused, and the form stays
