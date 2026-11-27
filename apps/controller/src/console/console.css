@@ -4768,7 +4768,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 html:has(#create-agent-form) {
   --create-action-row-space: calc(var(--control-h) + 2 * var(--space-3));
   --create-actions-space: calc(var(--create-action-row-space) + var(--control-h) + var(--space-4));
-  scroll-padding-bottom: var(--create-actions-space);
+  scroll-padding-bottom: max(
+    var(--create-actions-space),
+    calc(var(--create-actions-height, 0px) + var(--space-2))
+  );
 }
 /* Leave room for a wrapped syntax diagnostic above the sticky actions. */
 @media (max-height: 32rem) {
