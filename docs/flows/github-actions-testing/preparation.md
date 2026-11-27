@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-19 23:19"
-last_updated_session: "authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60"
+updated: "2026-11-27 04:00"
+last_updated_session: "authoring-run/7e42a047-c5fb-480c-b168-0c01480fd373"
 ---
 
 # CI resource preparation
@@ -155,30 +155,24 @@ error and planned resource and prints [owned cleanup](../../testing/postgresql.m
 `scripts/ci/prepare.ts:readState` rejects malformed lane, selected-file, env, and defaults fields; owners validate resources.
 `prepareLane` atomically publishes without replacement; `prepareFile` registers fresh children. Cleanup verifies files, identity, lane, and path. Worker death remains recoverable; mismatches, symlinks, and failures preserve journals and parent references.
 
-For hosted QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
-reviewed registry file only when a repository scenario is selected. It copies
-that metadata, the selected private App key and approved endpoint CIDRs into one
-private input directory under `RUNNER_TEMP`. Both fixtures pass that directory to
-the repository consumer and independent App-backed observer. The observer mints
-short-lived tokens for the selected repository; its credentials stay outside
-Agents. It checks run ownership before closing a pull request or deleting a branch
-with an exact-SHA lease. Invalid file input or an isolated target mismatch fails
-before the runner receives credential paths.
+For hosted QA, `scripts/ci/qa-matrix-credentials.mjs` reads the reviewed registry
+file only for a selected repository scenario. It stages the metadata, selected
+private App key and approved endpoint CIDRs under private `RUNNER_TEMP`, which
+both fixtures pass to the consumer and independent App-backed observer. The
+observer keeps credentials outside Agents, mints short-lived repository tokens,
+and checks run ownership before closing a pull request or deleting a branch with
+an exact-SHA lease. Invalid input or target mismatch fails before credential paths
+reach the runner.
 
-For hosted `qa-matrix` jobs, `scripts/ci/lane-images.ts:imageInventory`
-records tagged or digest-pinned image references and their IDs in private
-`lane-images` state before tests. If the inventory fails, preparation warns and
-records no baseline. Workstation runs record none. During cleanup,
-`restoreLaneImages` attempts to restore changed or missing baseline tags matching
-the QA launcher patterns and remove newly observed matching tags. Cleanup does
-not target other references. A successful final inventory reports added, changed,
-and missing references. If the first cleanup inventory fails, cleanup warns and
-skips both restoration and removal. If the final inventory fails, cleanup warns
-and reports `added`, `changed`, and `missing` as `null`: the final store
-state is unknown. Tag and inventory failures warn rather than fail the job.
-A returned resource is removed from state; invalid state or ownership still
-fails cleanup. These results do not prove
-the runner accepted a shared-store commit.
+For hosted `qa-matrix` jobs, `scripts/ci/lane-images.ts:imageInventory` records
+tagged or digest-pinned references and IDs in private `lane-images` state before tests. A failed
+inventory warns and leaves no baseline; workstation runs record none. During
+cleanup, `restoreLaneImages` restores changed or missing baseline tags and removes
+new tags matching the QA launcher patterns. Other references are untouched. A
+failed first cleanup inventory skips both actions. A successful final inventory
+reports added, changed and missing references; a failed one reports `added`, `changed`, and `missing` as `null`. Tag and inventory failures
+warn rather than fail the job. Returned resources leave state; invalid state or
+ownership fails cleanup. These observations do not prove a shared-store commit.
 
 Each Kubernetes fixture lane uses a server and worker with a shared local-path
 mount. Preparation validates the server's route source to the worker Pod CIDR and
@@ -187,25 +181,20 @@ the imported digest alias on both nodes. A DaemonSet keeps the image active on b
 nodes until cluster cleanup and exposes no Service. The status suite schedules the
 runtime on the worker to test proxy ingress across nodes.
 
-`scripts/ci/k3d-fixture-storage.ts:buildFixtureImage` reports separate engine-version and
-fixture-build stages. The engine probe uses the existing image-command
-limit (30 seconds by default); the fixture build has a 30-minute cap to allow slow builds. These are execution limits, not
-expected durations. Both commands respect the remaining lane deadline less
-the test reserve, recalculated before each command. Without a valid lane deadline,
-the finite command limits still apply. Unsupported timer values are rejected.
-An exhausted budget reports the stage that could not start. On POSIX, timeouts
-terminate the command's owned process group, including local descendants. The
-shared `scripts/ci/cleanup-command.ts` supervisor anchors the group ID through
-its last signal, including when preparation receives SIGINT cancellation; after
-it exits, preparation sends no further group signals. Windows retains direct-child
-termination. A failed build reports up to eight numbered FROM, RUN or COPY steps
-and their reported completion states from the last 32,768 characters of each captured stream.
-The step summary omits arguments, container output and arbitrary error text. This partial
-summary identifies steps in the fixture Dockerfile; it does not establish the
-current build phase or cause of a stall. The timeout keeps its concise stage error
-and original cause. The owned image tag is recorded before
-building and becomes ready only after success, so failed preparation remains
-available to cleanup.
+`scripts/ci/k3d-fixture-storage.ts:buildFixtureImage` reports engine-version and
+fixture-build stages. The engine probe defaults to 30 seconds; the fixture build
+allows 30 minutes. Before each command, both limits respect the remaining lane
+deadline minus the test reserve. Without a valid deadline, the finite limits
+still apply. Invalid timer values are rejected; exhausted budgets identify the
+stage that could not start. On POSIX, `scripts/ci/cleanup-command.ts` holds the
+owned process group through signal forwarding, including SIGINT cancellation,
+and sends no signals after the group supervisor exits. Windows terminates the
+direct child. Failed builds summarize up to eight numbered FROM, RUN or COPY
+steps and completion states from the last 32,768 characters of each stream,
+omitting arguments, container output and arbitrary errors. The summary identifies
+Dockerfile steps, not the current phase or stall cause. Timeouts retain their
+stage error and cause. The image tag is recorded before building and becomes
+ready only on success, so cleanup can recover failed preparation.
 
 Preparation checks the storage controller before fixture setup, then restarts it
 after image registration and requires the replacement to become ready before
@@ -226,7 +215,16 @@ gives each image one shared 20-minute build budget, including any first stage.
 Each cache export has a separate 20-minute limit within the 45-minute job.
 These are cancellation limits, not expected durations.
 
-For dedicated Codex preparation (and installed repository-credential preparation, once that lane is available again), each owned node supplies its actual `RuntimeDefault` syscall profile from a restricted probe Pod. In the same command path, preparation first verifies that `RuntimeDefault` denies the pinned Codex Bubblewrap sandbox, then preserves that baseline, adds the version-pinned Bubblewrap calls, installs the resulting Localhost profile, verifies its hash and effective OCI policy, and requires actual sandbox execution through the profile. A missing profile must prevent container creation. The selected relative profile path is passed to the live fixture as `runtime.codexSeccompProfile`; only the dedicated Codex container uses it. Node profile files belong to the disposable cluster, and temporary probe resources are cleaned before model tests. The live fixture checks the effective configured model before paid model turns. OpenShell continues to own containment for its provider-created Harness.
+Dedicated Codex preparation (and installed repository-credential preparation when
+available) obtains each node's actual `RuntimeDefault` syscall profile from a
+restricted probe Pod. It verifies that the profile denies the pinned Codex
+Bubblewrap sandbox, preserves that baseline, adds the version-pinned calls, installs the Localhost
+profile, checks its hash and effective OCI policy, and requires sandbox execution
+through it. A missing profile prevents container creation. The live fixture gets
+`runtime.codexSeccompProfile` for the dedicated Codex container and checks the
+effective model before paid turns. Node profiles belong to the disposable cluster;
+probe resources are cleaned before model tests. OpenShell owns containment for its
+provider-created Harness.
 
 `scripts/ci/repository-credentials.ts:prepareRepositoryCredentials` journals each
 tag before building it. A valid immutable Docker image ID moves the tag to ready.
@@ -248,33 +246,43 @@ Gateway v1.6.7 controllers and creates a private test CA. It imports immutable
 controller and runtime references so OCC can reach Envoy through its ClusterIP
 Service.
 
-OpenShell preparation uses digest-pinned K3s v1.36.4, installs matching kubectl
-and Agent Sandbox resources, obtains the OpenShell CLI and chart, and imports
-gateway, sandbox, and supervisor images. `prepareOpenShellClusterBootstrap` returns
-only the pinned node image and kubectl selection; `createK3dPreparation` creates
-the cluster without an OCE admission file or API server admission override.
-`prepareOpenShell` requires PSA to reject privileged and forbidden-capability Pods
-in a restricted probe namespace, then runs a default-runtime smoke Pod. The
-privileged probe omits `allowPrivilegeEscalation: false` so core validation does
-not reject it before PSA. OCE creates no RuntimeClass or
-PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Layer 7
-network policy enforcement by the supervisor. The Harness and supervisor receive
-neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
+OpenShell preparation digest-pins K3s v1.36.4, installs matching kubectl and Agent
+Sandbox resources, obtains the CLI and chart, and imports gateway, sandbox and
+supervisor images. `prepareOpenShellClusterBootstrap` returns the node image and
+kubectl selection; `createK3dPreparation` uses no OCE admission file or API
+server admission override. `prepareOpenShell` requires PSA to reject privileged
+and forbidden-capability Pods in a restricted probe namespace, then runs a
+default-runtime smoke Pod. The privileged probe omits
+`allowPrivilegeEscalation: false` to reach PSA rather than core validation.
+OCE creates no RuntimeClass or PSA exemption. The full lane checks filesystem,
+privilege and binary-scoped Layer 7 network policy enforcement by the supervisor. Neither the
+Harness nor supervisor receives `SYS_PTRACE` or `DAC_READ_SEARCH`.
 
-On terminal failure, Logging Collector’s `scripts/ci/prepare.ts:prepareLane`
-stops queued pulls, drains active acquisitions and fails without exporting test inputs.
-`prepareLaneLogging` starts an owned Collector for JSONL evidence in other lanes.
+`scripts/ci/prepare.ts:prepareLane` stops queued and drains active pulls; failure
+exports nothing. `prepareLaneLogging` starts other lanes’ JSONL Collector.
+`scripts/ci/logging.ts:prepareLogging` records the Docker endpoint, daemon,
+attempt, directory identity and full container ID. Its backend base directory
+comes from the explicit directory, `RUNNER_TEMP`, or the OS temporary directory.
+It rejects a base inside or equal to the k3d resource directory before setup,
+so independent k3d retirement cannot erase the backend directory, private cidfile
+or sibling custody receipt. `cleanupLogging` rejects legacy/unbound state and
+removes only the verified ID. Retain unresolved evidence and reconcile uncertain
+creation or removal without replay; keep receipts until lane retirement.
+Incompatible `--host` endpoints prevent creation.
 
 [Docker setup](../../../.github/actions/setup-test-docker/action.yml) connects the
 CLI, Compose and Driver to Docker 29.9.2 at `/var/run/docker.sock` for
 `fluentd-write-timeout` in Collector and Docker Model Runtime jobs.
 Others keep runner defaults. See [hosted coverage](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status).
 
-The OpenShell test owns management port-forwards throughout the test. Teardown stops the worker, drains forwards, then attempts app, database, namespace and directory cleanup even after an earlier failure. Forward shutdown allows two seconds after `SIGTERM`, then sends `SIGKILL` if necessary and waits two more seconds. Cleanup errors fail the test.
+The OpenShell test owns management port-forwards. Teardown stops the worker,
+drains forwards, and attempts app, database, namespace and directory cleanup
+even after failure. Forward shutdown waits two seconds after `SIGTERM`, then
+sends `SIGKILL` if needed and waits two more. Cleanup errors fail the test.
 
 ## Debugging and Verification
 
-Preparation errors go to stderr; successful CLI output lists exported names.
+CLI lists exports; errors go to stderr.
 See [lane verification](../../testing/ci/run-lanes.md).
 
 ## Related docs
@@ -284,6 +292,10 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-27 04:00: Document independent logging recovery storage and shorten the flow. (authoring-run/7e42a047-c5fb-480c-b168-0c01480fd373 - 5bedeb756f91663e60fd8171ac8cacc44704f3a7)
+
+- 2026-11-27 03:38: Document logging cleanup identity and recovery limits. (authoring-run/b7299b03-1a22-4622-a04e-9cddad878fa2 - 5bedeb756f91663e60fd8171ac8cacc44704f3a7)
 
 - 2026-11-19 23:19: Stop queued logging pulls after failure. (authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60 - d271eef41c4169a072750dca326fd4a00d19da00)
 

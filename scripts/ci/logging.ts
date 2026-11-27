@@ -1,10 +1,23 @@
 import { createServer } from "node:net";
-import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { chmod, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { ensureImage } from "./image-pull.ts";
+import {
+  beginCreate,
+  boundDocker,
+  cleanupCustody,
+  finishCreate,
+  nonceLabel,
+  parseCustody,
+  planCustody,
+  selectDockerEngine,
+  verifyDockerEngine,
+  withStateLock,
+  type Custody,
+} from "./logging-custody.ts";
 import { ownedName } from "./resource-names.ts";
 
 type CommandExecutor = (
@@ -289,6 +302,7 @@ async function waitForBackend(endpoint: string) {
 
 function dockerRunArgs({
   containerName,
+  custody,
   image,
   configPath,
   outputDirectory,
@@ -297,6 +311,7 @@ function dockerRunArgs({
   network,
 }: {
   containerName: string;
+  custody: Custody;
   image: string;
   configPath: string;
   outputDirectory: string;
@@ -304,7 +319,7 @@ function dockerRunArgs({
   port: number;
   network: string | undefined;
 }) {
-  const args = ["run", "--detach", "--name", containerName];
+  const args = ["run", "--detach", "--name", containerName, "--cidfile", custody.cidPath];
   if (network) {
     args.push("--network", network);
   }
@@ -319,6 +334,8 @@ function dockerRunArgs({
     `${outputDirectory}:/out`,
     "--label",
     "org.openclaw.enterprise.ci.resource=otel-backend",
+    "--label",
+    `${nonceLabel}=${custody.nonce}`,
     image,
     "--config=/etc/otel/backend.yaml",
   );
@@ -617,9 +634,16 @@ async function prepareLogging({
   });
   assertOwnedContainerName(containerName);
   const namespace = ownedCluster ? containerName : undefined;
-  const baseDirectory = resolve(
-    directory ?? ownedCluster?.directory ?? env.RUNNER_TEMP ?? tmpdir(),
-  );
+  // The k3d resource retires its directory independently, including after an
+  // unresolved OTel cleanup. Keep the backend's recovery evidence outside it.
+  const baseDirectory = await realpath(resolve(directory ?? env.RUNNER_TEMP ?? tmpdir()));
+  const clusterDirectory = ownedCluster ? await realpath(ownedCluster.directory) : undefined;
+  if (
+    clusterDirectory &&
+    (baseDirectory === clusterDirectory || baseDirectory.startsWith(`${clusterDirectory}${sep}`))
+  ) {
+    throw new Error("OTel backend directory must be outside the k3d resource directory.");
+  }
   await assertExistingDirectory(baseDirectory, "OTel backend base directory");
 
   const backendDirectory = join(baseDirectory, `${containerName}-state`);
@@ -629,115 +653,133 @@ async function prepareLogging({
   const manifestPath = join(backendDirectory, "collector.kubernetes.yaml");
   const secretsManifestPath = join(backendDirectory, "collector.secrets.yaml");
   const logsJsonl = join(outputDirectory, "logs.jsonl");
+  const unboundExecFile = execFile;
+  const engine = await selectDockerEngine(unboundExecFile, docker, env);
+  execFile = boundDocker(unboundExecFile, docker, engine);
   const address = await dockerAddress({ cluster: ownedCluster, env, execFile, docker });
   const port = await reservePort(address.bindAddress);
   const localEndpoint = `http://${address.bindAddress}:${port}/v1/logs`;
 
-  const resource = await registerResource(ciOtelBackendResourceKind, {
-    containerName,
-    directory: backendDirectory,
-    outputDirectory,
-    configPath,
-    logsJsonl,
-    image,
-    bindAddress: address.bindAddress,
-    port,
-    network: address.network,
-    namespace,
-    manifestPath: namespace ? manifestPath : undefined,
-    secretsManifestPath: namespace ? secretsManifestPath : undefined,
-    cluster: ownedCluster,
-  });
-
   await mkdir(backendDirectory, { recursive: false, mode: 0o700 });
   await chmod(backendDirectory, 0o700);
-  await mkdir(outputDirectory, { recursive: false, mode: 0o700 });
-  await chmod(outputDirectory, 0o700);
-  await writePrivateFile(configPath, backendConfig());
+  const custody = await planCustody(containerName, backendDirectory, image, engine);
+  return withStateLock(custody.receiptPath, async () => {
+    const resource = await registerResource(ciOtelBackendResourceKind, {
+      containerName,
+      custody,
+      directory: backendDirectory,
+      outputDirectory,
+      configPath,
+      logsJsonl,
+      image,
+      bindAddress: address.bindAddress,
+      port,
+      network: address.network,
+      namespace,
+      manifestPath: namespace ? manifestPath : undefined,
+      secretsManifestPath: namespace ? secretsManifestPath : undefined,
+      cluster: ownedCluster,
+    });
 
-  let endpointHost = address.endpointHost;
-  let endpointPort = port;
-  try {
-    // Pull with retries unless the engine holds the pinned digest (the
-    // logging-collector lane pulls it in prepare); `docker run` would pull once,
-    // without them.
-    await ensureImage(image, { execFile, docker });
-    await execFile(
-      docker,
-      dockerRunArgs({
-        containerName,
-        image,
-        configPath,
-        outputDirectory,
-        bindAddress: address.bindAddress,
-        port,
-        network: address.network,
-      }),
-    );
-    if (waitForReady) {
-      await waitForBackend(localEndpoint);
-    }
-    if (ownedCluster && !endpointHost) {
-      endpointHost = await dockerContainerIp(execFile, docker, containerName, address.network);
-      endpointPort = defaultCollectorContainerPort;
-    }
-    if (!endpointHost) {
-      throw new Error("OTel backend endpoint host could not be resolved.");
-    }
-    const endpoint = `http://${endpointHost}:${endpointPort}/v1/logs`;
-    if (ownedCluster) {
-      await installKubernetesCollector({
-        root,
-        cluster: ownedCluster,
-        env,
-        execFile,
-        directory: backendDirectory,
-        image,
-        endpoint,
-        endpointHost,
-        endpointPort,
-        manifestPath,
-        secretsManifestPath,
-        namespace: containerName,
+    await mkdir(outputDirectory, { recursive: false, mode: 0o700 });
+    await chmod(outputDirectory, 0o700);
+    await writePrivateFile(configPath, backendConfig());
+
+    let endpointHost = address.endpointHost;
+    let endpointPort = port;
+    try {
+      // Pull with retries unless the engine holds the pinned digest (the
+      // logging-collector lane pulls it in prepare); `docker run` would pull once,
+      // without them.
+      await ensureImage(image, { execFile, docker });
+      await verifyDockerEngine(unboundExecFile, docker, engine);
+      await beginCreate(custody);
+      const created = await execFile(
+        docker,
+        dockerRunArgs({
+          containerName,
+          custody,
+          image,
+          configPath,
+          outputDirectory,
+          bindAddress: address.bindAddress,
+          port,
+          network: address.network,
+        }),
+      );
+      const containerId = await finishCreate(custody, execFile, docker, created.stdout);
+      if (waitForReady) {
+        await waitForBackend(localEndpoint);
+      }
+      if (ownedCluster && !endpointHost) {
+        endpointHost = await dockerContainerIp(execFile, docker, containerId, address.network);
+        endpointPort = defaultCollectorContainerPort;
+      }
+      if (!endpointHost) {
+        throw new Error("OTel backend endpoint host could not be resolved.");
+      }
+      const endpoint = `http://${endpointHost}:${endpointPort}/v1/logs`;
+      if (ownedCluster) {
+        await installKubernetesCollector({
+          root,
+          cluster: ownedCluster,
+          env,
+          execFile,
+          directory: backendDirectory,
+          image,
+          endpoint,
+          endpointHost,
+          endpointPort,
+          manifestPath,
+          secretsManifestPath,
+          namespace: containerName,
+        });
+      }
+
+      return {
+        env: {
+          OCC_TEST_OTEL_LOGS: "1",
+          OCC_TEST_OTEL_LOGS_JSONL: logsJsonl,
+          OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: endpoint,
+        },
+        resource,
+        resourceId: resource?.id,
+        artifacts: {
+          directory: backendDirectory,
+          outputDirectory,
+          configPath,
+          logsJsonl,
+          endpoint,
+          localEndpoint,
+          endpointHost,
+          endpointPort,
+          containerName,
+          containerId,
+          namespace,
+          manifestPath: namespace ? manifestPath : undefined,
+          secretsManifestPath: namespace ? secretsManifestPath : undefined,
+        },
+      };
+    } catch (error) {
+      await cleanupLogging(
+        {
+          kind: ciOtelBackendResourceKind,
+          containerName,
+          directory: backendDirectory,
+          custody,
+          namespace,
+          cluster: ownedCluster,
+        },
+        { env, execFile: unboundExecFile },
+      ).catch((cleanupError: unknown) => {
+        throw new AggregateError(
+          [error, cleanupError],
+          "OTel backend preparation failed; cleanup is unresolved.",
+        );
       });
+      throw error;
     }
-
-    return {
-      env: {
-        OCC_TEST_OTEL_LOGS: "1",
-        OCC_TEST_OTEL_LOGS_JSONL: logsJsonl,
-        OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: endpoint,
-      },
-      resource,
-      resourceId: resource?.id,
-      artifacts: {
-        directory: backendDirectory,
-        outputDirectory,
-        configPath,
-        logsJsonl,
-        endpoint,
-        localEndpoint,
-        endpointHost,
-        endpointPort,
-        containerName,
-        namespace,
-        manifestPath: namespace ? manifestPath : undefined,
-        secretsManifestPath: namespace ? secretsManifestPath : undefined,
-      },
-    };
-  } catch (error) {
-    await cleanupLogging(
-      {
-        kind: ciOtelBackendResourceKind,
-        containerName,
-        directory: backendDirectory,
-        namespace,
-        cluster: ownedCluster,
-      },
-      { env, execFile },
-    ).catch(() => {});
-    throw error;
-  }
+  });
 }
 
 async function cleanupLogging(
@@ -753,20 +795,10 @@ async function cleanupLogging(
   assertOwnedContainerName(resource.containerName);
   const directory = assertOwnedDirectory(resource.directory, resource.containerName);
   const docker = env.OCC_DOCKER_BIN ?? "docker";
-  // k3d logging installs are scoped to the lane-owned cluster. The k3d-cluster
-  // cleanup owns all Kubernetes API objects, including Collector Namespace and
-  // RBAC, so a dead cluster must not block backend container and JSONL cleanup.
-  await execFile(docker, ["rm", "--force", resource.containerName]).catch((error: unknown) => {
-    if (
-      isRecord(error) &&
-      typeof error.message === "string" &&
-      /No such container/i.test(error.message)
-    ) {
-      return;
-    }
-    throw error;
-  });
-  await rm(directory, { recursive: true, force: true });
+  const custody = parseCustody(resource.custody, resource.containerName, directory);
+  // The lane-owned k3d cluster owns its Kubernetes objects. Its availability
+  // must not determine custody of the separate Docker backend.
+  await cleanupCustody(custody, execFile, docker);
 }
 
 export { ciOtelBackendResourceKind, cleanupLogging, prepareLogging, readDefaultCollectorImage };
