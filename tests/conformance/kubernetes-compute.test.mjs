@@ -79,7 +79,6 @@ import {
   routedOptions,
   routedRevision,
   admitRevisionHarness,
-  labelSelectorLabels,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
@@ -293,6 +292,7 @@ import {
 import {
   checkContainmentRetirementRetry,
   checkContainmentStopOrder,
+  checkCredentialSourceCleanupOrder,
   checkFailedHarnessStopEndsWait,
   checkForeignWorkloadPodRefusal,
   checkGatewayDrainYield,
@@ -310,7 +310,6 @@ import {
   checkStopPreservesReplacement,
   checkStopRetainsAgentStorage,
   checkUnreadHarnessStopsAtOnce,
-  lifecycleNamespaceReads,
 } from "./kubernetes-revision-stop-cases.ts";
 import {
   assertExecStringsWithinBudget,
@@ -6865,118 +6864,10 @@ test(
   checkNativeHarnessStopsAtOnce,
 );
 
-test("stop and retirement end credential-source access through Sandbox cleanup", async () => {
-  // Salvaged from #146: stop and retirement must still shut the workload down when credential
-  // cleanup is uncertain, and must not report completion until it is confirmed. On main the
-  // Credential Gateway attachment lives only in the paired Sandbox, so Sandbox cleanup is the
-  // withdrawal; OCC has no withdraw caller, and a failed cleanup must keep the work retryable.
-  const cleanupCalls = [];
-  let failCleanup = true;
-  let podObservations = 0;
-  const sandboxDriver = {
-    id: "sandbox-credential-stop",
-    implementation: "test/provider-owned",
-    capability: "sandbox",
-    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-    facets: ["networking", "filesystem", "process"],
-    async provisionHarness() {
-      assert.fail("stop and retirement must not provision a Harness workload");
-    },
-    async cleanup(context) {
-      cleanupCalls.push(context.revision?.id);
-      if (failCleanup) {
-        failCleanup = false;
-        throw new Error("sandbox cleanup failed");
-      }
-    },
-  };
-  const unexpected = (method) => async () => {
-    assert.fail(`stop and retirement must not call Credential Gateway ${method}`);
-  };
-  const credentialGatewayDriver = {
-    id: "credential-gateway-stop",
-    implementation: "test/credential-gateway",
-    capability: "credential_gateway",
-    attachForRevision: unexpected("attachForRevision"),
-    attachmentStatus: unexpected("attachmentStatus"),
-    withdraw: unexpected("withdraw"),
-    removeSource: unexpected("removeSource"),
-  };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
-  const harnessAuth = {
-    method: "credential_source",
-    sourceId: "cs_00000000-0000-4000-8000-000000000146",
-    credentialGatewayId: credentialGatewayDriver.id,
-    sourceType: "openai",
-    loginMode: "api_key",
-  };
-  const revision = routedRevision(driver, {
-    id: "revision-credential-stop",
-    sandboxDriverId: sandboxDriver.id,
-    harnessAuth,
-  });
-  const namespace = kubernetesNamespaceName(revision.namespaceId);
-  const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespacedSecret() {
-        throw notFound();
-      },
-      async readNamespacedService() {
-        throw notFound();
-      },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
-      async readNamespacedPersistentVolumeClaim() {
-        throw notFound();
-      },
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      ...namespaceReads,
-      async listNamespacedPod(request) {
-        const selected = labelSelectorLabels(request.labelSelector);
-        if (selected["openclaw.dev/workload-role"] === "agent") {
-          // The Harness is only observed as gone after its Sandbox cleanup succeeded.
-          assert.equal(failCleanup, false);
-          podObservations += 1;
-        }
-        return { apiVersion: "v1", kind: "PodList", items: [] };
-      },
-    },
-    apps: {
-      async readNamespacedDeployment() {
-        throw notFound();
-      },
-    },
-    networking: {
-      async readNamespacedNetworkPolicy() {
-        throw notFound();
-      },
-    },
-    objects: {
-      async read() {
-        throw notFound();
-      },
-    },
-  });
-
-  // An uncertain cleanup fails the stop, so the worker keeps the stop pending and retries.
-  await assert.rejects(driver.stopRevision(revision), /sandbox cleanup failed/);
-  assert.deepEqual(cleanupCalls, [revision.id]);
-  assert.equal(podObservations, 0);
-
-  await driver.stopRevision(revision);
-  assert.deepEqual(cleanupCalls, [revision.id, revision.id]);
-  assert.equal(podObservations, 1);
-
-  // Retirement of the same revision repeats the idempotent cleanup instead of skipping it.
-  await driver.retireRevision(revision);
-  assert.deepEqual(cleanupCalls, [revision.id, revision.id, revision.id]);
-  assert.equal(podObservations, 2);
-});
+test(
+  "stop and retirement end credential-source access through Sandbox cleanup",
+  checkCredentialSourceCleanupOrder,
+);
 
 test(
   "retiring a running embedded revision waits for gateway Pods and removes owned artifacts",

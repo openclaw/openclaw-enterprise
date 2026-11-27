@@ -1057,6 +1057,88 @@ export async function checkGatewayDrainYield() {
   assert.deepEqual(fixture.events, ["delete Agent Deployment", "list agent Pods"]);
 }
 
+export async function checkCredentialSourceCleanupOrder() {
+  const events: string[] = [];
+  let rejectCleanup = true;
+  const forbidden = (message: string): never => {
+    events.push(message);
+    assert.fail(message);
+  };
+  const sandboxDriver: SandboxDriver = {
+    id: "sandbox-credential-stop",
+    implementation: "test/provider-owned",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      return forbidden("stop and retirement must not provision a Harness workload");
+    },
+    async cleanup({ revision }) {
+      if (rejectCleanup) {
+        rejectCleanup = false;
+        events.push(`cleanup rejected: ${revision?.id}`);
+        throw new Error("sandbox cleanup failed");
+      }
+      events.push(`cleanup succeeded: ${revision?.id}`);
+    },
+  };
+  const unexpected = (method: string) => async () =>
+    forbidden(`stop and retirement must not call Credential Gateway ${method}`);
+  const credentialGatewayDriver = {
+    id: "credential-gateway-stop",
+    implementation: "test/credential-gateway",
+    capability: "credential_gateway",
+    attachForRevision: unexpected("attachForRevision"),
+    attachmentStatus: unexpected("attachmentStatus"),
+    withdraw: unexpected("withdraw"),
+    removeSource: unexpected("removeSource"),
+  };
+  // Compute selects only the Sandbox. Keep the legacy decoy to catch any accidental direct call.
+  const selection = { sandboxDriver, credentialGatewayDriver };
+  const driver = new KubernetesComputeDriver(options(), selection);
+  const harnessAuth = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000146",
+    credentialGatewayId: credentialGatewayDriver.id,
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const revision = routedRevision(driver, {
+    id: "revision-credential-stop",
+    sandboxDriverId: sandboxDriver.id,
+    harnessAuth,
+  });
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  Object.assign(driver, {
+    apiClients: Promise.resolve({
+      core: {
+        ...absentStopResourceReads,
+        ...lifecycleNamespaceReads(driver, namespace, revision.namespaceId),
+        readNamespacedPersistentVolumeClaim: readAbsentStopResource,
+        async listNamespacedPod({ labelSelector }: ListPods) {
+          assert.ok(labelSelector);
+          if (labelSelectorLabels(labelSelector)["openclaw.dev/workload-role"] === "agent") {
+            events.push("list agent Pods");
+          }
+          return { apiVersion: "v1", kind: "PodList", items: [] };
+        },
+      },
+      apps: { readNamespacedDeployment: readAbsentStopResource },
+      networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
+      objects: { read: readAbsentStopResource },
+    }),
+  });
+
+  await assert.rejects(driver.stopRevision(revision), /sandbox cleanup failed/);
+  assert.deepEqual(events.splice(0), [`cleanup rejected: ${revision.id}`]);
+
+  const completed = [`cleanup succeeded: ${revision.id}`, "list agent Pods"];
+  await driver.stopRevision(revision);
+  assert.deepEqual(events.splice(0), completed);
+  await driver.retireRevision(revision);
+  assert.deepEqual(events, completed);
+}
+
 export async function checkProviderStopTermination() {
   let cleanupComplete = false;
   let podObservations = 0;
