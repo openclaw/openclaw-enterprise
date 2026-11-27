@@ -3523,20 +3523,64 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
     '"destructiveEnabled":1e400',
   );
   await summary.click();
+  // Save from the top of a long draft. The next edit should repair the offscreen quote.
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport);
+  await page.setViewportSize({ width: 640, height: 360 });
+  const corrected = "\n".repeat(60) + '{"sample":{"enabled":true}}';
+  const pasted = corrected.replace('{"', "{“");
+  const offset = pasted.indexOf("“");
+  const error = page.locator("#agent-plugins-error");
+  await input.fill(pasted);
+  await input.press("Control+Home");
+  const atLastLine = () =>
+    input.evaluate((node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 1);
+  assert.equal(await atLastLine(), false, "the last line starts outside the editor");
+  const beforeRepair = agentRequests().length;
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.waitFor();
+  await nextFrames(page);
+  assert.equal(await input.inputValue(), pasted);
+  assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+  assert.deepEqual(
+    await input.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    [offset, offset],
+    "Save places the caret before the curly quote",
+  );
+  assert.equal(await atLastLine(), true, "the editor reveals the last line before typing");
+  assert.match((await error.textContent()) ?? "", /curly quote “.*straight quote/u);
+  const editorBox = await input.boundingBox();
+  const errorBox = await error.boundingBox();
+  assert.ok(editorBox && editorBox.y >= 0, "the editor starts onscreen");
+  assert.ok(errorBox && errorBox.y >= 0 && errorBox.y + errorBox.height <= 360);
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.keyboard.type('"');
+  assert.equal(await input.inputValue(), corrected);
+  assert.equal(await error.isHidden(), true);
+  assert.equal(
+    agentRequests().length,
+    beforeRepair,
+    "neither invalid Save nor editing sends a request",
+  );
+  await page.setViewportSize(originalViewport);
+
   // Save must open the raw editor and explain the refusal before its GET preflight or PATCH.
-  for (const raw of [bad, bad.replace("1e400", "-1e400"), "{", "[]", "null"]) {
+  const numberError = "A number is too large or too small to save. Use a number closer to zero.";
+  const shapeError = "Enter a valid Plugin selections JSON object.";
+  for (const [raw, message] of [
+    [bad, numberError],
+    [bad.replace("1e400", "-1e400"), numberError],
+    ["{", "Invalid JSON at line 1, column 2. Enter a valid JSON object."],
+    ["[]", shapeError],
+    ["null", shapeError],
+  ] as const) {
     await input.fill(raw);
     await summary.click();
     const before = agentRequests().length;
     await save.click();
-    await page
-      .getByText(
-        raw.includes("1e400")
-          ? "A number is too large or too small to save. Use a number closer to zero."
-          : "Enter a valid Plugin selections JSON object.",
-        { exact: true },
-      )
-      .waitFor();
+    await page.getByText(message, { exact: true }).waitFor();
     assert.equal(await input.inputValue(), raw);
     assert.equal(await input.evaluate((node) => document.activeElement === node), true);
     assert.equal(await input.isVisible(), true);

@@ -41,6 +41,7 @@ import {
   focusSaveOutcome,
   isUnavailable,
   jsonObjectDiagnostic,
+  revealEditorError,
   revealStatus,
   setDescription,
   setHidden,
@@ -7595,13 +7596,7 @@ export async function renderAgentDetail(
           // Set the caret before focus so the browser scrolls it into view.
           editor.setSelectionRange(diagnostic.offset, diagnostic.offset);
           editor.focus();
-          const editorTop = editor.getBoundingClientRect().top;
-          const messageBottom = editorError.node.getBoundingClientRect().bottom;
-          const viewportHeight = document.documentElement.clientHeight;
-          // Keep the caret in view when the editor and diagnostic cannot fit together.
-          if (messageBottom > viewportHeight && messageBottom - editorTop <= viewportHeight) {
-            editorError.node.scrollIntoView({ block: "nearest", inline: "nearest" });
-          }
+          revealEditorError(editor);
         } else {
           editor.focus();
         }
