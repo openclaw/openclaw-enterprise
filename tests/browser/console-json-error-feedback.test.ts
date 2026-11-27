@@ -444,7 +444,18 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.notEqual(misplacedComma, template);
   const commaOffset = misplacedComma.indexOf(",");
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
+  const shortViewport = { width: 1024, height: 360 };
+  const actions = "#create-agent-form ~ .form-actions";
+  const repairVisible = {
+    selection: [commaOffset, commaOffset],
+    firstLineVisible: true,
+    diagnosticVisible: true,
+  };
+  for (const [viewport, shrink] of [
+    [originalViewport, false],
+    [shortViewport, false],
+    [originalViewport, true],
+  ] as const) {
     await page.setViewportSize(viewport);
     await json.fill(misplacedComma);
     await json.press("Control+End");
@@ -454,12 +465,22 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
       .waitFor();
     assert.equal(await focusedId(page), "configuration-json");
     assert.equal(await json.inputValue(), misplacedComma);
-    const visible = await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions");
     assert.deepEqual(
-      visible,
-      { selection: [commaOffset, commaOffset], firstLineVisible: true, diagnosticVisible: true },
+      await json.evaluate(jsonErrorVisibility, actions),
+      repairVisible,
       `Create Agent shows the caret line and full diagnostic above its actions at ${viewport.width}×${viewport.height}`,
     );
+    if (shrink) {
+      // Resizing without touching the editor must leave the same repair visible and focused.
+      await page.setViewportSize(shortViewport);
+      await nextFrames(page);
+      assert.equal(await focusedId(page), "configuration-json");
+      assert.deepEqual(
+        await json.evaluate(jsonErrorVisibility, actions),
+        repairVisible,
+        "Create Agent keeps the caret line and full diagnostic visible when the window shrinks",
+      );
+    }
     await page.keyboard.press("Delete");
     assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
     assert.equal(await jsonError.isHidden(), true);
