@@ -14,21 +14,43 @@ export LC_ALL=C
 workspace=${workspace}
 [[ $(realpath -e -- "$workspace") == "$workspace" ]]
 
-# Refuse an alternate mount within the retained workspace.
-mounted=0
+# A mount table can still list a PVC hidden by a mount over its parent.
+# Match the directory and the files we actually open to that mount ID.
+mount=
 while read -r id parent device root mountpoint rest; do
   case "$mountpoint" in
-    "$workspace") mounted=$((mounted + 1)) ;;
+    "$workspace")
+      [[ -z "$mount" && "$id" =~ ^[0-9]+$ && " $rest" == *" - "* ]]
+      read -r fs source options <<< "\${rest#*- }"
+      [[ -n "$options" && "$fs" != tmpfs && "$fs" != ramfs ]]
+      mount=$id
+      ;;
     "$workspace/"*) exit 1 ;;
   esac
 done < /proc/self/mountinfo
-[[ $mounted == 1 ]]
+[[ -n "$mount" ]]
+
+on_workspace_mount() {
+  local key value
+  while read -r key value; do
+    if [[ "$key" == mnt_id: ]]; then
+      [[ "$value" == "$mount" ]] || return 1
+      return 0
+    fi
+  done < "/proc/self/fdinfo/$1"
+  return 1
+}
 
 cd -- "$workspace"
+exec {directory}<.
+on_workspace_mount "$directory"
 for name in "$@"; do
   case "$name" in AGENTS.md|SOUL.md|IDENTITY.md|USER.md) ;; *) exit 1 ;; esac
   [[ ! -L "$name" && -f "$name" ]]
-  hash=$(sha256sum < "$name")
+  exec {file}<"$name"
+  on_workspace_mount "$file"
+  hash=$(sha256sum <&"$file")
+  exec {file}<&-
   printf '%s\\n' "\${hash%% *}"
 done
 `;
@@ -41,7 +63,9 @@ function localHash(path: string): string {
   try {
     const before = fstatSync(fd, { bigint: true });
     // One workspace PUT accepts at most 16 KiB of UTF-8.
-    if (!before.isFile() || before.size > 16_384n) throw new Error("Invalid submitted file");
+    if (!before.isFile() || before.size > 16_384n) {
+      throw new Error("Invalid submitted file");
+    }
     const hash = createHash("sha256");
     const buffer = Buffer.alloc(Number(before.size) + 1);
     let read = 0;
@@ -52,7 +76,9 @@ function localHash(path: string): string {
       }
       read += length;
     }
-    if (BigInt(read) !== before.size) throw new Error("Unexpected local file size");
+    if (BigInt(read) !== before.size) {
+      throw new Error("Unexpected local file size");
+    }
     hash.update(buffer.subarray(0, read));
     const after = fstatSync(fd, { bigint: true });
     if (
@@ -70,7 +96,9 @@ function localHash(path: string): string {
 
 function compare(argv: string[]): boolean {
   const separator = argv.indexOf("--");
-  if (separator < 0) throw new Error("Expected file arguments after --");
+  if (separator < 0) {
+    throw new Error("Expected file arguments after --");
+  }
   const { values, tokens } = parseArgs({
     args: argv.slice(0, separator),
     options: {
@@ -233,8 +261,43 @@ function compare(argv: string[]): boolean {
   return expected.every((hash, index) => hash === hashes[index]);
 }
 
+const help = `Compare submitted edits before replacing a dedicated Codex Gateway.
+
+Pause all workspace writers. Keep independent copies of the latest submissions
+in a trusted directory, preserving their original names and exact contents.
+Use the reviewed Agent inventory to identify the active Agent revision and
+its exact ready Harness Pod. Match its workspace claim to the namespace, name
+and UID in the pre-upgrade PVC inventory (pvcs.txt). Stop if unsure.
+
+From the repository root, use the supported Node.js version. This example
+checks two files. Supply all edited files among AGENTS.md, SOUL.md, IDENTITY.md
+and USER.md. Protect other edits separately before replacing the Gateway.
+
+  set +x
+  copies="/secure/occ/submissions/$AGENT_ID"
+  node scripts/verify-upgrade-workspace.ts \\
+    --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \\
+    --namespace "$TENANT_NAMESPACE" --agent "$AGENT_ID" \\
+    --revision "$AGENT_REVISION" --pod "$HARNESS_POD" \\
+    --claim-uid "$WORKSPACE_CLAIM_UID" \\
+    -- "$copies/AGENTS.md" "$copies/SOUL.md"
+
+Use a trusted kubeconfig, client and Harness. The command needs existing
+permission to get the Pod and its persistent volume claim and to execute
+commands in the Pod. It runs Bash with realpath, sha256sum and Linux /proc.
+Only the selected filenames go to the Pod alongside the fixed command.
+It compares the returned hashes locally.
+
+Exit 0 means the supplied files match. Exit 1 means different contents.
+Exit 2 means the comparison could not be verified. On any failure, missing
+copy or missing Pod, stop the upgrade. Keep writes paused and preserve the
+original Gateway if present until an authorized operator reconciles the edits.
+The upgrade does not run this check automatically.`;
+
 try {
-  if (compare(process.argv.slice(2))) {
+  if (process.argv.length === 3 && process.argv[2] === "--help") {
+    console.log(help);
+  } else if (compare(process.argv.slice(2))) {
     console.log("The selected workspace files match the supplied copies.");
   } else {
     console.error(`Workspace files differ. ${preserveGateway}`);

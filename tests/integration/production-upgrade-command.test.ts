@@ -99,7 +99,9 @@ test("workspace verification compares every submitted copy on the selected retai
     "tenant",
   ];
   const selection = ["--agent", "agent-1", "--revision", "revision-1", "--pod", "harness-pod"];
-  for (const directory of [bin, local, workspace]) await mkdir(directory);
+  for (const directory of [bin, local, workspace]) {
+    await mkdir(directory);
+  }
   const workspaceMount = `40 39 8:1 /workspace ${workspace} rw - ext4 /volume rw\n`;
   await writeFile(mountinfo, workspaceMount);
   for (const [index, content] of contents.entries()) {
@@ -150,9 +152,17 @@ elif request == ["get", "pvc", "workspace-claim", "-o", "json"]:
 else:
     assert request[:8] == ["exec", "harness-pod", "--container", "agent", "--", "bash", "-p", "-c"]
     marker.write_text(json.dumps(request[5:]))
+    # Keep the real Linux descriptor IDs. Substitute only our synthetic mount table.
+    fd = os.open(root / "workspace", os.O_DIRECTORY)
+    try:
+        mount_id = next(line.split()[1] for line in pathlib.Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines() if line.startswith("mnt_id:"))
+    finally:
+        os.close(fd)
+    table = (root / "mountinfo").read_text()
+    (root / "mapped-mountinfo").write_text(table.replace("40 39 ", mount_id + " 39 "))
     command = request[5:]
     command[3] = command[3].replace("/home/node/workspace", shlex.quote(str(root / "workspace"))).replace(
-        "/proc/self/mountinfo", shlex.quote(str(root / "mountinfo"))
+        "/proc/self/mountinfo", shlex.quote(str(root / "mapped-mountinfo"))
     )
     result = subprocess.run(command, capture_output=True)
     sys.stdout.buffer.write(result.stdout[:65] if mode == "truncated" else result.stdout)
@@ -202,7 +212,9 @@ else:
       ][status]!,
     );
     const remoteArgs = await readFile(marker, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
       return "";
     });
     for (const privateValue of [
@@ -233,6 +245,10 @@ else:
     mountinfo,
     workspaceMount + `41 40 8:2 /file ${remoteFiles[1]} ro - ext4 /other ro\n`,
   );
+  await verify(2);
+  await writeFile(mountinfo, workspaceMount.replace("40 39", "0 39"));
+  await verify(2);
+  await writeFile(mountinfo, workspaceMount.replace("ext4", "tmpfs"));
   await verify(2);
   await writeFile(mountinfo, workspaceMount);
   await verify(2, "truncated");
