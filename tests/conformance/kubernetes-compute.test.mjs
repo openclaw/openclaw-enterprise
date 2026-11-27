@@ -2028,16 +2028,26 @@ test("invalid runtime snapshots cannot fall back to current images", async () =>
   }
 });
 
-const candidateImages = {
-  gateway: "openclaw-enterprise/gateway-fixture:candidate",
-  agent: "openclaw-enterprise/agent-fixture:candidate",
-};
-
 function reloadRuntimeDriver(driver, overrides) {
   return new KubernetesComputeDriver(
     { ...driver.options, ...overrides },
     { nodeEnrollment: driver.nodeEnrollment },
   );
+}
+
+function reloadWithCandidateImages(driver) {
+  const candidateImages = {
+    gateway: "openclaw-enterprise/gateway-fixture:candidate",
+    agent: "openclaw-enterprise/agent-fixture:candidate",
+  };
+  const reloaded = reloadRuntimeDriver(driver, {
+    images: { ...driver.options.images, ...candidateImages },
+  });
+  for (const role of ["gateway", "agent"]) {
+    assert.notEqual(driver.options.images[role], candidateImages[role]);
+    assert.equal(reloaded.options.images[role], candidateImages[role]);
+  }
+  return reloaded;
 }
 
 test("admitted dedicated runtimes keep their images across maintenance and activation", async () => {
@@ -2052,9 +2062,7 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
   const before = [fixture.gatewayName, fixture.agentName].map((name) =>
     structuredClone(fixture.read("Deployment", name).spec.template),
   );
-  const reloaded = reloadRuntimeDriver(fixture.driver, {
-    images: { ...fixture.driver.options.images, ...candidateImages },
-  });
+  const reloaded = reloadWithCandidateImages(fixture.driver);
   reloaded.apiClients = Promise.resolve(fixture.clients);
   assert.equal(
     (await reloaded.prepareRevision(fixture.revision, authContext(fixture.revision))).ready,
@@ -2108,9 +2116,7 @@ test("admitted workspace initialization retains the Gateway image after defaults
       template.spec.initContainers?.some((container) => container.name === "initialize-workspace"),
     ),
   );
-  const reloaded = reloadRuntimeDriver(fixture.driver, {
-    images: { ...fixture.driver.options.images, ...candidateImages },
-  });
+  const reloaded = reloadWithCandidateImages(fixture.driver);
   reloaded.apiClients = fixture.driver.apiClients;
   assert.equal((await reloaded.prepareRevision(fixture.revision, fixture.context)).ready, true);
   assert.deepEqual(templates(), before);
@@ -4621,16 +4627,12 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     revision.configuration,
     null,
   );
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, revision.configuration),
-  );
+  driver.validateHarnessAuth(revision.harness, revision.harnessAuth, revision.configuration);
   // A model ID may contain slashes: catalog entry `vendor/model` must satisfy `openai/vendor/model`.
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth(
-      revision.harness,
-      revision.harnessAuth,
-      admitLoggingConfiguration(createHarnessConfiguration("openclaw", "vendor/model"), "info"),
-    ),
+  driver.validateHarnessAuth(
+    revision.harness,
+    revision.harnessAuth,
+    admitLoggingConfiguration(createHarnessConfiguration("openclaw", "vendor/model"), "info"),
   );
   assert.throws(
     () =>
@@ -4707,75 +4709,57 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const worker = workerDeployment.spec.template.spec.containers[0];
   assert.ok(gateway);
   assert.ok(worker);
-  assert.deepEqual(gateway.readinessProbe, {
-    httpGet: { path: "/readyz", port: "plugin-status" },
-    periodSeconds: 2,
-  });
-  assert.deepEqual(worker.readinessProbe, {
-    httpGet: { path: "/readyz", port: "plugin-status" },
-    periodSeconds: 2,
-    timeoutSeconds: 3,
-  });
-  const workerProgram = containerProgram(worker);
+  const readiness = { httpGet: { path: "/readyz", port: "plugin-status" }, periodSeconds: 2 };
+  assert.deepEqual(gateway.readinessProbe, readiness);
+  assert.deepEqual(worker.readinessProbe, { ...readiness, timeoutSeconds: 3 });
+
+  const gatewayEnv = new Map(gateway.env.map((entry) => [entry.name, entry]));
+  const workerEnv = new Map(worker.env.map((entry) => [entry.name, entry]));
+  assert.equal(gatewayEnv.size, gateway.env.length, "duplicate Gateway environment name");
+  assert.equal(workerEnv.size, worker.env.length, "duplicate Worker environment name");
+  assert.equal(gatewayEnv.has("OPENAI_API_KEY"), false);
+  assert.ok(workerEnv.has("OPENAI_API_KEY"));
+  const profile = gatewayEnv.get("OPENCLAW_NATIVE_WORKER_PROFILE")?.value;
+  const workspaceNodeId = gatewayEnv.get("OPENCLAW_WORKSPACE_NODE_ID")?.value;
+  assert.equal(profile, "dedicated-native");
+  assert.equal(workspaceNodeId, deviceId);
+  assert.equal(workerEnv.get("TMPDIR")?.value, "/tmp/openclaw-native-worker");
   assert.equal(
-    gateway.env.some(({ name }) => name === "OPENAI_API_KEY"),
-    false,
-  );
-  assert.equal(
-    worker.env.some(({ name }) => name === "OPENAI_API_KEY"),
-    true,
-  );
-  assert.equal(workerProgram.includes('"runtime-server"'), false);
-  assert.equal(workerProgram.includes('"connect"'), true);
-  assert.equal(workerProgram.includes('"--ephemeral"'), true);
-  assert.equal(workerProgram.includes('"--target-file"'), true);
-  assert.equal(workerProgram.includes('"--pair-if-needed"'), false);
-  assert.equal(workerProgram.includes('"--session-host"'), false);
-  assert.equal(
-    workerProgram.includes("writeFileSync(connectTargetPath, target, { mode: 0o600 })"),
-    true,
-  );
-  assert.equal(
-    worker.env.find(({ name }) => name === "TMPDIR")?.value,
-    "/tmp/openclaw-native-worker",
-  );
-  assert.equal(
-    worker.env.find(({ name }) => name === "NODE_COMPILE_CACHE")?.value,
+    workerEnv.get("NODE_COMPILE_CACHE")?.value,
     "/home/node/.openclaw-node/.cache/node-compile",
   );
-  assert.equal(workerProgram.includes("chmodSync(temporary, 0o700)"), true);
-  assert.equal(workerProgram.includes("initializeRuntimeAssets();"), true);
-  assert.equal(workerProgram.includes("OPENCLAW_BUNDLED_SKILLS_DIR"), true);
-  assert.equal(workerProgram.includes('publishImageTree("/app/custodian-skills"'), true);
+  assert.equal(workerEnv.get("OPENCLAW_NATIVE_WORKER_CAPACITY")?.value, "12");
   assert.equal(
-    worker.env.find(({ name }) => name === "OPENCLAW_NATIVE_WORKER_CAPACITY")?.value,
-    "12",
-    "the dedicated native node must receive its configured session capacity.",
-  );
-  assert.equal(
-    gateway.env.find(({ name }) => name === "OPENCLAW_NATIVE_WORKER_PROFILE")?.value,
-    "dedicated-native",
-  );
-  assert.equal(
-    gateway.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_NODE_ID")?.value,
-    deviceId,
-  );
-  assert.equal(
-    worker.env.find(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE")?.valueFrom.secretKeyRef.name,
+    workerEnv.get("OPENCLAW_NODE_SETUP_CODE")?.valueFrom?.secretKeyRef?.name,
     "workspace-node-native-worker",
   );
-  assert.equal(
+  assert.deepEqual(
+    JSON.parse(workerEnv.get("OPENCLAW_NATIVE_INFERENCE_CONFIG").value),
+    nativeInference,
+  );
+  assert.ok(
     worker.volumeMounts.some(
       ({ name, mountPath }) =>
         name === "openclaw-workspace" && mountPath === "/home/node/.openclaw-node",
     ),
-    true,
   );
-  assert.deepEqual(
-    JSON.parse(worker.env.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG").value),
-    nativeInference,
-  );
-  assert.equal(worker.readinessProbe.timeoutSeconds, 3);
+
+  const workerProgram = containerProgram(worker);
+  for (const required of [
+    '"connect"',
+    '"--ephemeral"',
+    '"--target-file"',
+    "writeFileSync(connectTargetPath, target, { mode: 0o600 })",
+    "chmodSync(temporary, 0o700)",
+    "initializeRuntimeAssets();",
+    "OPENCLAW_BUNDLED_SKILLS_DIR",
+    'publishImageTree("/app/custodian-skills"',
+  ]) {
+    assert.ok(workerProgram.includes(required), `missing Worker program text: ${required}`);
+  }
+  for (const forbidden of ['"runtime-server"', '"--pair-if-needed"', '"--session-host"']) {
+    assert.ok(!workerProgram.includes(forbidden), `unexpected Worker program text: ${forbidden}`);
+  }
 
   // Execute the production launcher with the admitted worker identity and the
   // candidate image's source identity; native image tests qualify its binary.
@@ -4784,36 +4768,36 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     files: [["/etc/openclaw-managed/openclaw.json", JSON.stringify(configuration)]],
     env: {
       OPENCLAW_GATEWAY_PORT: "8080",
-      OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
+      OPENCLAW_NATIVE_WORKER_PROFILE: profile,
       OPENCLAW_STATE_DIR: "/home/node/.openclaw",
-      OPENCLAW_WORKSPACE_NODE_ID: deviceId,
+      OPENCLAW_WORKSPACE_NODE_ID: workspaceNodeId,
     },
   };
-  const { files, calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], runtimeOptions);
-  assert.equal(
-    calls.some(({ args }) => args?.[1] === "gateway"),
-    true,
-  );
-  const effectiveConfiguration = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-  assert.equal(effectiveConfiguration.cloudWorkers.requiredProfile, "dedicated-native");
-  assert.deepEqual(effectiveConfiguration.cloudWorkers.profiles["dedicated-native"], {
-    provider: "device",
-    settings: { device: deviceId, inference: "worker" },
-  });
-  // Restart against the writable configuration: reuse only the exact admitted worker profile.
-  const restartOptions = { ...runtimeOptions, env: { ...sandbox.process.env }, files };
+  const configPath = "/home/node/.openclaw/openclaw.json";
+  const runsGateway = ({ args }) => args?.[1] === "gateway";
+  function readAdmittedConfiguration({ calls, files }) {
+    assert.ok(calls.some(runsGateway));
+    const config = JSON.parse(files.get(configPath));
+    assert.equal(config.cloudWorkers.requiredProfile, "dedicated-native");
+    assert.deepEqual(config.cloudWorkers.profiles["dedicated-native"], {
+      provider: "device",
+      settings: { device: deviceId, inference: "worker" },
+    });
+    return config;
+  }
+  const started = await runOpenClawRuntimeHelper(undefined, [], runtimeOptions);
+  readAdmittedConfiguration(started);
+  // Restart from the writable configuration, then introduce a conflict in that verified result.
+  const restartOptions = {
+    ...runtimeOptions,
+    env: { ...started.sandbox.process.env },
+    files: started.files,
+  };
   const restarted = await runOpenClawRuntimeHelper(undefined, [], restartOptions);
-  assert.equal(
-    restarted.calls.some(({ args }) => args?.[1] === "gateway"),
-    true,
-  );
-
-  effectiveConfiguration.cloudWorkers.profiles["dedicated-native"].settings.device = "b".repeat(64);
+  const conflictingConfig = readAdmittedConfiguration(restarted);
+  conflictingConfig.cloudWorkers.profiles["dedicated-native"].settings.device = "b".repeat(64);
   const conflictingFiles = new Map(restarted.files);
-  conflictingFiles.set(
-    "/home/node/.openclaw/openclaw.json",
-    JSON.stringify(effectiveConfiguration),
-  );
+  conflictingFiles.set(configPath, JSON.stringify(conflictingConfig));
   const conflictingCalls = [];
   await assert.rejects(
     runOpenClawRuntimeHelper(undefined, [], {
@@ -4823,10 +4807,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     }),
     /worker profile conflicts with admitted configuration/u,
   );
-  assert.equal(
-    conflictingCalls.some(({ args }) => args?.[1] === "gateway"),
-    false,
-  );
+  assert.equal(conflictingCalls.some(runsGateway), false);
 });
 
 test(
