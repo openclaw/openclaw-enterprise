@@ -10,6 +10,7 @@ import type {
   PluginApprovers,
   AgentPluginCredentialSlot,
   PresetLaunchSettings,
+  SecretBinding,
   SecretBindings,
   SecretMetadata,
   SecretReference,
@@ -40,7 +41,18 @@ import {
   withRequestId,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
-import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
+import {
+  CODEX_SOURCE_DESTINATION_HINT,
+  configuredHarnessId,
+  credentialSourceOperateDenial,
+  modelCredentialSourceSelection,
+  harnessAuthDescription,
+  modelSourceProvider,
+} from "./harness-auth.mjs";
+import {
+  createCredentialSourcePicker,
+  staticCredentialSourceSelection,
+} from "../credential-source-picker.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
   ACCESS_NOT_INCLUDED,
@@ -74,10 +86,17 @@ import {
 } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
+import { slack } from "../channels/slack.mjs";
+import {
+  createSlackCredentialBindingFields,
+  slackCredentialBindingKeys,
+  SLACK_SECRET_BINDINGS,
+} from "./credentials.mjs";
 import {
   administratorMessage,
   type AgentNavigation,
   channelBindingRefusal,
+  channelMissingBindingRefusal,
   describeFailure,
   GENERIC_CONFLICT,
   link,
@@ -121,6 +140,7 @@ export interface CreateAgentContext extends AgentNavigation {
   onResume?(resume: () => void): void;
   setTitle(title: string): void;
   setDiscardOnExit(discard: boolean): void;
+  holdWhileWriting(hold: { writing(): boolean; held(): void }): void;
   setDraftCapture(
     capture: (() => CreateAgentDraft) | null,
     unsaved?: (draft?: CreateAgentDraft) => boolean,
@@ -185,6 +205,7 @@ export interface CreateAgentDraft {
   pendingPrimaryModel: string | undefined;
   pendingModelSelections: Record<string, unknown> | undefined;
   configurationSecretBindings: SecretBindings;
+  stagedNativeSlackBindings: Record<string, SecretBinding | null>;
   pluginApprovers: PluginApprovers | undefined;
   oauthLogin: DeviceLogin | null | undefined;
   modelCredentialSource: CredentialReference | null | undefined;
@@ -828,15 +849,15 @@ export function renderCreateAgent(
 const MEMBER_CREDENTIAL_ACCESS =
   "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
 const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
+  "The Agent was created as a draft. Deploy it from its page to give it access to its model and channel credentials.";
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
   "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
-// This form saves Secret bindings only from its Slack channel settings. A channel refusal that
+// This form saves channel bindings only from its Slack channel settings. A channel refusal that
 // asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
 const CHANNEL_BINDING_FORM_REMEDY =
-  "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
+  "Select a Credential Source for each referenced Slack credential in the Slack editor or Slack credential bindings before creating the Agent.";
 // A typed model key is saved as a new Secret, which Agent create then binds (finding 2492).
 const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret. ${NEW_SECRET_OPERATE_REMEDY}`;
 
@@ -1120,18 +1141,6 @@ function renderAgentForm(
   let modelCredentialSource = draft.modelCredentialSource;
   let modelCredentialSecret = draft.modelCredentialSecret;
   const authMethodField = field("Authentication method", authMethod);
-  const credentialStorage = element(
-    "select",
-    { id: "model-credential-storage" },
-    element("option", { value: "source" }, "Credential Source"),
-    element("option", { value: "secret" }, "Namespace Secret"),
-  );
-  // A Preset's password or bound Secret keeps its declared authentication path.
-  if (passwordAuth || boundSource?.kind === "secret" || modelCredentialSource?.kind === "secret") {
-    credentialStorage.value = "secret";
-  }
-  const credentialStorageField = field("Credential storage", credentialStorage);
-
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
 
@@ -1259,6 +1268,39 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  const embeddedSourceHint = element(
+    "p",
+    { className: "hint", hidden: true },
+    "Credential Sources require Dedicated execution. If this Installation supports it, choose Codex or select Dedicated under Runtime details.",
+  );
+  const modelSourcePicker = createCredentialSourcePicker(context, {
+    ...modelCredentialSourceSelection,
+    id: "agent-model-credential",
+    label: "Model credential",
+    addNew: {
+      label: "Add new credential…",
+      initial: draft.inputs?.modelCredentialChoice === "new",
+    },
+    initial:
+      draft.inputs?.modelCredentialChoice !== "new" &&
+      modelCredentialSource?.kind === "credential_source"
+        ? modelCredentialSource
+        : null,
+    onChange(source) {
+      edited = true;
+      apiKey.value = "";
+      modelCredentialSource = source;
+      modelCredentialSecret = source;
+      resetPluginDiscovery();
+      feedback.textContent = "";
+      updateControls();
+    },
+  });
+  const existingSourceDestinationHint = element(
+    "p",
+    { className: "hint", hidden: true },
+    CODEX_SOURCE_DESTINATION_HINT,
+  );
   // The picker owns validation and reports an accepted choice above. Searching its list
   // must not clear the field's validity or mark the draft as edited.
   for (const event of ["input", "change"]) {
@@ -1299,8 +1341,7 @@ function renderAgentForm(
       return;
     }
     passwordAuth = false;
-    credentialStorageHelp.textContent = "Choose the Secret to use when this Agent runs.";
-    credentialStorage.value = "secret";
+    newCredentialHelp.textContent = "Choose the Secret to use when this Agent runs.";
     operateAnswer.reset();
     apiKey.value = "";
     resetPluginDiscovery();
@@ -1330,7 +1371,7 @@ function renderAgentForm(
     initial: draft.oauthLogin,
     hint: "Sign in for this dedicated Codex Agent. The same saved login supports plugin browsing before deployment and when editing later versions.",
     onChange(source) {
-      if (authMethod.value === "credential_source") {
+      if (authMethod.value === "credential_source" && modelSourcePicker.creating) {
         modelCredentialSource = source;
         modelCredentialSecret = source;
         resetPluginDiscovery();
@@ -1338,7 +1379,7 @@ function renderAgentForm(
       }
     },
   });
-  const credentialStorageHelp = element(
+  const newCredentialHelp = element(
     "p",
     { className: "hint" },
     passwordAuth
@@ -1351,7 +1392,7 @@ function renderAgentForm(
     credentialLabel,
     apiKey,
     credentialHelp,
-    credentialStorageHelp,
+    newCredentialHelp,
   );
   const savePatForDiscovery = button("Save service account token", () => {
     void savePatSource();
@@ -1382,8 +1423,10 @@ function renderAgentForm(
       : null,
     ...(!binding
       ? [
-          credentialStorageField,
+          modelSourcePicker.field,
+          existingSourceDestinationHint,
           modelCredentialField,
+          embeddedSourceHint,
           oauthLogin.section,
           transientCredentialField,
           secretConflictRecovery,
@@ -1745,6 +1788,7 @@ function renderAgentForm(
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
     modelCredentialPicker.resetSelection();
+    modelSourcePicker.reset();
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
@@ -1767,10 +1811,6 @@ function renderAgentForm(
     } else {
       updateModelConfiguration(true, values);
     }
-  });
-  credentialStorage.addEventListener("change", () => {
-    clearModelCredential();
-    updateControls();
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
@@ -1802,6 +1842,9 @@ function renderAgentForm(
       clearModelCredential();
       resetModelChoices(true, "", values);
     } else {
+      if (modelCredentialSource?.kind === "credential_source") {
+        clearModelCredential();
+      }
       updateModelConfiguration(true, values);
     }
     updateControls();
@@ -1811,6 +1854,9 @@ function renderAgentForm(
     const previousHarness = harness.value;
     if (mode.value === "embedded") {
       harness.value = "openclaw";
+      if (modelCredentialSource?.kind === "credential_source") {
+        clearModelCredential();
+      }
     }
     // Topology alone does not change the model policy or provider transport.
     if (harness.value !== previousHarness) {
@@ -1918,17 +1964,22 @@ function renderAgentForm(
       (rendered.configuration?.secretBindings as SecretBindings | undefined) ??
       {},
   );
-  let directorySecretSource: SecretReference | null = null;
-  const getDirectorySecretSource = () =>
-    directorySecretSource ?? configurationSecretBindings.SLACK_BOT_TOKEN?.source;
-  const getSlackBotSecretId = () => {
+  const stagedNativeSlackBindings = structuredClone(draft.stagedNativeSlackBindings ?? {});
+  const hasConfigurationSource = (bindings = configurationSecretBindings) =>
+    Object.values(bindings).some(({ source }) => source.kind === "credential_source");
+  const configurationSourceDenial = (cause: unknown, bindings = configurationSecretBindings) =>
+    hasConfigurationSource(bindings) ? namedDenial(cause) : undefined;
+  const slackBotSource = () => {
     const source = configurationSecretBindings.SLACK_BOT_TOKEN?.source;
-    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
+    return source?.kind === "credential_source" && source.namespaceId === namespaceId
+      ? source
+      : null;
   };
-  const getDirectorySecretId = () => {
-    const source = getDirectorySecretSource();
-    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
-  };
+  const getSlackBotSourceId = () => slackBotSource()?.id ?? null;
+  let directorySource: CredentialSourceReference | null = slackBotSource();
+  let directoryUsesChannelSource = true;
+  let directoryApproversAvailable = false;
+  const getDirectorySourceId = () => directorySource?.id ?? null;
   const draftConnection: SlotConnection = {
     grantOnCreate: true,
     feedback: (slot) =>
@@ -2004,7 +2055,7 @@ function renderAgentForm(
     createApproverField: (options) =>
       createSlackApproverField({
         context,
-        getSecretId: getSlackBotSecretId,
+        getSourceId: getSlackBotSourceId,
         ...options,
       }),
   });
@@ -2020,6 +2071,8 @@ function renderAgentForm(
     pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
     pluginFields.setCapabilities(policies ? { ...policies, credentialSlots: pluginSlots } : null);
     defaultApprovers.hidden = policies?.approvers?.agent !== true;
+    directoryApproversAvailable = !defaultApprovers.hidden;
+    directorySourcePicker.setActive(directoryApproversAvailable && !directorySetup.hidden);
     if (!defaultApprovers.hidden) {
       defaultApprovers.refreshNames();
     } else if (capabilities && pluginApprovers !== undefined) {
@@ -2045,30 +2098,38 @@ function renderAgentForm(
   let pluginApprovers = structuredClone(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : presetPluginApprovers,
   );
-  const directorySecret = createSecretReferenceField({
-    context: secretContext,
-    id: "approver-directory-secret",
-    label: "Slack bot token Secret for people search",
-    getCurrentSource: getDirectorySecretSource,
-    onSecretSelected: async (secret) => {
-      directorySecretSource = secret.ref;
-      defaultApprovers.refreshDirectory();
-    },
-    createSecretName: () => `${name.value.trim() || "Agent"} Slack bot token`,
-    metadataLabel: "View Slack bot Secret metadata",
-    stagedHint: "Ready to search.",
-  });
-  directorySecret.field.append(
+  function createDirectorySourcePicker() {
+    const currentId = slackBotSource()?.id;
+    const picker = createCredentialSourcePicker(context, {
+      ...staticCredentialSourceSelection,
+      id: "approver-directory-source",
+      label: "Slack bot Credential Source for people search",
+      initial: directorySource,
+      ...(currentId === undefined ? {} : { currentId }),
+      onChange(source) {
+        directorySource = source;
+        directoryUsesChannelSource = source?.id === slackBotSource()?.id;
+        defaultApprovers.refreshDirectory();
+      },
+    });
+    picker.setRequired(false);
+    return picker;
+  }
+  let directorySourcePicker = createDirectorySourcePicker();
+  const directorySetup = element(
+    "div",
+    {},
+    directorySourcePicker.field,
     element(
       "p",
       { className: "hint" },
-      "Choose a Slack bot token to search by name. This choice is only for search and does not configure the Agent's Slack channel.",
+      "Choose a saved Slack bot Credential Source to search by name. This choice is only for search and does not configure the Agent's Slack channel.",
     ),
   );
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
-    getSecretId: getDirectorySecretId,
+    getSourceId: getDirectorySourceId,
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
@@ -2076,7 +2137,9 @@ function renderAgentForm(
     },
     inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     lazyNames: true,
-    directorySetup: directorySecret.field,
+    directorySetup,
+    onDirectoryVisibilityChange: (visible) =>
+      directorySourcePicker.setActive(directoryApproversAvailable && visible),
   });
   defaultApprovers.hidden = true;
   pluginFields.section.insertBefore(
@@ -2117,9 +2180,10 @@ function renderAgentForm(
   // A refused create shows the API's 400 sentence. Its denial names nobody to ask once the
   // Installation read succeeded, which only an Installation administrator can do (finding 2113).
   const createRefusal = (cause: unknown, mutation: boolean) =>
-    requestFailure(cause).status === 403 && capabilityDiscoveryDone && !capabilitiesUnreadable
+    configurationSourceDenial(cause) ??
+    (requestFailure(cause).status === 403 && capabilityDiscoveryDone && !capabilitiesUnreadable
       ? administratorMessage(cause)
-      : rejectionMessage(cause, mutation);
+      : rejectionMessage(cause, mutation));
   // The Namespace's permission answer this form decides with. A retry rereads it when the
   // console's read failed (finding 2110); the API still decides every write.
   let namespacePermissions = context.permissions;
@@ -2203,6 +2267,12 @@ function renderAgentForm(
         )
       : null;
   let pending = false;
+  let channelEnrollmentPending = false;
+  context.holdWhileWriting({
+    writing: () => channelEnrollmentPending,
+    // The open Channel editor already reports that credential creation is in progress.
+    held: () => undefined,
+  });
   // Create's own request. `pending` also covers the recovery controls' requests, which must not
   // mark Create busy (finding 1961).
   let createPending = false;
@@ -2394,6 +2464,8 @@ function renderAgentForm(
     nativeAdminHelp,
   );
   const channelEditor = element("div", { className: "create-channels" });
+  let credentialBindingFields: { key: string; field: HTMLElement } | undefined;
+  let credentialBindingFieldsGeneration = 0;
   const networkProxyFields = createNetworkProxyFields({
     context,
     namespaceId,
@@ -2469,7 +2541,7 @@ function renderAgentForm(
       field(
         "Configuration JSON",
         configuration,
-        "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form unless you set GitHub access per repository. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
+        "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form unless you set GitHub access per repository. Embedded and unsupported runtimes save a draft for later deployment. Slack token Credential Sources can be selected in the channel editor.",
         configurationError.node,
       ),
       reset,
@@ -2506,7 +2578,7 @@ function renderAgentForm(
     harness,
     nativeProvider,
     authMethod,
-    credentialStorage,
+    modelCredentialChoice: modelSourcePicker.control,
     model,
     modelChoice,
     configuration,
@@ -2563,6 +2635,7 @@ function renderAgentForm(
     pendingPrimaryModel,
     pendingModelSelections,
     configurationSecretBindings,
+    stagedNativeSlackBindings,
     stagedChannelSecrets,
     modelCredentialSource,
     modelCredentialSecret,
@@ -2677,6 +2750,8 @@ function renderAgentForm(
   function renderChannelEditor() {
     const values = parseObject(configuration);
     if (values === undefined) {
+      credentialBindingFields = undefined;
+      ++credentialBindingFieldsGeneration;
       updateControls();
       channelEditor.replaceChildren(
         element(
@@ -2693,6 +2768,38 @@ function renderAgentForm(
         ),
       );
       return;
+    }
+    function updateConfigurationBindings(next: SecretBindings) {
+      const previousBot = slackBotSource()?.id;
+      configurationSecretBindings = structuredClone(next);
+      if (previousBot === slackBotSource()?.id) {
+        return;
+      }
+      if (directoryUsesChannelSource) {
+        directorySource = slackBotSource();
+        const previous = directorySourcePicker;
+        previous.setActive(false);
+        directorySourcePicker = createDirectorySourcePicker();
+        previous.field.replaceWith(directorySourcePicker.field);
+        directorySourcePicker.setActive(directoryApproversAvailable && !directorySetup.hidden);
+      }
+      defaultApprovers.refreshDirectory();
+      pluginDiscovery.update();
+    }
+    const referenced = new Set(slackCredentialBindingKeys(values));
+    const removed = Object.keys(stagedNativeSlackBindings).filter((key) => !referenced.has(key));
+    if (removed.length && !savedConfiguration) {
+      const next = { ...configurationSecretBindings };
+      for (const key of removed) {
+        const original = stagedNativeSlackBindings[key];
+        if (original) {
+          next[key] = original;
+        } else {
+          delete next[key];
+        }
+        delete stagedNativeSlackBindings[key];
+      }
+      updateConfigurationBindings(next);
     }
     const channels = renderChannels({
       values,
@@ -2719,9 +2826,9 @@ function renderAgentForm(
         editableDescription:
           "Stage Slack settings into this Configuration JSON. They are saved when you create the Agent.",
         drawerNotice:
-          "Channel and Secret binding settings apply to this form’s Configuration JSON.",
+          "Channel and credential binding settings apply to this form’s Configuration JSON.",
         drawerFootnote:
-          "Channel settings and selected bindings are not persisted until you create the Agent. Secrets created from the modal are stored immediately in the Namespace.",
+          "Channel settings and selected Credential Source bindings are not persisted until you create the Agent.",
         saveLabel: "Apply channel settings",
         readOnlyDescription:
           "This saved initial Configuration is fixed for this create form." +
@@ -2729,6 +2836,9 @@ function renderAgentForm(
             ? ""
             : " Retrying Agent creation will reuse these channel settings."),
         readOnlyCardMessage: "This saved initial Configuration cannot be edited from this form.",
+      },
+      onStateChange: ({ pending }) => {
+        channelEnrollmentPending = pending;
       },
       onSave: async (updatedValues, options = {}) => {
         if (!context.isCurrent() || pending || outcomeUnknown || savedConfiguration) {
@@ -2738,11 +2848,8 @@ function renderAgentForm(
         edited = true;
         configuration.value = JSON.stringify(updatedValues, null, 2);
         if (options.secretBindings !== undefined) {
-          configurationSecretBindings = structuredClone(options.secretBindings);
+          updateConfigurationBindings(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
-          directorySecret.refresh();
-          defaultApprovers.refreshDirectory();
-          pluginDiscovery.update();
         }
         configurationError.clear();
         setTimeout(() => {
@@ -2752,6 +2859,49 @@ function renderAgentForm(
         }, 0);
       },
     });
+    const excludeKeys = slack.support(values).supported
+      ? SLACK_SECRET_BINDINGS.map(({ key }) => key)
+      : [];
+    const bindingKeys = slackCredentialBindingKeys(values, configurationSecretBindings).filter(
+      (key) => !excludeKeys.includes(key),
+    );
+    const bindingFieldsKey = JSON.stringify([bindingKeys, Boolean(savedConfiguration)]);
+    if (credentialBindingFields?.key !== bindingFieldsKey) {
+      const generation = ++credentialBindingFieldsGeneration;
+      const currentBindings =
+        savedConfiguration?.secretBindings ??
+        (rendered.configuration?.secretBindings as SecretBindings | undefined);
+      credentialBindingFields = {
+        key: bindingFieldsKey,
+        field: createSlackCredentialBindingFields(context, {
+          values,
+          bindings: configurationSecretBindings,
+          ...(currentBindings ? { currentBindings } : {}),
+          excludeKeys,
+          disabled: Boolean(savedConfiguration),
+          onChange(key, binding) {
+            if (generation !== credentialBindingFieldsGeneration) {
+              return;
+            }
+            edited = true;
+            if (!Object.hasOwn(stagedNativeSlackBindings, key)) {
+              stagedNativeSlackBindings[key] = structuredClone(
+                configurationSecretBindings[key] ?? null,
+              );
+            }
+            const next = { ...configurationSecretBindings };
+            if (binding) {
+              next[key] = binding;
+            } else {
+              delete next[key];
+            }
+            updateConfigurationBindings(next);
+            configurationError.clear();
+            updateControls();
+          },
+        }),
+      };
+    }
     const modeWarning =
       mode.value === "embedded" && hasEnabledChannel(values)
         ? statusBlock(
@@ -2762,7 +2912,11 @@ function renderAgentForm(
             { role: null },
           )
         : null;
-    channelEditor.replaceChildren(channels, ...(modeWarning ? [modeWarning] : []));
+    channelEditor.replaceChildren(
+      channels,
+      credentialBindingFields.field,
+      ...(modeWarning ? [modeWarning] : []),
+    );
     updateControls();
   }
   const staticSourceRequired = () =>
@@ -2773,19 +2927,31 @@ function renderAgentForm(
     installationCapabilities?.modelCredentialSourcePresets?.includes(
       authMethod.value === "codex_pat" ? "codex-pat" : "openai",
     ) === true;
+  const canUseManagedStatic = () =>
+    nativeProvider.value === "openai" &&
+    mode.value === "dedicated" &&
+    (authMethod.value === "api_key" ||
+      (harness.value === "codex" && authMethod.value === "codex_pat")) &&
+    (staticSourceRequired() || !capabilityDiscoveryDone);
+  const usesModelSourcePicker = () =>
+    !binding &&
+    !passwordAuth &&
+    nativeProvider.value === "openai" &&
+    mode.value === "dedicated" &&
+    (canUseManagedStatic() ||
+      (harness.value === "codex" && authMethod.value === "credential_source"));
   const usesManagedStatic = () =>
     savedCredentialSource !== undefined ||
     (!binding &&
       !savedCredentialSource &&
-      nativeProvider.value === "openai" &&
-      mode.value === "dedicated" &&
-      (authMethod.value === "api_key" ||
-        (harness.value === "codex" && authMethod.value === "codex_pat")) &&
-      (staticSourceRequired() || credentialStorage.value === "source"));
+      ((passwordAuth && staticSourceRequired()) ||
+        (!passwordAuth && canUseManagedStatic() && modelSourcePicker.creating)));
+  const usesExistingModelSource = () => usesModelSourcePicker() && !modelSourcePicker.creating;
   // TokenService enrollment and per-repository GitHub access use the draft path.
   const shouldProvision = () =>
     !repositories.scoped() &&
     !usesManagedStatic() &&
+    !usesExistingModelSource() &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
     mode.value === "dedicated" &&
     provisionableExecutionModes.has(mode.value);
@@ -2956,9 +3122,7 @@ function renderAgentForm(
       return false;
     }
     configurationError.show(
-      refusal.includes(" in secretBindings")
-        ? `${refusal} ${CHANNEL_BINDING_FORM_REMEDY}`
-        : refusal,
+      channelMissingBindingRefusal(refusal) ? `${refusal} ${CHANNEL_BINDING_FORM_REMEDY}` : refusal,
     );
     return true;
   }
@@ -3019,11 +3183,11 @@ function renderAgentForm(
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
-    if (usesOAuth && !binding) {
+    if (usesOAuth && !binding && modelSourcePicker.creating) {
       modelCredentialSource = oauthLogin.source;
       modelCredentialSecret = oauthLogin.source;
     }
-    oauthLogin.setActive(usesOAuth && !binding);
+    oauthLogin.setActive(usesOAuth && !binding && modelSourcePicker.creating);
     oauthLogin.setDisabled(planLocked || saved);
     // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
     // natively disabled. The Codex harness lock is applied below, once its hint is set.
@@ -3138,7 +3302,7 @@ function renderAgentForm(
           ? notReady
             ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
             : "Dedicated Agents are provisioned and deployed when created."
-          : usesManagedStatic()
+          : usesManagedStatic() || usesExistingModelSource()
             ? "This Agent will be saved as a draft with its Credential Source. Deploy it from the Agent page after creation."
             : capabilitiesUnreadable
               ? // Without the Installation's capabilities, deploying may need an administrator.
@@ -3232,21 +3396,35 @@ function renderAgentForm(
     oauthOption.hidden = harness.value !== "codex";
     oauthOption.disabled = harness.value !== "codex";
     const managedStatic = usesManagedStatic();
-    credentialStorageField.hidden = Boolean(
-      staticSourceRequired() ||
+    const existingSource = usesExistingModelSource();
+    credentialLabel.textContent = usesPat ? "Service account token" : "API key";
+    modelCredentialField.hidden = Boolean(
+      binding || passwordAuth || managedStatic || existingSource || usesOAuth,
+    );
+    embeddedSourceHint.hidden = Boolean(
       binding ||
       nativeProvider.value !== "openai" ||
-      mode.value !== "dedicated" ||
-      !["api_key", "codex_pat"].includes(authMethod.value),
+      harness.value !== "openclaw" ||
+      mode.value !== "embedded",
     );
-    credentialStorage.disabled ||= Boolean(
-      savedCredentialSource || savedSecret || savedConfiguration,
+    transientCredentialField.hidden =
+      usesOAuth || existingSource || (!passwordAuth && !managedStatic);
+    let modelSourcePurpose: "openai" | "codex-pat" | "builtin_codex" = "openai";
+    if (usesOAuth) {
+      modelSourcePurpose = "builtin_codex";
+    } else if (usesPat) {
+      modelSourcePurpose = "codex-pat";
+    }
+    modelSourcePicker.setAddNewLabel(usesOAuth ? "Sign in with OAuth" : "Add new credential…");
+    modelSourcePicker.setAddNewDisabled(Boolean(savedConfiguration));
+    modelSourcePicker.setActive(usesModelSourcePicker(), modelSourcePurpose);
+    modelSourcePicker.setDisabled(
+      planLocked || Boolean(savedAgent || savedCredentialSource || savedSecret),
     );
-    credentialLabel.textContent = usesPat ? "Service account token" : "API key";
-    modelCredentialField.hidden = Boolean(binding || passwordAuth || managedStatic || usesOAuth);
-    transientCredentialField.hidden = usesOAuth || (!passwordAuth && !managedStatic);
-    credentialStorageHelp.textContent = managedStatic
-      ? "Saves a Credential Source with the selected TokenService. Use it to load hosted plugins and deploy the Agent."
+    existingSourceDestinationHint.hidden =
+      !existingSource || harness.value !== "codex" || usesPat || usesOAuth;
+    newCredentialHelp.textContent = managedStatic
+      ? "This credential will be saved for reuse and bound to the Agent."
       : "Stores the model credential as a Namespace Secret.";
     savePatForDiscovery.hidden =
       !usesPat || !managedStatic || Boolean(savedCredentialSource || savedSecret);
@@ -3261,13 +3439,16 @@ function renderAgentForm(
     modelCredentialField.querySelector("label")!.textContent = usesPat
       ? "Service account token Secret"
       : "API key Secret";
-    modelCredentialPicker.setRequired(!binding && !passwordAuth && !managedStatic && !usesOAuth);
+    modelCredentialPicker.setRequired(
+      !binding && !passwordAuth && !managedStatic && !existingSource && !usesOAuth,
+    );
     modelCredentialPicker.setDisabled(
       planLocked ||
         Boolean(
           binding ||
           passwordAuth ||
           managedStatic ||
+          existingSource ||
           usesOAuth ||
           savedConfiguration ||
           savedCredentialSource ||
@@ -3306,13 +3487,18 @@ function renderAgentForm(
       credentialHelp.textContent = "Use an Anthropic API key for embedded OpenClaw.";
     }
     apiKey.required = Boolean(
-      (passwordAuth || managedStatic) && !usesOAuth && !savedCredentialSource && !savedSecret,
+      (passwordAuth || managedStatic) &&
+      !usesOAuth &&
+      !existingSource &&
+      !savedCredentialSource &&
+      !savedSecret,
     );
     apiKey.disabled ||= Boolean(
       savedSecret ||
       savedCredentialSource ||
       binding ||
       usesOAuth ||
+      existingSource ||
       (!passwordAuth && !managedStatic),
     );
     startOver.disabled =
@@ -3877,7 +4063,7 @@ function renderAgentForm(
   function plannedHarnessAuth(
     usesOAuth: boolean,
   ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
-    if (usesOAuth) {
+    if (usesOAuth && !usesExistingModelSource()) {
       return undefined;
     }
     // The operator-managed runtime binding names no Secret, so it is sent as it is everywhere.
@@ -3886,6 +4072,9 @@ function renderAgentForm(
     }
     if (savedCredentialSource) {
       return { method: "credential_source", sourceId: savedCredentialSource.id };
+    }
+    if (usesExistingModelSource() && modelCredentialSource?.kind === "credential_source") {
+      return { method: "credential_source", sourceId: modelCredentialSource.id };
     }
     if (usesManagedStatic()) {
       const method = binding?.method ?? authMethod.value;
@@ -3964,6 +4153,13 @@ function renderAgentForm(
       focusConfiguration();
       return;
     }
+    if (usesExistingModelSource() && !modelSourceProvider(values, harness.value, mode.value)) {
+      configurationError.show(
+        "The existing Credential Source cannot be used with this model provider or destination. Update the Configuration JSON or choose compatible authentication.",
+      );
+      focusConfiguration();
+      return;
+    }
     if (
       (!binding || hasBoundModelCredential) &&
       isObject(selected) &&
@@ -4024,12 +4220,17 @@ function renderAgentForm(
     if (
       !binding &&
       !savedCredentialSource &&
-      ((!passwordAuth && !usesManagedStatic()) || usesOAuth) &&
-      modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
+      ((!passwordAuth && !usesManagedStatic()) || usesOAuth || usesExistingModelSource()) &&
+      modelCredentialSource?.kind !==
+        (usesOAuth || usesExistingModelSource() ? "credential_source" : "secret")
     ) {
-      feedback.textContent = usesOAuth
-        ? "Complete ChatGPT sign-in before creating the Agent."
-        : "Choose a model credential Secret before creating the Agent.";
+      if (usesExistingModelSource()) {
+        feedback.textContent = "Choose an existing Credential Source before creating the Agent.";
+      } else if (usesOAuth) {
+        feedback.textContent = "Complete ChatGPT sign-in before creating the Agent.";
+      } else {
+        feedback.textContent = "Choose a model credential Secret before creating the Agent.";
+      }
       return;
     }
     pending = true;
@@ -4044,6 +4245,7 @@ function renderAgentForm(
     // retry after an administrator's grant goes on.
     if (
       passwordAuth &&
+      !usesExistingModelSource() &&
       !usesManagedStatic() &&
       !usesOAuth &&
       !savedSecret &&
@@ -4068,7 +4270,8 @@ function renderAgentForm(
     const plannedAuth = plannedHarnessAuth(usesOAuth);
     const savesFirst =
       !usesOAuth &&
-      ((passwordAuth && !savedSecret) || (!savedCredentialSource && usesManagedStatic()));
+      ((passwordAuth && !usesExistingModelSource() && !savedSecret) ||
+        (!savedCredentialSource && usesManagedStatic()));
     if (
       !savedConfiguration &&
       !savedAgent &&
@@ -4107,7 +4310,11 @@ function renderAgentForm(
               ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
               : nameTaken
                 ? AGENT_NAME_CONFLICT
-                : followableRefusal(rejectionMessage(error));
+                : followableRefusal(
+                    configurationSourceDenial(error) ??
+                      namedRefusal(error) ??
+                      rejectionMessage(error),
+                  );
           refusedInConfiguration = showChannelBindingRefusal(error);
           feedback.textContent = refusedInConfiguration
             ? ""
@@ -4140,7 +4347,13 @@ function renderAgentForm(
     const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
-      if (passwordAuth && !usesManagedStatic() && !usesOAuth && !savedSecret) {
+      if (
+        passwordAuth &&
+        !usesManagedStatic() &&
+        !usesExistingModelSource() &&
+        !usesOAuth &&
+        !savedSecret
+      ) {
         mutationStarted = true;
         creatingSecret = true;
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
@@ -4174,6 +4387,8 @@ function renderAgentForm(
         }
         showSavedStatus();
         harnessAuth = { method: "credential_source", sourceId: source.id };
+      } else if (usesExistingModelSource() && modelCredentialSource?.kind === "credential_source") {
+        harnessAuth = { method: "credential_source", sourceId: modelCredentialSource.id };
       } else {
         const selected = passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
         harnessAuth = binding ?? selectedHarnessAuth(authMethod.value, selected);
@@ -4220,9 +4435,12 @@ function renderAgentForm(
           },
         }).catch((error: unknown) => {
           if (requestFailure(error).status === 403) {
-            // A Configuration create can be refused by the collection check or a bound Secret
-            // check. Give both requirements without guessing which check refused it.
-            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSED;
+            // The API names the exact collection or bound Source grant it refused.
+            responseFields(error).refusal =
+              configurationSourceDenial(error, bindings) ??
+              (hasConfigurationSource(bindings)
+                ? "Creating this Configuration needs Configuration create in the Namespace and operate on every bound credential."
+                : CONFIGURATION_CREATE_REFUSED);
           }
           throw error;
         });
@@ -4271,14 +4489,19 @@ function renderAgentForm(
             body: agentBody,
           }).catch((cause: unknown) => {
             if (repositoryBindings.length === 0 && requestFailure(cause).status === 403) {
+              const exactSourceDenial =
+                (usesExistingModelSource() && harnessAuth.method === "credential_source"
+                  ? credentialSourceOperateDenial(cause, harnessAuth.sourceId)
+                  : undefined) ?? configurationSourceDenial(cause, bindings);
               const reason = agentSaveAccessReason(namedDenial(cause), namespaceId, agentBody);
               const help =
                 capabilitiesUnreadable && context.installationAdmin === false
                   ? askAdministratorTo("check your access")
                   : "Review grants and IAM Restrictions.";
               const retry = reason ? " If access changes, select Create Agent again here." : "";
-              responseFields(cause).refusal =
-                `Agent creation was refused. ${reason ?? ACCESS_NOT_INCLUDED} ${help}${retry}`;
+              responseFields(cause).refusal = exactSourceDenial
+                ? `Agent creation was refused. ${exactSourceDenial} If access changes, select Create Agent again here.`
+                : `Agent creation was refused. ${reason ?? ACCESS_NOT_INCLUDED} ${help}${retry}`;
             }
             throw cause;
           }),
@@ -4402,7 +4625,7 @@ function renderAgentForm(
         creatingSource && outcomeUnknown
           ? "Credential Source creation has an unknown outcome. Check Credential Sources before taking another action."
           : savedAgent
-            ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
+            ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check access to its model and channel credentials.`
             : confirmedSecretConflict
               ? ""
               : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
@@ -4414,7 +4637,11 @@ function renderAgentForm(
                       conflict: "Agent creation conflicts with the saved state.",
                       next: "Check the Agent name and selections, then try again.",
                     })
-                : followableRefusal(createRefusal(cause, mutationStarted));
+                : followableRefusal(
+                    (hasConfigurationSource(bindings) && error.status === 409
+                      ? namedRefusal(cause)
+                      : undefined) ?? createRefusal(cause, mutationStarted),
+                  );
       if (!savedAgent && savedConfiguration && knownRejection) {
         if (repositoryBindings.length) {
           requireRepositoryReload();

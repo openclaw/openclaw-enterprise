@@ -1,5 +1,10 @@
+import { managedCredentialAliasesEnvironment } from "./openshell-plugin-runtime.ts";
+
 /** The canonical Sandbox process stays idle until Compute activates its prepared launch. */
-export function stagedHarnessSupervisor(command: readonly string[]): string {
+export function stagedHarnessSupervisor(
+  command: readonly string[],
+  workerRepositories?: readonly string[],
+): string {
   return String.raw`
 const fs = require("node:fs");
 const net = require("node:net");
@@ -9,6 +14,7 @@ process.umask(0o077);
 const socketPath = path.join(process.env.HOME, ".oce-staged-harness.sock");
 const planPath = path.join(process.env.HOME, ".oce-staged-harness.json");
 const command = ${JSON.stringify(command)};
+const workerRepositories = ${JSON.stringify(workerRepositories ?? null)};
 fs.mkdirSync(process.env.HOME, { recursive: true, mode: 0o700 });
 fs.writeFileSync(planPath, JSON.stringify({ state: "idle", command }), { mode: 0o600 });
 let child;
@@ -28,7 +34,18 @@ const server = net.createServer((peer) => {
       const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
       if (plan.state !== "prepared") throw new Error();
       const environment = { ...process.env };
+      delete environment.OPENCLAW_NODE_WORKER_EXECUTION;
       delete environment.OCE_CODEX_CHATGPT_ACCOUNT;
+      delete environment[${JSON.stringify(managedCredentialAliasesEnvironment)}];
+      const pluginAliases = {};
+      for (const projection of plan.projections) {
+        if (projection.runtimeEnvironment !== undefined) {
+          delete environment[projection.runtimeEnvironment];
+          if (projection.plugin === true) {
+            pluginAliases[projection.environment] = projection.runtimeEnvironment;
+          }
+        }
+      }
       for (const projection of plan.projections) {
         delete environment[projection.environment];
         const value = projection.placeholder.kind === "runtime"
@@ -36,10 +53,20 @@ const server = net.createServer((peer) => {
           : projection.placeholder.value;
         if (typeof value !== "string" || value.length === 0) throw new Error();
         environment[projection.environment] = value;
+        if (workerRepositories && projection.environment === "GITHUB_TOKEN") {
+          if (projection.placeholder.kind !== "runtime" || projection.runtimeEnvironment !== undefined || !/^openshell:resolve:env:s[0-9a-f]{64}_GITHUB_TOKEN$/.test(value)) throw new Error();
+          environment.OPENCLAW_NODE_WORKER_EXECUTION = JSON.stringify({
+            gitConfigFile: "/usr/local/lib/oce/openshell-worker.gitconfig",
+            toolData: { gitRepositories: workerRepositories.join(" "), gitPlaceholder: value },
+          });
+        }
         if (projection.account !== undefined) {
           if (projection.environment !== "CODEX_ACCESS_TOKEN") throw new Error();
           environment.OCE_CODEX_CHATGPT_ACCOUNT = JSON.stringify(projection.account);
         }
+      }
+      if (Object.keys(pluginAliases).length > 0) {
+        environment[${JSON.stringify(managedCredentialAliasesEnvironment)}] = JSON.stringify(pluginAliases);
       }
       activated = true;
       child = spawn(plan.command[0], plan.command.slice(1), {
@@ -93,9 +120,10 @@ if (plan.state !== "prepared") process.exit(1);
 const environment = {};
 for (const projection of plan.projections) {
   if (projection.placeholder.kind !== "runtime") continue;
-  const value = process.env[projection.environment];
+  const runtimeEnvironment = projection.runtimeEnvironment ?? projection.environment;
+  const value = process.env[runtimeEnvironment];
   const match = typeof value === "string" && /^openshell:resolve:env:(?:v[0-9]+|s[0-9a-f]{64})_([A-Z][A-Z0-9_]*)$/.exec(value);
-  if (!match || match[1] !== projection.environment) process.exit(1);
+  if (!match || match[1] !== runtimeEnvironment) process.exit(1);
   environment[projection.environment] = value;
 }
 const peer = net.connect(path.join(process.env.HOME, ".oce-staged-harness.sock"));

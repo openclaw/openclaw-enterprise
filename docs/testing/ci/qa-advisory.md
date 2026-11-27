@@ -65,6 +65,7 @@ for Codex.
 | `oidc-agent-chat`                | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
 | `console-secrets`                | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
 | `agent-audit`                    | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
+| `gateway-startup-credentials`    | Yes (Kubernetes)     | Codex           | Refuse a deployer without Source operate, then grant the Agent exact Source use and deliver the value to the native Gateway through a revision Secret. Stop removes the Secret.  |
 | `git-write`                      | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
 | `git-push-denied`                | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
 | `slack`                          | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
@@ -74,6 +75,7 @@ for Codex.
 | `openshell-template-resources`   | No                   | Codex           | [Template resource delivery](../openshell-managed.md#template-resource-delivery).                                                                                                |
 | `openshell-provider-replacement` | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
 | `openshell-git-replacement`      | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
+| `openshell-token-service-agent`  | No                   | OpenClaw        | [Prepared native Source custody](../manual-tests.md): a real dedicated Agent turn, rotation, withdrawal, and deletion of the supplied disposable Source.                         |
 
 Source: [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs),
 [scenario selection](../../../tests/helpers/qa-selection.mjs).

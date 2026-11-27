@@ -47,7 +47,7 @@ With `nativeGit: "v1"` for a selected GitHub App, the Agent’s saved grant sets
 | Contributor (Write) | Also push    | Also create | Also open     |
 | No grant            | None         | None        | None          |
 
-The GitHub App installation and the Namespace’s token [`permissions`](../../docs/reference/repository-credentials/access-levels.md#native-git-delivery) must both permit the operation. Issues and Pull requests are independent. Metadata and Contents alone give Git access only.
+The GitHub App installation and the Namespace’s token [`permissions`](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery) must both permit the operation. Issues and Pull requests are independent. Metadata and Contents alone give Git access only.
 
 Repositories sharing one token need identical token permission maps. A PR can expose commits from another bound repository. If any binding lacks a grant, the [existing safeguard](https://github.com/openclaw/openclaw-enterprise/pull/7135) blocks PR creation everywhere. Contributors can still create issues. Unbind the unused repository and redeploy to restore PR creation.
 

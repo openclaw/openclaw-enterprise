@@ -522,7 +522,12 @@ export function createShell({
     );
     copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, status);
+    return element(
+      "span",
+      { className: "page-meta-id" },
+      element("span", { className: "page-meta-id-controls" }, id, copy),
+      status,
+    );
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
@@ -634,7 +639,7 @@ export function createShell({
         navigate(name);
       });
     }
-    const credentialAdministration =
+    const credentialSection =
       feature === connectionTemplatesPage || feature === credentialClientsPage;
     const icons = {
       agents:
@@ -648,7 +653,7 @@ export function createShell({
         {
           href: pageUrl(name),
           "data-nav": name,
-          ...(feature === name || (credentialAdministration && name === "secrets")
+          ...(feature === name || (credentialSection && name === "secrets")
             ? { "aria-current": "page" }
             : {}),
         },
@@ -717,7 +722,7 @@ export function createShell({
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
-      credentialAdministration || ["agents", "secrets"].includes(feature)
+      credentialSection || ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
@@ -779,17 +784,20 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (feature === "secrets" || credentialAdministration) {
+    if (feature === "secrets" || credentialSection) {
       const sections = element("nav", {
         className: "credential-tabs",
         "aria-label": "Credential sections",
       });
       for (const [name, label] of [
-        ["secrets", "Secrets"],
+        ["secrets", "Credentials"],
         [connectionTemplatesPage, "Connection templates"],
         [credentialClientsPage, "Credential clients"],
       ] as const) {
-        if (name !== "secrets" && !state.installationAdmin) {
+        if (
+          (name === connectionTemplatesPage || name === credentialClientsPage) &&
+          !state.installationAdmin
+        ) {
           continue;
         }
         const link = element(
@@ -1097,6 +1105,7 @@ export function createShell({
       observabilityLink?.remove();
       observabilityLink = null;
     },
+    focusLeaveFeedback,
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;
     },

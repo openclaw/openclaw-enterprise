@@ -275,11 +275,14 @@ export class OAuthGrantStore {
     // is safe to retry because the issuer has received nothing.
     let clientSecret: string | undefined;
     let registration: OAuthConnectionRegistration;
-    let refreshGrant: OAuthGrantRefresh = this.refreshGrant;
+    let refreshGrant: OAuthGrantRefresh;
     try {
       const client = await resolveClient();
       registration = client.registration;
-      refreshGrant = client.refreshGrant ?? refreshGrant;
+      refreshGrant =
+        client.refreshGrant ??
+        ((grant, tokenSignal, secret) =>
+          this.refreshGrant(grant, tokenSignal, secret, client.fetchToken));
       const { readSecret } = client;
       clientSecret =
         registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);
@@ -472,7 +475,9 @@ export class OAuthAccountTokens {
         refreshGrant: this.codexRefresh,
       };
     }
-    return this.client(ref, source);
+    // Only a Source being registered can reuse the callback's pre-exchange validation.
+    // Saved Sources must revalidate their issuer before each renewal.
+    return this.client(ref, registrationSource);
   }
 
   /** Publish the ready Source and its usable private grant as one database mutation. */

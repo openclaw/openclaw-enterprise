@@ -154,6 +154,8 @@ export interface OAuthConnectionRegistration {
 export interface OAuthConnectionClient {
   readonly registration: OAuthConnectionRegistration;
   readonly readSecret?: (signal: AbortSignal) => Promise<string>;
+  /** Sends only to the token endpoint vetted for the original consent version. */
+  readonly fetchToken?: (init: RequestInit) => Promise<Response>;
 }
 
 /** Trusted handoff from code exchange. The Token Service retains the reusable grant. */

@@ -13,12 +13,12 @@ import type { TestContext } from "node:test";
 import type { Page, Response as BrowserResponse } from "playwright";
 import { createRequire } from "node:module";
 import type { Namespace, PresetTemplate } from "../../packages/contracts/src/index.ts";
+import type { SandboxDriver } from "../../packages/contracts/src/drivers/sandbox/index.ts";
 import {
   CreatePresetBody,
   ErrorResponse,
   JsonValue,
 } from "../../packages/contracts/src/api/common.ts";
-import type { SandboxDriver } from "../../packages/contracts/src/drivers/sandbox/index.ts";
 import {
   CredentialSourceResponse,
   InstallationSchema,
@@ -26,21 +26,54 @@ import {
   type InstallationWire,
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import {
+  InstalledDriver,
+  OpenClawController,
+  type NamespaceLifecycleBinding,
+  type PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
+import { controlledOAuthIssuer } from "../helpers/oauth-issuer.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { installDeviceTokenService } from "../helpers/device-token-service.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import {
+  openShellNamespaceObjects,
+  openShellWorkspaceProtocol,
+} from "../helpers/openshell-workspace-protocol.ts";
+import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
+import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
+import {
+  buildSandboxInstallation,
+  loadSelectedOpenShellAgentInstallation,
+} from "../integration/sandbox-driver-installation-fixture.ts";
+import {
   apiRequests,
+  asksBeforeUnload,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -116,17 +149,6 @@ function present<T>(value: T | null | undefined): T {
   return value;
 }
 
-function assertSandboxDriver(
-  driver: ReturnType<typeof nativeSandboxDriver>,
-): asserts driver is ReturnType<typeof nativeSandboxDriver> & SandboxDriver {
-  assert.equal(driver.capability, "sandbox");
-  assert.ok(
-    driver.facets.every(
-      (facet) => facet === "filesystem" || facet === "networking" || facet === "process",
-    ),
-  );
-}
-
 // Legacy fixture helpers return decoded JSON. Check the fields this suite consumes.
 function resourceId(value: unknown): string {
   const { id } = object(value);
@@ -200,19 +222,69 @@ function provisioningDrivers(compute: ComputeOptions = {}) {
 // workspace files as OpenShell's does, so Create Agent's preflight admits the form's files.
 async function modelSourceFixture(
   t: TestContext,
-  { compute, ...options }: ConsoleOptions & { compute?: ComputeOptions } = {},
+  {
+    compute,
+    withDelivery = true,
+    gatewayClient,
+    ...options
+  }: ConsoleOptions & {
+    compute?: ComputeOptions;
+    withDelivery?: boolean;
+    gatewayClient?: Parameters<typeof loadSelectedOpenShellAgentInstallation>[1]["gatewayClient"];
+  } = {},
 ) {
-  const sandboxDriver = { ...nativeSandboxDriver(), validateWorkspaceSetup() {} };
-  assertSandboxDriver(sandboxDriver);
+  let runtime: Awaited<ReturnType<typeof loadSelectedOpenShellAgentInstallation>> | undefined;
+  if (withDelivery) {
+    const installation = buildSandboxInstallation();
+    Reflect.deleteProperty(installation.drivers, "credential_gateway");
+    Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+    runtime = await loadSelectedOpenShellAgentInstallation(t, {
+      installation,
+      computeId: "console-source-compute",
+      tokenServiceId: "occ",
+      core: new FakeSecretCoreV1Api(),
+      gatewayClient: gatewayClient ?? completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
+    });
+  }
+  const composition = runtime ? installationControllerOptions(runtime.installation) : undefined;
+  const sandboxDriver: SandboxDriver = runtime
+    ? present(runtime.sandboxDriver)
+    : nativeSandboxDriver();
   const drivers = provisioningDrivers({ ...compute, sandboxDriver });
-  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
+  const placements = new Map<string, string>();
+  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => {
+    let name = placements.get(namespace.id);
+    if (name === undefined) {
+      name = core.addNamespace(namespace.id);
+      placements.set(namespace.id, name);
+    }
+    return { ...namespace, name };
+  };
+  drivers.computeDriver.resolveSandboxNamespaceContext = async (namespace, signal) => ({
+    namespace: await drivers.computeDriver.resolveSandboxNamespace(namespace),
+    kubernetes: openShellNamespaceObjects(),
+    signal,
+  });
+  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
   let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
     ...drivers,
-    sandboxDriver,
     configurationDriver: undefined,
     filesystemConfiguration: true,
+    ...(runtime ? {} : { sandboxDriver }),
+    ...(runtime && {
+      credentialSourceDelivery: credentialSourceDeliveryBinding({
+        ...runtime,
+        computeDriver: drivers.computeDriver,
+      }),
+    }),
+    ...(composition && {
+      modelCredentialSourcePresets: composition.modelCredentialSourcePresets,
+      modelCredentialPreset: composition.modelCredentialPreset,
+      driverConfigurations: composition.driverConfigurations,
+    }),
     ...options,
+    namespaceLifecycleBindings,
     wrapState(current: PlatformStateStore) {
       state = current;
       return current;
@@ -220,7 +292,7 @@ async function modelSourceFixture(
   });
   await fixture.bootstrap();
   const controller = controllerOf(fixture);
-  const { driver } = useInstallationSecretDriver(controller);
+  const { core, driver } = useInstallationSecretDriver(controller);
   assert.ok(driver.privateSecrets);
   assert.ok(state);
   const instanceId = await controller.activateTokenServiceInstance(
@@ -236,7 +308,18 @@ async function modelSourceFixture(
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
-  return { fixture };
+  if (runtime) {
+    const delivery = present(runtime.credentialDeliveryRegistration);
+    namespaceLifecycleBindings.push(
+      sandboxNamespaceLifecycleBinding(
+        controller.selectedDriver("compute"),
+        sandboxDriver,
+        delivery,
+      ),
+    );
+    controller.installDriver(delivery, ["sandbox", "credential_proxy_delivery"]);
+  }
+  return { fixture, core, namespaceLifecycleBindings, tokenServiceInstanceId: instanceId };
 }
 
 // Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
@@ -265,6 +348,7 @@ async function openModelSourceForm(
   await page.getByLabel("Agent name").fill("Source-backed " + harness);
   const material = "synthetic-source-model-key-" + harness;
   if (method === "api_key") {
+    await page.getByLabel("Model credential", { exact: true }).selectOption("new");
     await page.getByLabel("API key", { exact: true }).fill(material);
   } else {
     await createModelCredentialSecret(page, material);
@@ -404,7 +488,6 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Revoked operate Agent");
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await selectSecret(page, "API key Secret", secret);
   await page.getByText("Secret selected. Create Agent binds it.").waitFor();
   const model = page.getByLabel("Model ID", { exact: true });
@@ -519,18 +602,26 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
 });
 
 test("Create Agent names a refused Slack token form once, under its Configuration JSON", async (t) => {
-  // Finding 2506: with both Slack Secrets selected, every refused botToken form typed into Create
+  // Finding 2506: with both Slack Sources selected, every refused botToken form typed into Create
   // Agent's own Configuration JSON got the Slack Channel Driver's generic "Select an
   // environment-backed Secret" alert, since provisioning asked that Driver before the
   // Configuration rules. Now the rule's own message shows once, as the JSON's field error.
-  const fixture = await createConsoleAppFixture(t, {
-    ...provisioningDrivers(),
-    sandboxDriver: nativeSandboxDriver(),
-  });
-  await fixture.bootstrap();
+  // This case stops at validation, before any Channel Source export or Gateway delivery.
+  const { fixture } = await modelSourceFixture(t, { compute: { channelRuntime: true } });
   const namespace = await readyNamespace(fixture, "Provision Slack forms");
-  const slackApp = await createSecret(fixture, namespace.id, "Forms Slack app", "xapp-forms");
-  const slackBot = await createSecret(fixture, namespace.id, "Forms Slack bot", "xoxb-forms");
+  const enroll = async (name: string, prefix: string) => {
+    const response = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: { name, type: "static", secret: `${prefix}-${randomUUID()}` },
+      },
+    );
+    return fixture.fixtureResponse(response, 201, CredentialSourceResponse, "create Slack Source")
+      .data;
+  };
+  const slackApp = await enroll("Forms Slack app", "xapp");
+  const slackBot = await enroll("Forms Slack bot", "xoxb");
   let slackCalls = 0;
   const channel = new SlackChannelDriver(async () => {
     slackCalls++;
@@ -559,8 +650,8 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     "CFORMS1",
   );
   await slack.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
-  await selectSecret(slack, "Slack app token", slackApp);
-  await selectSecret(slack, "Slack bot token", slackBot);
+  await slack.getByLabel("Slack app token", { exact: true }).selectOption(slackApp.id);
+  await slack.getByLabel("Slack bot token", { exact: true }).selectOption(slackBot.id);
   await slack.getByRole("button", { name: "Apply channel settings" }).click();
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
@@ -577,17 +668,6 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`;
   const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
   await card.getByText(cardText(inline), { exact: true }).waitFor();
-  // The card re-renders many times per edit and submit. Each render once read both bound
-  // Secrets again, about 386 reads per edit (finding 2601); the view now reads each once.
-  const secretReads = () =>
-    requests.filter(
-      ({ method, path }) =>
-        method === "GET" &&
-        [slackApp, slackBot].some(({ id }) => path === `/namespaces/${namespace.id}/secrets/${id}`),
-    ).length;
-  const settledReads = secretReads();
-  t.diagnostic(`Slack Secret reads after the first edit: ${settledReads}`);
-  assert.ok(settledReads <= 2, `${settledReads} Slack Secret reads after the first edit`);
   // Its closed native configuration disclosure is the JSON the reader typed, not card text.
   assert.doesNotMatch(await card.innerText(), /xoxb-pasted/);
   // The Slack editor's channel field looked names up; Create Agent must not call Slack again.
@@ -596,7 +676,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     slackValues.botToken = botToken;
     await configuration.fill(JSON.stringify(values, null, 2));
     const response = await submitCreateAgent(page, fixture, namespace.id, {
-      path: "agents/provision",
+      path: "agents/validate",
     });
     assert.equal(response.status(), 400, botToken);
     return checked(ErrorResponse, await response.json()).error;
@@ -652,11 +732,17 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   );
   assert.deepEqual(nonAuthWriteRequests(requests), writesBeforeModelChange);
 
-  // Later edits and submits read no bound Secret again.
-  assert.equal(secretReads(), settledReads);
   // Refused before Slack was asked, and nothing was saved.
   assert.equal(slackCalls, lookups);
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 3);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`).length,
+    3,
+  );
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
 });
 
@@ -719,6 +805,45 @@ test("Create Agent saves a managed static Source and binds its exact ID to a dra
   }
 });
 
+test("an uncertain Create Agent Source write clears busy state without allowing a duplicate or keeping an unsafe draft", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Uncertain Create Agent Source");
+  const { page } = await openModelSourceForm(t, fixture, namespace);
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  const requests = apiRequests(page, fixture.origin);
+  // The actual Source write commits, but its reply is lost before the Console can confirm custody.
+  const uncertain = await holdRequests(t, page, fixture.origin + sourcePath, {
+    method: "POST",
+    afterServer: true,
+    loseResponse: true,
+    once: true,
+  });
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await create.click();
+  assert.equal((await uncertain.requested)?.status(), 201);
+  assert.equal(await create.getAttribute("aria-busy"), "true");
+  assert.equal(await create.isDisabled(), true);
+  uncertain.release();
+  await page
+    .getByText("Credential Source creation has an unknown outcome.", { exact: false })
+    .waitFor();
+  assert.equal(await create.getAttribute("aria-busy"), "false");
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(pathRequests(requests, "POST", sourcePath).length, 1);
+
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Agents", exact: true })
+    .click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  assert.equal(await asksBeforeUnload(page), false);
+  assert.equal(pathRequests(requests, "POST", sourcePath).length, 1);
+});
+
 test("Create Agent saves a PAT Source before loading hosted Apps", async (t) => {
   const { fixture } = await modelSourceFixture(t);
   controllerOf(fixture).installPluginDrivers([new CodexPluginDriver()]);
@@ -756,7 +881,7 @@ test("Create Agent saves a PAT Source before loading hosted Apps", async (t) => 
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await page.getByLabel("Credential storage").selectOption("source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const save = page.getByRole("button", { name: "Save service account token" });
   assert.equal(await save.isDisabled(), true);
   await page.getByLabel("Agent name").fill("Hosted Apps");
@@ -786,6 +911,1360 @@ test("Create Agent saves a PAT Source before loading hosted Apps", async (t) => 
   assert.deepEqual(hostedCalls, ["identity", "catalog"]);
   assert.equal(pathRequests(requests, "POST", `${base}/credential-sources`).length, 1);
   assert.equal(pathRequests(requests, "POST", `${base}/agents`).length, 0);
+});
+
+async function enrollModelSource(
+  fixture: ConsoleFixture,
+  namespaceId: string,
+  name: string,
+  preset: "openai" | "codex-pat" = "openai",
+) {
+  const result = await fixture.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+    body: {
+      name,
+      type: "static",
+      config: { provider_preset: preset },
+      secret: "synthetic-source-model-value",
+    },
+  });
+  assert.equal(result.status, 201);
+  return resourceId(result.data);
+}
+
+// Source maintenance uses exact IAM and the recorded TokenService owner; readable metadata alone
+// must not authorize replacement, and a saved Agent reference must block deletion.
+test("Credential Source maintenance checks exact update authority, replaces custody, and refuses referenced deletion", async (t) => {
+  const gateway = workspaceGatewayClient();
+  const { fixture, tokenServiceInstanceId } = await modelSourceFixture(t, {
+    gatewayClient: completeOpenShellGatewayClient(gateway),
+  });
+  const namespace = await readyNamespace(fixture, "Source maintenance");
+  // The Namespace fixture creates a Workspace lifecycle observation. Delivery retirement also
+  // requires the immutable Workspace ID returned by a real Gateway, so include it here.
+  const workspace = [...gateway.workspaces.values()][0];
+  assert.ok(workspace);
+  gateway.workspaces.set(workspace.name, { ...workspace, id: randomUUID() });
+  const sourceId = await enrollModelSource(fixture, namespace.id, "Bound model Source");
+  const spareId = await enrollModelSource(fixture, namespace.id, "Unreferenced Source");
+  const configurationId = resourceId(
+    await fixture.createConfiguration(
+      namespace.id,
+      createHarnessConfiguration("openclaw", "gpt-5"),
+    ),
+  );
+  const agent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Source consumer",
+      executionMode: "dedicated",
+      configurationId,
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    },
+  });
+  assert.equal(agent.status, 201);
+
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/secrets?namespace=${namespace.id}`);
+  const table = page.getByRole("table", { name: "Credential Sources", exact: true });
+  const bound = table.getByRole("row").filter({ hasText: "Bound model Source" });
+  // The action must fit before Playwright can scroll the clipped table to click it.
+  const tableBox = await table.boundingBox();
+  const deleteBox = await bound.getByRole("button", { name: "Delete Source" }).boundingBox();
+  assert.ok(tableBox && deleteBox);
+  assert.ok(deleteBox.x + deleteBox.width <= tableBox.x + tableBox.width);
+  const sourceUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources/${sourceId}`;
+  const restoreUpdate = revokeAdministratorGrant(fixture, ["update", "credential_source"]);
+  await bound.getByRole("button", { name: "Replace value", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "Replace Credential Source value", exact: true });
+  await dialog.getByLabel("New credential value").fill("synthetic-refused-replacement");
+  const refused = page.waitForResponse(
+    (response) => response.url() === sourceUrl && response.request().method() === "PATCH",
+  );
+  await dialog.getByRole("button", { name: "Replace value", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  await dialog.getByText(new RegExp(`Credential ?Source update.*${sourceId}`, "i")).waitFor();
+  assert.equal(await dialog.getByLabel("New credential value").inputValue(), "");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  restoreUpdate();
+
+  await bound.getByRole("button", { name: "Replace value", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Replace Credential Source value", exact: true });
+  const replacement = "synthetic-committed-replacement";
+  await dialog.getByLabel("New credential value").fill(replacement);
+  const patched = page.waitForResponse(
+    (response) => response.url() === sourceUrl && response.request().method() === "PATCH",
+  );
+  await dialog.getByRole("button", { name: "Replace value", exact: true }).click();
+  const patch = await patched;
+  assert.equal(patch.status(), 200);
+  assert.equal(JSON.stringify(await patch.json()).includes(replacement), false);
+  await page.getByText("Bound model Source was updated.", { exact: true }).waitFor();
+  const owner = controllerOf(fixture).selectedDriver("token_service");
+  assert.equal(
+    (
+      await owner.resolveCredential(
+        {
+          sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: sourceId },
+          tokenServiceInstanceId,
+        },
+        AbortSignal.timeout(5_000),
+      )
+    ).credential,
+    replacement,
+  );
+  assert.equal((await page.locator("body").innerText()).includes(replacement), false);
+
+  await bound.getByRole("button", { name: "Delete Source", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Delete Credential Source", exact: true });
+  const blocked = page.waitForResponse(
+    (response) => response.url() === sourceUrl && response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "Delete Source", exact: true }).click();
+  assert.equal((await blocked).status(), 409);
+  await dialog.getByText(/still references the credential source/i).waitFor();
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources/${sourceId}`))
+      .status,
+    200,
+  );
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  const spare = table.getByRole("row").filter({ hasText: "Unreferenced Source" });
+  const spareUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources/${spareId}`;
+  await spare.getByRole("button", { name: "Delete Source", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Delete Credential Source", exact: true });
+  // Exact delete still succeeds if Namespace read is withdrawn before the inventory refresh.
+  const restoreNamespaceRead = revokeAdministratorGrant(fixture, ["read", "namespace"]);
+  const removed = page.waitForResponse(
+    (response) => response.url() === spareUrl && response.request().method() === "DELETE",
+  );
+  const inventoryDenied = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/credential-sources` &&
+      response.request().method() === "GET",
+  );
+  await dialog.getByRole("button", { name: "Delete Source", exact: true }).click();
+  const removedResponse = await removed;
+  assert.equal(removedResponse.status(), 204);
+  assert.equal((await inventoryDenied).status(), 403);
+  await page.getByText(/^Your change succeeded, but Namespace access was refused/).waitFor();
+  assert.equal(await table.count(), 0);
+  restoreNamespaceRead();
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources/${spareId}`))
+      .status,
+    404,
+  );
+});
+
+test("Credential Sources lists and creates public metadata; an exact create denial saves nothing", async (t) => {
+  const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
+  const { fixture, core, namespaceLifecycleBindings } = await modelSourceFixture(t, {
+    withDelivery: false,
+    driverConfigurations,
+  });
+  const namespace = await readyNamespace(fixture, "Credential Source inventory");
+  const placed = core.addNamespace(namespace.id);
+  Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
+  core.secretUid = randomUUID();
+  const base = `/namespaces/${namespace.id}/credential-sources`;
+  const secretMaterial = "synthetic-inventory-secret-value";
+  const secret = await createSecret(fixture, namespace.id, "Inventory Secret", secretMaterial);
+  const controller = controllerOf(fixture);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Proxy scoped Agent",
+    createHarnessConfiguration("codex", "example-model"),
+    { executionMode: "dedicated", harnessAuth: { method: "api_key", source: secret.ref } },
+  );
+  const proxyOptions = { middlewareName: "console-egress", authorityScope: "execution" } as const;
+  // Only the counterpart discovery transport is controlled; Source admission and custody use
+  // the actual selected owner, IAM, platform state, and controller operations.
+  backend.client.clientForNamespace("").getGatewayInfo = async () => ({
+    gateway_version: "0.1.8",
+    extensions: [
+      {
+        configured_name: proxyOptions.middlewareName,
+        kind: 4,
+        protocol_major: 1,
+        required_capabilities: [...openShellExchangeCapabilities],
+        supported_capabilities: [...openShellExchangeCapabilities],
+      },
+    ],
+  });
+  const proxy = new OpenShellLegacyEgressProxyDriver(proxyOptions, {
+    id: sandboxDriver.id,
+    backend,
+    sandbox: sandboxDriver,
+  });
+  const owner = new InstalledDriver(
+    {
+      id: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      configuration: proxyOptions,
+    },
+    { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+  );
+  namespaceLifecycleBindings.push(
+    sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver, owner),
+  );
+  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  // Create an offered credential-free Source through its actual selected Proxy owner. The
+  // browser then reads the real collection route; this does not claim runtime delivery proof.
+  const protectedSource = await controller.createCredentialSource(fixture.principal.id, {
+    namespaceId: namespace.id,
+    name: "Protected Proxy Source",
+    type: "credential-free-repository-metadata",
+    config: {
+      origin: "https://private.example.test",
+      repository_id: "123",
+      repository: "private/application",
+      agent_id: agent.id,
+      authority: "execution",
+    },
+  });
+  const proxyId = protectedSource.id;
+  const templateResult = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "Reporting API",
+      mode: "static_bearer",
+      destinations: [
+        { method: "GET", host: "reports.example.test", port: 443, path: "/reports/**" },
+      ],
+    },
+  });
+  assert.equal(templateResult.status, 201);
+  const templateId = resourceId(templateResult.data);
+  const { page } = await newPage(t, fixture, { browser });
+  const secretsPath = `/namespaces/${namespace.id}/secrets`;
+  await page.route(
+    fixture.origin + secretsPath,
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill(
+            apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Secret storage unavailable."),
+          )
+        : route.fallback(),
+    { times: 1 },
+  );
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/secrets?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Credentials", exact: true }).waitFor();
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  assert.equal(await sections.getByRole("link", { name: "Credentials", exact: true }).count(), 1);
+  assert.equal(await sections.getByRole("link", { name: "Secrets", exact: true }).count(), 0);
+  assert.equal(await sections.getByRole("link", { name: "Sources", exact: true }).count(), 0);
+  await page.getByText("Secrets unavailable", { exact: true }).waitFor();
+  const sources = page.getByRole("table", { name: "Credential Sources", exact: true });
+  const proxyRow = sources.getByRole("row").filter({ hasText: "Protected Proxy Source" });
+  await proxyRow.getByText(proxyId, { exact: true }).waitFor();
+  const collection = await fixture.request("GET", base);
+  assert.equal(collection.status, 200);
+  const returnedProxy = (collection.data as Record<string, unknown>[]).find(
+    (item) => item.id === proxyId,
+  );
+  assert.equal(returnedProxy?.ownerCapability, "credential_proxy");
+  assert.equal(object(returnedProxy?.config).repository, "private/application");
+  assert.deepEqual(returnedProxy?.secrets, {});
+  const proxyText = await proxyRow.innerText();
+  for (const hidden of ["private/application", "private.example.test", secret.id, secretMaterial]) {
+    assert.equal(proxyText.includes(hidden), false, `Source row must not show ${hidden}`);
+  }
+  assert.equal((await page.locator("body").innerText()).includes(secretMaterial), false);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Create Secret", exact: true }).waitFor();
+  await page.getByRole("list", { name: "Secrets" }).getByText("Inventory Secret").waitFor();
+  const open = async () => {
+    await page.getByRole("button", { name: "Create Credential Source", exact: true }).click();
+    return page.getByRole("dialog", {
+      name: "Create Credential Source",
+      exact: true,
+    });
+  };
+  const templatesUrl = `${fixture.origin}/namespaces/${namespace.id}/connection-templates`;
+  const heldTemplates = await holdRequests(t, page, templatesUrl, {
+    method: "GET",
+    afterServer: true,
+    once: true,
+  });
+  const loadingForm = await open();
+  const cancel = loadingForm.getByRole("button", { name: "Cancel", exact: true });
+  const heading = loadingForm.getByRole("heading", { name: "Create Credential Source" });
+  assert.equal((await heldTemplates.requested)?.status(), 200);
+  assert.equal(await hasFocus(heading), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(cancel), true);
+  const templatesLoaded = page.waitForResponse(
+    (response) => response.url() === templatesUrl && response.request().method() === "GET",
+  );
+  heldTemplates.release();
+  assert.equal((await templatesLoaded).status(), 200);
+  await loadingForm.getByLabel("Preset or Connection Template", { exact: true }).waitFor();
+  assert.equal(
+    await hasFocus(cancel),
+    true,
+    "loading templates must preserve keyboard focus on Cancel",
+  );
+  await page.keyboard.press("Enter");
+  await loadingForm.waitFor({ state: "detached" });
+  assert.equal(pathRequests(requests, "POST", base).length, 0);
+
+  const fill = async (name: string, choice = "model:openai") => {
+    const form = await open();
+    const selector = form.getByLabel("Preset or Connection Template", {
+      exact: true,
+    });
+    assert.equal(await hasFocus(selector), true, "untouched dialog should focus the choice");
+    await selector.selectOption(choice);
+    await form.getByLabel("Source name", { exact: true }).fill(name);
+    await form.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
+    return form;
+  };
+  await page.route(
+    templatesUrl,
+    (route) =>
+      route.fulfill(
+        apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Template discovery unavailable."),
+      ),
+    { times: 1 },
+  );
+  const form = await fill("Research model");
+  await form.getByText("Templates unavailable", { exact: true }).waitFor();
+  // A new preset starts with an empty, masked value even if the last one was revealed.
+  const preset = form.getByLabel("Preset or Connection Template", { exact: true });
+  const credentialValue = form.getByLabel("Credential value", { exact: true });
+  await form.getByRole("button", { name: "Show value", exact: true }).click();
+  await preset.selectOption("builtin:codex-oauth");
+  await credentialValue.waitFor({ state: "detached" });
+  await preset.selectOption("model:openai");
+  assert.equal(await credentialValue.inputValue(), "");
+  assert.equal(
+    await credentialValue.evaluate((input) =>
+      input instanceof HTMLInputElement
+        ? input.type === "password"
+        : getComputedStyle(input).getPropertyValue("-webkit-text-security") === "disc",
+    ),
+    true,
+  );
+  await credentialValue.fill("synthetic-source-value");
+  const created = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + base && response.request().method() === "POST",
+  );
+  await form.getByRole("button", { name: "Create Source", exact: true }).click();
+  const response = await created;
+  assert.equal(response.status(), 201);
+  const source = checked(CredentialSourceResponse, await response.json()).data;
+  assert.equal(typeof object(response.request().postDataJSON()).secret, "string");
+  await page.getByText("Research model", { exact: true }).waitFor();
+  const saved = await fixture.request("GET", `${base}/${source.id}`);
+  assert.equal(saved.status, 200);
+  assert.equal(object(saved.data).name, "Research model");
+  assert.equal(JSON.stringify(saved.data).includes("synthetic-source-value"), false);
+  assert.deepEqual(object(saved.data).config, { provider_preset: "openai" });
+
+  // A plain static credential has neither a model preset nor a Connection Template.
+  const plainForm = await fill("Support token", "plain");
+  const plainCreated = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await plainForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const plainResponse = await plainCreated;
+  assert.equal(plainResponse.status(), 201);
+  const plainSource = checked(CredentialSourceResponse, await plainResponse.json()).data;
+  assert.equal(plainSource.type, "static");
+  assert.deepEqual(object(plainSource).config, {});
+  assert.equal(Object.hasOwn(plainSource, "connectionTemplateId"), false);
+  assert.equal(JSON.stringify(plainSource).includes("synthetic-source-value"), false);
+  await page.getByText("Support token", { exact: true }).waitFor();
+
+  const templateForm = await fill("Reporting credential", `template:${templateId}`);
+  const templateCreated = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await templateForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const templateResponse = await templateCreated;
+  assert.equal(templateResponse.status(), 201);
+  const templateSource = checked(CredentialSourceResponse, await templateResponse.json()).data;
+  assert.ok(templateSource.type === "static");
+  assert.equal(object(templateSource).connectionTemplateId, templateId);
+  const templateBody = object(templateResponse.request().postDataJSON());
+  assert.equal(templateBody.connectionTemplateId, templateId);
+  assert.equal(typeof templateBody.secret, "string");
+  assert.equal(Object.hasOwn(templateBody, "config"), false);
+  await page.getByText("Reporting credential", { exact: true }).waitFor();
+
+  // Creation does not grant exact Source read. Only the authoritative filtered list can
+  // establish that a newly enrolled Source belongs in the readable library.
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  const unreadableForm = await fill("Created without read");
+  const unreadableCreated = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await unreadableForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const unreadableResponse = await unreadableCreated;
+  assert.equal(unreadableResponse.status(), 201);
+  const unreadableId = resourceId(
+    checked(CredentialSourceResponse, await unreadableResponse.json()).data,
+  );
+  await page
+    .getByText("The created Source is not in your readable inventory", { exact: false })
+    .waitFor();
+  assert.equal(await page.getByRole("row", { name: /Created without read/ }).count(), 0);
+  assert.deepEqual((await fixture.request("GET", base)).data, []);
+  restoreRead();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("row", { name: /Created without read/ }).waitFor();
+
+  // A successful collection create remains confirmed if Namespace read is revoked, but
+  // the now-denied inventory must stop presenting rows as readable.
+  const inventoryDeniedForm = await fill("Created before inventory denial");
+  const restoreNamespaceRead = revokeAdministratorGrant(fixture, ["read", "namespace"]);
+  const inventoryDeniedCreated = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await inventoryDeniedForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const inventoryDeniedResponse = await inventoryDeniedCreated;
+  assert.equal(inventoryDeniedResponse.status(), 201);
+  const inventoryDeniedId = resourceId(
+    checked(CredentialSourceResponse, await inventoryDeniedResponse.json()).data,
+  );
+  await page.getByText(/Not authorized: this needs Namespace read/).waitFor();
+  assert.equal(await page.getByRole("row", { name: /Research model/ }).count(), 0);
+  assert.equal(await page.getByRole("list", { name: "Secrets" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Create Secret", exact: true }).count(), 0);
+  restoreNamespaceRead();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("row", { name: /Created before inventory denial/ }).waitFor();
+
+  const deniedForm = await fill("Denied model");
+  revokeAdministratorGrant(fixture, ["create", "credential_source"]);
+  const refused = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await deniedForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const denial = await refused;
+  assert.equal(denial.status(), 403);
+  const message = checked(ErrorResponse, await denial.json()).error.message;
+  await deniedForm.getByText(message, { exact: true }).waitFor();
+  assert.equal(await deniedForm.getByLabel("Credential value", { exact: true }).inputValue(), "");
+  const inventory = await fixture.request("GET", base);
+  assert.deepEqual(
+    (inventory.data as { id: string }[]).map(({ id }) => id).sort(),
+    [proxyId, source.id, plainSource.id, templateSource.id, unreadableId, inventoryDeniedId].sort(),
+  );
+  revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  await page.reload();
+  await page
+    .getByRole("heading", { name: "No readable Credential Sources", exact: true })
+    .waitFor();
+  assert.deepEqual((await fixture.request("GET", base)).data, []);
+});
+
+test("Credentials creates an OAuth Template Source only after eligible-client consent returns through the real callback", async (t) => {
+  const issuer = await controlledOAuthIssuer(t);
+  issuer.setTokenHandler(async ({ parameters }) => {
+    assert.equal(parameters.get("grant_type"), "authorization_code");
+    return Response.json({
+      access_token: "synthetic-access-token",
+      refresh_token: "synthetic-refresh-token",
+      token_type: "Bearer",
+      expires_in: 3600,
+      scope: "messages.read",
+    });
+  });
+  const secrets = createTestSecretDriver({ id: "console-oauth-source-secret" });
+  let state: PlatformStateStore | undefined;
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Source inventory", {
+    publicOrigin: true,
+    oauthIssuer: issuer.operations,
+    secretDriver: secrets,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
+  assert.ok(state);
+  await installDeviceTokenService(controllerOf(fixture), state, secrets);
+  const sibling = await readyNamespace(fixture, "Other OAuth availability");
+  const template = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "Support API",
+      mode: "manual",
+      issuer: issuer.issuer,
+      authorizationUrl: issuer.authorizationUrl,
+      tokenUrl: issuer.tokenUrl,
+      scopes: ["messages.read"],
+      destinations: [{ host: "api.support.test", port: 443, path: "/messages/**" }],
+    },
+  });
+  assert.equal(template.status, 201);
+  const templateId = resourceId(template.data);
+  const register = async (displayName: string, clientIssuer: string, namespaceId: string) => {
+    const response = await fixture.request("POST", "/credential-clients", {
+      body: {
+        kind: "oauth2",
+        namespaceId,
+        displayName,
+        issuer: clientIssuer,
+        clientId: displayName.toLowerCase().replaceAll(" ", "-"),
+        tokenEndpointAuthMethod: "none",
+      },
+    });
+    assert.equal(response.status, 201);
+    return resourceId(response.data);
+  };
+  const clientId = await register("Support client", issuer.issuer, namespace.id);
+  await register("Other issuer", "https://unrelated.oauth.test", namespace.id);
+  await register("Other Namespace", issuer.issuer, sibling.id);
+
+  const { page } = await newPage(t, fixture, { browser });
+  const authorizationReached = Promise.withResolvers<string>();
+  const returnToCallback = Promise.withResolvers<void>();
+  t.after(() => returnToCallback.resolve());
+  // Only the external provider's browser interaction is controlled. The Console start,
+  // issuer verification, HTTPS token exchange, Fastify callback, Source custody, and IAM are real.
+  await page.context().route(`${issuer.authorizationUrl}?*`, async (route) => {
+    const url = new URL(route.request().url());
+    const state = url.searchParams.get("state");
+    assert.ok(state);
+    authorizationReached.resolve(state);
+    await returnToCallback.promise;
+    const callback = new URL("/oauth/callback", fixture.origin);
+    callback.search = new URLSearchParams({
+      state,
+      code: "synthetic-provider-code",
+      iss: issuer.issuer,
+    }).toString();
+    await route.fulfill({ status: 302, headers: { location: callback.href } });
+  });
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  const connectionsPath = `/namespaces/${namespace.id}/connections`;
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/secrets?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Credential Source", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "Create Credential Source",
+    exact: true,
+  });
+  await dialog
+    .getByLabel("Preset or Connection Template", { exact: true })
+    .selectOption(`template:${templateId}`);
+  const clients = dialog.getByLabel("Credential Client", { exact: true });
+  await clients.waitFor();
+  assert.deepEqual(await clients.locator("option").allTextContents(), [
+    "Choose a Credential Client",
+    "Support client",
+  ]);
+  assert.equal(await dialog.getByLabel("Source name", { exact: true }).count(), 0);
+  assert.equal(await dialog.getByLabel("Credential value", { exact: true }).count(), 0);
+  await clients.selectOption(clientId);
+  // Client discovery does not grant Source creation: the real consent start must enforce create
+  // on the exact Namespace before opening an external authorization flow or storing a Source.
+  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "credential_source"]);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + connectionsPath && response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Continue to sign in", exact: true }).click();
+  const denial = await refused;
+  assert.equal(denial.status(), 403);
+  const message = checked(ErrorResponse, await denial.json()).error.message;
+  await dialog.getByText(message, { exact: true }).waitFor();
+  assert.deepEqual((await fixture.request("GET", sourcePath)).data, []);
+  assert.equal(issuer.requests.length, 0);
+  restoreCreate();
+
+  const started = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + connectionsPath && response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Continue to sign in", exact: true }).click();
+  assert.equal((await started).status(), 201);
+  await authorizationReached.promise;
+  assert.deepEqual(
+    (await fixture.request("GET", sourcePath)).data,
+    [],
+    "starting consent must not create a Source",
+  );
+  assert.equal(pathRequests(requests, "POST", sourcePath).length, 0);
+  const callback = page.context().waitForEvent("response", {
+    predicate: (response) => new URL(response.url()).pathname === "/oauth/callback",
+  });
+  returnToCallback.resolve();
+  const completed = await callback;
+  assert.equal(
+    completed.status(),
+    200,
+    completed.headers().location ?? "The callback did not return its completion page.",
+  );
+  await dialog.waitFor({ state: "detached" });
+  const saved = (await fixture.request("GET", sourcePath)).data as Record<string, unknown>[];
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0]?.type, "oauth2-refresh-token");
+  assert.equal(saved[0]?.connectionTemplateId, templateId);
+  assert.equal(object(saved[0]?.consent).oauthClientId, clientId);
+  assert.equal(JSON.stringify(saved).includes("synthetic-refresh-token"), false);
+  const sourceId = String(saved[0]?.id);
+  await page.getByText(sourceId, { exact: true }).waitFor();
+  assert.equal(issuer.requests.length, 1);
+
+  // The consenting account owner may disconnect with exact read and operate, even without
+  // administrative Source delete. Exercise the real DELETE rather than simulating this grant.
+  const restoreDelete = revokeAdministratorGrant(fixture, ["delete", "credential_source"]);
+  const row = page.getByRole("row").filter({ hasText: sourceId });
+  await row.getByRole("button", { name: "Disconnect", exact: true }).click();
+  const disconnect = page.getByRole("dialog", {
+    name: "Disconnect Credential Source",
+    exact: true,
+  });
+  const removed = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${sourcePath}/${sourceId}` &&
+      response.request().method() === "DELETE",
+  );
+  await disconnect.getByRole("button", { name: "Disconnect", exact: true }).click();
+  assert.equal((await removed).status(), 204);
+  await page.getByText("was disconnected.", { exact: false }).waitFor();
+  assert.equal((await fixture.request("GET", `${sourcePath}/${sourceId}`)).status, 404);
+  restoreDelete();
+});
+
+test("a lost successful Source create reply blocks another create until Refresh reveals the committed Source", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Unknown Source create");
+  const base = `/namespaces/${namespace.id}/credential-sources`;
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const held = await holdRequests(t, page, fixture.origin + base, {
+    method: "POST",
+    afterServer: true,
+    loseResponse: true,
+    once: true,
+  });
+  await page.getByRole("button", { name: "Create Credential Source", exact: true }).click();
+  const form = page.getByRole("dialog", {
+    name: "Create Credential Source",
+    exact: true,
+  });
+  await form
+    .getByLabel("Preset or Connection Template", { exact: true })
+    .selectOption("model:openai");
+  await form.getByLabel("Source name", { exact: true }).fill("Uncertain model");
+  await form
+    .getByLabel("Credential value", { exact: true })
+    .fill("synthetic-source-uncertain-value");
+  await form.getByRole("button", { name: "Create Source", exact: true }).click();
+  assert.equal((await held.requested)?.status(), 201);
+  // A pending Source write must keep the Credentials page guarded against navigation.
+  await page.goBack();
+  await page.waitForURL(new RegExp(`/console/secrets\\?namespace=${namespace.id}`));
+  held.release();
+  await form.getByText(/outcome is unknown/i).waitFor();
+  assert.equal(await form.getByLabel("Credential value", { exact: true }).inputValue(), "");
+  assert.equal(
+    await form.getByRole("button", { name: "Create Source", exact: true }).isDisabled(),
+    true,
+  );
+  await form.getByLabel("Credential value", { exact: true }).fill("synthetic-source-retry-value");
+  await form.locator("form").evaluate((node: HTMLFormElement) => node.requestSubmit());
+  await form.getByRole("button", { name: "Cancel", exact: true }).click();
+  const create = page.getByRole("button", {
+    name: "Create Credential Source",
+    exact: true,
+  });
+  assert.equal(await create.getAttribute("aria-disabled"), "true");
+  await create.click({ force: true });
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  assert.equal(pathRequests(requests, "POST", base).length, 1);
+  const inventory = (await fixture.request("GET", base)).data;
+  assert.ok(Array.isArray(inventory));
+  assert.equal(inventory.length, 1);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByText("Uncertain model", { exact: true }).waitFor();
+  assert.notEqual(await create.getAttribute("aria-disabled"), "true");
+  assert.equal(pathRequests(requests, "POST", base).length, 1);
+
+  // These controlled responses arrive after a real Source POST commits. Neither a
+  // service error nor a conflict proves the owner did not take custody.
+  for (const [status, code, sourceName] of [
+    [503, "DEPENDENCY_UNAVAILABLE", "Unavailable reply"],
+    [409, "RESOURCE_CONFLICT", "Conflict reply"],
+  ] as const) {
+    await page.unroute(fixture.origin + base);
+    await page.route(fixture.origin + base, async (route) => {
+      if (route.request().method() !== "POST") {
+        return route.continue();
+      }
+      const committed = await route.fetch();
+      assert.equal(committed.status(), 201);
+      return route.fulfill(apiErrorResponse(status, code, "Owner returned an error."));
+    });
+    await create.click();
+    const unavailable = page.getByRole("dialog", {
+      name: "Create Credential Source",
+      exact: true,
+    });
+    await unavailable
+      .getByLabel("Preset or Connection Template", { exact: true })
+      .selectOption("model:openai");
+    await unavailable.getByLabel("Source name", { exact: true }).fill(sourceName);
+    await unavailable
+      .getByLabel("Credential value", { exact: true })
+      .fill("synthetic-source-value");
+    await unavailable.getByRole("button", { name: "Create Source", exact: true }).click();
+    await unavailable.getByText("Source not confirmed", { exact: true }).waitFor();
+    assert.equal(await unavailable.getByText(/outcome is unknown/i).isVisible(), true);
+    assert.equal(
+      await unavailable.getByRole("button", { name: "Create Source", exact: true }).isDisabled(),
+      true,
+    );
+    await unavailable.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await create.getAttribute("aria-disabled"), "true");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.getByText(sourceName, { exact: true }).waitFor();
+  }
+  assert.equal(pathRequests(requests, "POST", base).length, 3);
+  assert.equal(((await fixture.request("GET", base)).data as unknown[]).length, 3);
+
+  // This controlled conflict has no catalog row. The fixture does not claim to
+  // prove native owner custody; it verifies that Refresh cannot dismiss that possibility.
+  await page.unroute(fixture.origin + base);
+  await page.route(fixture.origin + base, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", "Owner conflict."))
+      : route.continue(),
+  );
+  await create.click();
+  const conflict = page.getByRole("dialog", {
+    name: "Create Credential Source",
+    exact: true,
+  });
+  await conflict
+    .getByLabel("Preset or Connection Template", { exact: true })
+    .selectOption("model:openai");
+  await conflict.getByLabel("Source name", { exact: true }).fill("Absent Source");
+  await conflict.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
+  await conflict.getByRole("button", { name: "Create Source", exact: true }).click();
+  await conflict.getByText(/credential owner may already hold/i).waitFor();
+  await conflict.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByText("Check the credential owner before retrying", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByText(/Absent Source.*not in your readable inventory/).isVisible(),
+    true,
+  );
+  assert.notEqual(await create.getAttribute("aria-disabled"), "true");
+  assert.equal(pathRequests(requests, "POST", base).length, 4);
+});
+
+test("Create Agent reuses API key and Codex PAT Sources without enrollment; replacement persists the exact Reference", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Existing model Source");
+  const original = await enrollModelSource(fixture, namespace.id, "Research model");
+  const patSource = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
+  const template = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "Reports",
+      mode: "static_bearer",
+      destinations: [
+        { method: "GET", host: "reports.example.test", port: 443, path: "/reports/**" },
+      ],
+    },
+  });
+  assert.equal(template.status, 201);
+  const templateSource = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/credential-sources`,
+    {
+      body: {
+        name: "Reports credential",
+        type: "static",
+        connectionTemplateId: resourceId(template.data),
+        secret: "synthetic-source-template-value",
+      },
+    },
+  );
+  assert.equal(templateSource.status, 201);
+  const templateSourceId = resourceId(templateSource.data);
+  const { page } = await openModelSourceForm(t, fixture, namespace, "openclaw");
+  const picker = page.getByLabel("Model credential", { exact: true });
+  await picker.locator(`option[value="${original}"]`).waitFor({ state: "attached" });
+  const requests = apiRequests(page, fixture.origin);
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  let failList = true;
+  await page.route(fixture.origin + sourcePath, (route) => {
+    if (route.request().method() === "GET" && failList) {
+      failList = false;
+      return route.fulfill(
+        apiErrorResponse(
+          503,
+          "DEPENDENCY_UNAVAILABLE",
+          "Source inventory is temporarily unavailable.",
+        ),
+      );
+    }
+    return route.continue();
+  });
+  await page.getByRole("button", { name: "Refresh Source list", exact: true }).click();
+  await page.getByRole("button", { name: "Retry Source list", exact: true }).click();
+  await picker.selectOption(original);
+  assert.equal(pathRequests(requests, "GET", sourcePath).length, 2);
+  for (const excluded of [patSource, templateSourceId]) {
+    assert.equal(await picker.locator(`option[value="${excluded}"]`).count(), 0);
+  }
+  const replacement = await enrollModelSource(fixture, namespace.id, "Replacement model");
+  assert.equal(await picker.locator(`option[value="${replacement}"]`).count(), 0);
+  await page.getByRole("button", { name: "Refresh Source list", exact: true }).click();
+  await picker.locator(`option[value="${replacement}"]`).waitFor({ state: "attached" });
+  assert.equal(await picker.inputValue(), original);
+  assert.equal(pathRequests(requests, "GET", sourcePath).length, 3);
+  // Advanced settings can change the endpoint after Source selection. Refuse a mismatch
+  // before saving Configuration or an Agent draft that deployment cannot admit.
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const originalConfiguration = await configuration.inputValue();
+  const custom = object(JSON.parse(originalConfiguration));
+  object(object(object(custom.models).providers).openai).baseUrl = "https://models.example.test/v1";
+  await configuration.fill(JSON.stringify(custom, null, 2));
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const mismatch = page.getByText(
+    "The existing Credential Source cannot be used with this model provider or destination.",
+    { exact: false },
+  );
+  await mismatch.waitFor();
+  const mismatchBounds = await mismatch.boundingBox();
+  assert.ok(
+    mismatchBounds && mismatchBounds.y >= 0 && mismatchBounds.y < page.viewportSize()!.height,
+  );
+  assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  // URL parsing drops empty userinfo, but Compute refuses the written credential syntax.
+  object(object(object(custom.models).providers).openai).baseUrl = "https://@api.openai.com/v1";
+  await configuration.fill(JSON.stringify(custom, null, 2));
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await mismatch.waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  const canonicalHost = object(JSON.parse(originalConfiguration));
+  object(object(object(canonicalHost.models).providers).openai).baseUrl =
+    "HTTPS://API.OPENAI.COM:0443/v1";
+  await configuration.fill(JSON.stringify(canonicalHost, null, 2));
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents",
+    status: 201,
+  });
+  const created = object(object(await response.json()).data);
+  const agentPath = `/namespaces/${namespace.id}/agents/${resourceId(created)}`;
+  assert.deepEqual(created.harnessAuth, { method: "credential_source", sourceId: original });
+  assert.deepEqual(created.credentialSources, [{ sourceId: original }]);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page
+    .getByText(/^The Agent's current credential source.*complete Stop before deploying/)
+    .waitFor();
+  const detailPicker = page.getByLabel("Existing Credential Source", { exact: true });
+  await detailPicker.selectOption(replacement);
+  for (const excluded of [patSource, templateSourceId]) {
+    assert.equal(await detailPicker.locator(`option[value="${excluded}"]`).count(), 0);
+  }
+  const patched = page.waitForResponse(
+    (answer) =>
+      answer.url() === fixture.origin + agentPath && answer.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.equal((await patched).status(), 200);
+  const saved = await fixture.request("GET", agentPath);
+  assert.deepEqual(object(saved.data).harnessAuth, {
+    method: "credential_source",
+    sourceId: replacement,
+  });
+  assert.deepEqual(object(saved.data).credentialSources, [{ sourceId: replacement }]);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
+
+  // The Service Accounts authentication method can select an already stored PAT without
+  // accepting new credential material or enrolling another Source.
+  const { page: patPage } = await newPage(t, fixture, { browser });
+  const patRequests = apiRequests(patPage, fixture.origin);
+  await login(patPage, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await patPage.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await patPage.getByLabel("Provider", { exact: true }).selectOption("openai");
+  await patPage.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await patPage.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  const patPicker = patPage.getByLabel("Model credential", { exact: true });
+  await patPicker.selectOption(patSource);
+  for (const excluded of [original, replacement, templateSourceId]) {
+    assert.equal(await patPicker.locator(`option[value="${excluded}"]`).count(), 0);
+  }
+  await patPage.getByLabel("Agent name", { exact: true }).fill("Saved PAT Agent");
+  await patPage.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await patPage.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await patPage.getByLabel("Model ID", { exact: true }).press("Tab");
+  const patResponse = await submitCreateAgent(patPage, fixture, namespace.id, { status: 201 });
+  const patCreated = object(object(await patResponse.json()).data);
+  const patAgentId = resourceId(patCreated);
+  await patPage.waitForURL(
+    (url) =>
+      url.pathname === `/console/agents/${patAgentId}` &&
+      url.searchParams.get("revision") === "draft",
+  );
+  await patPage.getByText(`Saved · Credential Source · ${patSource}`, { exact: true }).waitFor();
+  const patSaved = object(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${patAgentId}`)).data,
+  );
+  assert.deepEqual(patSaved.harnessAuth, { method: "credential_source", sourceId: patSource });
+  assert.deepEqual(patSaved.credentialSources, [{ sourceId: patSource }]);
+  assert.equal(pathRequests(patRequests, "POST", sourcePath).length, 0);
+
+  await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(original);
+  revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const refused = page.waitForResponse(
+    (answer) =>
+      answer.url() === fixture.origin + agentPath && answer.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  const denied = await refused;
+  assert.equal(denied.status(), 403);
+  const message = checked(ErrorResponse, await denied.json()).error.message;
+  await page.getByText(message, { exact: false }).first().waitFor();
+  const unchanged = await fixture.request("GET", agentPath);
+  assert.deepEqual(object(unchanged.data).harnessAuth, {
+    method: "credential_source",
+    sourceId: replacement,
+  });
+  assert.deepEqual(object(unchanged.data).credentialSources, [{ sourceId: replacement }]);
+});
+
+test("Agent Credentials preserves the current Source but cannot replace it for an unsupported OpenClaw destination", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Custom model destination");
+  const sourceId = await enrollModelSource(fixture, namespace.id, "Current model Source");
+  const values = object(createHarnessConfiguration("openclaw", "gpt-5"));
+  object(object(object(values.models).providers).openai).baseUrl = "https://models.example.test/v1";
+  const configurationId = resourceId(await fixture.createConfiguration(namespace.id, values));
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Custom model Agent",
+      executionMode: "dedicated",
+      configurationId,
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${resourceId(created.data)}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  const method = page.getByLabel("Authentication source", { exact: true });
+  await method.waitFor();
+  assert.equal(await method.inputValue(), "credential_source");
+  await page.getByText("Source replacement is unavailable", { exact: false }).waitFor();
+  assert.equal(
+    await page.getByLabel("Existing Credential Source", { exact: true }).isVisible(),
+    false,
+  );
+});
+
+test("Codex Agent Credentials with an openai model provider excludes codex-pat Sources", async (t) => {
+  const destinationGuidance =
+    /Console cannot check Codex's effective destination.*Provider base URL https:\/\/api\.openai\.com\/v1 and Provider protocol Responses/;
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Codex openai provider choices");
+  const openaiSource = await enrollModelSource(fixture, namespace.id, "OpenAI model");
+  const codexPat = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
+  const values = object(createHarnessConfiguration("codex", "gpt-5"));
+  const defaults = object(object(values.agents).defaults);
+  defaults.model = "openai/gpt-5";
+  defaults.models = { "openai/gpt-5": { agentRuntime: { id: "codex" } } };
+  object(values.models).providers = object(
+    object(createHarnessConfiguration("openclaw", "gpt-5").models).providers,
+  );
+  const configurationId = resourceId(await fixture.createConfiguration(namespace.id, values));
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Codex using openai provider",
+      executionMode: "dedicated",
+      configurationId,
+    },
+  });
+  assert.equal(created.status, 201);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${resourceId(created.data)}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("credential_source");
+  assert.equal(
+    await page.getByText(/complete Stop before deploying this managed Source/).isVisible(),
+    true,
+  );
+  assert.equal(await page.getByText(destinationGuidance).isVisible(), true);
+  const picker = page.getByLabel("Existing Credential Source", { exact: true });
+  await page
+    .getByText(
+      "Listing confirms read access. Saving the Agent checks Credential Source operate permission.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await picker.locator(`option[value="${openaiSource}"]`).count(), 1);
+  assert.equal(await picker.locator(`option[value="${codexPat}"]`).count(), 0);
+
+  const codexConfigurationId = resourceId(
+    await fixture.createConfiguration(namespace.id, createHarnessConfiguration("codex", "gpt-5")),
+  );
+  const codexAgent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Codex using codex provider",
+      executionMode: "dedicated",
+      configurationId: codexConfigurationId,
+      harnessAuth: { method: "credential_source", sourceId: openaiSource },
+      credentialSources: [{ sourceId: openaiSource }],
+    },
+  });
+  assert.equal(codexAgent.status, 201);
+  await page.goto(
+    `${fixture.origin}/console/agents/${resourceId(codexAgent.data)}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page
+    .getByText(
+      "Listing confirms read access. Saving the Agent checks Credential Source operate permission.",
+      { exact: true },
+    )
+    .waitFor();
+  const codexPicker = page.getByLabel("Existing Credential Source", { exact: true });
+  assert.equal(await codexPicker.locator(`option[value="${openaiSource}"]`).count(), 1);
+  assert.equal(await codexPicker.locator(`option[value="${codexPat}"]`).count(), 1);
+  await codexPicker.selectOption(codexPat);
+  assert.equal(
+    await page
+      .getByText(
+        /Codex PAT and built-in ChatGPT OAuth Sources.*When the Console can read the Source.*selects Use Installation default.*disables model provider overrides/i,
+      )
+      .isVisible(),
+    true,
+  );
+
+  const { page: createPage } = await openModelSourceForm(t, fixture, namespace, "codex");
+  await createPage.getByLabel("Model credential", { exact: true }).selectOption(openaiSource);
+  assert.equal(await createPage.getByText(destinationGuidance).isVisible(), true);
+});
+
+test("Replacing an OpenAI Source with a fixed Codex Source drops the prior model provider override before deployment", async (t) => {
+  // This scenario needs actual staged Source admission, which the lighter enrollment
+  // fixture cannot provide. Kubernetes transport is controlled; selected Drivers and
+  // the Console, IAM, and deployment API remain real.
+  const binary = present(OPEN_SHELL_CODEX_BINARIES[0]);
+  const installation = {
+    ...buildSandboxInstallation(),
+    sandboxNetworkPolicyCeiling: ["api.openai.com", "auth.openai.com", "chatgpt.com"].map(
+      (host, index) => ({
+        id: `model-route-${index}`,
+        binary,
+        host,
+        ports: [{ from: 443, to: 443 }],
+      }),
+    ),
+    runtime: { nativeWorkerSupport: "custom-image" as const },
+  };
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+  const core = new FakeSecretCoreV1Api();
+  const runtime = await loadSelectedOpenShellAgentInstallation(t, {
+    installation,
+    computeId: "console-pat-replacement-compute",
+    tokenServiceId: "occ",
+    core,
+    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
+  });
+  assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
+    ...installationControllerOptions(runtime.installation),
+    backends: runtime.installation.backend,
+    credentialSourceDelivery: credentialSourceDeliveryBinding(runtime),
+    namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+    secretDriver: runtime.secretDriver,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await readyNamespace(fixture, "Codex PAT replacement");
+  const placed = core.addNamespace(namespace.id);
+  Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
+  const controller = controllerOf(fixture);
+  controller.registerDriver(runtime.computeDriver);
+  controller.selectDriver("compute", runtime.computeDriver.id);
+  const owner = present(await installTokenServiceDriver(controller, runtime, present(state)));
+  installSelectedSandboxDrivers(controller, runtime);
+
+  const openaiSource = await enrollModelSource(fixture, namespace.id, "OpenAI model");
+  const patSource = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
+  // Seed the selected TokenService at the trusted post-exchange boundary. The separate OAuth
+  // browser test covers issuing this grant through the controlled device issuer.
+  const oauthSource = await owner.createSource(
+    {
+      type: "oauth2-refresh-token",
+      namespaceId: namespace.id,
+      name: "Codex OAuth",
+      consent: {
+        kind: "builtin_codex",
+        ownerPrincipalId: fixture.principal.id,
+        account: { accountId: "replacement-account", planType: "plus", isFedramp: false },
+      },
+      grant: {
+        accessToken: randomUUID(),
+        refreshToken: randomUUID(),
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: ["openid"],
+        grantedScopes: ["openid"],
+      },
+    },
+    t.signal,
+  );
+  const configurationId = resourceId(
+    await fixture.createConfiguration(
+      namespace.id,
+      createHarnessConfiguration("codex", "example-model"),
+    ),
+  );
+  const base = `/namespaces/${namespace.id}`;
+  const role = await fixture.request("POST", `${base}/iam/roles`, {
+    body: {
+      name: "Use model Source",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  async function replaceWithFixedSource(sourceId: string, label: string) {
+    const created = await fixture.request("POST", `${base}/agents`, {
+      body: {
+        name: `Codex ${label} replacement Agent`,
+        executionMode: "dedicated",
+        configurationId,
+        harnessAuth: { method: "credential_source", sourceId: openaiSource },
+        credentialSources: [{ sourceId: openaiSource }],
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const agent = object(created.data);
+    const agentId = resourceId(agent);
+    const agentPath = `${base}/agents/${agentId}`;
+    const grant = await fixture.request("POST", `${base}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: resourceId(role.data),
+        resourceKind: "credential_source",
+        resourceId: openaiSource,
+      },
+    });
+    assert.equal(grant.status, 201, JSON.stringify(grant.body));
+    const prior = await fixture.request("POST", `${agentPath}/deploy`, {
+      body: {
+        harnessOverrides: {
+          modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+        },
+      },
+    });
+    assert.equal(prior.status, 202, JSON.stringify(prior.body));
+    const priorId = resourceId(prior.data);
+    await fixture.activateRevision(namespace.id, agentId, priorId);
+    const stopped = await fixture.request("POST", `${agentPath}/stop`);
+    assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+    // A real worker clears this pointer after shutdown. The fixture models that completion;
+    // it does not run a worker or runtime.
+    assert.ok(
+      await present(state).transact((unit) =>
+        unit.agents.compareAndClearActiveRevision(namespace.id, agentId, priorId),
+      ),
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(sourceId);
+    const savedResponse = page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + agentPath && response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+    assert.equal((await savedResponse).status(), 200);
+    await page.getByText("Authentication source saved.", { exact: true }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+    await waitForEnabled(deploy);
+    const settings = page.getByLabel("Harness settings", { exact: true });
+    assert.equal(await settings.inputValue(), "default", label);
+    assert.equal(await settings.locator('option[value="custom"]').isDisabled(), true, label);
+    assert.equal(
+      await page
+        .getByText(
+          `This Codex ${label} Source has a fixed destination. Model provider overrides are unavailable.`,
+          { exact: true },
+        )
+        .count(),
+      1,
+    );
+    const deployedResponse = page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + `${agentPath}/deploy` &&
+        response.request().method() === "POST",
+    );
+    await deploy.click();
+    const deployed = await deployedResponse;
+    assert.equal(deployed.status(), 202, await deployed.text());
+    assert.deepEqual(object(deployed.request().postDataJSON()).harnessOverrides, {});
+    const revision = object(object(await deployed.json()).data);
+    assert.equal(Object.hasOwn(object(object(revision.harness).overrides), "modelProvider"), false);
+    return { page, agentId, agentPath };
+  }
+  const { page, agentId, agentPath } = await replaceWithFixedSource(patSource, "PAT");
+  await replaceWithFixedSource(oauthSource.id, "OAuth");
+
+  // Source read is useful for the Console's destination guidance, but deployment
+  // authorization requires operate. A read denial must not invent a new prerequisite.
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  const sourcePath = `${base}/credential-sources/${patSource}`;
+  assert.equal((await fixture.request("GET", sourcePath)).status, 403);
+  const sourceRead = await holdRequests(t, page, fixture.origin + sourcePath, {
+    method: "GET",
+    once: true,
+  });
+  await page.goto(
+    `${fixture.origin}/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await sourceRead.requested;
+  await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
+  const fallbackDeploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  assert.equal(await fallbackDeploy.isDisabled(), true);
+  await page.getByText("Checking Credential Source destination…", { exact: true }).waitFor();
+  sourceRead.release();
+  await page.locator(".agent-harness-settings summary").click();
+  await page
+    .getByText(/Deployment will check whether the requested Harness destination is compatible\./)
+    .waitFor();
+  await waitForEnabled(fallbackDeploy);
+  const fallbackResponse = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + `${agentPath}/deploy` &&
+      response.request().method() === "POST",
+  );
+  await fallbackDeploy.click();
+  const fallback = await fallbackResponse;
+  assert.equal(fallback.status(), 202, await fallback.text());
+  assert.deepEqual(object(fallback.request().postDataJSON()).harnessOverrides, {});
+  const fallbackRevision = resourceId(object(await fallback.json()).data);
+  await page.waitForURL((url) => url.searchParams.get("revision") === fallbackRevision);
+
+  const deniedAgain = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + sourcePath && response.request().method() === "GET",
+  );
+  await page.goto(
+    `${fixture.origin}/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+    { waitUntil: "domcontentloaded" },
+  );
+  assert.equal((await deniedAgain).status(), 403);
+  restoreRead();
+  const refreshedSource = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + sourcePath && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  assert.equal((await refreshedSource).status(), 200);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
+  const refreshedSettings = page.getByLabel("Harness settings", { exact: true });
+  assert.equal(await refreshedSettings.inputValue(), "default");
+  assert.equal(await refreshedSettings.locator('option[value="custom"]').isDisabled(), true);
+  assert.equal(
+    await page
+      .getByText(/Deployment will check whether the requested Harness destination is compatible\./)
+      .count(),
+    0,
+  );
+
+  // A viewer who cannot deploy has no Harness destination controls to inform.
+  // Do not send an optional exact Source read which would produce an invisible denial.
+  revokeAdministratorGrant(fixture, ["deploy", "agent"]);
+  revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  const viewerRequests = apiRequests(page, fixture.origin);
+  await page.goto(
+    `${fixture.origin}/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await page.getByText(/deploying this Agent.*Agent deploy on it/i).waitFor();
+  assert.equal(pathRequests(viewerRequests, "GET", sourcePath).length, 0);
+});
+
+test("Source operate denial leaves an honestly reported saved Configuration and no Agent", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Source operate denial");
+  const sourceId = await enrollModelSource(fixture, namespace.id, "Model source");
+  const replacementId = await enrollModelSource(fixture, namespace.id, "Replacement model source");
+  const { page } = await openModelSourceForm(t, fixture, namespace, "openclaw");
+  const requests = apiRequests(page, fixture.origin);
+  const credential = page.getByLabel("Model credential", { exact: true });
+  await credential.selectOption(sourceId);
+  const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const denied = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents",
+    status: 403,
+  });
+  const message = checked(ErrorResponse, await denied.json()).error.message;
+  assert.match(message, /CredentialSource operate/);
+  await page
+    .getByText(/CredentialSource operate/)
+    .first()
+    .waitFor();
+  const writes = configurationPostRequests(requests, namespace.id);
+  assert.equal(writes.length, 1);
+  const savedNotice = await page.getByText(/Configuration saved:/).textContent();
+  const savedId = savedNotice?.match(/Configuration saved: ([^.\s]+)\./)?.[1];
+  assert.ok(savedId, "the partial-save notice names the retained Configuration");
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${savedId}`,
+  );
+  assert.equal(configuration.status, 200);
+  assert.equal(resourceId(configuration.data), savedId);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
+  const agents = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.deepEqual(agents.data, []);
+
+  // A retained Configuration must not lock the saved Source choice: the operator can retry
+  // with another compatible Source without creating a duplicate Configuration.
+  await credential.selectOption(replacementId);
+  restoreOperate();
+  const retried = await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
+  const agent = object(object(await retried.json()).data);
+  assert.equal(agent.configurationId, savedId);
+  assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: replacementId });
+  assert.deepEqual(agent.credentialSources, [{ sourceId: replacementId }]);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
 });
 
 test("Agent Credentials saves its existing model source without replacing the binding", async (t) => {
@@ -1028,6 +2507,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   assert.equal(await mode.inputValue(), "embedded");
+  const sourceModeHint = page.getByText("Credential Sources require Dedicated execution.", {
+    exact: false,
+  });
+  assert.equal(await sourceModeHint.isVisible(), true);
+  assert.equal(await page.getByLabel("Model credential", { exact: true }).isVisible(), false);
   assert.equal(
     await page.locator("#execution-mode-hint").textContent(),
     "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex.",
@@ -1047,6 +2531,9 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  assert.equal(await sourceModeHint.isVisible(), false);
+  assert.equal(await page.getByLabel("Model credential", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), true);
   // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
   assert.equal(
     await mode.locator('option[value="dedicated"]').evaluate((node) => {

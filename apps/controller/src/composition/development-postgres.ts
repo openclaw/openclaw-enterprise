@@ -1,11 +1,16 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { oauthIssuerOperations } from "../connections/oauth-issuer.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver, scheduleTokenServiceMaintenance } from "./token-service.ts";
+import {
+  installTokenServiceDriver,
+  scheduleTokenServiceMaintenance,
+  gatewayStartupSourceDelivery,
+} from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -187,9 +192,11 @@ export async function composePostgresDevelopment(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        oauthIssuer: oauthIssuerOperations,
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation, drivers?.repositoryRegistry),
         credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
+        gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(drivers),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),

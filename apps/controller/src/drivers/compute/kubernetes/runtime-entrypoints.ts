@@ -5407,6 +5407,7 @@ ${
   PATH: harnessPath,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: configPath,
+  OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: "1",
   OPENCLAW_NO_AUTO_UPDATE: "1",
 };
 if (process.env.OPENCLAW_NODE_CA_PEM) {
@@ -6163,7 +6164,13 @@ const nodeEnv = {
   ...(pluginBins.length > 0 && { PATH: [...pluginBins, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
+  OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: "1",
 };
+if (pluginBins.length > 0) {
+  // Only verified installation directories can satisfy the Agent's tool lookup configuration.
+  const execution = JSON.parse(nodeEnv.OPENCLAW_NODE_WORKER_EXECUTION ?? "{}");
+  nodeEnv.OPENCLAW_NODE_WORKER_EXECUTION = JSON.stringify({ ...execution, pathPrepend: pluginBins });
+}
 const gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || (
   process.env.OPENCLAW_NODE_CA_PATH
     ? readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8")
@@ -6189,6 +6196,7 @@ const doctorEnv = {
   TMPDIR: temporary,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
+  OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: nodeEnv.OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF,
   OPENCLAW_NO_AUTO_UPDATE: "1",
   ...(nodeEnv.NODE_EXTRA_CA_CERTS === undefined ? {} : { NODE_EXTRA_CA_CERTS: nodeEnv.NODE_EXTRA_CA_CERTS }),
 };

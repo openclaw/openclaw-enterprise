@@ -270,30 +270,26 @@ test("Settings stories distinguish read-only access from an endpoint refusal", (
   ]);
 });
 
-test("directory preview rejects malformed requests without losing search or ID lookup", async () => {
+test("directory preview uses Credential Sources and rejects malformed lookups", async () => {
   const { Check }: { Check(schema: unknown, value: unknown): boolean } =
     controller("typebox/value");
   const validEnvelope = (value: unknown): value is { data: ChannelDirectoryResult } =>
     Check(ChannelDirectoryLookupResponse, value);
-  const secretId = "sec_demo_slack_bot_token";
-  const canonicalSecretId = "sec_00000000-0000-4000-8000-000000000001";
+  const sourceId = "cs_00000000-0000-4000-8000-000000000001";
   const configurationId = "cfg_00000000-0000-4000-8000-000000000001";
   const agentId = "agt_00000000-0000-4000-8000-000000000001";
-  const base = { kind: "users", secretId };
-  const secrets = new Map([[secretId, {}]]);
+  const base = { kind: "users", sourceId };
+  const sources = new Map([[sourceId, {}]]);
   const evidence: Parameters<typeof serveChannelDirectory>[2] = { directoryResponses: [] };
   const fixture = createFixtureFetch([], [], async (_url, _method, body) =>
-    serveChannelDirectory(body, secrets, evidence),
+    serveChannelDirectory(body, sources, evidence),
   );
   const url = "https://preview.example.test/channel-directory/lookup";
   const post = (body: unknown) => fixture(url, { method: "POST", body: JSON.stringify(body) });
   async function lookup(fields: object) {
-    // The wire schema uses a UUID where the preview uses a seeded Secret alias.
-    assert.equal(
-      Check(ChannelDirectoryLookupBody, { ...base, ...fields, secretId: canonicalSecretId }),
-      true,
-    );
-    const response = await post({ ...base, ...fields });
+    const body = { ...base, ...fields };
+    assert.equal(Check(ChannelDirectoryLookupBody, body), true);
+    const response = await post(body);
     assert.equal(response.status, 200);
     const envelope: unknown = await response.json();
     assert.ok(validEnvelope(envelope));
@@ -335,6 +331,7 @@ test("directory preview rejects malformed requests without losing search or ID l
   }
   for (const body of [
     null,
+    { kind: "users", secretId: "sec_00000000-0000-4000-8000-000000000001" },
     { ...base, query: 1 },
     { ...base, ids: {} },
     { ...base, ids: "UDEMO123" },
@@ -348,8 +345,8 @@ test("directory preview rejects malformed requests without losing search or ID l
     await rejected(body, "Malformed channel directory preview request.");
   }
   await rejected(
-    { ...base, secretId: "sec_absent" },
-    "The simulated Secret is not in this preview.",
+    { ...base, sourceId: "cs_00000000-0000-4000-8000-000000000002" },
+    "The simulated Credential Source is not in this preview.",
   );
   await rejected(
     { ...base, cursor: "unknown-preview-page" },
@@ -720,6 +717,29 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     });
   });
 
+  await t.test("Repository collaborator stories serve the legacy network policy", async () => {
+    const { scenarios } = await import("../../scripts/console-storybook/public/scenarios.mts");
+    for (const story of [
+      "repositoryCollaborator",
+      "repositoryCollaboratorSaved",
+      "repositoryCollaboratorReadOnly",
+    ]) {
+      const scenario = scenarios[story];
+      assert.ok(scenario && "repositoryAccess" in scenario, story);
+      installFixture(scenario, evidence());
+      const view = await readData(
+        await request(`agents/${id("agt", 1)}/sandbox-policy/networking`),
+        200,
+      );
+      assert.partialDeepStrictEqual(view, { editingEnabled: false, policy: { version: 1 } }, story);
+      assert.ok("policy" in view && view.policy && typeof view.policy === "object", story);
+      assert.ok("additions" in view.policy, story);
+      assert.deepEqual(view.policy.additions, [], story);
+      // An empty repositoryNetworkPolicy would deny all repositories.
+      assert.equal(Object.hasOwn(view.policy, "repositoryNetworkPolicy"), false, story);
+    }
+  });
+
   await t.test("Malformed policy editing flags return 400 without changing the flag", async () => {
     installFixture({ policyState: "ready" }, evidence());
     const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
@@ -1019,6 +1039,90 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     await assertQueuedStop(traffic, id("agt", 1), id("rev", 7), id("rev", 6));
   });
 
+  await t.test("watched deployment returns scoped running and failed records", async () => {
+    const { scenarios } = await import("../../scripts/console-storybook/public/scenarios.mts");
+    installFixture(scenarios.deploymentFailsWhileWatching, evidence());
+    const agentId = id("agt", 1);
+    const deploymentId = id("rev", 7);
+    const servingId = id("rev", 6);
+    const agentPath = `agents/${agentId}`;
+    const deploymentPath = `${agentPath}/deployments/${deploymentId}`;
+    const revisionsPath = `${agentPath}/revisions`;
+    const agentScope = { namespaceId: namespace, agentId };
+    const scope = { deploymentId, ...agentScope };
+    const failureCode = "RUNTIME_MODEL_PROBE_FAILED";
+    const assertRevisions = (
+      data: object,
+      status: "running" | "failed",
+      errorCode: string | null,
+    ) => {
+      assert.partialDeepStrictEqual(data, [
+        {
+          ...agentScope,
+          id: deploymentId,
+          revision: 7,
+          deploymentStatus: status,
+          deploymentErrorCode: errorCode,
+        },
+        {
+          ...agentScope,
+          id: servingId,
+          revision: 6,
+          deploymentStatus: "succeeded",
+          deploymentErrorCode: null,
+        },
+      ]);
+    };
+
+    const initialRevisions = await readData(await request(revisionsPath), 200);
+    assertRevisionSelection(await readData(await request(agentPath), 200), servingId);
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      ...scope,
+      status: "running",
+      cleanup: null,
+      error: null,
+    });
+    assertRevisions(initialRevisions, "running", null);
+    assertRevisions(await readData(await request(revisionsPath), 200), "running", null);
+
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      ...scope,
+      status: "failed",
+      error: { code: failureCode },
+    });
+    assertRevisions(await readData(await request(revisionsPath), 200), "failed", failureCode);
+    assertRevisionSelection(await readData(await request(agentPath), 200), servingId);
+
+    // A later deployment must succeed in the same preview where v7 failed.
+    const successor = await readData(await request(`${agentPath}/deploy`, "POST", {}), 202);
+    assert.partialDeepStrictEqual(successor, { ...agentScope, revision: 8 });
+    assert.ok("id" in successor && typeof successor.id === "string");
+    const successorId = successor.id;
+    assert.notEqual(successorId, deploymentId);
+    assert.notEqual(successorId, servingId);
+    const successorPath = `${agentPath}/deployments/${successorId}`;
+    const successorScope = { deploymentId: successorId, ...agentScope };
+    assert.partialDeepStrictEqual(await readData(await request(successorPath), 200), {
+      ...successorScope,
+      status: "queued",
+    });
+    assertRevisionSelection(await readData(await request(agentPath), 200), servingId);
+    assert.partialDeepStrictEqual(await readData(await request(successorPath), 200), {
+      ...successorScope,
+      status: "succeeded",
+      error: null,
+    });
+    assertRevisionSelection(await readData(await request(agentPath), 200), successorId);
+
+    // Revisiting the watched failure must leave the newer version selected.
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      ...scope,
+      status: "failed",
+      error: { code: failureCode },
+    });
+    assertRevisionSelection(await readData(await request(agentPath), 200), successorId);
+  });
+
   await t.test("created Agent ignores forged selection through queued Stop", async () => {
     const traffic = evidence();
     installFixture({ deployed: true }, traffic);
@@ -1130,6 +1234,19 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         extraSetting: { retained: true },
       });
       assertRevisionSelection(cleared);
+
+      const historicalRecord = await readData(
+        await request(`${agentPath}/deployments/${firstRevision}`),
+        200,
+      );
+      assert.partialDeepStrictEqual(historicalRecord, {
+        deploymentId: firstRevision,
+        status: "succeeded",
+      });
+      const afterHistoricalRead = await readData(await request(agentPath), 200);
+      assert.partialDeepStrictEqual(afterHistoricalRead, { desiredRuntimeState: "stopped" });
+      assertRevisionSelection(afterHistoricalRead);
+
       assert.equal((await request(agentPath, "DELETE")).status, 202);
       assert.equal((await request(agentPath)).status, 404);
     },

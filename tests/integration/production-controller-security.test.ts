@@ -24,7 +24,7 @@ import {
   createTestAuthPrincipal,
   signInWithEmailPassword,
   signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { injectJson } from "../helpers/inject-json.ts";
 import { listen } from "../helpers/listen.ts";
 

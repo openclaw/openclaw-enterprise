@@ -1,6 +1,5 @@
 import type {
   AdmittedRepositoryBinding,
-  DeploymentRequestMatch,
   GitHubAppInstallationCredentialSource,
   RepositoryNetworkGrant,
   RepositoryNetworkPolicyCeiling,
@@ -11,15 +10,20 @@ import {
 } from "@openclaw-enterprise/occ";
 
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
-import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
-import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-credential-policy.ts";
-
 import { openShellRepositoryCredentialRequests } from "../drivers/credential-proxy/openshell-repository-policy.ts";
 import {
+  repositoryGitRestOperations,
+  restrictRepositoryPullRequestCreation,
+} from "../drivers/repo/access/delivery.ts";
+import {
+  githubPullRequestCreationRequest,
   matchesConfiguredGitHubRepository,
   resolveSelectedRepositoryScope,
   type GitHubRepositoryRegistry,
 } from "../drivers/repo/github/access/registry.ts";
+import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
+import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-credential-policy.ts";
+import { openShellRepositoryMetadataRequest } from "../drivers/sandbox/openshell-git-network-policy.ts";
 import { isGitHubAppSourceScopeCurrent } from "../drivers/token-service/github-app-source.ts";
 
 /** Qualify the installed native pair against the complete admitted deployment policy. */
@@ -40,7 +44,11 @@ export const supportsOpenShellCredentialDeployment: NonNullable<
     return false;
   }
   try {
-    compileOpenShellCredentialPolicy(policy, sandbox.admitNetworkPolicy([], 1).defaults);
+    compileOpenShellCredentialPolicy(
+      policy,
+      sandbox.admitNetworkPolicy([], 1).defaults,
+      proxy.nativeSourceOwner,
+    );
     // TODO(1.0 strict policy): require HTTPS scheme, exact executable, and Bearer matching when native support is available.
     return true;
   } catch {
@@ -57,6 +65,7 @@ type OpenShellRepositorySourceSelection = {
 function selectedSourceRepositories(
   registry: GitHubRepositoryRegistry,
   { namespaceId, source, bindings }: OpenShellRepositorySourceSelection,
+  selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings),
 ): RepositoryNetworkPolicyCeiling {
   if (
     source.namespaceId !== namespaceId ||
@@ -65,7 +74,6 @@ function selectedSourceRepositories(
   ) {
     return [];
   }
-  const selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
   const access = source.scope.permissions.contents;
   if (selected.nativeGit !== "v1" || (access !== "read" && access !== "write")) {
     return [];
@@ -140,10 +148,7 @@ export function prepareOpenShellRepositorySource(
       installationId: registry.githubInstallationId,
       resolveGrants(source) {
         const verified = selectedSourceRepositories(registry, { namespaceId, source, bindings });
-        if (
-          verified.length !== requested.length ||
-          source.scope.repositories.length !== verified.length
-        ) {
+        if (verified.length !== requested.length) {
           return undefined;
         }
         const grants = requested.flatMap(({ repository, limit, access }) => {
@@ -168,14 +173,16 @@ export function admitOpenShellRepositoryCredentials(
   input: OpenShellRepositorySourceSelection & {
     readonly grants: readonly RepositoryNetworkGrant[];
   },
-): readonly DeploymentRequestMatch[] | undefined {
+): ReturnType<NonNullable<ControllerOptions["repositoryCredentialAdmission"]>> {
   if (!registry || !input.grants.length) {
     return undefined;
   }
   try {
-    const selected = selectedSourceRepositories(registry, input);
+    const { namespaceId, source, bindings, grants } = input;
+    const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+    const selected = selectedSourceRepositories(registry, input, scope);
     if (
-      !input.grants.every((grant) =>
+      !grants.every((grant) =>
         selected.some(
           ({ repository, access }) =>
             repository === grant.repository && (access === "write" || grant.access === "read"),
@@ -184,7 +191,31 @@ export function admitOpenShellRepositoryCredentials(
     ) {
       return undefined;
     }
-    return openShellRepositoryCredentialRequests(input.grants);
+    const gitRequests = openShellRepositoryCredentialRequests(grants);
+    const publicNetworkRequests = grants.map(({ repository }) =>
+      openShellRepositoryMetadataRequest(repository),
+    );
+    if (source.scope.permissions.pull_requests !== "write") {
+      return { credentialRequests: gitRequests, publicNetworkRequests };
+    }
+    // Registry policy can use a short name. The request must use GitHub's verified full name.
+    const scopedRest = scope.scopedRest.flatMap((authority) => {
+      const verified = selected.find((entry) =>
+        matchesConfiguredGitHubRepository(authority, entry),
+      );
+      return verified ? [{ ...authority, repository: verified.repository }] : [];
+    });
+    // A PR body can name a private fork head covered by the shared installation token.
+    const authority = restrictRepositoryPullRequestCreation(
+      scopedRest,
+      source.scope.repositories,
+      grants,
+    );
+    const publication = repositoryGitRestOperations(grants, authority).flatMap(
+      ({ repository, pull_requests }) =>
+        pull_requests === "write" ? [githubPullRequestCreationRequest(repository)] : [],
+    );
+    return { credentialRequests: [...gitRequests, ...publication], publicNetworkRequests };
   } catch {
     return undefined;
   }

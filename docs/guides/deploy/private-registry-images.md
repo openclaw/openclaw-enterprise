@@ -12,8 +12,10 @@ independent verification.
 ## Select a release and chart
 
 From a successful publication, record the source commit, publication run and
-attempt, and both immutable image digests. For [Release OCE](../../release/README.md),
-record the qualifying workflow commit and the full-suite result. For
+attempt, and both immutable image digests. For a [full OCE release](../../release/README.md),
+record the qualifying workflow commit and the full-suite result. For an
+[image-only OCE publication](../../release/README.md#publish-images-only),
+record that Full Integration was skipped. For
 [standalone image publication](../../release/containers.md), record the successful
 push CI run. Check the publication receipt and remote digests; a tag
 alone does not establish the image contents. Publication smoke checks do not
@@ -29,7 +31,8 @@ examples, and helpers. From the repository root, compare `git rev-parse HEAD`
 with the recorded full source SHA and check `git status --short` for changes.
 If a separately published chart is available, verify its publication receipt,
 source commit, chart digest, and image annotations against the selected image publication;
-use it only when the release owner confirms compatibility. Release OCE publishes the matching chart. Standalone image publication can omit it.
+use it only when the release owner confirms compatibility. A full OCE release
+includes the matching chart. Image-only publication requires a separate chart selection.
 
 ## Copy the verified images to ECR
 

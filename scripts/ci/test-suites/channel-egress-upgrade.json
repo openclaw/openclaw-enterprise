@@ -36,7 +36,7 @@
     {
       "path": "tests/integration/channel-egress-upgrade-helm-real.test.ts",
       "expectedTests": [
-        "one-off channel upgrade deploys current drafts and verifies real model and Slack recovery"
+        "one-off channel upgrade stops legacy Slack and recovers a channel-free Agent with a real model turn"
       ]
     }
   ]

@@ -239,7 +239,7 @@ function consentCompletionPage(
         const channel = new BroadcastChannel(name);
         channel.postMessage({ outcome: "saved", sourceId: ${scriptString(sourceId)} });
         channel.close();
-        document.body.textContent = "Return to the Agent tab to check your connection.";
+        document.body.textContent = "Return to the original Console tab to check your connection.";
         window.close();
         return;
       }

@@ -4,12 +4,15 @@ import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   compileOpenShellCredentialPolicy,
   credentialPolicyFailure,
+  openShellCredentialPathsOverlap,
   OPEN_SHELL_PROXY_CREDENTIAL_RULE_PREFIX,
 } from "./openshell-credential-policy.ts";
+import { openShellRepositoryMetadataRequest } from "./openshell-git-network-policy.ts";
 import {
   AGENT_POLICY_PREFIX,
   OPEN_SHELL_STAGED_HTTP_RULE_PREFIX,
   openShellAgentNetworkRules,
+  openShellNetworkRouteMayOverlap,
   sameOpenShellPolicy,
 } from "./openshell-policy.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
@@ -19,6 +22,7 @@ export function stagedCredentialPolicies(
   revision: Readonly<AgentRevision>,
   snapshot: SandboxPolicySnapshot,
   activeBindingRefs?: ReadonlySet<string>,
+  nativeSourceOwner = false,
 ): {
   readonly idle: Readonly<Record<string, unknown>>;
   readonly admitted: Readonly<Record<string, unknown>>;
@@ -30,6 +34,7 @@ export function stagedCredentialPolicies(
   const { credentialRoutes: routes, publicRoutes } = compileOpenShellCredentialPolicy(
     deployment,
     snapshot.defaults,
+    nativeSourceOwner,
   );
   const httpDestinations = [...routes, ...publicRoutes];
   const networks = asRecord(policy.network_policies);
@@ -107,6 +112,43 @@ export function stagedCredentialPolicies(
   }
   const idleNetworks = { ...trusted, ...desiredDefaults, ...additions };
   const admitted: Record<string, unknown> = { ...idleNetworks };
+  const repositoryMetadata = (revision.sandboxPolicy?.repositoryNetworkPolicy?.grants ?? []).map(
+    ({ repository }) => openShellRepositoryMetadataRequest(repository),
+  );
+  const metadataRoutes = new Set<(typeof publicRoutes)[number]>();
+  for (const metadata of repositoryMetadata) {
+    if (
+      !deployment.networkAccessPolicy.allowed.some((request) =>
+        sameOpenShellPolicy(request, metadata),
+      )
+    ) {
+      continue;
+    }
+    const route = publicRoutes.find(
+      (candidate) =>
+        candidate.binary === metadata.binary &&
+        candidate.host.toLowerCase() === metadata.host &&
+        candidate.port === metadata.ports[0]!.from &&
+        candidate.path === metadata.requestPolicy.path,
+    );
+    if (
+      !route ||
+      route.rules.length !== 1 ||
+      route.rules[0]?.allow.method !== metadata.requestPolicy.method ||
+      route.rules[0].allow.path !== metadata.requestPolicy.path ||
+      openShellNetworkRouteMayOverlap(idleNetworks, route) ||
+      publicRoutes.some(
+        (other) =>
+          other !== route &&
+          other.host.toLowerCase() === metadata.host &&
+          other.port === route.port &&
+          openShellCredentialPathsOverlap(other.path, route.path),
+      )
+    ) {
+      credentialPolicyFailure();
+    }
+    metadataRoutes.add(route);
+  }
   const compiled: readonly ((typeof routes)[number] | (typeof publicRoutes)[number])[] = [
     ...routes,
     ...publicRoutes,
@@ -151,8 +193,9 @@ export function stagedCredentialPolicies(
     if (Object.hasOwn(admitted, name)) {
       credentialPolicyFailure();
     }
+    const metadata = !("provider" in route) && metadataRoutes.has(route);
     const endpointPath = "provider" in route ? route.endpointPath : route.path;
-    admitted[name] = {
+    const rule = {
       name,
       binaries: [{ path: route.binary }],
       endpoints: [
@@ -164,10 +207,17 @@ export function stagedCredentialPolicies(
           ...("provider" in route && route.protocol === "mcp" ? { mcp: route.mcp } : {}),
           enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
           rules: route.rules,
+          // OpenShell treats HEAD as a GET match unless an explicit deny takes precedence.
+          ...(metadata ? { deny_rules: [{ method: "HEAD", path: route.path }] } : {}),
           ...("provider" in route ? { credential_binding: { provider: route.provider } } : {}),
         },
       ],
     };
+    admitted[name] = rule;
+    if (metadata) {
+      // A Source withdrawal can reach the Sandbox before credential deployment finishes.
+      idleNetworks[name] = rule;
+    }
   }
   return {
     idle: { ...policy, network_policies: idleNetworks },

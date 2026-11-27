@@ -21,7 +21,7 @@ import type {
   WorkClaim,
 } from "../../packages/occ/src/index.ts";
 
-import { signInToControllerApp as signInAccount } from "../helpers/auth-session.mjs";
+import { signInToControllerApp as signInAccount } from "../helpers/auth-session.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -58,10 +58,7 @@ export function handedOff(status: AgentProvisioningStatusWire) {
 }
 
 export type FixtureOptions = Parameters<typeof createProvisioningFixture>[1];
-export type ProvisioningSecrets = Record<
-  "modelKey" | "slackBotToken" | "slackSigningSecret" | "externalServiceToken",
-  SecretWire
->;
+export type ProvisioningSecrets = Record<"modelKey" | "externalServiceToken", SecretWire>;
 export type WorkerEvent = Parameters<NonNullable<FixtureOptions["onWorkerEvent"]>>[0];
 export type ProvisioningPhase = AgentProvisioningRecord["completedPhase"];
 
@@ -184,23 +181,12 @@ export async function createProvisioningSecrets(
   namespaceId: string,
 ) {
   const modelKey = await createNamespaceSecret(fixture, namespaceId, "model-api-key");
-  const slackBotToken = await createNamespaceSecret(
-    fixture,
-    namespaceId,
-    "slack-bot-token",
-    `xoxb-${randomUUID()}`,
-  );
-  const slackSigningSecret = await createNamespaceSecret(
-    fixture,
-    namespaceId,
-    "slack-signing-secret",
-  );
   const externalServiceToken = await createNamespaceSecret(
     fixture,
     namespaceId,
     "external-service-token",
   );
-  return { modelKey, slackBotToken, slackSigningSecret, externalServiceToken };
+  return { modelKey, externalServiceToken };
 }
 
 export function provisioningBody(
@@ -216,24 +202,8 @@ export function provisioningBody(
       kind: "agent",
       values: {
         agents: { defaults: agentDefaults() },
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "http",
-            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            signingSecret: { source: "env", provider: "default", id: "SLACK_SIGNING_SECRET" },
-          },
-        },
       },
       secretBindings: {
-        SLACK_BOT_TOKEN: {
-          source: secretRef(namespaceId, secrets.slackBotToken.id),
-          delivery: { type: "env" },
-        },
-        SLACK_SIGNING_SECRET: {
-          source: secretRef(namespaceId, secrets.slackSigningSecret.id),
-          delivery: { type: "env" },
-        },
         EXTERNAL_SERVICE_TOKEN: {
           source: secretRef(namespaceId, secrets.externalServiceToken.id),
         },
@@ -383,7 +353,7 @@ export async function assertProvisionedSecretAccess(
   );
   assert.deepEqual(
     persistedSecrets.rows.map(({ name }) => name),
-    ["external-service-token", "model-api-key", "slack-bot-token", "slack-signing-secret"],
+    ["external-service-token", "model-api-key"],
   );
   const grantRoleId = `role_${namespace.id}_agent_secret_operate`;
   const grantRole = await fixture.pool.query<{ permissions: unknown }>(
@@ -423,11 +393,7 @@ export async function assertProvisionedSecretAccess(
   assert.equal(Number(required(configuration.rows[0]).generation), 1);
   const bindings = required(configuration.rows[0]).secret_bindings;
   assert.ok(typeof bindings === "object" && bindings !== null);
-  assert.deepEqual(Object.keys(bindings).sort(), [
-    "EXTERNAL_SERVICE_TOKEN",
-    "SLACK_BOT_TOKEN",
-    "SLACK_SIGNING_SECRET",
-  ]);
+  assert.deepEqual(Object.keys(bindings), ["EXTERNAL_SERVICE_TOKEN"]);
 }
 
 export async function provisioningRow(pool: pg.Pool, namespaceId: string, requestId: string) {

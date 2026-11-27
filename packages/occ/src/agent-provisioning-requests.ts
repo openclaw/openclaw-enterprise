@@ -62,7 +62,6 @@ import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { workMatchesRevision, type ControllerWork } from "./controller-work.ts";
-import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import { deploymentProgressForWork } from "./deployment-work-status.ts";
 import {
   CallerStateDeniedError,
@@ -77,6 +76,7 @@ import {
 import type { AgentRuntimeCredentials } from "./agent-runtime-credentials.ts";
 import {
   rejectCrossNamespaceSecretSources,
+  requireDedicatedGatewaySources,
   type ConfigurationOperations,
 } from "./configuration-operations.ts";
 import type { ControllerResourceValues } from "./controller-resource-values.ts";
@@ -114,7 +114,7 @@ interface ProvisioningRequestDependencies {
   readonly runtimeCredentials: Pick<AgentRuntimeCredentials, "runtimeCredentialComputeDriver">;
   readonly settings: Pick<
     ConfigurationOperations,
-    "selectedDriver" | "validateConfigurationContent"
+    "selectedDriver" | "validateConfigurationContent" | "authorizeBindings"
   >;
   readonly sandboxPolicy: Pick<ReturnType<typeof createSandboxPolicyOperations>, "sandboxDriver">;
   readonly secrets: Pick<SecretOperations, "ownedSecretDriver">;
@@ -307,15 +307,47 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         configurationInput.secretBindings,
         harnessAuth,
       );
+      requireDedicatedGatewaySources(configurationInput.secretBindings, executionMode);
       // Before the Channel Driver, which reads only an env SecretRef: it would answer a channel
       // credential reference form these rules name (an unbound name, `$NAME`, a fallback, other
       // text) with its generic binding refusal (finding 2506). Admission repeats them below.
       await validateContent(configurationInput);
+      if (harnessAuth.method === "credential_source") {
+        await transactions.transact(async (state) => {
+          const namespace = await lockNamespace(state, input.namespaceId);
+          if (namespace.status !== "ready") {
+            throw new NamespaceNotReadyError();
+          }
+          // This authorization accepts only a ready managed TokenService Source.
+          await harnessOperations.authorizeHarnessAuthSource(
+            state,
+            principalId,
+            input.namespaceId,
+            harnessAuth,
+          );
+          throw new ResourceStateConflictError(
+            "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
+          );
+        });
+      }
+      // Refuse a known unsupported Harness topology before Channel preflight can resolve
+      // credentials or contact a provider. Stored work repeats this check on every admission.
+      requireDedicatedNativeSupport(
+        {
+          id: resolveConfiguredHarnessId(
+            configurationInput.values,
+            dependencies.modelPolicyAgent(executionMode),
+          ),
+          mode: executionMode,
+        },
+        sandboxPolicy.sandboxDriver(),
+        dependencies.nativeWorkers,
+        { configuration: configurationInput.values },
+      );
       await dependencies.channels.validateChannelCredentials(
         principalId,
         input.namespaceId,
         configurationInput,
-        () => new ProvisioningSecretDriverError(),
         () => authorizeProvisioningRequest(principalId, input.namespaceId),
       );
       return { configurationInput, reservedAgentId };
@@ -385,16 +417,6 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         harnessAuth,
         networkProxy,
       );
-      if (
-        harnessAuth.method === "credential_source" &&
-        isManagedTokenServiceSource(
-          await state.credentialSources.findCredentialSource(namespace.id, harnessAuth.sourceId),
-        )
-      ) {
-        throw new ResourceStateConflictError(
-          "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
-        );
-      }
       await validateContent(configurationInput);
       const repositoryAccess = repository.repositorySettings(namespace.id, input.repositoryAccess);
       // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
@@ -757,6 +779,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     // gateway or routing change makes the Compute Driver refuse the plan.
     if (!statusRead) {
       validateComputeAgentProvisioning(compute, plan.executionMode, plan.configuration.values);
+      requireDedicatedGatewaySources(plan.configuration.secretBindings, plan.executionMode);
     }
     if (record.status === "failed") {
       // A failed plan does not keep its credential sources from deletion; say which is gone.
@@ -963,9 +986,12 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     namespaceId: string,
     plan: ReturnType<typeof parseProvisioningPlan>,
   ): Promise<void> {
-    const ids = Object.values(plan.configuration.secretBindings ?? {}).map(
-      (binding) => binding.source.id,
-    );
+    const ids = Object.values(plan.configuration.secretBindings ?? {})
+      .filter(({ source }) => source.kind === "secret")
+      .map(({ source }) => source.id);
+    const sourceIds = Object.values(plan.configuration.secretBindings ?? {})
+      .filter(({ source }) => source.kind === "credential_source")
+      .map(({ source }) => source.id);
     const auth = plan.harnessAuth;
     if (isSecretHarnessAuth(auth)) {
       ids.push(auth.source.id);
@@ -980,13 +1006,15 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         );
       }
     }
-    if (
-      auth?.method === "credential_source" &&
-      (await state.credentialSources.findCredentialSource(namespaceId, auth.sourceId)) === undefined
-    ) {
-      throw new ResourceStateConflictError(
-        `Credential source ${auth.sourceId}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`,
-      );
+    if (auth?.method === "credential_source") {
+      sourceIds.push(auth.sourceId);
+    }
+    for (const id of sourceIds) {
+      if ((await state.credentialSources.findCredentialSource(namespaceId, id)) === undefined) {
+        throw new ResourceStateConflictError(
+          `Credential source ${id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`,
+        );
+      }
     }
     if (
       isServiceAccountHarnessAuth(auth) &&
@@ -1006,8 +1034,18 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     harnessAuth: HarnessAuthBinding | null,
     networkProxy: AgentNetworkProxy | undefined,
   ): Promise<void> {
+    const gatewaySourceBindings = Object.fromEntries(
+      Object.entries(bindings ?? {}).filter(
+        ([, { source }]) => source.kind === "credential_source",
+      ),
+    );
+    if (Object.keys(gatewaySourceBindings).length > 0) {
+      await settings.authorizeBindings(state, principalId, namespaceId, gatewaySourceBindings);
+    }
     for (const binding of Object.values(bindings ?? {})) {
-      await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
+      if (binding.source.kind === "secret") {
+        await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
+      }
     }
     if (networkProxy?.credentialSecretId !== undefined) {
       const selected = await authorizeProvisioningSecretSource(state, principalId, namespaceId, {

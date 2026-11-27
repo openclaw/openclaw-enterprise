@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
+import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { installationRoles } from "../helpers/postgres-sign-in-installation.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
-import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
@@ -32,6 +32,7 @@ import { deferred } from "../helpers/deferred.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { oauthIssuerWithTransport } from "../helpers/oauth-issuer.ts";
 
 test(
   "saved Agent catalog discovery releases the database connection while reading Configuration",
@@ -108,6 +109,7 @@ test(
     let discoveredTokenUrl = slot.issuer + "/token";
     const metadataUrl = slot.mcp.resource + "/.well-known/oauth-protected-resource";
     const peerMethods: string[] = [];
+    let peerEchoesBearer = false;
     // Only the external discovery transport is controlled. The catalog supplies Slack's
     // reviewed server, protected resource and issuer; the API discovers and persists them.
     const transport = {
@@ -145,55 +147,83 @@ test(
       {
         label: "plugin-slack-oauth",
         authSecret: "plugin-slack-oauth-postgres-auth-secret",
+        controllerOptions: {
+          oauthIssuer: oauthIssuerWithTransport({
+            resolveHost: transport.resolveHost,
+            async fetchMetadata(value) {
+              if (
+                String(value) ===
+                "https://accounts.google.com/.well-known/oauth-authorization-server"
+              ) {
+                return Response.json({
+                  issuer: "https://accounts.google.com",
+                  authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+                  token_endpoint: "https://oauth2.googleapis.com/token",
+                  revocation_endpoint: "https://oauth2.googleapis.com/revoke",
+                  response_types_supported: ["code"],
+                  token_endpoint_auth_methods_supported: [
+                    "client_secret_basic",
+                    "client_secret_post",
+                  ],
+                });
+              }
+              return transport.fetchMetadata(value);
+            },
+          }),
+        },
         appOptions: {
           provisionAuthAccount: (
             ...args: Parameters<ReturnType<typeof createPostgresAuthAccountProvisioner>>
           ) => provision(...args),
           discoverMcpAuthorization: (url: string, choice?: string) =>
             discoverMcpAuthorization(url, choice, undefined, transport),
-          readManagedMcpToolNames(
-            endpoint: string,
-            accessToken: string,
-            signal?: AbortSignal,
-            options?: Parameters<typeof listManagedMcpToolNames>[3],
-          ) {
-            return listManagedMcpToolNames(endpoint, accessToken, signal, {
-              ...options,
-              resolveHost: transport.resolveHost,
-              async fetch(target, request) {
-                assert.equal(String(target), slack!.url);
-                assert.ok(
-                  new Headers(request?.headers).get("authorization")?.startsWith("Bearer "),
-                );
-                const method = request?.method ?? "GET";
-                peerMethods.push(method);
-                if (method === "GET") {
-                  return new Response(null, { status: 405 });
-                }
-                if (method === "DELETE") {
-                  return new Response(null, { status: 204 });
-                }
-                assert.equal(method, "POST");
-                assert.equal(typeof request?.body, "string");
-                const message = JSON.parse(request!.body as string);
-                if (message.method === "notifications/initialized") {
-                  return new Response(null, { status: 202 });
-                }
-                const result =
-                  message.method === "initialize"
-                    ? {
-                        protocolVersion: "2025-11-25",
-                        capabilities: { tools: {} },
-                        serverInfo: { name: "controlled MCP peer", version: "1" },
-                      }
-                    : { tools: [{ name: "slack_search_public", inputSchema: { type: "object" } }] };
-                return Response.json(
-                  { jsonrpc: "2.0", id: message.id, result },
-                  { headers: { "mcp-session-id": "controlled-session" } },
-                );
-              },
-            });
-          },
+          managedMcpDiscoveryTransport: {
+            resolveHost: transport.resolveHost,
+            async fetch(target, request) {
+              assert.equal(String(target), slack!.url);
+              const authorization = new Headers(request?.headers).get("authorization");
+              assert.ok(authorization);
+              assert.match(authorization, /^Bearer /);
+              const method = request?.method ?? "GET";
+              peerMethods.push(method);
+              if (method === "GET") {
+                return new Response(null, { status: 405 });
+              }
+              if (method === "DELETE") {
+                return new Response(null, { status: 204 });
+              }
+              assert.equal(method, "POST");
+              assert.equal(typeof request?.body, "string");
+              const message = JSON.parse(request!.body as string);
+              if (message.method === "notifications/initialized") {
+                return new Response(null, { status: 202 });
+              }
+              const result =
+                message.method === "initialize"
+                  ? {
+                      protocolVersion: "2025-11-25",
+                      capabilities: { tools: {} },
+                      serverInfo: { name: "controlled MCP peer", version: "1" },
+                    }
+                  : {
+                      tools: (peerEchoesBearer
+                        ? [authorization.slice("Bearer ".length)]
+                        : [
+                            "slack_search_public",
+                            "slack_read_emoji",
+                            "slack.search",
+                            "x".repeat(55),
+                            "case_collision",
+                            "CASE_COLLISION",
+                          ]
+                      ).map((name) => ({ name, inputSchema: { type: "object" } })),
+                    };
+              return Response.json(
+                { jsonrpc: "2.0", id: message.id, result },
+                { headers: { "mcp-session-id": "controlled-session" } },
+              );
+            },
+          } satisfies NonNullable<ControllerAppOptions["managedMcpDiscoveryTransport"]>,
         },
       },
     );
@@ -245,7 +275,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer: slot.issuer,
-      tokenUrl: discoveredTokenUrl,
       displayName: "Slack public client",
       clientId: `slack-probe-${randomUUID()}`,
       tokenEndpointAuthMethod: "none",
@@ -331,11 +360,10 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer,
-      tokenUrl,
-      revocationUrl,
-      displayName: "Google public client",
+      displayName: "Google confidential client",
       clientId: `google-admission-${randomUUID()}`,
-      tokenEndpointAuthMethod: "none",
+      tokenEndpointAuthMethod: "client_secret_basic",
+      clientSecret: randomUUID(),
     });
     assert.equal(googleClient.statusCode, 201, googleClient.body);
     const googleClientId = googleClient.json().data.id;
@@ -458,7 +486,8 @@ test(
     native.selectDriver("compute", runtime.computeDriver.id);
     assert.equal(await native.activateTokenServiceInstance(owner.id, storeIdentity), instanceId);
     installSelectedSandboxDrivers(native, runtime);
-    native.installPluginDrivers([new OCCPluginDriver()]);
+    const realPluginDriver = new OCCPluginDriver();
+    native.installPluginDrivers([realPluginDriver]);
     const app = createApp(native);
     const model = await inject(
       "POST",
@@ -543,9 +572,64 @@ test(
     assert.equal(prospectiveDiscovery.statusCode, 200, prospectiveDiscovery.body);
     assert.deepEqual(
       prospectiveDiscovery.json().data.tools.map((tool: { name: string }) => tool.name),
-      ["slack_search_public"],
+      ["slack_search_public", "slack_read_emoji"],
     );
     assert.ok(peerMethods.length > 0, "the controlled MCP peer received authenticated requests");
+    let discoveredDescriptions = 0;
+    let faultyDescription: "invented_tool" | "wrong_owner" | undefined;
+    const describe = realPluginDriver.getCatalogPlugin.bind(realPluginDriver);
+    const instrumented = t.mock.method(
+      realPluginDriver,
+      "getCatalogPlugin",
+      async (input: Parameters<OCCPluginDriver["getCatalogPlugin"]>[0]) => {
+        const entry = await describe(input);
+        if (input.discoveredMcpToolNames === undefined) {
+          return entry;
+        }
+        discoveredDescriptions += 1;
+        if (faultyDescription === "invented_tool") {
+          return {
+            ...entry,
+            tools: [{ id: "invented_tool", name: "invented_tool", ownerId: entry.id }],
+          };
+        }
+        if (faultyDescription === "wrong_owner") {
+          return {
+            ...entry,
+            tools: entry.tools!.map((tool) => ({ ...tool, ownerId: "other-plugin" })),
+          };
+        }
+        return entry;
+      },
+    );
+    // A peer must not be able to make OCC forward the bearer to the Plugin Driver as a tool name.
+    const detailBody = {
+      harnessId: "openclaw",
+      pluginId: slack.id,
+      managedConnection: { slot: slack.slotId, sourceId },
+    };
+    const beforeEcho = discoveredDescriptions;
+    peerEchoesBearer = true;
+    const echoed = await inject("POST", `${path}/agents/plugins/details`, detailBody, app);
+    peerEchoesBearer = false;
+    assert.equal(echoed.statusCode, 503, echoed.body);
+    assert.equal(echoed.json().error.code, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+    assert.equal(
+      discoveredDescriptions,
+      beforeEcho,
+      "the echoed bearer crossed the Driver boundary",
+    );
+
+    // OCC accepts a Driver's reviewed subset only when every entry belongs to this Plugin
+    // and every tool ID was actually offered by the authenticated upstream peer.
+    for (const fault of ["invented_tool", "wrong_owner"] as const) {
+      faultyDescription = fault;
+      const malformed = await inject("POST", `${path}/agents/plugins/details`, detailBody, app);
+      assert.equal(malformed.statusCode, 503, malformed.body);
+      assert.equal(malformed.json().error.code, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+    }
+    assert.equal(discoveredDescriptions, 2);
+    instrumented.mock.restore();
     const explicit = [{ sourceId: modelId }];
     const agent = await inject(
       "POST",
@@ -742,7 +826,7 @@ test(
     assert.equal(prospectiveTools.statusCode, 200, prospectiveTools.body);
     assert.deepEqual(
       prospectiveTools.json().data.tools.map((tool: { name: string }) => tool.name),
-      ["slack_search_public"],
+      ["slack_search_public", "slack_read_emoji"],
     );
     assert.ok(peerMethods.length > 0);
     assert.ok(
@@ -855,7 +939,7 @@ test(
     await setSavedRelease(slack.releaseSha256);
     assert.deepEqual(
       delegatedTools.json().data.tools.map((tool: { name: string }) => tool.name),
-      ["slack_search_public"],
+      ["slack_search_public", "slack_read_emoji"],
     );
     const updated = await memberPatch({ configurationId, pluginApprovers: [] });
     assert.equal(updated.statusCode, 200, updated.body);
@@ -930,6 +1014,7 @@ test(
       );
       assert.ok(injection);
       const endpoint: ConnectionEndpoint = selectedId === sourceId ? slack.endpoint : gmail;
+      // Emoji was discovered but left unselected; the exact policy must authorize only search.
       const policies: DeploymentRequestPolicy[] =
         selectedId === sourceId
           ? [

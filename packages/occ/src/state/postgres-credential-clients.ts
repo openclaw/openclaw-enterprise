@@ -49,8 +49,6 @@ function registrationFromRow(row: Row): Readonly<StoredCredentialClient> {
     kind: "oauth2",
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
-    tokenUrl: text(row, "token_url"),
-    ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     tokenEndpointAuthMethod:
       row.token_endpoint_auth_method as OAuthClient["tokenEndpointAuthMethod"],
   });
@@ -125,8 +123,8 @@ export function postgresCredentialClients(
       await client.query(
         `INSERT INTO occ.oauth_clients
          (id, kind, namespace_id, issuer, client_id, token_service_instance_id, created_at, display_name,
-          token_url, revocation_url, token_endpoint_auth_method, app_id, cleanup_after)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          token_endpoint_auth_method, app_id, cleanup_after)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           registration.id,
           registration.kind,
@@ -136,8 +134,6 @@ export function postgresCredentialClients(
           registration.tokenServiceInstanceId ?? null,
           registration.createdAt,
           registration.displayName,
-          oauth?.tokenUrl ?? null,
-          oauth?.revocationUrl ?? null,
           oauth?.tokenEndpointAuthMethod ?? null,
           registration.kind === "github-app" ? registration.appId : null,
           cleanupAfter ?? null,

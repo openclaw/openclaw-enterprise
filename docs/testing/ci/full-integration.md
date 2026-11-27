@@ -27,7 +27,7 @@ receipt before starting the full suite. Missing admission metadata fails visibly
 Manual dispatch selects one supported `lane` or `all` on `main` and requires the
 dispatcher's [team approval](configuration.md#environments). The ordinary PR
 and merge-group checks still provide targeted premerge feedback. QA Advisory
-has its own schedule. [Release OCE](../../release/README.md) calls Full Integration
+has its own schedule. To qualify a full release, [Release OCE](../../release/README.md) calls Full Integration
 with `lane=all` for the selected commit in protected `main` history and
 requires a successful aggregate for that SHA in its own run. Release
 runs do not count toward scheduled coverage.
@@ -37,7 +37,9 @@ runs do not count toward scheduled coverage.
 First-attempt scheduled and manual `all` runs can [reuse qualified CI results](#results-and-limits).
 Other selected lanes run fresh. Dispatch Preflight checks environment policy;
 Full Integration Aggregate requires selected results.
-QA waits for Slack to finish, including after Slack failure.
+After preflight, the Shipped Installation QA Matrix and Slack Live can run in
+parallel on ordinary `main` runs. Release QA shares the Slack Live queue, which
+prevents overlap with Slack Live and serializes Slack jobs across runs.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
 

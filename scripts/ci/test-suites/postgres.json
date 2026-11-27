@@ -36,6 +36,7 @@
         "Credential Proxy preview receipts require the exact history before the shared migration",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
         "Credential cutover preserves an existing backend-owned TokenService Source",
+        "OAuth endpoint authority refuses confidential Client custody before dropping its address",
         "Namespace GitHub App Clients enforce Source ownership after upgrading 0095",
         "Credential cutover retires obsolete Gateway bindings and preserves Channel Secrets",
         "TokenService Source migration refuses a retained pending OAuth Source without mutation",

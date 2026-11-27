@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {
-  SecretDetailResponse,
-  SecretListResponse,
-} from "../../packages/contracts/src/api/resources.ts";
+import type { SecretListResponse } from "../../packages/contracts/src/api/resources.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   apiRequests,
+  createSlackSourceConsoleFixture,
   asksBeforeUnload,
   detailUrl,
   grantSecretOperate,
@@ -27,345 +24,64 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
+import { slackAgentValues } from "./console-slack-agent.ts";
 
-test("refreshing a Secret picker keeps staged choices and finds a Secret created in another tab", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker refresh", {
-    secretDriver: createTestSecretDriver(),
-  });
-  const app = await fixture.createSecret(namespace.id, "Original app", "synthetic-app");
-  const bot = await fixture.createSecret(namespace.id, "Original bot", "synthetic-bot");
-  const staged = await fixture.createSecret(namespace.id, "Staged app", "synthetic-staged");
+test("refreshing a Slack Source picker preserves staged choices and discovers a newly enrolled Source", async (t) => {
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Slack Source refresh",
+  );
+  const app = (await enroll("Original app", "xapp")).source;
+  const bot = (await enroll("Original bot", "xoxb")).source;
+  const staged = (await enroll("Staged app", "xapp")).source;
   const agent = await fixture.createAgent(
     namespace.id,
-    "Picker draft",
+    "Source picker draft",
     slackAgentValues("picker", { channels: {} }),
-    slackTokenBindings(app, bot),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
   );
-  const member = await fixture.createNamespaceMember("picker-member", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
-  const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const listRead = () => responseTo(page, "GET", collection);
-  const initial = listRead();
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
-    member.credentials,
-  );
-  assert.equal((await initial).status(), 200);
-  // Verify the logged-in member against the real administrator-only endpoint.
-  const probe = await page.request.get(`${fixture.origin}/observability`);
-  assert.equal(probe.status(), 403);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   const appField = page.getByLabel("Slack app token", { exact: true });
   const botField = page.getByLabel("Slack bot token", { exact: true });
-  await waitForInputValue(botField, bot.name);
-  await settlePageRequests(page);
-  // Observe only this editor after login settles; the other tab owns its intentional create.
-  const requests = apiRequests(page, fixture.origin);
-  const writes = () =>
-    writeRequests(requests)
-      .filter(({ method }) => !["HEAD", "OPTIONS"].includes(method))
-      .map(({ method, path }) => ({ method, path }));
-  await selectSecret(page, "Slack app token", staged);
-  const laterName = "Later library Secret";
-  await botField.fill(laterName);
-  const originalInput = await botField.elementHandle();
-  assert.ok(originalInput);
+  await appField.selectOption(staged.id);
 
-  const other = await page.context().newPage();
-  await other.bringToFront();
-  await other.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
-  await other.getByRole("button", { name: "Create Secret", exact: true }).click();
-  const dialog = other.getByRole("dialog", { name: "Create Secret", exact: true });
-  await dialog.getByLabel("Secret name", { exact: true }).fill(laterName);
-  await dialog.getByLabel("Value", { exact: true }).fill("synthetic-later");
-  const created = responseTo(other, "POST", collection);
-  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  const response = await created;
-  assert.equal(response.status(), 201);
-  const { data: later }: SecretDetailResponse = await response.json();
-  assert.equal(later.name, laterName);
-  await other
-    .getByRole("dialog", { name: "Secret created" })
-    .getByRole("button", { name: "Close" })
+  // Another authorized session enrolls a Source after this picker loaded its inventory.
+  const later = (await enroll("Later bot", "xoxb")).source;
+  const refreshed = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/credential-sources`,
+  );
+  await botField
+    .locator("..")
+    .getByRole("button", { name: "Refresh Source list", exact: true })
     .click();
-
-  await page.bringToFront();
-  assert.equal(await botField.inputValue(), laterName);
-  await botField.focus();
-  await page.getByText("No matching Secrets.", { exact: true }).waitFor();
-  await settlePageRequests(page);
-  assert.deepEqual(writes(), []);
-  // Use the combobox keyboard, preserving its query and DOM focus through the read.
-  const refresh = page.getByRole("option", { name: "Refresh Secret list", exact: true });
-  await refresh.waitFor({ timeout: 5000 });
-  const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
-  await botField.press("ArrowDown");
+  assert.equal((await refreshed).status(), 200);
+  await botField.locator(`option[value="${later.id}"]`).waitFor({ state: "attached" });
   assert.equal(
-    await botField.getAttribute("aria-activedescendant"),
-    await create.getAttribute("id"),
+    await appField.inputValue(),
+    staged.id,
+    "refresh must preserve another picker's staged Source",
   );
-  await botField.press("ArrowDown");
-  assert.equal(
-    await botField.getAttribute("aria-activedescendant"),
-    await refresh.getAttribute("id"),
-  );
-  const refreshed = listRead();
-  await botField.press("Enter");
-  const read = await refreshed;
-  assert.equal(read.status(), 200);
-  const { data: listed }: SecretListResponse = await read.json();
-  assert.ok(listed.some((s) => s.id === later.id));
-  const option = page.getByRole("option", { name: laterName, exact: true });
-  await option.waitFor();
-  assert.equal(await botField.inputValue(), laterName);
-  assert.equal(await appField.inputValue(), staged.name);
-  assert.equal(await hasFocus(originalInput), true);
-  await settlePageRequests(page);
-  assert.deepEqual(writes(), []);
-  // Create keeps its established position before Refresh.
-  await botField.press("ArrowUp");
-  assert.equal(
-    await botField.getAttribute("aria-activedescendant"),
-    await create.getAttribute("id"),
-  );
-  await botField.press("ArrowUp");
-  const optionId = await option.getAttribute("id");
-  assert.ok(optionId);
-  assert.equal(await botField.getAttribute("aria-activedescendant"), optionId);
-  await botField.press("Enter");
-  await waitForInputValue(botField, laterName);
-  assert.equal(await botField.getAttribute("aria-expanded"), "false");
-  const metadata = page.locator(`a[href*="secret=${encodeURIComponent(later.id)}"]`);
-  await metadata.waitFor();
-  assert.equal(await metadata.count(), 1);
-  assert.equal(
-    new URL((await metadata.getAttribute("href"))!, fixture.origin).searchParams.get("secret"),
-    later.id,
-  );
-  assert.equal(await appField.inputValue(), staged.name);
-  await settlePageRequests(page);
-  assert.deepEqual(writes(), []);
+  await botField.selectOption(later.id);
 
   const configuration = `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const saved = responseTo(page, "PATCH", configuration);
-  await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
-  const save = await saved;
-  assert.equal(save.status(), 200);
-  const expected = { SLACK_APP_TOKEN: staged.id, SLACK_BOT_TOKEN: later.id };
-  for (const [key, id] of Object.entries(expected)) {
-    assert.equal(save.request().postDataJSON().secretBindings[key].source.id, id);
-    assert.equal((await save.json()).data.secretBindings[key].source.id, id);
-  }
-  const warning = page
-    .getByRole("alert")
-    .filter({ hasText: "this session did not verify that this Agent can use" });
-  await warning.waitFor();
-  assert.match(await warning.innerText(), /Installation administrator.*Retry Secret access/);
-  assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
-  await settlePageRequests(page);
-  const checked = await page.context().request.get(configuration);
-  assert.equal(checked.status(), 200);
-  const final = (await checked.json()).data.secretBindings;
-  for (const [key, id] of Object.entries(expected)) {
-    assert.equal(final[key].source.id, id);
-  }
-  assert.deepEqual(writes(), [{ method: "PATCH", path: new URL(configuration).pathname }]);
-  t.diagnostic(
-    "Two tabs; later create 201; refresh 200; no editor writes before Save; one exact PATCH and independent GET confirm both exact IDs.",
-  );
-});
-
-test("a real list refusal clears readable metadata but preserves staged references through retry", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker read revoked", {
-    secretDriver: createTestSecretDriver(),
-  });
-  const app = await fixture.createSecret(namespace.id, "Original app", "synthetic-app");
-  const bot = await fixture.createSecret(namespace.id, "Token original", "synthetic-bot");
-  const staged = await fixture.createSecret(namespace.id, "Staged app", "synthetic-staged");
-  const replacement = await fixture.createSecret(
-    namespace.id,
-    "Token replacement",
-    "synthetic-next",
-  );
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Revoked list draft",
-    slackAgentValues("revoked-list", { channels: {} }),
-    slackTokenBindings(app, bot),
-  );
-  const member = await fixture.createNamespaceMember("revoked-picker", namespace.id, MEMBER_WRITE);
-  const { page } = await newPage(t, fixture);
-  const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const listRead = () => responseTo(page, "GET", collection);
-  const initial = listRead();
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
-    member.credentials,
-  );
-  const initialResponse = await initial;
-  assert.equal(initialResponse.status(), 200);
-  const initialIds = ((await initialResponse.json()) as SecretListResponse).data.map((s) => s.id);
-  assert.ok(initialIds.includes(app.id));
-  assert.equal((await page.request.get(`${fixture.origin}/observability`)).status(), 403);
-  const appField = page.getByLabel("Slack app token", { exact: true });
-  const input = page.getByLabel("Slack bot token", { exact: true });
-  await waitForInputValue(input, bot.name);
-  await settlePageRequests(page);
-  const requests = apiRequests(page, fixture.origin);
-  await selectSecret(page, "Slack app token", staged);
-  const inputId = await input.getAttribute("id");
-  assert.ok(inputId);
-  const listbox = page.locator(`#${await input.getAttribute("aria-controls")}`);
-  await input.fill("");
-  await listbox.getByRole("option", { name: app.name, exact: true }).waitFor();
-  const linkName = "View bot token Secret metadata (opens in new tab)";
-  const link = page.getByText(linkName, { exact: true });
-  const status = page.locator(`#${await input.getAttribute("aria-describedby")}`);
-
-  // Repeat with a newer choice while the real refusal is in flight: status ownership
-  // must never prevent invalidation of the old authorization knowledge.
-  for (const chooseWhilePending of [false, true]) {
-    await input.fill("Token");
-    await listbox.getByRole("option", { name: bot.name, exact: true }).waitFor();
-    await page.getByRole("link", { name: linkName, exact: true }).waitFor();
-    const restore = revokeMemberGrant(fixture, "revoked-picker", ["read", "namespace"]);
-    let release!: () => void;
-    let observed!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const requested = new Promise<void>((resolve) => {
-      observed = resolve;
-    });
-    await page.route(collection, async (route) => {
-      assert.equal(route.request().method(), "GET");
-      const response = await route.fetch();
-      assert.equal(response.status(), 403);
-      observed();
-      await gate;
-      await route.fulfill({ response });
-    });
-    try {
-      const refused = listRead();
-      await listbox.getByRole("option", { name: "Refresh Secret list", exact: true }).click();
-      await requested;
-      if (chooseWhilePending) {
-        assert.equal(
-          new URL((await link.getAttribute("href"))!, fixture.origin).searchParams.get("secret"),
-          bot.id,
-        );
-        await selectSecret(page, "Slack bot token", replacement);
-        await waitForInputValue(input, replacement.name);
-        assert.equal(
-          new URL((await link.getAttribute("href"))!, fixture.origin).searchParams.get("secret"),
-          replacement.id,
-        );
-        await input.fill("Token");
-        assert.equal(
-          await listbox
-            .getByRole("option", { name: "Loading Secrets...", exact: true })
-            .getAttribute("aria-disabled"),
-          "true",
-        );
-      }
-      const hint = await status.innerText();
-      await input.press("ArrowDown");
-      const activeId = await input.getAttribute("aria-activedescendant");
-      assert.equal(
-        activeId,
-        await listbox.getByRole("option", { name: bot.name, exact: true }).getAttribute("id"),
-      );
-      release();
-      assert.equal((await refused).status(), 403);
-      await listbox.getByRole("option", { name: "Refresh Secret list", exact: true }).waitFor();
-      if (chooseWhilePending) {
-        assert.equal(await status.innerText(), hint);
-      } else {
-        assert.match(await status.innerText(), /Secrets unavailable/);
-      }
-      assert.equal(await input.getAttribute("aria-activedescendant"), null);
-      assert.equal(await page.locator(`[id="${activeId}"]`).count(), 0);
-      for (const secret of [app, bot, staged, replacement]) {
-        assert.equal((await listbox.textContent())?.includes(secret.name), false);
-      }
-      assert.equal(await page.getByRole("link", { name: linkName, exact: true }).count(), 0);
-      assert.equal(await link.getAttribute("href"), null);
-      assert.equal(await input.inputValue(), "Token");
-      assert.equal(await hasFocus(input), true);
-      assert.equal(await appField.inputValue(), staged.name);
-      await input.press("Enter");
-      assert.equal(await input.inputValue(), "Token");
-      await input.press("Escape");
-      assert.equal(await input.inputValue(), "Bound Secret");
-      assert.equal(await input.getAttribute("aria-expanded"), "false");
-      assert.equal((await listbox.textContent())?.includes(bot.name), false);
-    } finally {
-      release();
-      restore();
-      await page.unroute(collection);
-    }
-    const deniedRead = restrict(fixture.policy, "read", "secret", {
-      namespaceId: namespace.id,
-      resourceId: app.id,
-    });
-    try {
-      await input.fill("Token");
-      const retry = listRead();
-      await listbox.getByRole("option", { name: "Refresh Secret list", exact: true }).click();
-      const response = await retry;
-      assert.equal(response.status(), 200);
-      const allowedIds = ((await response.json()) as SecretListResponse).data.map((s) => s.id);
-      assert.deepEqual(allowedIds.sort(), initialIds.filter((id) => id !== app.id).sort());
-      await listbox.getByRole("option", { name: replacement.name, exact: true }).waitFor();
-      assert.equal(await input.inputValue(), "Token");
-      assert.equal(await hasFocus(input), true);
-      assert.equal(
-        new URL((await link.getAttribute("href"))!, fixture.origin).searchParams.get("secret"),
-        chooseWhilePending ? replacement.id : bot.id,
-      );
-      // Clear the filter to inspect the complete menu, not merely a hidden denied row.
-      await input.fill("");
-      const menuIds = await listbox
-        .locator('[role="option"]')
-        .evaluateAll((options) =>
-          options.map((option) => option.id).filter((id) => id.includes("-option-secret%3A")),
-        );
-      assert.deepEqual(
-        menuIds.sort(),
-        allowedIds
-          .map((id): string => `${inputId}-option-${encodeURIComponent(`secret:${id}`)}`)
-          .sort(),
-      );
-      assert.equal((await listbox.textContent())?.includes(app.name), false);
-      await input.press("Escape");
-      await waitForInputValue(input, chooseWhilePending ? replacement.name : bot.name);
-      assert.equal(await appField.inputValue(), staged.name);
-      const appLink = page.getByRole("link", {
-        name: "View app token Secret metadata (opens in new tab)",
-      });
-      assert.equal(
-        new URL((await appLink.getAttribute("href"))!, fixture.origin).searchParams.get("secret"),
-        staged.id,
-      );
-    } finally {
-      liftRestriction(fixture.policy, deniedRead);
-    }
-  }
-  await settlePageRequests(page);
-  assert.deepEqual(
-    requests.filter((r) => !["GET", "HEAD", "OPTIONS"].includes(r.method)),
-    [],
-  );
-  const saved = await fixture.request(
+  await page.getByRole("button", { name: "Save channel credentials", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  const current = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.equal(saved.data.secretBindings.SLACK_APP_TOKEN.source.id, app.id);
-  assert.equal(saved.data.secretBindings.SLACK_BOT_TOKEN.source.id, bot.id);
+  assert.deepEqual(current.data.secretBindings.SLACK_APP_TOKEN.source, staged.ref);
+  assert.deepEqual(current.data.secretBindings.SLACK_BOT_TOKEN.source, later.ref);
 });
 
 test("a refused refresh clears its loading hint while a choice awaits permission", async (t) => {
@@ -719,7 +435,6 @@ test("Create Agent discards a pending model Secret even after switching provider
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const key = page.getByLabel("API key Secret", { exact: true });
   const provider = page.getByLabel("Provider", { exact: true });
   const permission = `${fixture.origin}/namespaces/${namespace.id}/permissions/secrets`;
@@ -758,7 +473,6 @@ test("Create Agent waits for the replacement model Secret before validating", as
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const key = page.getByLabel("API key Secret", { exact: true });
   const base = `${fixture.origin}/namespaces/${namespace.id}`;
   const permission = `${base}/permissions/secrets`;

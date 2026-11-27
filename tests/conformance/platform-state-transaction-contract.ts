@@ -64,6 +64,20 @@ async function verifyRevisionOrder(
   await assertHistory();
 }
 
+function expectedRevisionSummary(item: PlatformStateSeed["revision"]) {
+  return {
+    id: item.id,
+    namespaceId: item.namespaceId,
+    agentId: item.agentId,
+    revision: item.revision,
+    backendId: item.backendId,
+    configurationId: item.configurationId,
+    configurationGeneration: item.configurationGeneration,
+    harness: item.harness,
+    createdAt: item.createdAt,
+  };
+}
+
 export async function verifyPlatformStateTransactions(
   store: PlatformStateStore,
   {
@@ -222,6 +236,29 @@ export async function verifyPlatformStateTransactions(
   await store.read(async (state) => {
     assert.deepEqual(await state.revisions.listRevisions(namespace.id, providerAgent.id), []);
   });
+
+  const readProviderAgent = () =>
+    store.read(({ agents }) => agents.findAgent(namespace.id, providerAgent.id));
+  const setEditing = (enabled: boolean) =>
+    store.transact(({ agents }) =>
+      agents.setSandboxPolicyEditing(namespace.id, providerAgent.id, enabled),
+    );
+  const editingAgent = { ...providerAgent, sandboxPolicyEditing: true };
+  assert.deepEqual(await readProviderAgent(), providerAgent);
+  assert.deepEqual(await setEditing(true), editingAgent);
+
+  assert.equal(
+    await store.transact(({ agents }) =>
+      agents.setSandboxPolicyEditing(namespace.id, identifier("agt"), false),
+    ),
+    undefined,
+  );
+  assert.deepEqual(await readProviderAgent(), editingAgent);
+  // Setting the same value still returns the matching Agent.
+  assert.deepEqual(await setEditing(true), editingAgent);
+  assert.deepEqual(await setEditing(false), providerAgent);
+  assert.deepEqual(await readProviderAgent(), providerAgent);
+
   await store.transact(async (transaction) => {
     assert.deepEqual(
       await transaction.agents.updateConfiguration(
@@ -553,19 +590,7 @@ export async function verifyPlatformStateTransactions(
     // saved settings; `before` excludes the revision it names and everything newer.
     assert.deepEqual(
       await state.revisions.pageRevisionSummaries(namespace.id, agent.id, { limit: 1 }),
-      {
-        revisions: listed.map((item) => ({
-          id: item.id,
-          namespaceId: item.namespaceId,
-          agentId: item.agentId,
-          revision: item.revision,
-          backendId: item.backendId,
-          configurationId: item.configurationId,
-          configurationGeneration: item.configurationGeneration,
-          harness: item.harness,
-          createdAt: item.createdAt,
-        })),
-      },
+      { revisions: [expectedRevisionSummary(revision)] },
     );
     assert.deepEqual(
       await state.revisions.pageRevisionSummaries(namespace.id, agent.id, {
@@ -695,6 +720,16 @@ export async function verifyPlatformStateTransactions(
     store.transact(async (transaction) => {
       escapedTransaction = transaction;
       await transaction.namespaces.createNamespace(rejectedNamespace);
+      // Both Namespaces exist. Check the real owner before rollback could mask a stray write.
+      const { agents } = transaction;
+      assert.equal(
+        await agents.setSandboxPolicyEditing(rejectedNamespace.id, providerAgent.id, true),
+        undefined,
+      );
+      assert.equal(
+        (await agents.findAgent(namespace.id, providerAgent.id))?.sandboxPolicyEditing,
+        false,
+      );
       await transaction.audit.append(rejectedAudit);
       await transaction.operations.append(rejectedOperation);
       throw transactionFailure;
@@ -751,14 +786,27 @@ export async function verifyPlatformStateTransactions(
     networkProxy,
     compute: { ...revision.compute, networkProxyAdmission: "private-admission" },
   };
-  await store.transact(async (transaction) => {
+  const admitted = await store.transact(async (transaction) => {
     await transaction.configurations.createConfiguration(proxyConfiguration);
     await transaction.agents.createAgent(proxyAgent);
-    await transaction.revisions.createRevision(proxyRevision);
+    return transaction.revisions.createRevision(proxyRevision);
   });
   await store.read(async ({ revisions }) => {
     const saved = await revisions.findRevision(namespace.id, proxyAgent.id, proxyRevision.id);
     assert.deepEqual(saved?.networkProxy, networkProxy);
     assert.equal(saved?.compute.networkProxyAdmission, "private-admission");
+    // The summary carries the selected proxy, but never the private Compute admission.
+    assert.deepEqual(
+      await revisions.pageRevisionSummaries(namespace.id, proxyAgent.id, { limit: 1 }),
+      {
+        revisions: [
+          {
+            ...expectedRevisionSummary(proxyRevision),
+            createdAt: admitted.createdAt,
+            networkProxy,
+          },
+        ],
+      },
+    );
   });
 }

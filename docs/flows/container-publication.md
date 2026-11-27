@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: "2026-11-24"
-last_updated_session: "authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371"
+updated: "2026-11-25"
+last_updated_session: "authoring-run/7c685762-5846-42ed-80aa-4038fc0856b2"
 ---
 
 # Container publication flow
@@ -12,7 +12,7 @@ The standalone **Enterprise Containers** workflow verifies Linux amd64 and arm64
 and publishes their indexes to public GHCR packages. Image-only is the default.
 With `publish_chart: true`, a separate protected job tags both indexes with
 the OCE version and publishes the Helm chart. [Release OCE](release-oce.md)
-reuses the native preparation and publishes the chart and CLI before moving image aliases.
+reuses native preparation for both full releases and image-only publication.
 
 ## Entry Points
 
@@ -306,6 +306,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-25 08:08: Link the Release OCE image-only path to native preparation. (authoring-run/7c685762-5846-42ed-80aa-4038fc0856b2 - 67865414220f9d67820f165fe932fe23df025322)
 
 - 2026-11-24 11:32: Trace shared native assembly and chart preparation. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 6908216b29038bd850b44f084b07ba7f886614d5)
 
