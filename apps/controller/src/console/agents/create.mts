@@ -2701,11 +2701,21 @@ function renderAgentForm(
     if (details) {
       details.open = true;
     }
+    const error = configurationError.node;
+    if (!error.hidden) {
+      // Leave room for the actual error and actions, including a wrapped deployment warning.
+      const belowEditor =
+        error.getBoundingClientRect().bottom - configuration.getBoundingClientRect().bottom;
+      configuration.style.setProperty(
+        "--configuration-error-space",
+        `${Math.ceil(actions.getBoundingClientRect().height + belowEditor)}px`,
+      );
+    }
     if (offset !== undefined) {
       configuration.setSelectionRange(offset, offset);
     }
     configuration.focus();
-    if (offset === undefined) {
+    if (error.hidden) {
       return;
     }
 
@@ -2714,9 +2724,7 @@ function renderAgentForm(
       document.documentElement.clientHeight,
       actions.getBoundingClientRect().top,
     );
-    const overlap = Math.ceil(
-      configurationError.node.getBoundingClientRect().bottom - visibleBottom,
-    );
+    const overlap = Math.ceil(error.getBoundingClientRect().bottom - visibleBottom);
     if (overlap > 0 && configuration.getBoundingClientRect().top >= overlap) {
       window.scrollBy(0, overlap);
     }

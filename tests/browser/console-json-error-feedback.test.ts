@@ -306,7 +306,19 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   // Valid JSON syntax can still contain a number that serialization would replace with null.
   const overflow = template.replace(/^\s*\{/, '{"metadata":{"thresholds":[1,-1e400,3]},');
   assert.notEqual(overflow, template);
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport);
+  const shortViewport = { width: 1024, height: 360 };
+  await page.setViewportSize(shortViewport);
   await json.fill(overflow);
+  // A number-range error has no caret location. Keep the user's selection on the first line.
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("Shift+ArrowRight");
+  const firstLineSelection = [0, 1];
+  assert.deepEqual(
+    await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    firstLineSelection,
+  );
   await model.fill("gpt-4.1");
   await model.press("Tab");
   await jsonError
@@ -316,6 +328,12 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
     .waitFor();
   assert.equal(await focusedId(page), "configuration-json");
   assert.equal(await json.inputValue(), overflow);
+  assert.deepEqual(
+    await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions"),
+    { selection: firstLineSelection, firstLineVisible: true, diagnosticVisible: true },
+    `Create Agent keeps the selection and shows the first line and full number diagnostic above its actions at ${shortViewport.width}×${shortViewport.height}`,
+  );
+  await page.setViewportSize(originalViewport);
   for (const name of ["Choose a model from the list", "Enter model ID manually"]) {
     await page.getByRole("button", { name, exact: true }).click();
     assert.equal(await focusedId(page), "configuration-json");
@@ -355,10 +373,8 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const misplacedComma = template.replace(/^\s*\{/, "$&,");
   assert.notEqual(misplacedComma, template);
   const commaOffset = misplacedComma.indexOf(",");
-  const originalViewport = page.viewportSize();
-  assert.ok(originalViewport);
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
+  for (const viewport of [originalViewport, shortViewport]) {
     await page.setViewportSize(viewport);
     await json.fill(misplacedComma);
     await json.press("Control+End");
