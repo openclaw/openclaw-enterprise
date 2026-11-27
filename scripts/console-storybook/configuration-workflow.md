@@ -90,6 +90,12 @@ are visible and the caret is before `x`. Enlarge the editor manually
 and try saving again. If both no longer fit, check that the editor keeps its
 size and the caret stays visible. Press Delete and save the corrected draft.
 
+Repeat at 320×480. On a line after line 10, add spaces before a string
+value so its opening quote is past column 100. Replace that quote with
+`“`. Move to the end so the typo scrolls out of view. Press Tab and Enter
+to save. The caret and the instruction to use a straight quote should both
+be visible. Without clicking, press Delete and type `"` to repair the draft.
+
 ## Correct an out-of-range Configuration number
 
 Open **Pages → Agent detail → Invalid Configuration JSON**
