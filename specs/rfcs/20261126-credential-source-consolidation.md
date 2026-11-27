@@ -86,26 +86,34 @@ before Worker records revocation.
 
 ### Dedicated Kubernetes Codex without OpenShell
 
-Today, the Credential Proxy implementation requires the OpenShell Sandbox.
-The Harness calls the provider with a placeholder. OpenShell substitutes the
-credential when the request matches policy.
+- **OpenShell:** The Harness sends the placeholder to the provider's address.
+  OpenShell applies the Sandbox policy and substitutes the real credential on
+  approved requests.
+- **Standalone Kubernetes:** Codex calls the Credential Proxy's private HTTPS
+  endpoint with a short-lived Kubernetes workload token bound to its Pod and
+  scoped to the Proxy. Any process in that Pod can use the approved routes. The
+  Proxy matches the token's verified Pod identity and the connection peer to
+  the live Compute-owned Pod. It checks the Agent revision and route before it
+  resolves the Source through TokenService and adds upstream auth.
+  Compute owns the Codex Deployment and prepared Git delivery.
 
-For Kubernetes Codex without OpenShell, add a standalone Credential Proxy.
-Kubernetes Compute owns the Codex Deployment and prepared Git delivery. Codex
-calls the Proxy over private HTTPS. The Proxy verifies the exact Harness Pod
-and Agent revision, checks the approved model route, then adds the upstream
-credential from TokenService. For model access, the Pod receives only its
-workload identity. Any process in that Pod can use the approved route. Compute
-keeps the approved Git routes.
+Add a Pod-backed variant to `CredentialDeploymentTarget`. The Namespace,
+Agent, and revision identify the deployment. Compute identifies its live
+Harness Pod by UID. The OpenShell variant identifies its Sandbox by `sandboxId`.
+Admission pins the Proxy registration, model Source, and approved routes.
+The Proxy prepares the endpoint and trust information before Compute starts
+Codex. It accepts the startup probe while Worker holds the preparing revision's
+claim and serves requests from the active revision. Withdrawal, abandonment,
+and retirement close the target to new requests. Stop and retirement drain
+existing requests before removing the target.
 
-Start by testing the pinned Codex app server's provider auth command. The
-command reads a short-lived Kubernetes token bound to the Pod and scoped to
-the Proxy. An explicit HTTPS endpoint avoids intercepting the model provider's
-TLS. The Proxy must handle the startup model probe for the exact preparing
-revision as well as requests from the active revision. Retired or abandoned
-revisions lose access. Existing repository delivery demonstrates private worker
-ingress and separate request authorization. Model access needs its own Pod
-verification and route policy.
+Preserve both no-Sandbox model profiles. The API-key profile can use Codex's
+provider auth command to present the Pod token. The existing imported
+`codex_pat` profile reads an exact Namespace Secret and runs
+`codex login --with-access-token`. Its replacement uses a PAT Source and must
+preserve native account verification, model discovery, startup probe, and
+app-server inference. OCC-issued ServiceAccounts already use a separate issued
+Source binding.
 
 ## Interface changes
 
@@ -143,12 +151,11 @@ See the [implementation plan](../plans/20261126-credential-source-consolidation.
 
 ## Open decisions
 
-- **Dedicated Codex without OpenShell:** Prove that the pinned app server can
-  present its Pod identity while preserving the supported API-key and
-  account-token profiles. The custom Responses provider offers an
-  API-key path to test. Verify the existing account operations separately.
-  Verify HTTP streaming, supported WebSocket transport, active revision
-  replacement, and request withdrawal before choosing the final Proxy contract.
+- **Dedicated Codex without OpenShell:** Verify the API-key and imported PAT
+  profiles with the shipped Codex binary. Exercise the startup probe and
+  app-server turn, HTTP streaming and supported upstream WebSockets, active
+  revision replacement, and Source withdrawal. The API-key loopback probe
+  does not establish PAT delivery or Kubernetes workload authorization.
 - **OpenShell:** Can Gateway export an OpenShell-owned Source? Decide operator certificate custody, authority, and Provider identity handling, then qualify the path. Do not enable export or silently fall back before that decision.
 
 ## Simplifications
