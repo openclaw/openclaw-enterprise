@@ -308,12 +308,29 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.notEqual(overflow, template);
   const originalViewport = page.viewportSize();
   assert.ok(originalViewport);
+  // Enlarge the editor using Chromium's native resize grip before shortening the window.
+  await json.scrollIntoViewIfNeeded();
+  const beforeResize = await json.boundingBox();
+  assert.ok(beforeResize);
+  const gripX = beforeResize.x + beforeResize.width - 4;
+  const gripY = beforeResize.y + beforeResize.height - 4;
+  await page.mouse.move(gripX, gripY);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(gripX, gripY + 24, { steps: 4 });
+  } finally {
+    await page.mouse.up();
+  }
+  const resizedHeight = await json.evaluate((node) => node.getBoundingClientRect().height);
+  assert.ok(resizedHeight > beforeResize.height, "the native resize grip enlarges the editor");
+
   const shortViewport = { width: 1024, height: 360 };
   await page.setViewportSize(shortViewport);
   await json.fill(overflow);
   // A number-range error has no caret location. Keep the user's selection on the first line.
   await page.keyboard.press("Control+Home");
   await page.keyboard.press("Shift+ArrowRight");
+  const editorScroll = await json.evaluate((node) => node.scrollTop);
   const firstLineSelection = [0, 1];
   assert.deepEqual(
     await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
@@ -328,10 +345,16 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
     .waitFor();
   assert.equal(await focusedId(page), "configuration-json");
   assert.equal(await json.inputValue(), overflow);
+  const { selection, diagnosticVisible } = await json.evaluate(
+    jsonErrorVisibility,
+    "#create-agent-form ~ .form-actions",
+  );
+  const editor = await json.boundingBox();
+  assert.equal(await json.evaluate((node) => node.scrollTop), editorScroll);
   assert.deepEqual(
-    await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions"),
-    { selection: firstLineSelection, firstLineVisible: true, diagnosticVisible: true },
-    `Create Agent keeps the selection and shows the first line and full number diagnostic above its actions at ${shortViewport.width}×${shortViewport.height}`,
+    { selection, editorTopVisible: editor !== null && editor.y >= 0, diagnosticVisible },
+    { selection: firstLineSelection, editorTopVisible: true, diagnosticVisible: true },
+    `Create Agent keeps the selection and shows the editor and number error above its actions at ${shortViewport.width}×${shortViewport.height}`,
   );
   await page.setViewportSize(originalViewport);
   for (const name of ["Choose a model from the list", "Enter model ID manually"]) {
@@ -346,6 +369,11 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const corrected: unknown = JSON.parse(await json.inputValue());
   assert.partialDeepStrictEqual(corrected, { metadata: { thresholds: [1, -150, 3] } });
   assert.equal(await jsonError.isHidden(), true);
+  assert.equal(
+    await json.evaluate((node) => node.getBoundingClientRect().height),
+    resizedHeight,
+    "correcting the draft restores the user-chosen editor height",
+  );
   assert.equal(await normalFocus.evaluate((node) => node === document.activeElement), true);
   await json.fill(template);
   await model.fill("gpt-4.1");

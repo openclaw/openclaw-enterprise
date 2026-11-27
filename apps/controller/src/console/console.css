@@ -4783,6 +4783,7 @@ html:has(#create-agent-form) {
 }
 /* Keep the user's chosen height when the error clears. */
 .launch-advanced #configuration-json[aria-invalid="true"] {
+  --configuration-error-space: var(--create-actions-space);
   max-height: calc(100dvh - var(--configuration-error-space) - var(--space-2));
 }
 .repository-customize .repository-option {
