@@ -89,7 +89,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 14 operations |
 | [Installation](#installation) | 10 operations |
-| [Namespaces](#namespaces) | 7 operations |
+| [Namespaces](#namespaces) | 8 operations |
 | [Agents](#agents) | 61 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
@@ -3892,6 +3892,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agent-capabilities`](#get-namespacesnamespaceidagentcapabilities) | Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there |
 | [`GET /namespaces/{namespaceId}/permissions`](#get-namespacesnamespaceidpermissions) | Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/permissions/secrets`](#get-namespacesnamespaceidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation |
+| [`POST /namespaces/{namespaceId}/provision/retry`](#post-namespacesnamespaceidprovisionretry) | Retry failed Namespace provisioning as its original authorized actor |
 
 #### `GET /namespaces`
 
@@ -4404,6 +4405,69 @@ Example response
 {
   "data": {
     "operateDenied": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/provision/retry`
+
+<span id="post-namespacesnamespaceidprovisionretry"></span>
+
+Retry failed Namespace provisioning as its original authorized actor
+
+**Operation ID:** `retryNamespaceProvisioning`
+
+**Permissions:** Requires read permission on the requested Namespace. Requires create permission for Namespace resources in the Installation. Requires administer permission on the Installation if this Namespace uses an existing Kubernetes namespace. Only the original provisioning actor can retry, and an exact Namespace create restriction still denies the operation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `namespace` | `requested` |
+| `create` | `namespace` | `installation` |
+| `administer` | `installation` | `requested` (when selecting an existing namespace) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `202` | Accepted |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`202` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.existingNamespace` | `string` | No | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
+| `data.id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data.status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "name": "engineering",
+    "status": "provisioning"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

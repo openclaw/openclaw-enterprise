@@ -843,6 +843,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     options.agentRuntimeLogs?.enabled === true
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
       : undefined;
+  function verifiedActorServiceKeyId(request: FastifyRequest): string | undefined {
+    const admitted = admissions.get(request);
+    return admitted?.method === "api_key" ? admitted.serviceKeyId : undefined;
+  }
+
   function event(
     operation: RequestOperation,
     request: FastifyRequest,
@@ -880,11 +885,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     // A request admitted by a service key names that key (its non-secret ID), so an
     // administrator can tell which of a ServicePrincipal's keys acted. `serviceKeyId` stays
     // the key a key-management event acts on.
-    const admitted = admissions.get(request);
-    const actorKeyDetails =
-      admitted?.method === "api_key" && admitted.serviceKeyId !== undefined
-        ? { actorServiceKeyId: admitted.serviceKeyId }
-        : undefined;
+    const actorServiceKeyId = verifiedActorServiceKeyId(request);
+    const actorKeyDetails = actorServiceKeyId === undefined ? undefined : { actorServiceKeyId };
     const details =
       result?.details === undefined && actorKeyDetails === undefined
         ? evidenceDetails
@@ -1914,6 +1916,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         callerMay,
       });
       reply.send({ data, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "retryNamespaceProvisioning") {
+      const data = await controller.retryNamespaceProvisioning(
+        context.actorId,
+        namespaceId,
+        request.id,
+        verifiedActorServiceKeyId(request),
+      );
+      reply.status(202).send({ data, meta: { requestId: request.id } });
       return;
     }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -1277,9 +1277,54 @@ test(
         "",
       );
     };
+    // A separate failed Namespace keeps the partial-deletion case above independent
+    // from operator recovery: no replacement ID, gateway keys, or placement.
+    const recoverable = await request("POST", "/namespaces", { name: "quota-recoverable" });
+    assert.equal(recoverable.status, 201);
+    const recoveryId = recoverable.data.id;
+    const recoveryPlacement = await prepareNamespace(recoveryId);
+    await fixture.waitFor("second Namespace reaches a terminal refusal", async () =>
+      (await request("GET", `/namespaces/${recoveryId}`)).data.status === "failed"
+        ? true
+        : undefined,
+    );
+    const gatewayKeyIdentity = async () => {
+      const secret = await fixture.resource("secret", `${service}-jwt-keys`, recoveryPlacement);
+      const uid = metadata(secret).uid;
+      assert.ok(typeof uid === "string" && uid.length > 0, "gateway key Secret has no UID");
+      const data = asRecord(asRecord(secret)?.data);
+      const fields = ["signing.pem", "public.pem", "kid"].map((name) => data?.[name]);
+      assert.ok(
+        fields.every((value) => typeof value === "string" && value.length > 0),
+        "gateway key data is missing",
+      );
+      return { uid, digest: createHash("sha256").update(JSON.stringify(fields)).digest("hex") };
+    };
+    const recoveryKey = await gatewayKeyIdentity();
     await remove(refused.data.id);
     await worker.stop();
     configuration.drivers.compute.configuration.resources.namespace.quota = originalQuota;
+    await writeFile(startupPath, JSON.stringify(configuration), { mode: 0o600 });
+    worker = startWorker(await loadDrivers());
+    await worker.start();
+    const retry = await request("POST", `/namespaces/${recoveryId}/provision/retry`);
+    assert.equal(retry.status, 202);
+    await fixture.waitFor(
+      "same Namespace is ready after operator repair",
+      async () => {
+        const observed = await request("GET", `/namespaces/${recoveryId}`);
+        assert.equal(observed.status, 200);
+        assert.equal(observed.data.id, recoveryId);
+        assert.equal(observed.data.name, "quota-recoverable");
+        return observed.data.status === "ready" ? true : undefined;
+      },
+      300_000,
+    );
+    const recoveredKey = await gatewayKeyIdentity();
+    assert.equal(recoveredKey.uid, recoveryKey.uid);
+    assert.ok(recoveredKey.digest === recoveryKey.digest, "retry rotated gateway signing material");
+    await remove(recoveryId);
+    await worker.stop();
     for (const object of templates) {
       if (object.kind === "Deployment" || object.kind === "StatefulSet") {
         object.spec.replicas = 0;

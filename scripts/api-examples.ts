@@ -588,6 +588,7 @@ export const responseExamples = {
   listNamespaces: [namespace],
   getNamespace: namespace,
   createNamespace: { ...namespace, status: "provisioning" },
+  retryNamespaceProvisioning: { ...namespace, status: "provisioning" },
   deleteNamespace: { ...namespace, status: "deleting" },
   listAgents: [agent],
   getAgent: agent,

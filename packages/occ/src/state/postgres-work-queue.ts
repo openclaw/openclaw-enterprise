@@ -107,6 +107,7 @@ interface WorkRow {
   readonly audit_attempt_id: string | null;
   readonly lease_expires_at: Date | string | null;
   readonly lease_active?: boolean;
+  readonly provisioning_retry_at?: Date | string | null;
   readonly age_ms?: number;
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
@@ -117,7 +118,7 @@ interface WorkRow {
 
 /** The work's age on PostgreSQL's clock, for a claim or renewal to return. */
 const CLAIM_AGE_SQL = (alias: string) =>
-  `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - ${alias}.created_at) * 1000)::double precision AS age_ms`;
+  `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - COALESCE(${alias}.provisioning_retry_at, ${alias}.created_at)) * 1000)::double precision AS age_ms`;
 
 const MAX_BACKOFF_MS = 300_000;
 export const PENDING_WORK_PREDICATE = "state IN ('queued', 'claimed')";
@@ -605,6 +606,9 @@ export function asWork(value: unknown): ControllerWork {
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
     ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
     ...(row.result_data === null ? {} : { resultData: Object.freeze({ ...row.result_data }) }),
+    ...(row.provisioning_retry_at == null
+      ? {}
+      : { provisioningRetryAt: asDate(row.provisioning_retry_at) }),
     createdAt: asDate(row.created_at),
     updatedAt: asDate(row.updated_at),
   });

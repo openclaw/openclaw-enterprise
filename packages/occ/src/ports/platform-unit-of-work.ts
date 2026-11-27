@@ -250,6 +250,7 @@ export function bindPlatformUnitOfWork(
       ...platformReadMethods.operations,
       "append",
       "retryFailedAgentDeletion",
+      "retryFailedNamespaceProvisioning",
       "retryFailedNamespaceDeletion",
       "expediteCredentialWithdrawalWork",
     ]),

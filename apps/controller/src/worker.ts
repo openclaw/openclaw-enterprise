@@ -135,6 +135,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import {
   backendDefinitionMap,
+  namespaceProvisioningDenial,
   removeNamespacePolicy,
   removedPolicyDetails,
   validateBackendDefinitions,
@@ -1929,7 +1930,7 @@ export class ControllerWorker {
   }
 
   /**
-   * Milliseconds since the claimed work was created, by PostgreSQL's clock. The convergence
+   * Milliseconds since work creation (or explicit Namespace provisioning retry), by PostgreSQL's clock. The convergence
    * deadline and age-scaled rechecks use it. `createdAt` is on the database clock, so
    * `Date.now() - createdAt` would move the deadline by the controller's skew from it
    * (finding 1187). The claim carries PostgreSQL's age when granted, and each renewal around
@@ -3379,31 +3380,24 @@ export class ControllerWorker {
           }
         : exact;
     const actorPresent = state.identities.some((identity) => identity.id === claim.actorId);
-    const decision = await this.iamDecision(driver, request);
     if (!actorPresent) {
+      const decision = await this.iamDecision(driver, request);
       return { outcome: "permanent", code: "ACTOR_REVOKED", decision, authorization: request };
     }
-    if (!decision.allowed) {
-      return deniedAuthorization(request, decision);
+    if (claim.namespaceTarget === "deleted") {
+      return this.checkGrant(driver, exact);
     }
-    if (claim.namespaceTarget === "ready") {
-      if (namespace.existingNamespace !== undefined) {
-        const adminRequest: AuthorizationRequest = {
-          principalId: claim.actorId,
-          action: "administer",
-          resource: { kind: "installation", id: installation.id },
-        };
-        const refusal = await this.checkGrant(driver, adminRequest);
-        if (refusal !== undefined) {
-          return refusal;
-        }
-      }
-      const exactDecision = await this.iamDecision(driver, exact);
-      if (exactDecision.evidence.restrictionIds.length > 0) {
-        return deniedAuthorization(exact, exactDecision);
-      }
-    }
-    return undefined;
+    const denial = await namespaceProvisioningDenial(
+      claim.actorId,
+      installation.id,
+      namespace.id,
+      {
+        retry: claim.provisioningRetryAt !== undefined,
+        adopted: namespace.existingNamespace !== undefined,
+      },
+      (authorization) => this.iamDecision(driver, authorization),
+    );
+    return denial ? deniedAuthorization(denial.authorization, denial.decision) : undefined;
   }
 
   private async observeNamespace(

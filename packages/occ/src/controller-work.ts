@@ -42,6 +42,7 @@ export interface ControllerWork {
   readonly completedAt?: Date;
   readonly reasonCode?: string;
   readonly resultData?: Readonly<Record<string, unknown>>;
+  readonly provisioningRetryAt?: Date;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -51,7 +52,7 @@ export interface ClaimedWork extends ControllerWork {
   readonly claimToken: string;
   readonly leaseExpiresAt: Date;
   /**
-   * Milliseconds since `createdAt` when the claim was granted or renewed, by the State store's
+   * Milliseconds since `provisioningRetryAt` (or `createdAt` when not retried) when the claim was granted or renewed, by the State store's
    * clock. `createdAt` is on that clock too, so subtracting it from the controller's clock would
    * shift the age by their skew.
    */

@@ -218,13 +218,15 @@ and `worker.completed` adds `cleanupCause`.
 
 Pending Namespace convergence and Agent deployment share
 `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` (default: 15 minutes), measured from
-operation creation on PostgreSQL's clock. Queue time counts; starting or
-restarting the worker does not reset it. Have the worker ready before submitting
-deployment work. After the limit, a deployment's first pending result can fail
+operation creation on PostgreSQL's clock. An accepted
+[retry of failed Namespace provisioning](../namespaces.md#retry-failed-provisioning)
+starts a new budget at `provisioning_retry_at` without changing `created_at`.
+Queue time counts. A duplicate retry, claim renewal, or worker restart does not
+reset the deadline. Have the worker ready before submitting deployment work. After the limit, a deployment's first pending result can fail
 with `CONVERGENCE_DEADLINE_EXCEEDED`.
 
 For an intentional longer wait, configure the worker timeout before resuming
-(`worker.convergenceTimeoutMs` in Helm). It must cover the operation's total age
+(`worker.convergenceTimeoutMs` in Helm). It must cover the elapsed time in the current run
 plus remaining convergence time. The setting applies across that worker's
 Namespace and Agent deployment work and live SandboxPolicy applications.
 Extending it can delay `SANDBOX_POLICY_UNCONFIRMED`; the provider may already

@@ -4625,6 +4625,7 @@ function repositories(
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
+      retryFailedNamespaceProvisioning: async () => false,
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,

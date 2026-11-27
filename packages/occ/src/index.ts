@@ -1,6 +1,7 @@
 export { OpenClawController } from "./controller.ts";
 export type { LegacyCredentialSourceMetadata } from "./credential-source-metadata.ts";
 export { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "./namespace-operations.ts";
+export { namespaceProvisioningDenial } from "./namespace-provisioning-authority.ts";
 export type { CreateNamespaceInput } from "./namespace-operations.ts";
 export type {
   NamespaceLifecycleBinding,

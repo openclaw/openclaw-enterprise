@@ -6055,6 +6055,14 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return (retried.rows[0] as { retried?: unknown } | undefined)?.retried === true;
         },
+        retryFailedNamespaceProvisioning: async (namespaceId, actorId) => {
+          await this.requireInitialized(context);
+          const result = await client.query(
+            "SELECT occ.retry_failed_namespace_provisioning($1, $2) AS retried",
+            [namespaceId, actorId],
+          );
+          return (result.rows[0] as { retried?: unknown } | undefined)?.retried === true;
+        },
         retryFailedNamespaceDeletion: async (namespaceId, initiatingActorId, actorId) => {
           await this.requireInitialized(context);
           // created_at is immutable, so a retry keeps the original convergence

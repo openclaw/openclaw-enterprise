@@ -546,6 +546,25 @@ export function registerExactResourceCases() {
 }
 
 export function registerNamespaceDeletionCase() {
+  test("Namespace provisioning retry checks authority before disclosing active work", async () => {
+    const fixture = await createFixture();
+    await bootstrap(fixture);
+    const namespace = await createNamespace(fixture, "Active tenant");
+    const path = `/namespaces/${namespace.id}/provision/retry`;
+    const denied = await request(fixture.createApp(fixture.tenantAReader), path, {
+      method: "POST",
+    });
+    assert.equal(denied.response.status, 403);
+    assert.equal(fixture.auditSink.events.at(-1)?.kind, "authorization_denial");
+    const conflict = await request(fixture.app, path, { method: "POST" });
+    assert.equal(conflict.response.status, 409);
+    const invalid = await request(fixture.app, path, {
+      method: "POST",
+      body: { actorId: "other" },
+    });
+    assert.equal(invalid.response.status, 400);
+  });
+
   test("Namespace deletion authorizes the exact target and rejects nonempty resources", async () => {
     const fixture = await createFixture();
     await bootstrap(fixture);

@@ -515,6 +515,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `completed_at`
 - `reason_code`
 - `result_data`
+- `provisioning_retry_at` (database time of the last accepted Namespace provisioning retry; null on the original run)
 - `created_at`
 - `updated_at`
 

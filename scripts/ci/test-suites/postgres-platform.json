@@ -375,7 +375,10 @@
     },
     {
       "path": "tests/integration/postgres-worker-audit.test.ts",
-      "expectedTests": ["PostgreSQL commits a worker claim and its audit record before Compute"]
+      "expectedTests": [
+        "PostgreSQL commits a worker claim and its audit record before Compute",
+        "Namespace provisioning retry is atomic, authorized and bounded across worker restarts"
+      ]
     },
     {
       "path": "tests/integration/compute-singleton-worker-postgres.test.ts",
