@@ -120,6 +120,13 @@ On a saved Agent with a working catalog, repeat the invalid edit at 390 px.
 open a plugin. Check that it has no **Not selected** label. Use the keyboard to
 activate **Back to plugins**. Focus should return to **Search plugins**.
 
+On the same signed-in Agent, restore readable JSON and open a plugin whose tools
+are still loading. At 390 px, focus **Back to plugins** before the tool list
+arrives. When the tools appear, focus should remain on **Back to plugins**.
+Press Enter. The list should return with **Search plugins** focused. Open another
+plugin and move focus to **Done** while its tools load. Check that focus stays
+on **Done**.
+
 ## Correct an out-of-range Configuration number
 
 Open **Pages → Agent detail → Invalid Configuration JSON**

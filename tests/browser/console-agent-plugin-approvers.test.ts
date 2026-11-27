@@ -698,6 +698,30 @@ async function conflictFeedback(response: Response, dialog: Locator) {
   return { advice, feedback };
 }
 
+test("Back keeps focus when saved plugin tools finish loading", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  await ui.page.setViewportSize({ width: 1100, height: 844 });
+  const back = ui.button("Back to plugins");
+  const focused = (node: Element) => node === node.ownerDocument.activeElement;
+  const held = ui.holdNextDetails();
+  try {
+    await ui.button("Alpha").click();
+    await within(held.started, "the pending plugin details read");
+    await ui.page.keyboard.press("Shift+Tab");
+    assert.equal(await back.evaluate(focused), true);
+    await discoveryResponse(ui.page, `${ui.catalogUrl}/details`, async () => held.release());
+  } finally {
+    held.release();
+  }
+  await ui.dialog.locator('details[data-tool="app_hosted/search"]').waitFor();
+  assert.equal(await back.evaluate(focused), true, "Back remains focused after the tool response");
+  await ui.page.keyboard.press("Enter");
+  await ui.button("Alpha").waitFor();
+  const search = ui.dialog.getByRole("searchbox", { name: "Search plugins" });
+  assert.equal(await search.evaluate(focused), true);
+  await ui.checkDraft();
+});
+
 test("Saved plugin details conflict offers manual retry and keeps the draft", async (t) => {
   const ui = await savedPluginConflictFixture(t);
   await ui.loadDetails("Beta");
