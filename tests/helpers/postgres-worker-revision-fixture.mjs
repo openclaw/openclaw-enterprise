@@ -15,7 +15,7 @@ import { installationDriverConfigurations } from "../../apps/controller/src/comp
 import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
 
 /**
- * @import { SuiteContext, TestContext } from "node:test"
+ * @import { SuiteContext, TestContext, TestOptions } from "node:test"
  * @import { Pool } from "pg"
  * @import { Agent, AgentRevision, BackendDefinition, ComputeDriver, Namespace, Principal, RepositoryRevisionState, RevisionHarnessDescriptor } from "../../packages/contracts/src/index.ts"
  * @import { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts"
@@ -1055,6 +1055,11 @@ export function createWorkerRevisionFixtures(
     };
   }
 
+  /**
+   * @param {string} name
+   * @param {(fixture: Awaited<ReturnType<typeof setup>>, context: TestContext) => void | Promise<void>} run
+   * @param {TestOptions} [options]
+   */
   function revisionTest(name, run, options = {}) {
     test(name, { ...requiresPostgres, ...options }, async (context) => {
       const fixture = await setup(context);
