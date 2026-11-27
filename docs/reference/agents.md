@@ -180,7 +180,7 @@ bindings and requests that never created an Agent, see
 
 For dedicated OpenClaw or Codex, use
 `{ "method": "credential_source", "sourceId": "cs_…" }` with a supported
-TokenService and its compatible Sandbox and Credential Proxy. List it in
+CredentialService and its compatible Sandbox and Credential Proxy. List it in
 `credentialSources`; see [Source grants](credential-sources.md#bind-a-source-to-an-agent).
 
 Replacing a revision from or to managed credential delivery currently returns `409` before queueing. Complete Stop before deploying again. See [implementation status](credential-sources.md#implementation-status).

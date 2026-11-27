@@ -186,7 +186,8 @@ export function registerDeviceAuthorizationAgentCases(): void {
     );
     assert.equal(retained?.state, "ready");
     assert.ok(
-      retained?.ownerCapability === "token_service" && retained.type === "oauth2-refresh-token",
+      retained?.ownerCapability === "credential_service" &&
+        retained.type === "oauth2-refresh-token",
     );
     assert.equal(retained.consent.revocationRequestedBy, undefined);
     assert.deepEqual(

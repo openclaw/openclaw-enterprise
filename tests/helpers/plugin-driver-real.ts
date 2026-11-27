@@ -506,7 +506,7 @@ function createImportedCodexServiceAccountDriverFactory(
         );
       },
       async createCredential(account) {
-        const owner = controller.selectedDriver("token_service");
+        const owner = controller.selectedDriver("credential_service");
         const source = await owner.createSource(
           {
             type: "static",

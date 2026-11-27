@@ -6,13 +6,13 @@ import {
   type CredentialSourceReference,
   type PushAgentCredentialsBody,
   type PushAgentCredentialsResponse,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
-import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import { isManagedCredentialServiceSource } from "./credential-source-metadata.ts";
 import {
   AgentDeletingError,
   DependencyUnavailableError,
@@ -44,13 +44,13 @@ interface RetryDependencies {
     "authorize" | "authorizeAgentPrincipal" | "holdAuthority"
   >;
   readonly proxy: () => CredentialProxyDriver;
-  readonly tokenService: (instanceId: string) => TokenServiceDriver;
+  readonly credentialService: (instanceId: string) => CredentialServiceDriver;
   readonly timeoutMs: number;
 }
 
 interface SelectedSource {
   readonly sourceRef: CredentialSourceReference;
-  readonly tokenServiceInstanceId: string;
+  readonly credentialServiceInstanceId: string;
 }
 
 export function createAgentCredentialRetry(dependencies: RetryDependencies) {
@@ -127,7 +127,7 @@ export function createAgentCredentialRetry(dependencies: RetryDependencies) {
         );
         const source = await state.credentialSources.lockCredentialSource(namespace.id, id);
         if (
-          !isManagedTokenServiceSource(source) ||
+          !isManagedCredentialServiceSource(source) ||
           source.state !== "ready" ||
           !credentialSourceMatchesSnapshot(source, revisionCredentialSourceSnapshot(revision, id))
         ) {
@@ -135,7 +135,10 @@ export function createAgentCredentialRetry(dependencies: RetryDependencies) {
             "The deployed credential source is unavailable or has changed owner.",
           );
         }
-        selected.push({ sourceRef, tokenServiceInstanceId: source.tokenServiceInstanceId });
+        selected.push({
+          sourceRef,
+          credentialServiceInstanceId: source.credentialServiceInstanceId,
+        });
       }
       // External delivery cannot roll back with PostgreSQL. Record the authorized attempt before it starts.
       await state.audit.append(selected.length === 0 ? audit.empty() : audit.started());
@@ -159,11 +162,11 @@ export function createAgentCredentialRetry(dependencies: RetryDependencies) {
           async () => {
             try {
               return await dependencies
-                .tokenService(source.tokenServiceInstanceId)
+                .credentialService(source.credentialServiceInstanceId)
                 .resolveCredential(
                   {
                     sourceRef: source.sourceRef,
-                    tokenServiceInstanceId: source.tokenServiceInstanceId,
+                    credentialServiceInstanceId: source.credentialServiceInstanceId,
                   },
                   signal,
                 );

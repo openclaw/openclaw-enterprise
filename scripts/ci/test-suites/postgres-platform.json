@@ -34,7 +34,7 @@
     "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
-    "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+    "tests/integration/postgres-static-credential-service-lifecycle.test.ts",
     "tests/integration/postgres-staged-agent-credential-binding.test.ts",
     "tests/integration/postgres-staged-github-source-admission.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
@@ -52,7 +52,7 @@
     "tests/integration/postgres-transaction-commit.test.ts",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.ts",
-    "tests/integration/postgres-prepared-token-service.test.ts",
+    "tests/integration/postgres-prepared-credential-service.test.ts",
     "tests/integration/postgres-prepared-repository-git-broker.test.ts",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
@@ -126,7 +126,7 @@
     {
       "path": "tests/integration/postgres-codex-pat-source.test.ts",
       "expectedTests": [
-        "a new TokenService PAT Source admits a Dedicated Codex Agent through the normal API"
+        "a new CredentialService PAT Source admits a Dedicated Codex Agent through the normal API"
       ]
     },
     {
@@ -199,9 +199,9 @@
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
-      "path": "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+      "path": "tests/integration/postgres-static-credential-service-lifecycle.test.ts",
       "expectedTests": [
-        "staged TokenService lifecycle keeps private custody, audit, and exact update authority"
+        "staged CredentialService lifecycle keeps private custody, audit, and exact update authority"
       ]
     },
     {
@@ -292,7 +292,7 @@
     {
       "path": "tests/integration/postgres-service-account-compensation.test.ts",
       "expectedTests": [
-        "fresh issued ServiceAccount PAT uses TokenService custody and preserves independent Source lifecycle"
+        "fresh issued ServiceAccount PAT uses CredentialService custody and preserves independent Source lifecycle"
       ]
     },
     {
@@ -443,7 +443,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-token-service.test.ts",
+      "path": "tests/integration/postgres-prepared-credential-service.test.ts",
       "expectedTests": [
         "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue"
       ]

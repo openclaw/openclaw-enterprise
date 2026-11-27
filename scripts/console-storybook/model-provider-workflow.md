@@ -10,7 +10,7 @@ the entered key. Deploying this draft is a separate action.
 Also inspect these changed states:
 
 - **Credential Source creation denied** shows a simulated permission refusal.
-- **Credential Source outcome unknown** shows a simulated TokenService outage and clears the entered key.
+- **Credential Source outcome unknown** shows a simulated CredentialService outage and clears the entered key.
 - **Credential Source creation pending** shows the submitting state while the request waits.
 
 For Embedded execution, a password Preset, another provider, or an Installation without

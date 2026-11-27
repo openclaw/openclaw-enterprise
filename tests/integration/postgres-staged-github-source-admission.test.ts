@@ -7,14 +7,14 @@ import test from "node:test";
 import pg from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { composeProduction } from "../helpers/password-hasher.ts";
-import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
+import { prepareOccCredentialServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import {
   narrowOpenShellRepositoryRoutes,
   openShellRepositoryDeploymentPolicy,
@@ -26,8 +26,8 @@ import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/san
 import { compileOpenShellCredentialPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import type { OpenShellSandboxProviderStatus } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
-import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/credential-service/codex-device-authorization.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   isNativeStagedRepositoryRevision,
@@ -242,7 +242,7 @@ test(
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
     Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
     Object.assign(installation.drivers, {
-      token_service: { id: "occ", configuration: {} },
+      credential_service: { id: "occ", configuration: {} },
     });
     installation.drivers.compute.id = controller.selectedDriver("compute").id;
     Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");
@@ -532,15 +532,15 @@ test(
       nativeController.registerDriver(selected);
       nativeController.selectDriver(capability, selected.id);
     }
-    const selectedTokenService = runtime.installation.drivers.token_service;
-    assert.ok(selectedTokenService);
+    const selectedCredentialService = runtime.installation.drivers.credential_service;
+    assert.ok(selectedCredentialService);
     const storeIdentity = randomUUID();
-    const instanceId = await nativeController.activateTokenServiceInstance(
-      selectedTokenService.id,
+    const instanceId = await nativeController.activateCredentialServiceInstance(
+      selectedCredentialService.id,
       storeIdentity,
     );
-    const owner = new OCCTokenServiceDriver(
-      selectedTokenService.id,
+    const owner = new OCCCredentialServiceDriver(
+      selectedCredentialService.id,
       controller.installation.id,
       store,
       instanceId,
@@ -556,7 +556,7 @@ test(
       { registry: runtime.repositoryRegistry },
     );
     nativeController.registerDriver(owner);
-    nativeController.selectDriver("token_service", owner.id);
+    nativeController.selectDriver("credential_service", owner.id);
     nativeController.registerDriver(runtime.computeDriver);
     nativeController.selectDriver("compute", runtime.computeDriver.id);
     installSelectedSandboxDrivers(nativeController, runtime);
@@ -749,7 +749,7 @@ test(
       harnessAuth: { method: "api_key", source: directKey.json().data.ref },
     });
     assert.equal(directKeyDraft.statusCode, 400, directKeyDraft.body);
-    assert.match(directKeyDraft.json().error.message, /enroll.*as a TokenService Source/i);
+    assert.match(directKeyDraft.json().error.message, /enroll.*as a CredentialService Source/i);
     const issueCountBeforeSave = github.issuesOfTokens.length;
     const selected = (access: "read" | "write") => ({
       githubAppClientId: clientId,
@@ -1316,7 +1316,7 @@ test(
     // replace the active credential or turn the Source back into a name selector.
     const installedSource = {
       sourceRef: { kind: "credential_source" as const, namespaceId, id: gitSource.id },
-      tokenServiceInstanceId: nativeController.currentTokenServiceInstanceId(),
+      credentialServiceInstanceId: nativeController.currentCredentialServiceInstanceId(),
     };
     const beforeRenewal = await owner.resolveCredential(installedSource, t.signal);
     corruptedReply = "id";
@@ -1528,13 +1528,13 @@ test(
       view.credentialSources.findCredentialSource(namespaceId, creatorGitSourceId),
     );
     assert.ok(
-      creatorSource?.ownerCapability === "token_service" &&
+      creatorSource?.ownerCapability === "credential_service" &&
         creatorSource.type === "github-app-installation",
     );
     assert.deepEqual(creatorSource.scope, gitSource.scope);
     const creatorTokenSource = {
       sourceRef: { kind: "credential_source" as const, namespaceId, id: creatorGitSourceId },
-      tokenServiceInstanceId: nativeController.currentTokenServiceInstanceId(),
+      credentialServiceInstanceId: nativeController.currentCredentialServiceInstanceId(),
     };
     const creatorCredential = await owner.resolveCredential(creatorTokenSource, t.signal);
     assert.ok(creatorCredential.version);
@@ -1686,7 +1686,7 @@ test(
       ({ consumer }) => consumer.kind === "repository",
     );
     assert.ok(gitBinding);
-    const provider = await prepareOccTokenServiceProviderCopy({
+    const provider = await prepareOccCredentialServiceProviderCopy({
       client: gatewayClient,
       workspace,
       namespaceId,
@@ -1808,7 +1808,7 @@ test(
     );
     const modelBinding = recipientBindings?.find(({ consumer }) => consumer.kind === "model");
     assert.ok(recipientDeployment && modelBinding);
-    const modelDelivery = await prepareOccTokenServiceProviderCopy({
+    const modelDelivery = await prepareOccCredentialServiceProviderCopy({
       client: gatewayClient,
       workspace,
       namespaceId,
@@ -1936,9 +1936,9 @@ test(
       const releaseDelivery = Promise.withResolvers<void>();
       holdNextDelivery = () => releaseDelivery.promise;
       const reachedManualRenewal = Promise.withResolvers<void>();
-      const prototype = OCCTokenServiceDriver.prototype as unknown as {
+      const prototype = OCCCredentialServiceDriver.prototype as unknown as {
         renewGitHubAppSource(
-          source: Parameters<OCCTokenServiceDriver["forceRefresh"]>[0],
+          source: Parameters<OCCCredentialServiceDriver["forceRefresh"]>[0],
           signal: AbortSignal,
           mode: "due" | "forced",
         ): Promise<void>;
@@ -1948,7 +1948,7 @@ test(
       const observe = t.mock.method(
         prototype,
         "renewGitHubAppSource",
-        function (this: OCCTokenServiceDriver, ...args: Parameters<typeof renew>) {
+        function (this: OCCCredentialServiceDriver, ...args: Parameters<typeof renew>) {
           const [source, , mode] = args;
           const result = renew.apply(this, args);
           if (source.sourceRef.id === gitSource.id && mode === "forced") {

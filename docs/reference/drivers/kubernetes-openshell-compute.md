@@ -35,7 +35,7 @@ drivers:
 ```
 
 List the Sandbox Driver on the OpenShell Backend and set an endpoint reachable
-from the OCE Namespace. Use TokenService and its paired native Credential Proxy
+from the OCE Namespace. Use CredentialService and its paired native Credential Proxy
 for managed Sources. `legacy` is the default OpenShell integration mode.
 Both modes keep the configured Compute Driver ID and use `occ/kubernetes`.
 The Compute schema rejects the removed `managedOpenShell` block.

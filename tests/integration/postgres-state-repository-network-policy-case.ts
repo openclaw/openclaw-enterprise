@@ -1,5 +1,5 @@
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import pg from "pg";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -986,8 +986,11 @@ async function createScopedDeployment(fixture: PolicyApp) {
   const store = controller.selectedDriver("secret").privateSecrets;
   assert.ok(store);
   const ownerId = "policy-source-owner";
-  const instanceId = await controller.activateTokenServiceInstance(ownerId, "policy-fixture-store");
-  const owner = new OCCTokenServiceDriver(
+  const instanceId = await controller.activateCredentialServiceInstance(
+    ownerId,
+    "policy-fixture-store",
+  );
+  const owner = new OCCCredentialServiceDriver(
     ownerId,
     controller.installation.id,
     store,
@@ -995,7 +998,7 @@ async function createScopedDeployment(fixture: PolicyApp) {
     state,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   const credential = await inject("POST", root + "/credential-sources", {
     name: "synthetic-channel",
     type: "static",

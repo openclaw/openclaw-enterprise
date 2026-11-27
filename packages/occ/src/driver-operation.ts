@@ -4,36 +4,43 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
-  TokenServiceSourceInputError,
+  CredentialServiceSourceInputError,
 } from "./errors.ts";
 
 export async function driverOperation<T>(
   operation: () => Promise<T>,
-  capability: "Configuration" | "ServiceAccount" | "Compute" | "TokenService" = "Configuration",
+  capability:
+    "Configuration" | "ServiceAccount" | "Compute" | "CredentialService" = "Configuration",
 ): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (capability === "TokenService") {
+    if (capability === "CredentialService") {
       // Driver errors can contain the material supplied to it. Retain only the error category.
       if (error instanceof CredentialDeliveryFailedError) {
         throw new CredentialDeliveryFailedError();
       }
-      if (error instanceof TokenServiceSourceInputError) {
-        throw new TokenServiceSourceInputError("The TokenService rejected the source input.");
+      if (error instanceof CredentialServiceSourceInputError) {
+        throw new CredentialServiceSourceInputError(
+          "The CredentialService rejected the source input.",
+        );
       }
       if (error instanceof ResourceStateConflictError) {
         throw new ResourceStateConflictError(
-          "The TokenService cannot complete this source operation.",
+          "The CredentialService cannot complete this source operation.",
         );
       }
       if (error instanceof ResourceConflictError) {
-        throw new ResourceConflictError("The TokenService source conflicts with current state.");
+        throw new ResourceConflictError(
+          "The CredentialService source conflicts with current state.",
+        );
       }
       if (error instanceof ScopeViolationError) {
-        throw new ScopeViolationError("The TokenService source is unavailable to this operation.");
+        throw new ScopeViolationError(
+          "The CredentialService source is unavailable to this operation.",
+        );
       }
-      throw new DependencyUnavailableError("The selected TokenService Driver is unavailable.");
+      throw new DependencyUnavailableError("The selected CredentialService Driver is unavailable.");
     }
     if (
       error instanceof DependencyUnavailableError ||

@@ -187,15 +187,15 @@ Pins the saved OAuth configuration and the HTTPS destinations that can receive t
 
 ### `oauth_clients`
 
-Stores Installation- or Namespace-scoped OAuth2 and GitHub App Client metadata. The selected TokenService owns private Client material. A cleanup deadline hides a retired Client until private cleanup completes.
+Stores Installation- or Namespace-scoped OAuth2 and GitHub App Client metadata. The selected CredentialService owns private Client material. A cleanup deadline hides a retired Client until private cleanup completes.
 
 - `id`, `kind`, `namespace_id`, `display_name`, `issuer`, `client_id`
 - `token_endpoint_auth_method`
-- `app_id`, `token_service_instance_id`, `cleanup_after`, `created_at`
+- `app_id`, `credential_service_instance_id`, `cleanup_after`, `created_at`
 
 ### `connection_token_custody`
 
-Tracks the Token Service secret reference, the published access token version and the next refresh time.
+Tracks the CredentialService secret reference, the published access token version and the next refresh time.
 
 - `namespace_id`
 - `credential_source_id`
@@ -203,15 +203,15 @@ Tracks the Token Service secret reference, the published access token version an
 - `scheduled_version`
 - `next_refresh_at`
 
-### `token_service_instances`
+### `credential_service_instances`
 
-Binds an Installation to its selected TokenService Driver and private-store identity.
+Binds an Installation to its selected CredentialService Driver and private-store identity.
 
 - `installation_id`, `id`, `driver_id`, `store_identity`
 
 ### `credential_sources`
 
-Stores the canonical static and OAuth Sources created by the selected TokenService. The optional Template ID belongs to the Source. OAuth fields preserve the original consent and revocation state. Legacy owner rows use the separate existing storage path.
+Stores the canonical static and OAuth Sources created by the selected CredentialService. The optional Template ID belongs to the Source. OAuth fields preserve the original consent and revocation state. Legacy owner rows use the separate existing storage path.
 
 - `id`
 - `namespace_id`
@@ -219,10 +219,10 @@ Stores the canonical static and OAuth Sources created by the selected TokenServi
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_proxy` or `token_service`)
+- `owner_capability` (`credential_proxy` or `credential_service`)
 - `driver_id` (Proxy Sources)
-- `token_service_instance_id` (selected TokenService owner)
-- `backend_ref` (optional private, nonsecret TokenService locator)
+- `credential_service_instance_id` (selected CredentialService owner)
+- `backend_ref` (optional private, nonsecret CredentialService locator)
 - `connection_template_id` (optional immutable association)
 - `oauth_provenance`, `oauth_account` (Template consent or the fixed Codex preset)
 - `oauth_consent_version`, `oauth_client_id`, `oauth_owner_principal_id`

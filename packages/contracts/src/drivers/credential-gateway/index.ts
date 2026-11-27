@@ -1,4 +1,4 @@
-import type { CredentialRefreshStatus } from "../token-service/index.ts";
+import type { CredentialRefreshStatus } from "../credential-service/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
@@ -92,7 +92,7 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
-  /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
+  /** The credential service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
   withSourceToken?<T>(
     context: CredentialSourceContext,
     use: (token: CredentialSourceToken) => Promise<T>,

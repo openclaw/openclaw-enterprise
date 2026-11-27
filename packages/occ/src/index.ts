@@ -217,7 +217,7 @@ export {
   SandboxWorkspaceSetupRefusedError,
   RepositorySessionWithdrawnError,
   ScopeViolationError,
-  TokenServiceSourceInputError,
+  CredentialServiceSourceInputError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,

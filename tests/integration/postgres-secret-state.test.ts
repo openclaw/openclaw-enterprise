@@ -226,15 +226,15 @@ async function gatewaySource(
   namespaceId: string,
 ): Promise<StaticCredentialSource> {
   const existing = await pool.query<{ id: string }>(
-    "SELECT id FROM occ.token_service_instances LIMIT 1",
+    "SELECT id FROM occ.credential_service_instances LIMIT 1",
   );
   const instanceId =
     existing.rows[0]?.id ??
     (
       await store.transact((state) =>
-        state.installations.selectTokenServiceInstance({
+        state.installations.selectCredentialServiceInstance({
           id: randomUUID(),
-          driverId: "state-test-token-service",
+          driverId: "state-test-credential-service",
           storeIdentity: "state-test-store",
         }),
       )
@@ -245,8 +245,8 @@ async function gatewaySource(
     name: `Gateway Source ${randomUUID()}`,
     type: "static",
     config: {},
-    ownerCapability: "token_service",
-    tokenServiceInstanceId: instanceId,
+    ownerCapability: "credential_service",
+    credentialServiceInstanceId: instanceId,
     state: "ready",
     createdAt: new Date().toISOString(),
   };
@@ -591,7 +591,7 @@ test(
       const first = await state.revisions.createRevision({
         ...revisionFor(agent, configuration, harnessSecret, 1),
         secretBindings: gatewayBindings,
-        gatewayTokenServiceInstanceId: source.tokenServiceInstanceId,
+        gatewayCredentialServiceInstanceId: source.credentialServiceInstanceId,
       });
       await state.operations.append({
         kind: "agent_revision",

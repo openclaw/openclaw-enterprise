@@ -146,12 +146,14 @@ export function registerDeviceAuthorizationRefusalCases(): void {
     assertNoCredentials(fixture);
   });
 
-  test("a caller missing Source creation receives the exact IAM refusal before TokenService selection", async (t) => {
+  test("a caller missing Source creation receives the exact IAM refusal before CredentialService selection", async (t) => {
     const bare = await createConsoleAppFixture(t, {
       sandboxDriver: deviceTestSandbox(),
     });
     await bare.bootstrap();
-    const bareNamespace = await bare.createNamespace("No selected TokenService", { ready: true });
+    const bareNamespace = await bare.createNamespace("No selected CredentialService", {
+      ready: true,
+    });
     const selected = await createFixture(t);
     for (const { fixture, namespace } of [
       { fixture: bare, namespace: bareNamespace },

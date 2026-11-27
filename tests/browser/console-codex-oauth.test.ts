@@ -7,12 +7,12 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import {
   controlDeviceIssuer,
-  installDeviceTokenService,
+  installDeviceCredentialService,
   DEVICE_ACCOUNT_ID,
   DEVICE_OAUTH_ACCESS_TOKEN,
   DEVICE_OAUTH_REFRESH_TOKEN,
   type DeviceIssuerOptions,
-} from "../helpers/device-token-service.ts";
+} from "../helpers/device-credential-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
@@ -98,7 +98,7 @@ async function createOAuthConsoleNamespace(
     },
   });
   assert.ok(state);
-  const { owner } = await installDeviceTokenService(result.fixture.controller, state, secrets);
+  const { owner } = await installDeviceCredentialService(result.fixture.controller, state, secrets);
   const issuer = controlDeviceIssuer(t, issuerOptions);
   return { ...result, issuer, owner };
 }
@@ -258,7 +258,7 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
       mcp_servers: [],
     },
   };
-  // Only issuer and hosted catalog HTTP are controlled. Console, Fastify, selected TokenService,
+  // Only issuer and hosted catalog HTTP are controlled. Console, Fastify, selected CredentialService,
   // IAM, Source/session persistence and the production Plugin Driver run unchanged.
   t.mock.method(
     globalThis,
@@ -770,9 +770,9 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   );
 });
 
-// A legacy Gateway does not offer the TokenService-owned device authorization capability.
+// A legacy Gateway does not offer the CredentialService-owned device authorization capability.
 const DEVICE_LOGIN_NOT_OFFERED =
-  "ChatGPT sign-in needs a selected TokenService that supports device authorization. Choose another authentication method.";
+  "ChatGPT sign-in needs a selected CredentialService that supports device authorization. Choose another authentication method.";
 
 for (const savedAgent of [false, true]) {
   for (const drivers of ["none", "Credential Gateway only"]) {
@@ -989,7 +989,7 @@ for (const savedAgent of [false, true]) {
 
 const WAITING = "Waiting for you to complete sign-in in the other tab…";
 
-// A saved Agent's Credentials tab with the selected TokenService and a pending issuer response.
+// A saved Agent's Credentials tab with the selected CredentialService and a pending issuer response.
 async function openAgentOAuth(t: TestContext, name: string) {
   const { fixture, namespace, issuer } = await createOAuthConsoleNamespace(t, name, undefined, {
     approve: async () => false,

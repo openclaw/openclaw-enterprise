@@ -310,7 +310,7 @@ export function registerStartupCredentialProxyCases({
         ...base.drivers,
         sandbox: { id, package: id, configuration: { endpoint: "https://127.0.0.1:1", ca: "" } },
         credential_proxy: { id, configuration: {} },
-        token_service: { id: "occ", configuration: {} },
+        credential_service: { id: "occ", configuration: {} },
       },
     };
 

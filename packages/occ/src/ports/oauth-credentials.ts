@@ -15,7 +15,7 @@ export interface OAuthCredentialReadRepository {
     sourceId: string,
   ): Promise<Readonly<OAuthTokenCustody & { due: boolean }> | undefined>;
   listDueOAuthSources(
-    tokenServiceInstanceId: string,
+    credentialServiceInstanceId: string,
     limit: number,
     afterSourceId?: string,
   ): Promise<readonly Readonly<Pick<OAuthCredentialSource, "namespaceId" | "id">>[]>;

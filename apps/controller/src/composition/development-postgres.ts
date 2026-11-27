@@ -7,10 +7,10 @@ import {
   installationControllerOptions,
 } from "./installation-config.ts";
 import {
-  installTokenServiceDriver,
-  scheduleTokenServiceMaintenance,
+  installCredentialServiceDriver,
+  scheduleCredentialServiceMaintenance,
   gatewayStartupSourceDelivery,
-} from "./token-service.ts";
+} from "./credential-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -131,7 +131,7 @@ export async function composePostgresDevelopment(
     closeResources(exchange, drivers?.protectedDriver, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      preparedTokenProof: drivers?.credentialService?.postgresCurrentProof,
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();
@@ -200,7 +200,7 @@ export async function composePostgresDevelopment(
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
-        ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.credentialService && { preparedTokens: drivers.credentialService }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -225,7 +225,7 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    const tokenService = await installTokenServiceDriver(controller, drivers, state);
+    const credentialService = await installCredentialServiceDriver(controller, drivers, state);
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
@@ -364,8 +364,8 @@ export async function composePostgresDevelopment(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    const stopTokenMaintenance = tokenService
-      ? scheduleTokenServiceMaintenance(app, tokenService, config.logger)
+    const stopTokenMaintenance = credentialService
+      ? scheduleCredentialServiceMaintenance(app, credentialService, config.logger)
       : undefined;
     app.addHook("onClose", async () => {
       await stopTokenMaintenance?.();

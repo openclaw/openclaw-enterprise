@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
@@ -306,11 +306,11 @@ test("a staged credential source refuses an ungranted Agent principal before rev
   const namespace = await fixture.createNamespace("Staged principal denial", { ready: true });
   const { driver } = useInstallationSecretDriver(fixture.controller);
   assert.ok(driver.privateSecrets);
-  const instanceId = await fixture.controller.activateTokenServiceInstance(
+  const instanceId = await fixture.controller.activateCredentialServiceInstance(
     "selected-owner",
     randomUUID(),
   );
-  const owner = new OCCTokenServiceDriver(
+  const owner = new OCCCredentialServiceDriver(
     "selected-owner",
     fixture.controller.installation.id,
     driver.privateSecrets,
@@ -318,7 +318,7 @@ test("a staged credential source refuses an ungranted Agent principal before rev
     sourceState,
   );
   fixture.controller.registerDriver(owner);
-  fixture.controller.selectDriver("token_service", owner.id);
+  fixture.controller.selectDriver("credential_service", owner.id);
   const event = (ref: CredentialSourceReference, phase?: "registration_started"): AuditEvent => ({
     id: `aud_${randomUUID()}`,
     installationId: fixture.controller.installation.id,

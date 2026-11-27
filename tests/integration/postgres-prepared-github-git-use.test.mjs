@@ -4,7 +4,7 @@ import { createPublicKey, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { CredentialService } from "../../apps/controller/src/backends/credential-service/service.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -513,7 +513,7 @@ test(
     });
     // The real maintenance loop, started by hand once the key is replaced.
     let loop;
-    const tokenService = new (class extends TokenService {
+    const credentialService = new (class extends CredentialService {
       ownFamilies(families) {
         return (loop = super.ownFamilies(families));
       }
@@ -523,7 +523,7 @@ test(
     const firstReport = new Promise((resolve) => (reported = resolve));
     await f.startOwner({
       privateKeyPath,
-      tokenService,
+      credentialService,
       startWorker: false,
       report: (code, context) => {
         reports.push({ code, ...context });

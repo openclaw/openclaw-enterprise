@@ -481,7 +481,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"port":    8080,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
-		config["drivers"].(map[string]any)["token_service"] = map[string]any{
+		config["drivers"].(map[string]any)["credential_service"] = map[string]any{
 			"id": "occ", "configuration": map[string]any{},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}

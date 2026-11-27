@@ -12,8 +12,8 @@ kind: reference/driver
 
 ## Overview
 
-Use `CredentialProxyDriver` with TokenService for managed Agent credentials.
-TokenService owns credential custody and lifecycle. Credential Proxy prepares
+Use `CredentialProxyDriver` with CredentialService for managed Agent credentials.
+CredentialService owns credential custody and lifecycle. Credential Proxy prepares
 credential delivery and enables injection only for bindings and requests admitted
 in the Agent revision. `SandboxDriver` enforces network policy and routing;
 it does not delegate network authorization to the Proxy.
@@ -46,7 +46,7 @@ defines the canonical `CredentialProxyDriver` contract, which extends `Driver`.
 | <a id="method-configuredeployment"></a>`configureDeployment`         | Required    | The Worker supplies the target reported by Compute, admitted bindings, exact Source resolvers, and injection policies. The Proxy rejects a mismatched target before resolving and returns projections. |
 | <a id="method-getdeploymentstatus"></a>`getDeploymentStatus`         | Required    | Compute checks the target's expected configuration, policy, serving copies, and versions without reloading or repairing them.                                                                          |
 | <a id="method-removedeployment"></a>`removeDeployment`               | Required    | Compute removes only the named target's bindings or unbound resources left by failed staging.                                                                                                          |
-| <a id="method-notifycredentialupdated"></a>`notifyCredentialUpdated` | Optional    | TokenService notifies the Proxy of an update for one Source. With no delivery resource, the Proxy does nothing. Otherwise, it resolves only when transfer is needed and confirms serving copies.       |
+| <a id="method-notifycredentialupdated"></a>`notifyCredentialUpdated` | Optional    | CredentialService notifies the Proxy of an update for one Source. With no delivery resource, the Proxy does nothing. Otherwise, it resolves only when transfer is needed and confirms serving copies.  |
 
 OCC currently registers native delivery with Sandbox; independent composition is
 planned. OpenShell prepares admitted HTTP and managed MCP projections with a
@@ -154,14 +154,14 @@ bindings and calls `configureDeployment`. Compute receives only the returned
 projections and checks `getDeploymentStatus` before the Worker releases the Agent.
 For OCC custody, the Proxy resolves the
 Source to initialize or update existing delivery copies. For native OpenShell
-custody, it attaches the authoritative Provider. TokenService commits a
+custody, it attaches the authoritative Provider. CredentialService commits a
 replacement before notification; a failed delivery retries the committed value
 without minting another token. Removal or withdrawal detaches the exact binding;
-TokenService retains Source custody until Source deletion.
+CredentialService retains Source custody until Source deletion.
 
 ## Configuration
 
-Select TokenService and a compatible Sandbox registration. The registration
+Select CredentialService and a compatible Sandbox registration. The registration
 supplies `credential_proxy_delivery`; it has no separate Installation YAML
 selector. See [supported selections](selection.md#supported-selections).
 

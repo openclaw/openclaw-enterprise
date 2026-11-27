@@ -9,11 +9,11 @@ import {
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { installCredentialServiceDriver } from "../../apps/controller/src/composition/credential-service.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/credential-service/codex-device-authorization.ts";
 import {
   readProviderRequestBody,
   redirectProviderFetch,
@@ -22,7 +22,7 @@ import {
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
-import { controlDeviceIssuer } from "../helpers/device-token-service.ts";
+import { controlDeviceIssuer } from "../helpers/device-credential-service.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { gatewayRouting } from "../helpers/kubernetes-routed-options.ts";
@@ -130,7 +130,7 @@ test(
     );
     let instanceId: string | undefined;
     for (const { controller, state } of [first, second]) {
-      const current = await controller.activateTokenServiceInstance(
+      const current = await controller.activateCredentialServiceInstance(
         "device-oauth-owner",
         storeIdentity,
       );
@@ -138,11 +138,11 @@ test(
         assert.equal(
           current,
           instanceId,
-          "both replicas must select the same TokenService instance",
+          "both replicas must select the same CredentialService instance",
         );
       }
       instanceId = current;
-      const owner = new OCCTokenServiceDriver(
+      const owner = new OCCCredentialServiceDriver(
         "device-oauth-owner",
         controller.installation.id,
         secretDriver.privateSecrets,
@@ -157,7 +157,7 @@ test(
         ),
       );
       controller.registerDriver(owner);
-      controller.selectDriver("token_service", owner.id);
+      controller.selectDriver("credential_service", owner.id);
     }
     const created = await first.inject("POST", "/namespaces", {
       name: `Device login ${randomUUID()}`,
@@ -407,15 +407,15 @@ test(
     assert.equal(ready.private_state, null);
     assert.equal(ready.device_source_id, completed.json().data.source.id);
     const createdSources = await first.pool.query(
-      "SELECT id,type,owner_capability,token_service_instance_id,oauth_provenance FROM occ.credential_sources WHERE namespace_id=$1",
+      "SELECT id,type,owner_capability,credential_service_instance_id,oauth_provenance FROM occ.credential_sources WHERE namespace_id=$1",
       [namespaceId],
     );
     assert.deepEqual(createdSources.rows, [
       {
         id: ready.device_source_id,
         type: "oauth2-refresh-token",
-        owner_capability: "token_service",
-        token_service_instance_id: instanceId,
+        owner_capability: "credential_service",
+        credential_service_instance_id: instanceId,
         oauth_provenance: "builtin_codex",
       },
     ]);
@@ -545,7 +545,7 @@ test(
     const installation = buildSandboxInstallation();
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
     Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
-    Object.assign(installation.drivers, { token_service: { id: "occ", configuration: {} } });
+    Object.assign(installation.drivers, { credential_service: { id: "occ", configuration: {} } });
     Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");
     Object.assign(installation.drivers.compute.configuration, { gatewayRouting });
     const runtime = await loadInstallationFile(t, installation, {
@@ -589,7 +589,7 @@ test(
       appOptions: { publicOrigin: "https://console.oce.localhost" },
     });
     await app.controller.applyIAMConfiguration();
-    await installTokenServiceDriver(app.controller, { ...runtime, secretDriver }, app.state);
+    await installCredentialServiceDriver(app.controller, { ...runtime, secretDriver }, app.state);
     const createdNamespace = await app.inject("POST", "/namespaces", {
       name: `Direct Codex ${randomUUID()}`,
     });
@@ -711,7 +711,8 @@ test(
         view.credentialSources.findCredentialSource(namespaceId, sourceId),
       );
       assert.ok(
-        retained?.ownerCapability === "token_service" && retained.type === "oauth2-refresh-token",
+        retained?.ownerCapability === "credential_service" &&
+          retained.type === "oauth2-refresh-token",
       );
       assert.equal(retained.state, "ready");
       assert.equal(retained.consent.revocationRequestedBy, undefined);

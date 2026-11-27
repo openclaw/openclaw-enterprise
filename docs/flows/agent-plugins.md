@@ -34,7 +34,7 @@ graph TD
   D1 -->|no credential| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|credentialless catalog| D4["Call PluginDriver"]
-  D6 -->|TokenService Source| D9["Check Source and owner, then resolve"]
+  D6 -->|CredentialService Source| D9["Check Source and owner, then resolve"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
@@ -72,7 +72,7 @@ graph TD
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires Agent `create`; catalog `credentialSlots` expose eligible readable Sources. Managed MCP details use `managedConnection` and require caller Source `operate`. Saved discovery requires Agent `read`/`update`; delegation requires a Driver-validated saved release, slot, Source and Template plus Agent Source `operate`.
 
-`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. OCC rechecks authority before dispatch; cancellation discards late credentials.
+`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through CredentialService and passes it and consent account metadata to PluginDriver. OCC rechecks authority before dispatch; cancellation discards late credentials.
 
 For managed MCP, OCC lists tool names, rejects bearer echoes, and passes the names to the selected Plugin Driver's `getCatalogPlugin`. The Driver filters aliases; OCC validates unique upstream IDs and ownership. Account changes clear `driverPolicy.toolNames`. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) reject redirects and credential echoes; duplicate IDs return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
 

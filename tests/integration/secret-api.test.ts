@@ -7,7 +7,7 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import {
   InMemoryPlatformState,
@@ -1236,11 +1236,11 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
     });
     const namespace = await bootstrapNamespace(fixture);
     const controller = fixture.controller();
-    const instanceId = await controller.activateTokenServiceInstance(
+    const instanceId = await controller.activateCredentialServiceInstance(
       "gateway-source-owner",
       randomUUID(),
     );
-    const owner = new OCCTokenServiceDriver(
+    const owner = new OCCCredentialServiceDriver(
       "gateway-source-owner",
       controller.installation.id,
       fixture.secretDriver.privateSecrets,
@@ -1248,7 +1248,7 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
       fixture.platformState,
     );
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
     const sources = `/namespaces/${namespace.id}/credential-sources`;
     const source = await request(fixture.app, "POST", sources, {
       schema: CredentialSourceResponse,
@@ -1413,12 +1413,12 @@ test("Gateway Source bindings use exact grants, preserve reusable static Sources
   });
   const admitted = await deploy();
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  assert.equal(JSON.stringify(admitted.body).includes("gatewayTokenServiceInstanceId"), false);
+  assert.equal(JSON.stringify(admitted.body).includes("gatewayCredentialServiceInstanceId"), false);
   const revisionId = asRecord(admitted.data)?.id;
   const revision = await fixture
     .controller()
     .getRevision(fixture.principal.id, namespace.id, agent.id, revisionId as string);
-  assert.equal(revision.gatewayTokenServiceInstanceId, active.instanceId);
+  assert.equal(revision.gatewayCredentialServiceInstanceId, active.instanceId);
   assert.equal(
     revision.secretDriverId,
     undefined,
@@ -1570,8 +1570,11 @@ test("credential source writes commit one value-free audit row each", async (t) 
   const namespace = await bootstrapNamespace(fixture);
   const controller = fixture.controller();
   const store = fixture.secretDriver.privateSecrets;
-  const instanceId = await controller.activateTokenServiceInstance("audit-owner", randomUUID());
-  const owner = new OCCTokenServiceDriver(
+  const instanceId = await controller.activateCredentialServiceInstance(
+    "audit-owner",
+    randomUUID(),
+  );
+  const owner = new OCCCredentialServiceDriver(
     "audit-owner",
     controller.installation.id,
     store,
@@ -1579,7 +1582,7 @@ test("credential source writes commit one value-free audit row each", async (t) 
     fixture.platformState,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   // Observe the real private store reference so deletion proves custody is removed, not merely
   // that the public Source record has disappeared.
   const storeCreate = t.mock.method(store, "create");
@@ -1595,7 +1598,7 @@ test("credential source writes commit one value-free audit row each", async (t) 
   const custodyRef = storeCreate.mock.calls[0]!.arguments[0];
   const source = {
     sourceRef: created.data.ref,
-    tokenServiceInstanceId: instanceId,
+    credentialServiceInstanceId: instanceId,
   };
   const resolve = async () =>
     (await owner.resolveCredential(source, AbortSignal.timeout(5_000))).credential;

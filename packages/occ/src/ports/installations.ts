@@ -1,4 +1,4 @@
-import type { TokenServiceInstance } from "./token-service.ts";
+import type { CredentialServiceInstance } from "./credential-service.ts";
 import type { Installation } from "@openclaw-enterprise/contracts";
 
 export interface InstallationReadRepository {
@@ -8,9 +8,9 @@ export interface InstallationReadRepository {
 
 export interface InstallationRepository extends InstallationReadRepository {
   createInstallation(installation: Installation): Promise<Readonly<Installation>>;
-  selectTokenServiceInstance(
-    candidate: TokenServiceInstance,
-  ): Promise<Readonly<TokenServiceInstance>>;
+  selectCredentialServiceInstance(
+    candidate: CredentialServiceInstance,
+  ): Promise<Readonly<CredentialServiceInstance>>;
   /**
    * Holds a human Principal's account until COMMIT so a disable cannot commit first.
    * False when the account is disabled; true when it is enabled or the Principal has

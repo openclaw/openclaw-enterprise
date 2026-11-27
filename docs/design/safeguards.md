@@ -42,10 +42,10 @@ retain references, not historical values. Admission checks current authorization
 Kubernetes process restarts do not reauthorize delivered env values. Immediate
 loss of access requires stopping the workload or revoking the upstream credential.
 
-The selected TokenService owns the canonical Namespace-scoped CredentialSource
+The selected CredentialService owns the canonical Namespace-scoped CredentialSource
 and its static credential, OAuth grant, or GitHub installation token. OCC authorizes Source operations and
 can query nonsecret metadata directly; usable token access goes through
-TokenService. Credential Proxy prepares delivery for an admitted binding, while
+CredentialService. Credential Proxy prepares delivery for an admitted binding, while
 Sandbox enforces the admitted network policy. A Template ID associates a Source
 with approved settings; Template-based OAuth consent retains its original version
 and client. Template-free Codex OAuth uses a fixed, server-owned issuer and client
@@ -124,7 +124,7 @@ independently verified and restored.
 Rollback and cleanup cover both selected runtime targets and preserve exact
 ownership; a failed or unreachable target cannot be treated as successful
 recovery or deletion. OCC never substitutes another runtime target, Namespace,
-identity, IAM, TokenService, Credential Proxy, Secret Driver, gateway,
+identity, IAM, CredentialService, Credential Proxy, Secret Driver, gateway,
 provider, or runtime implementation.
 
 ## Audit

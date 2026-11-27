@@ -21,7 +21,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import {
   apiRequests,
   createSlackSourceConsoleFixture,
@@ -393,11 +393,11 @@ async function savedCodexPluginFixture(
   const { core, driver: secrets } = useInstallationSecretDriver(native);
   core.addNamespace(namespace.id);
   assert.ok(secrets.privateSecrets && state);
-  const instance = await native.activateTokenServiceInstance(
+  const instance = await native.activateCredentialServiceInstance(
     "console-pat-tokens",
     crypto.randomUUID(),
   );
-  const tokens = new OCCTokenServiceDriver(
+  const tokens = new OCCCredentialServiceDriver(
     "console-pat-tokens",
     native.installation.id,
     secrets.privateSecrets,
@@ -405,7 +405,7 @@ async function savedCodexPluginFixture(
     state,
   );
   native.registerDriver(tokens);
-  native.selectDriver("token_service", tokens.id);
+  native.selectDriver("credential_service", tokens.id);
   const driver = new CodexPluginDriver();
   native.registerDriver(driver);
   native.selectDriver("plugin", driver.id);
@@ -1026,11 +1026,11 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
   core.addNamespace(namespace.id);
   assert.ok(driver.privateSecrets);
   assert.ok(state);
-  const instance = await native.activateTokenServiceInstance(
+  const instance = await native.activateCredentialServiceInstance(
     "console-mcp-tokens",
     crypto.randomUUID(),
   );
-  const tokens = new OCCTokenServiceDriver(
+  const tokens = new OCCCredentialServiceDriver(
     "console-mcp-tokens",
     native.installation.id,
     driver.privateSecrets,
@@ -1038,7 +1038,7 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
     state,
   );
   native.registerDriver(tokens);
-  native.selectDriver("token_service", tokens.id);
+  native.selectDriver("credential_service", tokens.id);
   const pluginDriver = new OCCPluginDriver();
   native.registerDriver(pluginDriver);
   native.selectDriver("plugin", pluginDriver.id);

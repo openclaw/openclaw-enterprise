@@ -137,7 +137,7 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     name: "installation",
     createdAt: "2026-10-01T00:00:00Z",
   });
-  // Advertising delivery must not select it for a protected-only installation without TokenService.
+  // Advertising delivery must not select it for a protected-only installation without CredentialService.
   assert.ok(owner.capabilities.includes("credential_proxy_delivery"));
   assert.equal(api.credentialDeliveryRegistration, undefined);
   const legacyOnly = new InstalledDriver(
@@ -358,16 +358,16 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   await Promise.all([worker.protectedDriver!.close(), worker.protectedDriver!.close()]);
   assert.equal(calls.close, 2);
 
-  // Selecting OCC TokenService enables the advertised delivery role on the same protected owner,
+  // Selecting OCC CredentialService enables the advertised delivery role on the same protected owner,
   // while the protected registration identity remains stable for existing revision admissions.
-  Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+  Object.assign(configuration.drivers, { credential_service: { id: "occ", configuration: {} } });
   await writeFile(path, JSON.stringify(configuration));
-  const withTokenService = (await load())!;
-  const deliveryOwner = withTokenService.credentialDeliveryRegistration!;
-  assert.equal(deliveryOwner, withTokenService.protectedDriver);
+  const withCredentialService = (await load())!;
+  const deliveryOwner = withCredentialService.credentialDeliveryRegistration!;
+  assert.equal(deliveryOwner, withCredentialService.protectedDriver);
   assert.deepEqual(deliveryOwner.ref, owner.ref);
   const mixed = new OpenClawController(controller.installation);
-  installSelectedSandboxDrivers(mixed, withTokenService);
+  installSelectedSandboxDrivers(mixed, withCredentialService);
   assert.equal(mixed.selectedDriver("sandbox"), deliveryOwner.require("sandbox"));
   assert.equal(mixed.selectedDriver("credential_proxy"), deliveryOwner.require("credential_proxy"));
   assert.equal(
@@ -386,7 +386,7 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   mixed.selectDriver("credential_proxy_delivery", foreignDelivery.id);
   await assert.rejects(mixed.validateBackendConfiguration(), /same registered Driver/);
   await deliveryOwner.close();
-  Reflect.deleteProperty(configuration.drivers, "token_service");
+  Reflect.deleteProperty(configuration.drivers, "credential_service");
 
   configuration.drivers.credential_proxy.id = "other-owner";
   await writeFile(path, JSON.stringify(configuration));

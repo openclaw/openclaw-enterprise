@@ -254,7 +254,7 @@ func (client *Client) DeletePreset(namespaceID, presetID string) error {
 	return client.sendEmpty(http.MethodDelete, []string{"namespaces", namespaceID, "presets", presetID})
 }
 
-// CreateCredentialSource registers a static credential with the selected TokenService.
+// CreateCredentialSource registers a static credential with the selected CredentialService.
 func (client *Client) CreateCredentialSource(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(
 		http.MethodPost,
@@ -273,7 +273,7 @@ func (client *Client) GetCredentialSource(namespaceID, sourceID string) (any, er
 	return client.get("namespaces", namespaceID, "credential-sources", sourceID)
 }
 
-// UpdateCredentialSource updates a static Source through its selected TokenService.
+// UpdateCredentialSource updates a static Source through its selected CredentialService.
 func (client *Client) UpdateCredentialSource(
 	namespaceID string,
 	sourceID string,
@@ -286,7 +286,7 @@ func (client *Client) UpdateCredentialSource(
 	)
 }
 
-// RotateCredentialSource asks TokenService to renew an OAuth or GitHub App Source.
+// RotateCredentialSource asks CredentialService to renew an OAuth or GitHub App Source.
 func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
 	return client.send(
 		http.MethodPost,

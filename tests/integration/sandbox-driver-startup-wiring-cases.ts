@@ -152,7 +152,7 @@ export function registerSandboxDriverStartupWiringCases() {
     // legacy CredentialGatewayDriver as a credential Source owner.
     Reflect.deleteProperty(configuration.drivers, "credential_gateway");
     Reflect.deleteProperty(configuration.backend[0]!.drivers, "credential_gateway");
-    Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+    Object.assign(configuration.drivers, { credential_service: { id: "occ", configuration: {} } });
     const runtime = await loadInstallationFile(t, configuration);
     const owner = runtime!.credentialDeliveryRegistration!;
     const proxy = owner.require("credential_proxy_delivery");
@@ -178,7 +178,7 @@ export function registerSandboxDriverStartupWiringCases() {
     const protectedOnly = (await loadInstallationFile(t, configuration))!;
     const mixed = (await loadInstallationFile(t, {
       ...configuration,
-      drivers: { ...configuration.drivers, token_service: { id: "occ", configuration: {} } },
+      drivers: { ...configuration.drivers, credential_service: { id: "occ", configuration: {} } },
     }))!;
     const owner = mixed.credentialDeliveryRegistration!;
     assert.equal(owner, mixed.protectedDriver);

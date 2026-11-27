@@ -13,7 +13,7 @@ and their configured enforcement.
 When eligible **Per-repository access** choices are available and none is selected,
 **Create Agent** warns if it will request deployment without a repository policy.
 Select a repository to **Save Agent draft** with its access instead. Saving a
-draft does not deploy it. For TokenService Git, you can add
+draft does not deploy it. For CredentialService Git, you can add
 **Per-repository access** to an existing Dedicated Agent whose earlier
 deployments used only standalone model credentials. Save a GitHub App Client and
 access for each approved repository, complete **Stop**, then deploy. OCC uses or

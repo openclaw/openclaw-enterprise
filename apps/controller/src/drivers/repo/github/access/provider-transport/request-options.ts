@@ -188,7 +188,7 @@ function prepareScope(
     Object.freeze(projection.repositories);
   }
   // GitHub accepts unqualified names on first enrollment. The response must
-  // prove the exact owner/repository entries before TokenService can save the token.
+  // prove the exact owner/repository entries before CredentialService can save the token.
   const prepared = Object.freeze({ ...projection, issuance }) as ProviderScope;
   requestBodies.set(
     prepared,

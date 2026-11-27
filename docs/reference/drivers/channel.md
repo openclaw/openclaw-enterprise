@@ -43,7 +43,7 @@ channel credentials before API provisioning or deployment. Its credential reader
 `withSecret(binding, path, validate)`, authorizes the exact same-Namespace binding and supplies its value
 to the validation callback. Slack credentials select a ready static OCC-owned
 Credential Source for a qualified dedicated Kubernetes Gateway.
-OCC resolves the Source through TokenService and repeats exact caller
+OCC resolves the Source through CredentialService and repeats exact caller
 authorization, Source ownership and delivery qualification after resolution.
 For deployment, OCC also checks that the Agent is Dedicated and still selects
 the prepared Configuration generation and exact Source binding before owner
@@ -57,12 +57,12 @@ Validation does not pin credential versions or revalidate queued work.
 
 For validation, OCC admits the caller, checks Agent creation or deployment,
 and requires `operate` on the exact same-Namespace Source. OCC checks the qualified
-Compute and TokenService pair and rechecks authority and Source ownership after
-TokenService returns.
+Compute and CredentialService pair and rechecks authority and Source ownership after
+CredentialService returns.
 
 The directory API accepts `sourceId` for a ready static Source.
 OCC checks Agent create or exact Agent/Configuration update and Source `operate`,
-qualifies the selected OCC TokenService and Kubernetes Compute pair, repeats exact
+qualifies the selected OCC CredentialService and Kubernetes Compute pair, repeats exact
 authority before resolution, and rechecks authority, readiness, and owner after
 resolution. The ChannelDriver
 receives the value in process and authenticates to its provider. No credential value

@@ -9,7 +9,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -24,7 +24,7 @@ import {
 } from "./sandbox-driver-installation-fixture.ts";
 
 test(
-  "a new TokenService PAT Source admits a Dedicated Codex Agent through the normal API",
+  "a new CredentialService PAT Source admits a Dedicated Codex Agent through the normal API",
   requiresPostgres,
   async (t) => {
     const fixture = await createPostgresAgentApp(t, {
@@ -68,7 +68,7 @@ test(
     const runtime = await loadSelectedOpenShellAgentInstallation(t, {
       installation,
       computeId: controller.selectedDriver("compute").id,
-      tokenServiceId: "occ",
+      credentialServiceId: "occ",
       core,
       gatewayClient: completeOpenShellGatewayClient(providerStore.client),
     });
@@ -101,7 +101,7 @@ test(
     const store = selectedSecret.privateSecrets;
     assert.ok(store);
     const storeIdentity = randomUUID();
-    const instanceId = await native.activateTokenServiceInstance("occ", storeIdentity);
+    const instanceId = await native.activateCredentialServiceInstance("occ", storeIdentity);
     await store.create(
       {
         installationId: native.installation.id,
@@ -109,15 +109,15 @@ test(
       },
       storeIdentity,
     );
-    const tokenService = new OCCTokenServiceDriver(
+    const credentialService = new OCCCredentialServiceDriver(
       "occ",
       native.installation.id,
       store,
       instanceId,
       state,
     );
-    native.registerDriver(tokenService);
-    native.selectDriver("token_service", tokenService.id);
+    native.registerDriver(credentialService);
+    native.selectDriver("credential_service", credentialService.id);
     installSelectedSandboxDrivers(native, runtime);
     const app = createApp(native);
     const request = (method: string, path: string, body?: object) =>
@@ -128,7 +128,7 @@ test(
       secrets: {},
     });
     assert.equal(oldEnrollment.statusCode, 400, oldEnrollment.body);
-    assert.match(oldEnrollment.body, /through TokenService/);
+    assert.match(oldEnrollment.body, /through CredentialService/);
 
     const pat = "at-codex-pat-integration";
     const enrolled = await request("POST", `${base}/credential-sources`, {
@@ -151,10 +151,10 @@ test(
       [sourceId],
     );
 
-    const resolved = await tokenService.resolveCredential(
+    const resolved = await credentialService.resolveCredential(
       {
         sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
-        tokenServiceInstanceId: instanceId,
+        credentialServiceInstanceId: instanceId,
       },
       AbortSignal.timeout(5_000),
     );
@@ -183,7 +183,7 @@ test(
     );
     const [binding] = revision?.credentialDeployment?.bindings ?? [];
     assert.equal(binding?.sourceRef.id, sourceId);
-    assert.equal(revision?.credentialSources?.[0]?.tokenServiceInstanceId, instanceId);
+    assert.equal(revision?.credentialSources?.[0]?.credentialServiceInstanceId, instanceId);
     assert.equal(binding?.consumer.kind, "model");
     assert.equal(binding?.projection.environment, "CODEX_ACCESS_TOKEN");
     const policy = revision?.credentialDeployment;

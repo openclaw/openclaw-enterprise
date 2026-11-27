@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import {
   AgentResponse,
   ChannelDirectoryLookupResponse,
@@ -41,7 +41,7 @@ async function configuredController(
       secretDriver,
       gatewayStartupSourceDelivery: (compute, owner) =>
         compute.id === "compute-integration" &&
-        owner instanceof OCCTokenServiceDriver &&
+        owner instanceof OCCCredentialServiceDriver &&
         qualified(),
     },
     {
@@ -66,11 +66,11 @@ async function createDirectorySource(
   const ownerController = controller.fixture.controller;
   const state = controller.fixture.platformState;
   assert(ownerController && state);
-  const instanceId = await ownerController.activateTokenServiceInstance(
+  const instanceId = await ownerController.activateCredentialServiceInstance(
     "directory-owner",
     randomUUID(),
   );
-  const owner = new OCCTokenServiceDriver(
+  const owner = new OCCCredentialServiceDriver(
     "directory-owner",
     ownerController.installation.id,
     secretDriver.privateSecrets,
@@ -78,7 +78,7 @@ async function createDirectorySource(
     state,
   );
   ownerController.registerDriver(owner);
-  ownerController.selectDriver("token_service", owner.id);
+  ownerController.selectDriver("credential_service", owner.id);
   const created = await controller.request(
     "POST",
     `/namespaces/${namespaceId}/credential-sources`,
@@ -365,7 +365,7 @@ test("Channel directory lookup checks the exact edit target and Source before an
     fixture.state.restrictions.pop();
   }
 
-  // A restriction installed during TokenService custody resolution must still block the provider.
+  // A restriction installed during CredentialService custody resolution must still block the provider.
   for (const [resourceKind, resourceId, action, editTarget] of [
     ["agent", agentData.id, "update", { agentId: agentData.id }],
     ["credential_source", source.id, "operate", {}],

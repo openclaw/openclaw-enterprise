@@ -159,7 +159,7 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
   );
 });
 
-test("credential source registration checks Namespace readiness before TokenService availability", async () => {
+test("credential source registration checks Namespace readiness before CredentialService availability", async () => {
   const controller = await configuredController();
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "source-readiness");

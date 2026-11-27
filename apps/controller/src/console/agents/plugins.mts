@@ -459,12 +459,12 @@ export function renderAgentPlugins(
               : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
                 apiKeyAuth()
                 ? "Plugin browsing is unavailable with API-key authentication."
-                : "Hosted plugin browsing requires a TokenService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
+                : "Hosted plugin browsing requires a CredentialService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.",
     unsupportedMessage:
-      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs require a TokenService account Source.",
+      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs require a CredentialService account Source.",
     availableMessage: () =>
       catalogCredential === "none"
         ? "Load the Installation's curated plugin catalog. Access and tool availability are checked separately."

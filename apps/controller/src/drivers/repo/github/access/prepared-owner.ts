@@ -5,7 +5,7 @@ import type { GitHubPreparationAdmission, GitHubPreparationStore } from "./prepa
 import {
   createTokenPreparation,
   type TokenPreparationObservation,
-} from "../../../../backends/token-service/preparation.ts";
+} from "../../../../backends/credential-service/preparation.ts";
 import type { GitHubPreparationDiagnostic, ProviderObservation } from "./provider-diagnostics.ts";
 import {
   parseInstallationTokenResponse,

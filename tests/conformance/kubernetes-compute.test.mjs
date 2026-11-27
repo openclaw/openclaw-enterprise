@@ -680,7 +680,7 @@ test("staged Codex account and PAT authentication use fixed routing while static
   const accountAuth = {
     method: "credential_source",
     sourceId: "cs_codex_account",
-    tokenServiceInstanceId: "tokens",
+    credentialServiceInstanceId: "tokens",
     sourceType: "oauth2-refresh-token",
   };
   const staticAuth = { ...accountAuth, sourceType: "static" };
@@ -715,12 +715,12 @@ test("staged Codex account and PAT authentication use fixed routing while static
 });
 
 async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat }) {
-  // The admission snapshot has a Source type and TokenService owner, but no duplicated loginMode.
+  // The admission snapshot has a Source type and CredentialService owner, but no duplicated loginMode.
   // Controlled Sandbox/Proxy transports capture Compute's launch; no native deployment is claimed.
   const auth = {
     method: "credential_source",
     sourceId: "cs_codex_account",
-    tokenServiceInstanceId: "tokens",
+    credentialServiceInstanceId: "tokens",
     sourceType,
   };
   const preset = resolveModelCredentialPreset({
@@ -838,7 +838,7 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
         {
           sourceId: auth.sourceId,
           sourceType: auth.sourceType,
-          tokenServiceInstanceId: auth.tokenServiceInstanceId,
+          credentialServiceInstanceId: auth.credentialServiceInstanceId,
         },
       ],
       sandboxPolicy: {
@@ -993,7 +993,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         method: "credential_source",
         sourceId: "cs_model",
         sourceType: harnessId === "codex" ? "oauth2-refresh-token" : "static",
-        tokenServiceInstanceId: "tokens",
+        credentialServiceInstanceId: "tokens",
       };
       const model = {
         bindingRef: "model",
@@ -1060,12 +1060,12 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
               {
                 sourceId: auth.sourceId,
                 sourceType: auth.sourceType,
-                tokenServiceInstanceId: "tokens",
+                credentialServiceInstanceId: "tokens",
               },
               {
                 sourceId: repository.sourceRef.id,
                 sourceType: "github-app-installation",
-                tokenServiceInstanceId: "tokens",
+                credentialServiceInstanceId: "tokens",
               },
             ],
             executionAdmission: { version: 8, mode: "standalone" },
@@ -1242,8 +1242,8 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     id: "cs_staged_google",
     namespaceId: tenant.id,
     name: "Google credential",
-    ownerCapability: "token_service",
-    tokenServiceInstanceId: "tokens",
+    ownerCapability: "credential_service",
+    credentialServiceInstanceId: "tokens",
     type: "oauth2-refresh-token",
     config: {},
     secrets: {},
@@ -1274,7 +1274,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
   const stagedAuth = {
     method: "credential_source",
     sourceId: "cs_staged_model",
-    tokenServiceInstanceId: "tokens",
+    credentialServiceInstanceId: "tokens",
     sourceType: "static",
   };
   const modelGrant = {
@@ -1381,12 +1381,12 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
         {
           sourceId: pluginSource.id,
           sourceType: pluginSource.type,
-          tokenServiceInstanceId: "tokens",
+          credentialServiceInstanceId: "tokens",
         },
         {
           sourceId: stagedAuth.sourceId,
           sourceType: "static",
-          tokenServiceInstanceId: "tokens",
+          credentialServiceInstanceId: "tokens",
         },
       ],
       plugins: {
@@ -1502,7 +1502,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   const auth = {
     method: "credential_source",
     sourceId: "cs_staged_model",
-    tokenServiceInstanceId: "tokens",
+    credentialServiceInstanceId: "tokens",
     sourceType: "static",
   };
   const grant = {

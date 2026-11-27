@@ -18,7 +18,7 @@ Use **Configure plugins** to edit saved selections and tool policy. On a dedicat
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, add
 **Google Workspace** with **Install without an account** to check `gog --version`,
 or select a compatible OAuth Source to make approved Google API calls.
-Managed HTTP and MCP Plugins select a TokenService Source in their account
+Managed HTTP and MCP Plugins select a CredentialService Source in their account
 slot. See [managed OpenClaw plugins](openclaw-plugins.md). The operator and
 Agent need Source `operate` permission. Clearing a slot or
 removing a Plugin applies on the next deployment; to end access sooner,
@@ -28,7 +28,7 @@ Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
 For dedicated Codex browsing, the curated catalog needs no account credential.
-Hosted discovery uses a ready Codex account Source through TokenService; see
+Hosted discovery uses a ready Codex account Source through CredentialService; see
 [Codex Apps](../integrations/codex-plugins.md). Select **Save plugin selections**, then
 follow [Deploy the change](#deploy-the-change). The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
@@ -59,7 +59,7 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-On a dedicated OpenClaw Agent, select a ready TokenService Source for that slot
+On a dedicated OpenClaw Agent, select a ready CredentialService Source for that slot
 and choose **Load tools**. Select the tools the Agent may use, then save the
 Plugin selection. The worker advertises
 those tools; the Sandbox enforces the selection for both worker and script calls. See

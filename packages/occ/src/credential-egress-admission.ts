@@ -22,7 +22,7 @@ import {
   type RepositoryRevisionState,
   type Secret,
   type SecretReference,
-  type TokenService,
+  type CredentialService,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -59,7 +59,7 @@ interface CredentialEgressAdmissionDependencies {
   readonly proxyDriver: () => DriverByCapability["credential_proxy"];
   readonly proxyRegistrationOwner: () => InstalledDriver | undefined;
   readonly selectedProxyOwner: () => InstalledDriver;
-  readonly issuer: (ref: EgressRef) => ReturnType<TokenService["issuer"]>;
+  readonly issuer: (ref: EgressRef) => ReturnType<CredentialService["issuer"]>;
 }
 
 export function createCredentialEgressAdmission(
@@ -193,7 +193,7 @@ export function createCredentialEgressAdmission(
         agent.namespaceId,
         binding.sourceId,
       );
-      if (source?.ownerCapability !== "token_service" && source?.egress !== undefined) {
+      if (source?.ownerCapability !== "credential_service" && source?.egress !== undefined) {
         sources.push(source);
       }
     }

@@ -90,7 +90,7 @@ readonly gatewayStartupCredentials?: {
 };
 ```
 
-For exported inputs, require both methods: `resolve` returns only the selected Gateway variables, with a nonempty `sourceVersion` required for Source bindings and absent for Secret Driver exports; `authorize` checks all bindings without reading values. Canonical Namespace Secret-only deployments retain their existing worker authorization path. Reuse [TokenService.resolveCredential](../../packages/contracts/src/drivers/token-service/index.ts) and optional [SecretDriver.withValue](../../packages/contracts/src/drivers/secret/index.ts). OCC must not expose exported values to the Harness, other containers, APIs, revisions, logs, or diagnostics.
+For exported inputs, require both methods: `resolve` returns only the selected Gateway variables, with a nonempty `sourceVersion` required for Source bindings and absent for Secret Driver exports; `authorize` checks all bindings without reading values. Canonical Namespace Secret-only deployments retain their existing worker authorization path. Reuse [TokenService.resolveCredential](https://github.com/openclaw/openclaw-enterprise/blob/8e8c7faaeb5f750c3e2d7e9ebcca61b7d57ac1aa/packages/contracts/src/drivers/token-service/index.ts) and optional [SecretDriver.withValue](../../packages/contracts/src/drivers/secret/index.ts). OCC must not expose exported values to the Harness, other containers, APIs, revisions, logs, or diagnostics.
 
 ## Initial support
 

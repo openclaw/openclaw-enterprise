@@ -11,7 +11,7 @@ lifecycle. This page owns Kubernetes setup and operator procedures.
 
 The Driver delivers Namespace Secrets to approved workloads and supports
 transient reads for Channel credential validation and directory lookup.
-OCC TokenService uses the Driver's [private custody](#tokenservice-private-custody). OCC stores
+OCC CredentialService uses the Driver's [private custody](#credentialservice-private-custody). OCC stores
 [Codex device-login sessions](kubernetes-compute/codex-oauth-storage.md) in PostgreSQL.
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
@@ -76,7 +76,7 @@ OCC-owned metadata.
 
 <a id="installation-private-oauth-client-secrets"></a>
 
-## TokenService private custody
+## CredentialService private custody
 
 Helm provisions a Kubernetes namespace for private Source and credential Client material. Outside Helm, select a dedicated namespace with `OCC_INSTALLATION_SECRET_NAMESPACE`. The Driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the Worker get and delete. Keep tenant workloads and tenant RoleBindings out of this namespace.
 
@@ -221,8 +221,8 @@ reads the current CP source and delivers the admitted fields into the DP runtime
 Secret before starting the Harness. An unchanged Configuration or Secret reference
 does not remove the need to deploy again.
 
-For an OCC TokenService-managed model key, update the Source and verify delivery
-using the [managed model key replacement procedure](../../guides/deploy/credential-lifecycle.md#replace-an-occ-tokenservice-managed-model-key).
+For an OCC CredentialService-managed model key, update the Source and verify delivery
+using the [managed model key replacement procedure](../../guides/deploy/credential-lifecycle.md#replace-an-occ-credentialservice-managed-model-key).
 
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.

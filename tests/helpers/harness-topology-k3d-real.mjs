@@ -1551,7 +1551,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         },
   );
   if (slack !== undefined) {
-    workerConfiguration.drivers.token_service = { id: "occ", configuration: {} };
+    workerConfiguration.drivers.credential_service = { id: "occ", configuration: {} };
   }
   // Cases share an Installation, so keep its policy after the Default user case
   // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.

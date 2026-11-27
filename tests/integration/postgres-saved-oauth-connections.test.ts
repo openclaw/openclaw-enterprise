@@ -3,9 +3,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
-import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { scheduleTokenServiceMaintenance } from "../../apps/controller/src/composition/token-service.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
+import { scheduleCredentialServiceMaintenance } from "../../apps/controller/src/composition/credential-service.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { managedCliInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
@@ -31,7 +31,7 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { installDeviceCredentialService } from "../helpers/device-credential-service.ts";
 import { controlledOAuthIssuer, oauthIssuerWithTransport } from "../helpers/oauth-issuer.ts";
 
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
@@ -102,11 +102,11 @@ test(
         controllerOptions: { oauthIssuer: controlled.operations },
       });
     const deliveries: { version: string; due: boolean }[] = [];
-    await installDeviceTokenService(
+    await installDeviceCredentialService(
       controller,
       state,
       secrets,
-      "scope-token-service",
+      "scope-credential-service",
       async (ref, version) => {
         const custody = await state.read(({ oauthCredentials }) =>
           oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId),
@@ -204,7 +204,7 @@ test(
     assert.ok(
       eligibility
         .json()
-        .data.every((value: Record<string, unknown>) => !("tokenServiceInstanceId" in value)),
+        .data.every((value: Record<string, unknown>) => !("credentialServiceInstanceId" in value)),
     );
     const missingSelection = await inject("POST", `/namespaces/${namespaceId}/connections`, {
       connectionTemplateId: template.json().data.id,
@@ -252,7 +252,7 @@ test(
     const exchangeReached = Promise.withResolvers<void>();
     const resumeExchange = Promise.withResolvers<void>();
     t.after(() => resumeExchange.resolve());
-    // Fastify, IAM, TokenService custody, PostgreSQL and the HTTPS transport are real.
+    // Fastify, IAM, CredentialService custody, PostgreSQL and the HTTPS transport are real.
     controlled.setTokenHandler(async ({ authorization, parameters: body }) => {
       if (
         authorization !==
@@ -407,7 +407,7 @@ test(
 );
 
 test(
-  "OAuth consent creates an owner-bound Source and refreshes it through the TokenService",
+  "OAuth consent creates an owner-bound Source and refreshes it through the CredentialService",
   {
     skip:
       requiresPostgres.skip || (!(issuer && secretsFile) && "Prepare the keycloak-oidc CI lane."),
@@ -469,7 +469,7 @@ test(
       }
     });
 
-    // The API and Token Service use the fixture Secret store. Keycloak authenticates the
+    // The API and CredentialService use the fixture Secret store. Keycloak authenticates the
     // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
     const secretDriver = {
       ...createTestSecretDriver(),
@@ -512,8 +512,11 @@ test(
       },
       storeIdentity,
     );
-    const instanceId = await controller.activateTokenServiceInstance("oauth-owner", storeIdentity);
-    const tokenOwner = new OCCTokenServiceDriver(
+    const instanceId = await controller.activateCredentialServiceInstance(
+      "oauth-owner",
+      storeIdentity,
+    );
+    const tokenOwner = new OCCCredentialServiceDriver(
       "oauth-owner",
       controller.installation.id,
       privateStore,
@@ -523,7 +526,7 @@ test(
       new OAuthAccountTokens(state, privateStore, resolveClient),
     );
     controller.registerDriver(tokenOwner);
-    controller.selectDriver("token_service", tokenOwner.id);
+    controller.selectDriver("credential_service", tokenOwner.id);
     const auth = new PostgresHumanAuthentication(
       state,
       controller.installation.id,
@@ -743,7 +746,7 @@ test(
       label: "saved-account",
       authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
     });
-    // Consent cannot start on an API replica without its selected TokenService owner.
+    // Consent cannot start on an API replica without its selected CredentialService owner.
     const countAttempts = async () =>
       (
         await pool.query(
@@ -1026,9 +1029,9 @@ test(
     const custody = await pool.query<{
       secret_ref: PrivateSecretRef;
       driver_id: string | null;
-      token_service_instance_id: string;
+      credential_service_instance_id: string;
     }>(
-      `SELECT custody.secret_ref, source.driver_id, source.token_service_instance_id FROM occ.connection_token_custody custody
+      `SELECT custody.secret_ref, source.driver_id, source.credential_service_instance_id FROM occ.connection_token_custody custody
        JOIN occ.credential_sources source ON source.namespace_id = custody.namespace_id AND source.id = custody.credential_source_id
        WHERE custody.namespace_id=$1 AND custody.credential_source_id=$2`,
       [namespaceId, id],
@@ -1037,7 +1040,7 @@ test(
     const [custodyRow] = custody.rows;
     assert.ok(custodyRow);
     assert.equal(custodyRow.driver_id, null);
-    assert.equal(custodyRow.token_service_instance_id, instanceId);
+    assert.equal(custodyRow.credential_service_instance_id, instanceId);
     const privateRef = custodyRow.secret_ref;
     assert.equal(privateRef.installationId, controller.installation.id);
     assert.equal(await privateStore.withValue(privateRef, async () => true), true);
@@ -1071,10 +1074,10 @@ test(
         ["openid"],
       ],
     );
-    // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
+    // The trusted CredentialService consumer can use the grant. Saving/rotating alone creates no sender.
     const sourceInstance = {
       sourceRef: { kind: "credential_source", namespaceId, id } as const,
-      tokenServiceInstanceId: instanceId,
+      credentialServiceInstanceId: instanceId,
     };
     async function prepared() {
       const token = await tokenOwner.resolveCredential(sourceInstance, t.signal);
@@ -1087,7 +1090,7 @@ test(
       assert.equal(
         result.status,
         200,
-        "Keycloak accepts the Token Service's prepared access token",
+        "Keycloak accepts the CredentialService's prepared access token",
       );
       return (await result.json()).sub;
     };
@@ -1139,7 +1142,7 @@ test(
     } finally {
       unavailable.mock.restore();
     }
-    // Source metadata remains readable when TokenService cannot inspect its private custody.
+    // Source metadata remains readable when CredentialService cannot inspect its private custody.
     const unavailableCustody = t.mock.method(privateStore, "withValue", async () => {
       throw new DependencyUnavailableError("Secret store unavailable");
     });
@@ -1296,7 +1299,7 @@ test(
       unit.oauthCredentials.recordTokenSchedule(namespaceId, id, "due"),
     );
     const maintenanceApp = createApp(controller);
-    const stopMaintenance = scheduleTokenServiceMaintenance(maintenanceApp, tokenOwner);
+    const stopMaintenance = scheduleCredentialServiceMaintenance(maintenanceApp, tokenOwner);
     maintenanceApp.addHook("onClose", stopMaintenance);
     try {
       await maintenanceApp.ready();
@@ -1331,7 +1334,7 @@ test(
     const resolving = tokenOwner.resolveCredential(sourceInstance, t.signal);
     await observed.promise;
     // The SQL revocation survives a transient custody failure. A worker with the same
-    // Secret store and Token Service finishes it after the API request has returned.
+    // Secret store and CredentialService finishes it after the API request has returned.
     const unavailableDelete = t.mock.method(privateStore, "delete", async () => {
       throw new DependencyUnavailableError("Secret store unavailable");
     });
@@ -1366,7 +1369,7 @@ test(
     const { worker } = recovery.startWorker({
       backends: [],
       secretDriver,
-      tokenServiceDriverId: tokenOwner.id,
+      credentialServiceDriverId: tokenOwner.id,
     });
     await worker.start();
 

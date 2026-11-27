@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   ConfigurationResponse,
@@ -51,7 +51,7 @@ export async function prepareFixture({
       channelDriver,
       secretDriver,
       gatewayStartupSourceDelivery: (compute, owner) =>
-        compute.id === "compute-integration" && owner instanceof OCCTokenServiceDriver,
+        compute.id === "compute-integration" && owner instanceof OCCCredentialServiceDriver,
     },
     {
       wrapPlatformState: (state) => state,

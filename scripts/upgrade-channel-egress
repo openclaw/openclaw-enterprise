@@ -354,7 +354,7 @@ def lifecycle(action, args):
             binding = bindings.get(name)
             source = binding.get("source") if isinstance(binding, dict) else None
             require(not (isinstance(source, dict) and source.get("kind") == "secret"),
-                    f"Agent {agent_id} has an enabled Slack credential bound to a public Namespace Secret; no additional Agent was stopped. Stop that Agent under the old controller and start a fresh upgrade attempt. After the upgrade, select the qualified OCC TokenService with Kubernetes Compute, recreate its credentials as Credential Sources, update its Slack Configuration bindings, and deploy it")
+                    f"Agent {agent_id} has an enabled Slack credential bound to a public Namespace Secret; no additional Agent was stopped. Stop that Agent under the old controller and start a fresh upgrade attempt. After the upgrade, select the qualified OCC CredentialService with Kubernetes Compute, recreate its credentials as Credential Sources, update its Slack Configuration bindings, and deploy it")
 
     if action == "stop":
         # An earlier completed Stop can still need its original revision for Deploy.

@@ -58,7 +58,7 @@ import {
   SecretDriverOwnershipError,
   SecretValueError,
   ServiceAccountDriverNotConfiguredError,
-  TokenServiceSourceInputError,
+  CredentialServiceSourceInputError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
 import {
@@ -987,7 +987,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
   }
-  if (error instanceof TokenServiceSourceInputError) {
+  if (error instanceof CredentialServiceSourceInputError) {
     return failure(
       400,
       "INVALID_REQUEST",

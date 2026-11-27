@@ -8,7 +8,7 @@ import type {
   DriverConfigurationDescriptor,
   SandboxFacet,
   StaticCredentialSource,
-  TokenServiceDriver,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
@@ -56,9 +56,9 @@ interface SetupDiscoveryDependencies {
   ) => Promise<{ readonly configuration: DriverConfigurationDescriptor | undefined }>;
   readonly selectCompute: () => ComputeDriver;
   readonly selectChannel: () => ChannelDriver;
-  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly ownedCredentialServiceDriver: (instanceId: string) => CredentialServiceDriver;
   readonly gatewayStartupSourceDelivery:
-    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
+    ((compute: ComputeDriver, owner: CredentialServiceDriver) => boolean) | undefined;
 }
 
 function validateChannelDirectoryInput(
@@ -230,10 +230,13 @@ export class SetupDiscovery {
       const resolved = await driverOperation(
         () =>
           first.owner.resolveCredential(
-            { sourceRef: first.ref, tokenServiceInstanceId: first.source.tokenServiceInstanceId },
+            {
+              sourceRef: first.ref,
+              credentialServiceInstanceId: first.source.credentialServiceInstanceId,
+            },
             signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
           ),
-        "TokenService",
+        "CredentialService",
       );
       if (!isNonEmptyString(resolved.credential) || !isNonEmptyString(resolved.version)) {
         throw new ChannelDirectoryError("invalid_response");
@@ -246,7 +249,7 @@ export class SetupDiscovery {
     // qualification after owner I/O before the Channel Driver can contact Slack.
     const current = await this.channelDirectorySource(principalId, namespaceId, input);
     if (
-      current.source.tokenServiceInstanceId !== first.source.tokenServiceInstanceId ||
+      current.source.credentialServiceInstanceId !== first.source.credentialServiceInstanceId ||
       current.owner !== first.owner ||
       current.compute !== first.compute
     ) {
@@ -317,7 +320,7 @@ export class SetupDiscovery {
   ): Promise<{
     readonly ref: CredentialSourceReference;
     readonly source: Readonly<StaticCredentialSource>;
-    readonly owner: TokenServiceDriver;
+    readonly owner: CredentialServiceDriver;
     readonly compute: ComputeDriver;
   }> {
     await this.authorizeChannelDirectoryUse(principalId, namespaceId, input);
@@ -352,19 +355,21 @@ export class SetupDiscovery {
         );
       }
       if (
-        source.ownerCapability !== "token_service" ||
+        source.ownerCapability !== "credential_service" ||
         source.type !== "static" ||
         source.state !== "ready"
       ) {
         throw new ResourceStateConflictError(
-          "Channel directory lookup requires a ready static TokenService Credential Source.",
+          "Channel directory lookup requires a ready static CredentialService Credential Source.",
         );
       }
-      const owner = this.dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const owner = this.dependencies.ownedCredentialServiceDriver(
+        source.credentialServiceInstanceId,
+      );
       const compute = this.dependencies.selectCompute();
       if (this.dependencies.gatewayStartupSourceDelivery?.(compute, owner) !== true) {
         throw new ResourceStateConflictError(
-          "The selected Compute and TokenService do not support Gateway Source delivery.",
+          "The selected Compute and CredentialService do not support Gateway Source delivery.",
         );
       }
       return {

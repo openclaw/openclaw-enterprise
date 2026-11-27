@@ -21,7 +21,7 @@ must leave channels disabled.
 Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver.
 Hosted plugin discovery and runtime authentication accept a `codex_pat` token
 (a same-Namespace Secret or a PAT entered during Agent creation) or a Codex OAuth
-Source from ChatGPT sign-in. Sign-in requires a selected TokenService Driver
+Source from ChatGPT sign-in. Sign-in requires a selected CredentialService Driver
 that supports device authorization; the rendered profile selects only the Plugin
 Driver. Rendering supplies neither the credential nor a ready catalog.
 

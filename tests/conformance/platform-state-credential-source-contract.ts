@@ -21,7 +21,7 @@ export async function verifyCredentialSourceContract(
     installation,
     namespace: otherNamespace,
   }: Pick<PlatformStateSeed, "installation" | "namespace">,
-  tokenServiceInstanceId: string,
+  credentialServiceInstanceId: string,
 ): Promise<void> {
   const namespace = {
     id: identifier("ns"),
@@ -44,10 +44,10 @@ export async function verifyCredentialSourceContract(
     const ready = {
       id: identifier("cs"),
       namespaceId: namespace.id,
-      name: `Owned TokenService Source ${randomUUID()}`,
+      name: `Owned CredentialService Source ${randomUUID()}`,
       type: "static",
-      ownerCapability: "token_service",
-      tokenServiceInstanceId,
+      ownerCapability: "credential_service",
+      credentialServiceInstanceId,
       state: "ready",
       config: { provider_preset: "openai" },
       createdAt: namespace.createdAt,

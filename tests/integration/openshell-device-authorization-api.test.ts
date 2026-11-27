@@ -12,7 +12,7 @@ import {
 import {
   DEVICE_OAUTH_ACCESS_TOKEN,
   DEVICE_OAUTH_REFRESH_TOKEN,
-} from "../helpers/device-token-service.ts";
+} from "../helpers/device-credential-service.ts";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import {
   readProviderRequestBody,
@@ -119,7 +119,7 @@ test("Codex pre-code poll failures retain one temporary login and enforce its in
   assertNoCredentials(fixture);
 });
 
-test("Codex start failures classify the TokenService boundary without exposing issuer diagnostics", async (t) => {
+test("Codex start failures classify the CredentialService boundary without exposing issuer diagnostics", async (t) => {
   const logs: unknown[] = [];
   const fixture = await createFixture(t, {
     logger: createOccLogger({
@@ -153,7 +153,7 @@ test("Codex start failures classify the TokenService boundary without exposing i
           entry.requestId === failure.meta.requestId,
       );
     assert.ok(warning);
-    assert.equal(warning.boundary, "token_service");
+    assert.equal(warning.boundary, "credential_service");
     assert.equal(warning.reason, reason);
     if (reason === "unavailable") {
       assert.equal(warning.failure, "HTTP_503");
@@ -163,7 +163,7 @@ test("Codex start failures classify the TokenService boundary without exposing i
   }
 });
 
-test("deleting a completed Codex Source retires native delivery before erasing TokenService custody", async (t) => {
+test("deleting a completed Codex Source retires native delivery before erasing CredentialService custody", async (t) => {
   const calls: string[] = [];
   let unavailable = true;
   let namespaceId = "";

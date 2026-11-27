@@ -8,9 +8,9 @@ through revision Providers and exposes the dedicated Codex app-server.
 ## Managed credential delivery
 
 The paired [Credential Proxy](../credential-proxy.md) configures the admitted
-Source bindings before Compute releases the Harness. With OCC TokenService,
+Source bindings before Compute releases the Harness. With OCC CredentialService,
 Proxy prepares a Provider with the delivery copy. The native OpenShell
-TokenService preview attaches its existing Provider. The Harness receives
+CredentialService preview attaches its existing Provider. The Harness receives
 placeholders for those bindings. [Source support](../../credential-sources.md#implementation-status)
 
 <span id="dedicated-codex-runtime-provider"></span>

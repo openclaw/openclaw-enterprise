@@ -15,11 +15,11 @@ to find the required settings.
 
 ## Configure managed credential delivery
 
-Use bundled Kubernetes Compute and add OCC TokenService under `drivers` in the
+Use bundled Kubernetes Compute and add OCC CredentialService under `drivers` in the
 trusted Installation configuration.
 
 ```yaml
-token_service:
+credential_service:
   id: occ
   configuration: {}
 ```
@@ -41,14 +41,14 @@ protected metadata and repository exchanges; do not select it for new workflows.
 
 ## Available implementations
 
-| Implementation                                                           | Use it for                                                                                                   | Current limits                                                                                                                                          |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Kubernetes Compute](../../reference/drivers/kubernetes-compute.md)      | Run embedded OpenClaw or dedicated Codex Agents on Kubernetes.                                               | Managed ChatGPT credentials require dedicated Codex.                                                                                                    |
-| [Kubernetes Secret](../../reference/drivers/kubernetes-secret.md)        | Store and deliver OCC Secrets on Kubernetes.                                                                 | The bundled Secret Driver is required in trusted Installation YAML, including when selecting SSH Compute; it cannot deliver credentials to an SSH host. |
-| [SSH Compute](../../reference/drivers/ssh-compute.md)                    | Run embedded OpenClaw on operator-managed Linux/systemd hosts, using model credentials supplied on the host. | No dedicated Codex or OCC-managed model credentials.                                                                                                    |
-| [Docker/Podman Compute](../../reference/drivers/docker-compute.md)       | Run the local Compose control plane for development.                                                         | Current Agent authentication cannot deploy new Agents with this Driver. Use Kubernetes for local Agent deployment.                                      |
-| [OpenShell Sandbox](../../reference/drivers/openshell-sandbox.md)        | Run a dedicated Harness in a Sandbox.                                                                        | Development integration; verify the required gateway and supervisor capabilities for the selected delivery path.                                        |
-| [OCC TokenService](../../reference/credential-sources/managed-static.md) | Hold managed Sources and their credentials.                                                                  | Check [current Source support](../../reference/credential-sources.md#implementation-status) before selecting this Driver.                               |
+| Implementation                                                                | Use it for                                                                                                   | Current limits                                                                                                                                          |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Kubernetes Compute](../../reference/drivers/kubernetes-compute.md)           | Run embedded OpenClaw or dedicated Codex Agents on Kubernetes.                                               | Managed ChatGPT credentials require dedicated Codex.                                                                                                    |
+| [Kubernetes Secret](../../reference/drivers/kubernetes-secret.md)             | Store and deliver OCC Secrets on Kubernetes.                                                                 | The bundled Secret Driver is required in trusted Installation YAML, including when selecting SSH Compute; it cannot deliver credentials to an SSH host. |
+| [SSH Compute](../../reference/drivers/ssh-compute.md)                         | Run embedded OpenClaw on operator-managed Linux/systemd hosts, using model credentials supplied on the host. | No dedicated Codex or OCC-managed model credentials.                                                                                                    |
+| [Docker/Podman Compute](../../reference/drivers/docker-compute.md)            | Run the local Compose control plane for development.                                                         | Current Agent authentication cannot deploy new Agents with this Driver. Use Kubernetes for local Agent deployment.                                      |
+| [OpenShell Sandbox](../../reference/drivers/openshell-sandbox.md)             | Run a dedicated Harness in a Sandbox.                                                                        | Development integration; verify the required gateway and supervisor capabilities for the selected delivery path.                                        |
+| [OCC CredentialService](../../reference/credential-sources/managed-static.md) | Hold managed Sources and their credentials.                                                                  | Check [current Source support](../../reference/credential-sources.md#implementation-status) before selecting this Driver.                               |
 
 The [Compute comparison](../../reference/drivers/compute-matrix.md) distinguishes
 individual implementation capabilities from an Agent deployment that can

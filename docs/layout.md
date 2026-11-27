@@ -129,7 +129,7 @@ and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`,
 OCC owns immutable Agent bindings and safe session State; worker helpers connect
 those records to Compute delivery. Public status omits private cleanup diagnostics.
 The common engine's `RepositoryBackend` protocol is separate from these interfaces.
-The worker Token Service owns GitHub App signing and provider-token custody.
+The worker CredentialService owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
 

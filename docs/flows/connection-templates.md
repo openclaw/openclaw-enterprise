@@ -8,7 +8,7 @@ last_updated_session: authoring-run/2ae72e91-8611-461a-b01f-65bf8fc3e7a1
 
 ## Overview
 
-An Installation administrator saves allowed destinations in a static Bearer Connection Template or saves OAuth settings in an OAuth template. OCC keeps the template identity and immutable versions in its repository. For OAuth, a person can then select a template to connect an account in a Namespace. OCC runs browser authorization, and the Token Service stores and renews the grant. Static credential enrollment and delivery are outside this flow.
+An Installation administrator saves allowed destinations in a static Bearer Connection Template or saves OAuth settings in an OAuth template. OCC keeps the template identity and immutable versions in its repository. For OAuth, a person can then select a template to connect an account in a Namespace. OCC runs browser authorization, and the CredentialService stores and renews the grant. Static credential enrollment and delivery are outside this flow.
 
 ## Entry Points
 
@@ -26,7 +26,7 @@ graph TD
   Admin -->|MCP server URL| Discovery["OCC reads provider metadata"]
   Discovery --> Version
   Version --> Saved["OCC returns the saved version"]
-  Admin -->|Confidential client| Secret["TokenService stores its secret"]
+  Admin -->|Confidential client| Secret["CredentialService stores its secret"]
   Admin -->|Public client| Publish["OCC publishes the client registration"]
   Secret --> Publish
 ```
@@ -38,9 +38,9 @@ graph TD
   Start["Person selects a template and a compatible client"] --> Attempt["OCC records the browser attempt"]
   Attempt --> Provider["Provider asks for consent"]
   Provider -->|Authorization code| Callback["OCC consumes the attempt and exchanges the code"]
-  Callback --> Custody["TokenService creates the OAuth Source and stores the grant"]
+  Callback --> Custody["CredentialService creates the OAuth Source and stores the grant"]
   Custody --> IAM["OCC grants creator access and audits completion"]
-  IAM -->|Renewal due| Renew["TokenService refreshes with original consent"]
+  IAM -->|Renewal due| Renew["CredentialService refreshes with original consent"]
 ```
 
 ## Execution Trace
@@ -65,7 +65,7 @@ For manual OAuth, OCC authorizes Installation administration and verifies the en
 
 If the save response lacks a valid version, the Console keeps the editor open and disables another save. Close the editor to refresh the catalog and check whether the change was saved before continuing registration.
 
-OCC records the selected Installation or Namespace scope for either Client kind. For an OAuth2 secret or GitHub App key, OCC reserves a hidden row and asks the selected TokenService to store the material under the Client's private address. A public OAuth2 Client needs only metadata. OCC publishes the Client and records the audit.
+OCC records the selected Installation or Namespace scope for either Client kind. For an OAuth2 secret or GitHub App key, OCC reserves a hidden row and asks the selected CredentialService to store the material under the Client's private address. A public OAuth2 Client needs only metadata. OCC publishes the Client and records the audit.
 
 Rotation replaces the private value at the same address. OAuth2 code exchange and refresh read the current secret. The GitHub issuer uses the current signing key and checks the Client's scope against the Source's Namespace before reading it. A pending consent attempt, Agent repository selection or retained Source can block Client deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
 
@@ -77,21 +77,21 @@ Before listing available templates, OCC checks `credential_source:create` and co
 
 Before starting browser consent and again before exchanging the code, OCC checks that the IAM Driver can grant the creator read and operate access to the new Source.
 
-OCC verifies the person's Namespace permission and selected TokenService, then saves the chosen client and Template version in an `oauth_connection` row in `occ.authentication_states`. The row contains the state hash, browser session, principal, requested scopes, and Proof Key for Code Exchange (PKCE) verifier. The provider receives the state and the challenge derived from the verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults. The worker removes expired attempts. Device login uses the same store with a different kind and lifecycle.
+OCC verifies the person's Namespace permission and selected CredentialService, then saves the chosen client and Template version in an `oauth_connection` row in `occ.authentication_states`. The row contains the state hash, browser session, principal, requested scopes, and Proof Key for Code Exchange (PKCE) verifier. The provider receives the state and the challenge derived from the verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults. The worker removes expired attempts. Device login uses the same store with a different kind and lifecycle.
 
 ### 4. Exchange the code and save the account
 
-`packages/occ/src/oauth-consent.ts:completeNamespaceConnection` and `apps/controller/src/drivers/token-service/occ.ts:createSource`
+`packages/occ/src/oauth-consent.ts:completeNamespaceConnection` and `apps/controller/src/drivers/credential-service/occ.ts:createSource`
 
-On callback, OCC consumes the matching attempt once, checks the person's session and authority, and selects the active TokenService before exchanging the code. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. Before reading the current client secret or sending the code, OCC revalidates the original version's exact token endpoint against current issuer metadata. It sends the code and verifier only to that endpoint and includes the MCP resource when applicable. If the exchange times out, the person starts a new attempt.
+On callback, OCC consumes the matching attempt once, checks the person's session and authority, and selects the active CredentialService before exchanging the code. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. Before reading the current client secret or sending the code, OCC revalidates the original version's exact token endpoint against current issuer metadata. It sends the code and verifier only to that endpoint and includes the MCP resource when applicable. If the exchange times out, the person starts a new attempt.
 
-After exchange, OCC sends the grant and consent details to the selected TokenService. TokenService allocates the Source ID and writes the access token and refresh grant to private storage. It then saves the ready OAuth Source, its custody reference, and its renewal schedule in one transaction. OCC grants the creator access and records completion against the Source and the authorized Namespace create operation. OCC records the requested scopes and the issuer’s valid initial granted scopes separately, even when the issuer grants more than requested. If the issuer omits `scope`, OCC records the requested scopes as granted. The refresh parser refuses any scope outside the prior grant.
+After exchange, OCC sends the grant and consent details to the selected CredentialService. CredentialService allocates the Source ID and writes the access token and refresh grant to private storage. It then saves the ready OAuth Source, its custody reference, and its renewal schedule in one transaction. OCC grants the creator access and records completion against the Source and the authorized Namespace create operation. OCC records the requested scopes and the issuer’s valid initial granted scopes separately, even when the issuer grants more than requested. If the issuer omits `scope`, OCC records the requested scopes as granted. The refresh parser refuses any scope outside the prior grant.
 
 ### 5. Renew the grant
 
-`apps/controller/src/composition/token-service.ts:scheduleTokenServiceMaintenance` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
+`apps/controller/src/composition/credential-service.ts:scheduleCredentialServiceMaintenance` and `apps/controller/src/backends/credential-service/oauth-connection.ts:renew`
 
-The API checks for due OAuth Sources on a five-second schedule independent of Git maintenance. The selected TokenService can also renew during an authorized API read. The Worker resolves only an eligible current access token and can retry deployment after API renewal. Template-backed renewal revalidates the original consent version's token endpoint before reading the registered Client's current secret or sending the refresh grant. An unavailable or changed issuer endpoint stops the request; OCC never substitutes the current Template version or another Client. A Template update can affect later admission. The existing grant keeps its issuer endpoint and scope ceiling. TokenService records the next renewal and any narrower granted scopes.
+The API checks for due OAuth Sources on a five-second schedule independent of Git maintenance. The selected CredentialService can also renew during an authorized API read. The Worker resolves only an eligible current access token and can retry deployment after API renewal. Template-backed renewal revalidates the original consent version's token endpoint before reading the registered Client's current secret or sending the refresh grant. An unavailable or changed issuer endpoint stops the request; OCC never substitutes the current Template version or another Client. A Template update can affect later admission. The existing grant keeps its issuer endpoint and scope ceiling. CredentialService records the next renewal and any narrower granted scopes.
 
 Built-in Codex device login uses no Connection Template. See the [Credential source lifecycle](credential-source-lifecycle.md#1-register-a-source).
 

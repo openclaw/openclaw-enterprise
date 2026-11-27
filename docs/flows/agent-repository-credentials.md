@@ -22,7 +22,7 @@ and [qualification](../testing/repository-credentials.md).
 
 ## Flow
 
-### TokenService Git
+### CredentialService Git
 
 ```mermaid
 ---
@@ -31,7 +31,7 @@ config:
 ---
 flowchart TB
   Draft["<b>Agent draft</b><br/>Client and repo access"] --> Deploy["<b>Deploy</b><br/>Authorizes caller and scope"]
-  Deploy --> Source["<b>TokenService Source</b><br/>Reuse or mint"]
+  Deploy --> Source["<b>CredentialService Source</b><br/>Reuse or mint"]
   Source --> Revision["<b>Agent revision</b><br/>Source and exact request rules"]
   Revision --> Proxy["<b>Credential Proxy</b><br/>Worker configures delivery"]
   Proxy --> Git["<b>OpenShell</b><br/>Injects on admitted Git or publication routes"]
@@ -124,7 +124,7 @@ Catalog overflow above 1,000 repositories plus Installation returns
 bindings. Outages allow empty drafts. After an uncertain save, read the Agent
 and Configuration.
 
-Requests carry Repository references and optional profiles. TokenService Git saves
+Requests carry Repository references and optional profiles. CredentialService Git saves
 a Client and access per Repository. Legacy GitHub defaults to `git-write`.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
@@ -249,7 +249,7 @@ Codex checks the named profile at thread start, resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-`projectGatewayRevision` disables bundled `github` for Dedicated TokenService Git.
+`projectGatewayRevision` disables bundled `github` for Dedicated CredentialService Git.
 With PR authority, Compute loads `github-repository-rest` from
 `/usr/local/lib/oce/skills` and remaps `github` selections. Both Harnesses use the
 catalog. Codex calls `skills_read`. The binding supplies the placeholder.

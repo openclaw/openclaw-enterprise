@@ -7,7 +7,7 @@ last_verified: "2026-11-02"
 # Push a Git branch from an OpenShell Agent
 
 Use the Source-backed Git path to push an empty commit from a dedicated Codex
-Agent to an approved test repository. TokenService holds the GitHub App signing
+Agent to an approved test repository. CredentialService holds the GitHub App signing
 key and installation token. OpenShell Credential Proxy injects the token for
 requests allowed by the Agent's saved repository policy.
 
@@ -37,7 +37,7 @@ Select the GitHub Backend with `repository.id` and
 short name in the approved registry and grant its Namespace access. In the
 Namespace entry, use `github-repository` with `nativeGit: "v1"`, `contents: write`,
 and `metadata: read`. Set `access: write` in the
-[Installation ceiling](../../reference/repository-credentials/access-levels.md#tokenservice-registry-example).
+[Installation ceiling](../../reference/repository-credentials/access-levels.md#credentialservice-registry-example).
 
 In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
 registry ConfigMap. Set the Backend's `registryPath` to
@@ -45,7 +45,7 @@ registry ConfigMap. Set the Backend's `registryPath` to
 
 As Installation administrator, open **Credentials → Credential clients → Register
 client**. Select **GitHub App**, choose **Installation-wide** or the Agent's
-Namespace, enter the App ID, and select its PEM signing key. TokenService verifies
+Namespace, enter the App ID, and select its PEM signing key. CredentialService verifies
 the key and keeps it private. Use **Rotate GitHub App key** on the same Client to
 replace it later; existing installation tokens keep their own expiry.
 

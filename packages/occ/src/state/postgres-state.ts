@@ -137,7 +137,7 @@ import type {
 import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
 import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
-import type { TokenServiceInstance } from "../ports/token-service.ts";
+import type { CredentialServiceInstance } from "../ports/credential-service.ts";
 import {
   copyProvisioningRecord,
   phaseAtLeast,
@@ -226,7 +226,7 @@ export interface PersistedNativeIAMState {
 }
 
 export interface PostgresPlatformStateOptions {
-  /** Installed Token Service binds its custody proof to this exact transaction. */
+  /** Installed CredentialService binds its custody proof to this exact transaction. */
   readonly preparedTokenProof?:
     ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
@@ -322,7 +322,7 @@ const SECRET_IDENTIFIER =
   /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CREDENTIAL_SOURCE_IDENTIFIER =
   /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const TOKEN_SERVICE_INSTANCE_IDENTIFIER =
+const CREDENTIAL_SERVICE_INSTANCE_IDENTIFIER =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAMESPACE_IDENTIFIER =
   /^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -648,7 +648,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id, cs.backend_ref, cs.connection_template_id, cs.oauth_provenance, cs.oauth_account, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at, cs.github_app_client_id, cs.github_app_scope,
+  cs.credential_service_instance_id, cs.backend_ref, cs.connection_template_id, cs.oauth_provenance, cs.oauth_account, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at, cs.github_app_client_id, cs.github_app_scope,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -709,14 +709,14 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     name: text(row, "name"),
     createdAt: timestamp(row, "created_at"),
   };
-  if (ownerCapability === "token_service") {
+  if (ownerCapability === "credential_service") {
     if ((state !== "ready" && state !== "deleting") || Object.keys(secretIds).length !== 0) {
-      throw new PersistedStateInvalidError("Persisted TokenService Source is invalid.");
+      throw new PersistedStateInvalidError("Persisted CredentialService Source is invalid.");
     }
     const owned = {
       ...common,
       ownerCapability,
-      tokenServiceInstanceId: text(row, "token_service_instance_id"),
+      credentialServiceInstanceId: text(row, "credential_service_instance_id"),
       ...(row.backend_ref == null
         ? {}
         : { backendRef: jsonObject(row.backend_ref) as Record<string, string> }),
@@ -934,13 +934,13 @@ function revisionFromRow(
     execution_admission: StoredExecutionAdmission;
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
-    gateway_token_service_instance_id?: AgentRevision["gatewayTokenServiceInstanceId"];
+    gateway_credential_service_instance_id?: AgentRevision["gatewayCredentialServiceInstanceId"];
     plugins?: AgentRevision["plugins"];
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
   // The protected marker fences old readers; standalone is fenced by its distinct
-  // execution admission and TokenService snapshot shape instead.
+  // execution admission and CredentialService snapshot shape instead.
   const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
   const executionAdmission = executionAdmissionFromRow(
     admitted.execution_admission,
@@ -1013,9 +1013,9 @@ function revisionFromRow(
     ({ source }) => source.kind === "credential_source",
   );
   if (
-    hasGatewaySource !== (admitted.gateway_token_service_instance_id !== undefined) ||
-    (admitted.gateway_token_service_instance_id !== undefined &&
-      !TOKEN_SERVICE_INSTANCE_IDENTIFIER.test(admitted.gateway_token_service_instance_id))
+    hasGatewaySource !== (admitted.gateway_credential_service_instance_id !== undefined) ||
+    (admitted.gateway_credential_service_instance_id !== undefined &&
+      !CREDENTIAL_SERVICE_INSTANCE_IDENTIFIER.test(admitted.gateway_credential_service_instance_id))
   ) {
     throw new SavedConfigurationReadError(
       "secretBindings",
@@ -1068,9 +1068,9 @@ function revisionFromRow(
       ? {}
       : { secretDriverId: admitted.secret_driver_id }),
     ...(secretBindings === undefined ? {} : { secretBindings }),
-    ...(admitted.gateway_token_service_instance_id === undefined
+    ...(admitted.gateway_credential_service_instance_id === undefined
       ? {}
-      : { gatewayTokenServiceInstanceId: admitted.gateway_token_service_instance_id }),
+      : { gatewayCredentialServiceInstanceId: admitted.gateway_credential_service_instance_id }),
     ...(admitted.plugins === undefined ? {} : { plugins: admitted.plugins }),
     ...(admitted.plugin_approvers === undefined
       ? {}
@@ -2434,14 +2434,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         const installation = await this.currentInstallation(context);
         return installation === undefined ? undefined : immutableCopy(installation);
       },
-      selectTokenServiceInstance: async (candidate: TokenServiceInstance) => {
+      selectCredentialServiceInstance: async (candidate: CredentialServiceInstance) => {
         const installation = await this.requireInitialized(context);
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-          "token_service_instance:" + installation.id,
+          "credential_service_instance:" + installation.id,
         ]);
         const [row] = decodeQueryRows(
           await client.query(
-            "SELECT id, driver_id, store_identity FROM occ.token_service_instances WHERE installation_id=$1",
+            "SELECT id, driver_id, store_identity FROM occ.credential_service_instances WHERE installation_id=$1",
             [installation.id],
           ),
         );
@@ -2460,26 +2460,26 @@ export class PostgresPlatformState implements PlatformStateStore {
           const id = text(row, "id");
           if (id === candidate.id) {
             throw new ResourceStateConflictError(
-              "The TokenService instance still has registrations.",
+              "The CredentialService instance still has registrations.",
             );
           }
           try {
-            await client.query("DELETE FROM occ.token_service_instances WHERE id=$1", [id]);
+            await client.query("DELETE FROM occ.credential_service_instances WHERE id=$1", [id]);
           } catch (error) {
             const failure = asRecord(error);
             if (
               (failure?.code === "23001" || failure?.code === "23503") &&
-              failure.constraint === "credential_sources_token_service_instance_id_fkey"
+              failure.constraint === "credential_sources_credential_service_instance_id_fkey"
             ) {
               throw new ResourceStateConflictError(
-                "The TokenService instance still has registrations.",
+                "The CredentialService instance still has registrations.",
               );
             }
             throw error;
           }
         }
         await client.query(
-          "INSERT INTO occ.token_service_instances (installation_id,id,driver_id,store_identity) VALUES ($1,$2,$3,$4)",
+          "INSERT INTO occ.credential_service_instances (installation_id,id,driver_id,store_identity) VALUES ($1,$2,$3,$4)",
           [installation.id, candidate.id, candidate.driverId, candidate.storeIdentity],
         );
         return immutableCopy(candidate);
@@ -2845,7 +2845,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const validateSecretBindingsAvailable = async (
       namespaceId: string,
       bindings: SecretBindings | undefined,
-      gatewayTokenServiceInstanceId?: string,
+      gatewayCredentialServiceInstanceId?: string,
     ): Promise<void> => {
       const secretIds = referencedBindingIds(namespaceId, bindings, "secret");
       if (secretIds.length > 0) {
@@ -2867,10 +2867,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           await client.query(
             `SELECT id FROM occ.credential_sources
                WHERE namespace_id = $1 AND id = ANY($2::text[])
-                 AND type = 'static' AND state = 'ready' AND owner_capability = 'token_service'
-                 AND ($3::text IS NULL OR token_service_instance_id = $3)
+                 AND type = 'static' AND state = 'ready' AND owner_capability = 'credential_service'
+                 AND ($3::text IS NULL OR credential_service_instance_id = $3)
                ORDER BY id FOR SHARE`,
-            [namespaceId, sourceIds, gatewayTokenServiceInstanceId ?? null],
+            [namespaceId, sourceIds, gatewayCredentialServiceInstanceId ?? null],
           ),
         );
         if (found.length !== sourceIds.length) {
@@ -3423,17 +3423,22 @@ export class PostgresPlatformState implements PlatformStateStore {
             ),
           ).map(credentialSourceFromRow),
         ),
-      scanReadyTokenServiceSourceIds: async (type, tokenServiceInstanceId, limit, afterId) =>
+      scanReadyCredentialServiceSourceIds: async (
+        type,
+        credentialServiceInstanceId,
+        limit,
+        afterId,
+      ) =>
         Object.freeze(
           decodeQueryRows(
             await client.query(
               `SELECT cs.namespace_id, cs.id FROM occ.credential_sources cs
                JOIN occ.namespaces n ON n.id=cs.namespace_id
-               WHERE cs.owner_capability='token_service' AND cs.type=$1
-                 AND cs.token_service_instance_id=$2 AND cs.state='ready'
+               WHERE cs.owner_capability='credential_service' AND cs.type=$1
+                 AND cs.credential_service_instance_id=$2 AND cs.state='ready'
                  AND n.status='ready' AND n.deleted_at IS NULL AND cs.id>$3
                ORDER BY cs.id LIMIT $4`,
-              [type, tokenServiceInstanceId, afterId ?? "", limit],
+              [type, credentialServiceInstanceId, afterId ?? "", limit],
             ),
           ).map((row) => ({ namespaceId: text(row, "namespace_id"), id: text(row, "id") })),
         ),
@@ -3451,7 +3456,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         const secretInputs =
-          source.ownerCapability === "token_service" ? [] : Object.entries(source.secrets);
+          source.ownerCapability === "credential_service" ? [] : Object.entries(source.secrets);
         // Only the Secret ID is stored; the row's Namespace makes every input same-Namespace.
         if (
           secretInputs.some(
@@ -3466,7 +3471,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         try {
           await client.query(
             `INSERT INTO occ.credential_sources
-             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, connection_template_id, oauth_provenance, oauth_account, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at, github_app_client_id, github_app_scope, backend_ref)
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, credential_service_instance_id, connection_template_id, oauth_provenance, oauth_account, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at, github_app_client_id, github_app_scope, backend_ref)
              VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24::jsonb)`,
             [
               source.id,
@@ -3474,25 +3479,25 @@ export class PostgresPlatformState implements PlatformStateStore {
               source.name,
               source.type,
               JSON.stringify(
-                source.ownerCapability === "token_service" && source.type !== "static"
+                source.ownerCapability === "credential_service" && source.type !== "static"
                   ? {}
                   : source.config,
               ),
-              source.ownerCapability === "token_service" ? null : source.driverId,
+              source.ownerCapability === "credential_service" ? null : source.driverId,
               source.state,
               source.createdAt,
-              source.ownerCapability === "token_service" || source.egress === undefined
+              source.ownerCapability === "credential_service" || source.egress === undefined
                 ? null
                 : JSON.stringify(source.egress),
               source.ownerCapability,
-              source.ownerCapability === "token_service"
-                ? (source.tokenServiceInstanceId ?? null)
+              source.ownerCapability === "credential_service"
+                ? (source.credentialServiceInstanceId ?? null)
                 : null,
-              source.ownerCapability === "token_service" &&
+              source.ownerCapability === "credential_service" &&
               source.type !== "github-app-installation"
                 ? (source.connectionTemplateId ?? null)
                 : null,
-              ...(source.ownerCapability === "token_service" &&
+              ...(source.ownerCapability === "credential_service" &&
               source.type === "oauth2-refresh-token"
                 ? [
                     source.consent.kind,
@@ -3510,11 +3515,11 @@ export class PostgresPlatformState implements PlatformStateStore {
                     source.consent.revokedAt ?? null,
                   ]
                 : [null, null, null, null, null, null, null, null, null]),
-              ...(source.ownerCapability === "token_service" &&
+              ...(source.ownerCapability === "credential_service" &&
               source.type === "github-app-installation"
                 ? [source.clientId, JSON.stringify(source.scope)]
                 : [null, null]),
-              source.ownerCapability === "token_service" && source.backendRef !== undefined
+              source.ownerCapability === "credential_service" && source.backendRef !== undefined
                 ? JSON.stringify(source.backendRef)
                 : null,
             ],
@@ -3542,7 +3547,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const current = await findCredentialSource(namespaceId, credentialSourceId);
         if (
           current === undefined ||
-          current.ownerCapability === "token_service" ||
+          current.ownerCapability === "credential_service" ||
           current.state !== "ready"
         ) {
           return undefined;
@@ -3580,7 +3585,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
         const result = await client.query(
-          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND type='static' AND token_service_instance_id IS NOT NULL",
+          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND type='static' AND credential_service_instance_id IS NOT NULL",
           [namespaceId, credentialSourceId, JSON.stringify(config)],
         );
         return result.rowCount === 1
@@ -4523,7 +4528,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             decodeQueryRows(
               await client.query(
                 `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability,
-                        cs.driver_id, cs.token_service_instance_id, cs.connection_template_id
+                        cs.driver_id, cs.credential_service_instance_id, cs.connection_template_id
                    FROM occ.credential_sources AS cs
                    JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                    WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
@@ -4540,9 +4545,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 ? {}
                 : { connectionTemplateId: text(row, "connection_template_id") }),
               ...(row.driver_id == null ? {} : { driverId: text(row, "driver_id") }),
-              ...(row.token_service_instance_id == null
+              ...(row.credential_service_instance_id == null
                 ? {}
-                : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+                : { credentialServiceInstanceId: text(row, "credential_service_instance_id") }),
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -4564,7 +4569,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         await validateSecretBindingsAvailable(
           revision.namespaceId,
           secretBindings,
-          revision.gatewayTokenServiceInstanceId,
+          revision.gatewayCredentialServiceInstanceId,
         );
         if (!validPluginRevisionState(revision.plugins)) {
           throw new ScopeViolationError("The AgentRevision plugin state is invalid.");
@@ -4606,9 +4611,12 @@ export class PostgresPlatformState implements PlatformStateStore {
                 ? {}
                 : { secret_driver_id: revision.secretDriverId }),
               ...(secretBindings === undefined ? {} : { secret_bindings: secretBindings }),
-              ...(revision.gatewayTokenServiceInstanceId === undefined
+              ...(revision.gatewayCredentialServiceInstanceId === undefined
                 ? {}
-                : { gateway_token_service_instance_id: revision.gatewayTokenServiceInstanceId }),
+                : {
+                    gateway_credential_service_instance_id:
+                      revision.gatewayCredentialServiceInstanceId,
+                  }),
               ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
               ...(revision.pluginApprovers === undefined
                 ? {}

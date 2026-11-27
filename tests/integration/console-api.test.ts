@@ -26,7 +26,7 @@ import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-g
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
@@ -1673,11 +1673,11 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   const { driver: privateSecrets } = useInstallationSecretDriver(fixture.controller);
   assert.ok(privateSecrets.privateSecrets);
   fixture.controller.selectDriver("secret", secretDriver.id);
-  const instance = await fixture.controller.activateTokenServiceInstance(
+  const instance = await fixture.controller.activateCredentialServiceInstance(
     "answer-tokens",
     randomUUID(),
   );
-  const tokens = new OCCTokenServiceDriver(
+  const tokens = new OCCCredentialServiceDriver(
     "answer-tokens",
     fixture.controller.installation.id,
     privateSecrets.privateSecrets,
@@ -1685,7 +1685,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
     state,
   );
   fixture.controller.registerDriver(tokens);
-  fixture.controller.selectDriver("token_service", tokens.id);
+  fixture.controller.selectDriver("credential_service", tokens.id);
   const source = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
     body: {
       name: "Managed Harness Source",
@@ -2266,8 +2266,11 @@ async function enrollChannelSource(
 ) {
   const controller = fixture.controller;
   assert.ok(controller && secretDriver.privateSecrets);
-  const instance = await controller.activateTokenServiceInstance("channel-tokens", randomUUID());
-  const owner = new OCCTokenServiceDriver(
+  const instance = await controller.activateCredentialServiceInstance(
+    "channel-tokens",
+    randomUUID(),
+  );
+  const owner = new OCCCredentialServiceDriver(
     "channel-tokens",
     controller.installation.id,
     secretDriver.privateSecrets,
@@ -2275,7 +2278,7 @@ async function enrollChannelSource(
     state,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   const response = await fixture.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     body: { name: "Channel credential", type: "static", secret: value },
   });
@@ -2290,7 +2293,7 @@ test("deployment delivers a Channel Source only through the captured validator",
     secretDriver,
     stateOwnedIAM: true,
     gatewayStartupSourceDelivery: (compute: { id: string }, owner: unknown) =>
-      compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
+      compute.id === "console-compute" && owner instanceof OCCCredentialServiceDriver,
     wrapState(current: PlatformStateStore) {
       state = current;
       return current;
@@ -2507,7 +2510,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     stateOwnedIAM: true,
     nativeWorkerSupport: "custom-image",
     gatewayStartupSourceDelivery: (selected: { id: string }, owner: unknown) =>
-      selected.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
+      selected.id === "console-compute" && owner instanceof OCCCredentialServiceDriver,
     wrapState(current: PlatformStateStore) {
       channelState = current;
       return current;
@@ -3086,7 +3089,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
         return reply;
       };
 
-      // Prove the error crossed the bound Source reader after TokenService resolved it.
+      // Prove the error crossed the bound Source reader after CredentialService resolved it.
       // A failure in an earlier preflight could give the same HTTP response.
       const privateDiagnostic = "private gateway location hidden from deploy logs";
       const validateGatewaySettings = t.mock.fn(() => {});

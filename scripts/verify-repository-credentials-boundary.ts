@@ -23,7 +23,7 @@ const credentialDirectories = [
   "drivers/repo/access",
   "drivers/repo/github",
   "backends/repository-credentials",
-  "backends/token-service",
+  "backends/credential-service",
 ];
 const sharedConfigurationFields = "composition/installation-fields.ts";
 const sharedJsonMembers = "drivers/json-members.ts";
@@ -166,8 +166,8 @@ const reviewedImports: ReviewedModules = {
     "node:util": ["isDeepStrictEqual"],
   },
   // Source consent pins the client and endpoint; private custody retains the grant.
-  // Only the refresh adapter can POST that grant. TokenService has no general HTTP capability.
-  "backends/token-service/oauth-connection.ts": {
+  // Only the refresh adapter can POST that grant. CredentialService has no general HTTP capability.
+  "backends/credential-service/oauth-connection.ts": {
     "node:crypto": ["randomUUID"],
     "node:timers/promises": ["setTimeout"],
     "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
@@ -179,9 +179,9 @@ const reviewedImports: ReviewedModules = {
     ],
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
   },
-  // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
-  "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
-  "backends/token-service/service.ts": {
+  // CredentialService compares complete admissions. Provider I/O remains in the existing adapter.
+  "backends/credential-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
+  "backends/credential-service/service.ts": {
     "node:crypto": ["randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },

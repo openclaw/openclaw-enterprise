@@ -6,7 +6,7 @@ import type { TestContext } from "node:test";
 
 import pg from "pg";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { installCredentialServiceDriver } from "../../apps/controller/src/composition/credential-service.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
@@ -28,7 +28,7 @@ import { createHarnessConfiguration, nativeAdminGatewayAuth } from "./harness-co
 import { loadInstallationFile } from "./installation-file.ts";
 import { fixtureOAuthIssuer } from "./oauth-issuer.ts";
 import {
-  createOpenShellTokenServiceInstallationConfiguration,
+  createOpenShellCredentialServiceInstallationConfiguration,
   createOpenShellKubernetesFixture,
   waitForOpenShellRevisionActivation,
 } from "./openshell-kubernetes-real.mjs";
@@ -142,7 +142,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
     host: "storage.googleapis.com",
     ports,
   };
-  const configuration = createOpenShellTokenServiceInstallationConfiguration({
+  const configuration = createOpenShellCredentialServiceInstallationConfiguration({
     authentication: { mode: "kubeconfig", kubeconfigPath, context: kubernetesContext },
     platformNamespace,
     gatewayImage,
@@ -183,9 +183,9 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   assert.ok(initial);
   controller.registerDriver(initial.secretDriver);
   controller.selectDriver("secret", initial.secretDriver.id);
-  await installTokenServiceDriver(controller, initial, state);
-  const owner = controller.selectedDriver("token_service");
-  const instanceId = controller.currentTokenServiceInstanceId();
+  await installCredentialServiceDriver(controller, initial, state);
+  const owner = controller.selectedDriver("credential_service");
+  const instanceId = controller.currentCredentialServiceInstanceId();
   assert.ok(instanceId);
   const createdNamespace = await inject("POST", "/namespaces", {
     name: `Optional Plugin ${randomUUID()}`,
@@ -242,7 +242,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   }
   native.registerDriver(runtime.computeDriver);
   native.selectDriver("compute", runtime.computeDriver.id);
-  await installTokenServiceDriver(native, runtime, state);
+  await installCredentialServiceDriver(native, runtime, state);
   installSelectedSandboxDrivers(native, runtime);
   native.installPluginDrivers([new OCCPluginDriver()]);
   const app = createApp(native);
@@ -408,7 +408,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   const custody = await owner.resolveCredential(
     {
       sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: slackSource.id },
-      tokenServiceInstanceId: instanceId,
+      credentialServiceInstanceId: instanceId,
     },
     t.signal,
   );
@@ -507,7 +507,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
     const retained = await owner.resolveCredential(
       {
         sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: slackSource.id },
-        tokenServiceInstanceId: instanceId,
+        credentialServiceInstanceId: instanceId,
       },
       t.signal,
     );

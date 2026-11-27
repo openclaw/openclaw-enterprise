@@ -18,7 +18,7 @@ async function deliveredImages(t: TestContext) {
 }
 
 test(
-  "delivered development token service keeps the static token outside a separate Agent container",
+  "delivered development credential service keeps the static token outside a separate Agent container",
   { timeout: 180000 },
   async (t) => {
     const delivered = await deliveredImages(t);

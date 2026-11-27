@@ -7,7 +7,7 @@ last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 # Service Account Driver Credential Delivery Flow
 
 OCC creates the provider account and issues its Codex PAT in separate
-operations. The selected TokenService stores the PAT as a static Source.
+operations. The selected CredentialService stores the PAT as a static Source.
 The ServiceAccount Driver records the provider credential ID for revocation.
 The Agent receives a Proxy placeholder tied to the Source.
 
@@ -22,7 +22,7 @@ The Agent receives a Proxy placeholder tied to the Source.
 ```mermaid
 flowchart TD
   A["Authorize account update and Namespace Source create"] --> B["ChatGPT issues a new PAT"]
-  B --> C["TokenService enrolls a static Codex PAT Source"]
+  B --> C["CredentialService enrolls a static Codex PAT Source"]
   C --> D["OCC saves the Source reference and issuer receipt"]
   D --> E["Agent admission authorizes and freezes the Source"]
   E --> F["Worker delivers through native Credential Proxy"]
@@ -38,9 +38,9 @@ nonsecret Backend configuration.
 
 [Account operations](../../packages/occ/src/service-account-operations.ts)
 check the exact account update grant, the Namespace Source create grant,
-Namespace readiness and selected TokenService support before minting.
+Namespace readiness and selected CredentialService support before minting.
 The [ChatGPT Driver](../../apps/controller/src/drivers/service-account/chatgpt.ts)
-passes the fresh bearer in-process to the selected TokenService, which commits
+passes the fresh bearer in-process to the selected CredentialService, which commits
 static `codex-pat` custody in its own Namespace transaction. OCC checks the
 returned ready Source, binds the creator's Source grants, and finalizes the
 account reference and issuance audit. If enrollment or finalization fails
@@ -65,7 +65,7 @@ Withdraw or retire the Source separately through the ordinary Source API.
 ## Verification
 
 Run the focused ServiceAccount issuance test in the `postgres-platform` lane.
-It covers the real account route and selected TokenService with a controlled
+It covers the real account route and selected CredentialService with a controlled
 issuer. Use the [native Agent verification](../testing/manual-tests.md) for
 a model turn in an installed runtime.
 

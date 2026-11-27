@@ -583,7 +583,7 @@ export async function runServiceApiKeysCliScenario(
       },
     );
 
-    // A valid static registration reports the unavailable selected TokenService through the CLI.
+    // A valid static registration reports the unavailable selected CredentialService through the CLI.
     grantRole(policy, principal.id, {
       id: "cli-credential-source-creator",
       resource: undefined,

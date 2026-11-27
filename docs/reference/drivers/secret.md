@@ -41,7 +41,7 @@ OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes
 
 OCC uses `withValue` for trusted operations that need the current Namespace
 Secret, such as Channel credential validation and directory lookup. Managed
-model and Plugin credentials use the separate TokenService custody path.
+model and Plugin credentials use the separate CredentialService custody path.
 
 For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
 supplies the stored `secret`, `retention: "none"`, and a `lifetime`. Honor its
@@ -51,7 +51,7 @@ optional `expiresAt`. Read each value from the authoritative store without
 caching it. Kubernetes verifies the stored UID and returns the object's
 `resourceVersion` as the version.
 
-The optional `privateSecrets` store holds [TokenService Sources](../credential-sources.md) and [credential client secrets](../connection-templates.md). OCC supplies the Installation ID and an opaque address for the resource and its owner. The Driver creates, replaces, reads and deletes that value. Compare-and-swap fences OAuth grant replacement. An absent value counts as deleted, so the Worker can finish an interrupted retirement. Namespace Secret APIs and workload projections cannot access this material.
+The optional `privateSecrets` store holds [CredentialService Sources](../credential-sources.md) and [credential client secrets](../connection-templates.md). OCC supplies the Installation ID and an opaque address for the resource and its owner. The Driver creates, replaces, reads and deletes that value. Compare-and-swap fences OAuth grant replacement. An absent value counts as deleted, so the Worker can finish an interrupted retirement. Namespace Secret APIs and workload projections cannot access this material.
 
 ## IAM
 
@@ -106,7 +106,7 @@ lookup, and reference checks: create a new Secret through the selected driver an
 bind it instead, or delete the old Secret once the Installation selects its
 Driver again. OCC never calls a Driver that does not own the Secret.
 
-Hosted Codex Plugin discovery uses a ready TokenService account Source.
+Hosted Codex Plugin discovery uses a ready CredentialService account Source.
 Curated catalogs can support discovery without a credential. See
 [Plugin discovery](plugin.md#selection-and-catalogs).
 

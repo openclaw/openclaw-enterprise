@@ -14,7 +14,7 @@ export interface DeviceAuthorizationSession {
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly harnessId: string;
-  readonly tokenServiceInstanceId: string;
+  readonly credentialServiceInstanceId: string;
   readonly sourceId?: string;
   readonly phase: "pending" | "polling" | "ready" | "cancelled";
   readonly expiresAt: string;
@@ -79,7 +79,7 @@ export function deviceAuthorizationScope(
       session.agentId,
       session.harnessId,
       session.sourceId,
-      session.tokenServiceInstanceId,
+      session.credentialServiceInstanceId,
       purpose,
     ]),
   );

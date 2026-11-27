@@ -62,7 +62,7 @@ Git access through `repositoryAccess` has its own approval. An operator can
 withdraw Git approval while a separate metadata Source still permits its read.
 OCC denial, removal of an installed route and revocation or expiry at GitHub
 are separate events. See the
-[Token Service lifecycle](../repository-credentials.md#token-service-lifecycle).
+[CredentialService lifecycle](../repository-credentials.md#credentialservice-lifecycle).
 
 In the [withdrawal example](../../../tests/integration/credential-proxy-withdrawal.test.ts), the operator removes binding A while B keeps working. After B is withdrawn, OCC denies it, but the test peer still returns `200` until policy takes effect. After policy application and restart, the stored plan has no routes and both requests receive `403`. An installed sender needs its own [custody and withdrawal checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
 

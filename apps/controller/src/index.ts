@@ -17,9 +17,9 @@ import {
   ModelProviderSchema,
   ModelProviderModelSchema,
   CredentialSourceResponse,
-  RegisterTokenServiceSourceBody,
-  RegisterGitHubAppTokenServiceSourceBody,
-  UpdateTokenServiceSourceBody,
+  RegisterCredentialServiceSourceBody,
+  RegisterGitHubAppCredentialServiceSourceBody,
+  UpdateCredentialServiceSourceBody,
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
   ErrorResponse,
@@ -747,9 +747,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(StaticKeyConnectionTemplateVersionSchema);
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
-  app.addSchema(RegisterTokenServiceSourceBody);
-  app.addSchema(RegisterGitHubAppTokenServiceSourceBody);
-  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(RegisterCredentialServiceSourceBody);
+  app.addSchema(RegisterGitHubAppCredentialServiceSourceBody);
+  app.addSchema(UpdateCredentialServiceSourceBody);
   app.addSchema(PushAgentCredentialsBody);
   app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
@@ -760,9 +760,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         if (typeof schema.$id === "string") {
           schema.title ??= schema.$id;
           switch (schema.$id) {
-            case "RegisterTokenServiceSourceBody":
-            case "RegisterGitHubAppTokenServiceSourceBody":
-            case "UpdateTokenServiceSourceBody":
+            case "RegisterCredentialServiceSourceBody":
+            case "RegisterGitHubAppCredentialServiceSourceBody":
+            case "UpdateCredentialServiceSourceBody":
             case "PushAgentCredentialsBody":
             case "PushAgentCredentialsResponse":
               return schema.$id;
@@ -3841,7 +3841,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        boundary: "token_service",
+        boundary: "credential_service",
         reason: error.reason,
         failure: error.failure,
       });

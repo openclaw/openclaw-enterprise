@@ -47,7 +47,7 @@ import {
   assertExecutionAdmission,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
-  type TokenService,
+  type CredentialService,
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
@@ -55,7 +55,7 @@ import {
   computeReleasePublicKey,
   signComputeExecutionRelease,
 } from "../egress-enrollment.ts";
-import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
+import { forwardMethod } from "../../../backends/credential-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import {
   decodeReplacementRuntime,
@@ -1221,7 +1221,7 @@ function stagedCodexStaticAuth(
     harness.id === "codex" &&
     harness.mode === "dedicated" &&
     auth.method === "credential_source" &&
-    auth.tokenServiceInstanceId !== undefined &&
+    auth.credentialServiceInstanceId !== undefined &&
     auth.sourceType === "static"
   );
 }
@@ -1270,7 +1270,7 @@ function prepareHarnessAuth(
     );
   } else if (
     resolvedAuth.method === "credential_source" &&
-    resolvedAuth.tokenServiceInstanceId !== undefined &&
+    resolvedAuth.credentialServiceInstanceId !== undefined &&
     harness.mode === "dedicated" &&
     (harness.id === "codex" || harness.id === "openclaw")
   ) {
@@ -3430,11 +3430,13 @@ function gatewayDocumentBeforeLanBind(
 
 /** Compute observes prepared-source readiness; it does not resolve warm credentials. */
 type PreparedTokenReadinessIssuer = Pick<
-  NonNullable<ReturnType<TokenService["issuer"]>>,
+  NonNullable<ReturnType<CredentialService["issuer"]>>,
   "sourceFromRoute" | "ready"
 >;
 type PreparedTokenReadinessService = {
-  issuer(...args: Parameters<TokenService["issuer"]>): PreparedTokenReadinessIssuer | undefined;
+  issuer(
+    ...args: Parameters<CredentialService["issuer"]>
+  ): PreparedTokenReadinessIssuer | undefined;
 };
 
 function preparedTokenReadiness(
@@ -4341,7 +4343,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly channelDrivers?: readonly ChannelProviderDriver[];
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
-      readonly preparedTokens?: TokenService;
+      readonly preparedTokens?: CredentialService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialDeliveryRegistration?: SelectedDriverRegistration;
       readonly protectedDriver?: InstalledDriver;
@@ -5083,7 +5085,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (auth.method === "credential_source") {
       const proxy = this.credentialDeploymentProxyDriver;
       if (
-        auth.tokenServiceInstanceId === undefined ||
+        auth.credentialServiceInstanceId === undefined ||
         !dedicated ||
         this.sandboxDriver?.provisionHarness === undefined ||
         this.sandboxDriver?.provisionStagedHarness === undefined ||
@@ -5098,7 +5100,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         proxy.removeDeployment === undefined
       ) {
         throw new ConfigurationFailure(
-          "TokenService Harness authentication requires the staged Sandbox and Credential Proxy operations.",
+          "CredentialService Harness authentication requires the staged Sandbox and Credential Proxy operations.",
         );
       }
     }
@@ -6629,7 +6631,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // omits legacy Credential Gateway attachments.
       if (
         this.sandboxDriver.implementation === "openshell" &&
-        (auth?.method !== "credential_source" || auth.tokenServiceInstanceId === undefined)
+        (auth?.method !== "credential_source" || auth.credentialServiceInstanceId === undefined)
       ) {
         throw new DependencyUnavailableError(
           "OpenShell cannot deliver the selected Harness authentication with staged credentials.",
@@ -9274,7 +9276,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
-    if (source.ownerCapability === "token_service") {
+    if (source.ownerCapability === "credential_service") {
       if (!credentialSourceMatchesSnapshot(source, snapshot)) {
         throw new OwnershipFailure("The staged Source does not match its admitted owner.");
       }
@@ -15499,7 +15501,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return (
       (auth.method === "api_key" ||
         (auth.method === "credential_source" &&
-          (auth.tokenServiceInstanceId !== undefined
+          (auth.credentialServiceInstanceId !== undefined
             ? auth.sourceType === "static"
             : auth.loginMode === "api_key"))) &&
       (harness.id === "codex" ||
@@ -15534,7 +15536,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (
       auth.method === "credential_source" &&
-      auth.tokenServiceInstanceId !== undefined &&
+      auth.credentialServiceInstanceId !== undefined &&
       harness.id !== "codex"
     ) {
       const selected = harnessModelAuthentication(configuration);
@@ -15577,7 +15579,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   ): void {
     const provider = savedModelProvider(harness.configuration);
     for (const source of sources) {
-      if (source.ownerCapability !== "token_service" && source.type === "openai") {
+      if (source.ownerCapability !== "credential_service" && source.type === "openai") {
         requireModelSourceDestination(source.config, provider);
       }
     }
@@ -15593,7 +15595,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         (revision.harness.id === "codex" &&
           (revision.harnessAuth.method === "api_key" ||
             (revision.harnessAuth.method === "credential_source" &&
-              (revision.harnessAuth.tokenServiceInstanceId !== undefined
+              (revision.harnessAuth.credentialServiceInstanceId !== undefined
                 ? revision.harnessAuth.sourceType === "static" &&
                   !stagedCodexPat(revision, revision.harnessAuth)
                 : revision.harnessAuth.loginMode === "api_key"))) !==
@@ -15603,7 +15605,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           provider.protocol !== "openai-responses") ||
         (requested.modelProvider !== undefined &&
           (revision.harnessAuth.method !== "credential_source" ||
-            (revision.harnessAuth.tokenServiceInstanceId === undefined &&
+            (revision.harnessAuth.credentialServiceInstanceId === undefined &&
               revision.harnessAuth.loginMode !== "api_key") ||
             !isDeepStrictEqual(requested.modelProvider, provider)))
       ) {
@@ -15778,7 +15780,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.executionAdmission.version === 8 &&
       revision.executionAdmission.mode === "standalone" &&
       auth.method === "credential_source" &&
-      auth.tokenServiceInstanceId !== undefined &&
+      auth.credentialServiceInstanceId !== undefined &&
       auth.sourceType === "oauth2-refresh-token"
     ) {
       openShellProgram = "account";
@@ -17198,7 +17200,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "Harness authentication Secret does not match the admitted source.",
         );
       }
-    } else if (auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined) {
+    } else if (
+      auth.method === "credential_source" &&
+      auth.credentialServiceInstanceId !== undefined
+    ) {
       if (auth.source !== undefined || !isDeepStrictEqual(auth, revision.harnessAuth)) {
         throw new OwnershipFailure(
           "Staged Harness authentication does not match the admitted source.",

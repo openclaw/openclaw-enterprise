@@ -26,8 +26,8 @@ import {
   type CreateSecretBody,
   type CredentialSourceResponse,
   type CredentialWithdrawalResponse,
-  type RegisterTokenServiceSourceBody,
-  type UpdateTokenServiceSourceBody,
+  type RegisterCredentialServiceSourceBody,
+  type UpdateCredentialServiceSourceBody,
   type ErrorResponse,
   type HarnessExecutionMode,
   type IAMAccessBindingListResponse,
@@ -122,8 +122,8 @@ type RequestPayload =
   | CreateAgentBody
   | CreateConfigurationBody
   | CreateSecretBody
-  | RegisterTokenServiceSourceBody
-  | UpdateTokenServiceSourceBody
+  | RegisterCredentialServiceSourceBody
+  | UpdateCredentialServiceSourceBody
   | UpdateAgentBody
   | UpdateConfigurationBody
   | UpdateSecretBody
@@ -262,7 +262,7 @@ test(
       ...installation,
       drivers: {
         ...installation.drivers,
-        token_service: { id: "occ", configuration: {} },
+        credential_service: { id: "occ", configuration: {} },
         compute: {
           ...installation.drivers.compute,
           configuration: {
@@ -282,15 +282,16 @@ test(
     };
     const installationSecretNamespace = `oce-api-secrets-${hash(randomUUID())}`;
     // Each API and worker process installs its own token issuers, including after a failed start.
-    async function loadDrivers(includeTokenService = true) {
-      const { token_service: _tokenService, ...withoutTokenService } = configuration.drivers;
+    async function loadDrivers(includeCredentialService = true) {
+      const { credential_service: _credentialService, ...withoutCredentialService } =
+        configuration.drivers;
       const drivers = await loadInstallationConfiguration({
         mode: "development",
         environment: { OCC_INSTALLATION_SECRET_NAMESPACE: installationSecretNamespace },
         startupConfiguration: {
-          configuration: includeTokenService
+          configuration: includeCredentialService
             ? configuration
-            : { ...configuration, drivers: withoutTokenService },
+            : { ...configuration, drivers: withoutCredentialService },
           logging: { level: "info" },
         },
       });
@@ -403,7 +404,7 @@ test(
     } finally {
       await kubectl("delete", "namespace", legacyName, "--wait=true");
     }
-    // The OCC TokenService uses the selected Secret Driver's installation-private store.
+    // The OCC CredentialService uses the selected Secret Driver's installation-private store.
     await kubectl("create", "namespace", installationSecretNamespace);
     const apiDrivers = await loadDrivers();
     const app = await composePostgresDevelopment(developmentConfig, apiDrivers);

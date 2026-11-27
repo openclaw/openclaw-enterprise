@@ -21,10 +21,10 @@ export function credentialSourceRef(
   return { kind: "credential_source", id: source.id, namespaceId: source.namespaceId };
 }
 
-export function isManagedTokenServiceSource(
+export function isManagedCredentialServiceSource(
   source: Readonly<StoredCredentialSource> | undefined,
 ): source is Readonly<CredentialSource> {
-  return source?.ownerCapability === "token_service";
+  return source?.ownerCapability === "credential_service";
 }
 
 export type LegacyCredentialSourceMetadata = Readonly<

@@ -20,13 +20,13 @@ attempt only if none is queued or running; a queued attempt runs at once.
 
 For a Source bound to Gateway startup, withdrawal blocks another managed start of that revision, but cannot erase the running Gateway's environment or confirm revocation while its staged Secret may remain. The status stays `pending` with `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`. Stop or retire the revision to remove its staged copy. If the Source is also used through Credential Proxy, the Worker withdraws that use separately and still waits for Gateway retirement before confirming the whole withdrawal. Once Stop clears the selected version, the status endpoint returns `404`; the revision's revocation record and audit event remain.
 
-For a staged TokenService Source, the Worker rechecks the requester's exact `agent:operate`
+For a staged CredentialService Source, the Worker rechecks the requester's exact `agent:operate`
 authority. Compute asks the selected native Credential Proxy to remove the binding from the saved
 Sandbox target. Sandbox removes the binding's injection rule and exclusive network access while preserving independent, non-overlapping credential-free grants. An overlapping retained grant prevents confirmed native reduction. Proxy detaches the Provider and checks its native receipt. The Worker
 records `revoked` after that receipt reaches `REVOKED`, or after Proxy independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves
 the withdrawal `pending` with `DEPENDENCY_UNAVAILABLE` for retry. Proxy retains an OpenShell Provider
 still attached to another Agent and retires its owned Provider and profile after the last binding is
-removed. TokenService keeps the Source and its credential; other Agents using that Source retain their
+removed. CredentialService keeps the Source and its credential; other Agents using that Source retain their
 access. With OpenShell custody, the authoritative Provider and profile remain until Source deletion.
 
 For other supported delivery paths, the Worker detaches the Source from the version's Sandbox. The
@@ -84,7 +84,7 @@ version has maintenance (see below). Send the withdraw request again to queue
 another attempt, with its own series.
 
 A withdrawn Source never reattaches to that Agent revision. For managed
-TokenService delivery, complete [Stop](../agents/deployment.md#stop-and-resume)
+CredentialService delivery, complete [Stop](../agents/deployment.md#stop-and-resume)
 and deploy a new revision to replace a lost Sandbox or restore a withdrawn
 binding. The new revision can attach a Source that is still selected and
 authorized. A running revision can receive a replacement for a binding that

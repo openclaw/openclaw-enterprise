@@ -308,7 +308,7 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
 
 - Startup requires bundled Kubernetes Compute and an OpenShell Backend. Configure
   the Gateway endpoint on the Backend.
-- If managed delivery fails, check that the selected TokenService owns the
+- If managed delivery fails, check that the selected CredentialService owns the
   Source and that the paired Proxy can reach the Sandbox. Verify the
   [Source and delivery status](../credential-sources.md#retry-credential-delivery).
 - For an unavailable Gateway, check Service and Pod readiness.

@@ -74,7 +74,7 @@ function googleNetworks(
 }
 
 function sourceScope(source: CredentialSource) {
-  if (source.ownerCapability === "token_service") {
+  if (source.ownerCapability === "credential_service") {
     return undefined;
   }
   const config = source.config;
@@ -101,7 +101,7 @@ export const googleWorkspaceCredentialPolicy = {
     source: CredentialSource,
     template?: ConnectionTemplateVersion,
   ): boolean {
-    if (source.ownerCapability === "token_service") {
+    if (source.ownerCapability === "credential_service") {
       return (
         source.state === "ready" &&
         source.type === "oauth2-refresh-token" &&
@@ -136,7 +136,7 @@ export const googleWorkspaceCredentialPolicy = {
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
     const scope = sourceScope(selected);
-    if (!scope || selected.ownerCapability === "token_service") {
+    if (!scope || selected.ownerCapability === "credential_service") {
       return undefined;
     }
     // The qualified adapter selects middleware by host, including discovery requests.
@@ -144,7 +144,7 @@ export const googleWorkspaceCredentialPolicy = {
     if (
       sources.some(
         (s) =>
-          s.ownerCapability !== "token_service" &&
+          s.ownerCapability !== "credential_service" &&
           s.id !== selected.id &&
           (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
       )

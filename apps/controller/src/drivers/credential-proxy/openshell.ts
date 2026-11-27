@@ -52,7 +52,7 @@ import type {
   OpenShellPolicyStatus,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
-import type { OpenShellNativeProvider } from "../token-service/openshell.ts";
+import type { OpenShellNativeProvider } from "../credential-service/openshell.ts";
 import {
   confirmSandboxAbsent,
   gatewayIdentityRefusal,
@@ -69,11 +69,11 @@ import {
   openShellDeliveryProviderNames,
   openShellEffectivePolicyMatches,
   openShellPushedPolicyMatches,
-  prepareOccTokenServiceProviderCopy,
+  prepareOccCredentialServiceProviderCopy,
   readOwnedOpenShellPushedProvider,
   readOpenShellPushedProvider,
-  retireOccTokenServiceProviderCopy,
-  updateOccTokenServiceProviderCopy,
+  retireOccCredentialServiceProviderCopy,
+  updateOccCredentialServiceProviderCopy,
 } from "./openshell-pushed-provider.ts";
 
 /** Attach the Provider for a credential binding to the paired OpenShell Sandbox. */
@@ -107,15 +107,19 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   constructor(selection: {
     readonly id: string;
     readonly implementation: string;
-    readonly tokenServiceImplementation: string;
+    readonly credentialServiceImplementation: string;
     readonly backend: Backend<OpenShellGateway>;
     readonly sandbox: SandboxDriver &
       Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
   }) {
-    this.nativeSourceOwner = selection.tokenServiceImplementation === "openshell/token-service";
-    if (!this.nativeSourceOwner && selection.tokenServiceImplementation !== "occ/token-service") {
+    this.nativeSourceOwner =
+      selection.credentialServiceImplementation === "openshell/credential-service";
+    if (
+      !this.nativeSourceOwner &&
+      selection.credentialServiceImplementation !== "occ/credential-service"
+    ) {
       throw new Error(
-        "OpenShell credential delivery requires a supported TokenService implementation.",
+        "OpenShell credential delivery requires a supported CredentialService implementation.",
       );
     }
     if (
@@ -155,7 +159,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       client.listProviderProfiles(workspace, signal),
     ]);
     for (const name of openShellDeliveryProviderNames(source, providers, profiles)) {
-      await retireOccTokenServiceProviderCopy({ client, workspace, source, name, signal });
+      await retireOccCredentialServiceProviderCopy({ client, workspace, source, name, signal });
     }
   }
 
@@ -287,7 +291,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   }
 
   private async pushCredentialUpdate(
-    input: Parameters<typeof updateOccTokenServiceProviderCopy>[0] & {
+    input: Parameters<typeof updateOccCredentialServiceProviderCopy>[0] & {
       readonly client: OpenShellGatewayClient;
       readonly namespace: Readonly<Namespace>;
     },
@@ -329,7 +333,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       }
     }
 
-    const result = await updateOccTokenServiceProviderCopy(input);
+    const result = await updateOccCredentialServiceProviderCopy(input);
     if (!result) {
       return;
     }
@@ -612,7 +616,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         const { binding } = supplied;
         const deliveryProvider = this.nativeSourceOwner
           ? await this.readDeploymentProvider(context, initialTarget, binding)
-          : await prepareOccTokenServiceProviderCopy({
+          : await prepareOccCredentialServiceProviderCopy({
               client: initialTarget.client,
               workspace: initialTarget.workspace,
               namespaceId: context.namespace.id,
@@ -736,7 +740,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         "Native credential attachment failed and Provider cleanup is unconfirmed.",
         prepared.map(
           (binding) => () =>
-            retireOccTokenServiceProviderCopy({
+            retireOccCredentialServiceProviderCopy({
               client: initialTarget.client,
               workspace: initialTarget.workspace,
               source: binding.sourceRef,
@@ -1118,7 +1122,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
         if (!this.nativeSourceOwner) {
           await refused(() =>
-            retireOccTokenServiceProviderCopy({
+            retireOccCredentialServiceProviderCopy({
               client: scope.client,
               workspace: scope.workspace,
               source: binding.sourceRef,

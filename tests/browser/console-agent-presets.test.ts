@@ -55,7 +55,7 @@ import {
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { installDeviceCredentialService } from "../helpers/device-credential-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
@@ -179,7 +179,7 @@ const createConsoleAppFixture = (
   } = {},
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 
-async function createTokenServiceConsoleFixture(t: TestContext) {
+async function createCredentialServiceConsoleFixture(t: TestContext) {
   const secretDriver = createTestSecretDriver({ id: "console-preset-token-storage" });
   const core = new FakeSecretCoreV1Api();
   const installation = buildSandboxInstallation();
@@ -188,7 +188,7 @@ async function createTokenServiceConsoleFixture(t: TestContext) {
   const runtime = await loadSelectedOpenShellAgentInstallation(t, {
     installation,
     computeId: "console-preset-compute",
-    tokenServiceId: "occ",
+    credentialServiceId: "occ",
     core,
     gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
   });
@@ -236,7 +236,7 @@ async function createTokenServiceConsoleFixture(t: TestContext) {
   });
   await fixture.bootstrap();
   assert.ok(state);
-  await installDeviceTokenService(fixture.controller, state, secretDriver, "occ");
+  await installDeviceCredentialService(fixture.controller, state, secretDriver, "occ");
   namespaceLifecycleBindings.push(
     sandboxNamespaceLifecycleBinding(computeDriver, sandbox, delivery),
   );
@@ -1139,8 +1139,8 @@ test("Create Agent clears approvers when the selected Harness has no plugin cata
   assert.equal(Object.hasOwn(response.request().postDataJSON(), "pluginApprovers"), false);
 });
 
-test("Create Agent discovers hosted plugins through a saved TokenService Source", async (t) => {
-  const fixture = await createTokenServiceConsoleFixture(t);
+test("Create Agent discovers hosted plugins through a saved CredentialService Source", async (t) => {
+  const fixture = await createCredentialServiceConsoleFixture(t);
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
@@ -3732,7 +3732,7 @@ for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
 }
 
 test("method-only codex_pat Preset requires credential entry in the create form", async (t) => {
-  const fixture = await createTokenServiceConsoleFixture(t);
+  const fixture = await createCredentialServiceConsoleFixture(t);
   const namespace = await fixture.createNamespace("Method-only preset", { ready: true });
   const artifact = structuredClone(standardCodexPreset);
   artifact.name = "method-only-codex-pat";

@@ -4,7 +4,7 @@ searchable: false
 
 # Set up repository access for a team
 
-**Deprecated.** For new installations, use [OpenShell Git push](openshell-git-push.md) for a sandboxed Agent or [repository access](../repository-credentials.md) for the Kubernetes worker Token Service.
+**Deprecated.** For new installations, use [OpenShell Git push](openshell-git-push.md) for a sandboxed Agent or [repository access](../repository-credentials.md) for the Kubernetes worker CredentialService.
 
 Connect one team repository to an organization-owned GitHub App, then ask a
 dedicated Codex Agent to push a branch and open a draft PR. Start with an
@@ -20,7 +20,7 @@ the [upgrade operations guidance](../../reference/settings/operations.md).
 This path uses the App installation's authority. Personal GitHub user delegation
 is not implemented. This procedure uses Kubernetes Compute, dedicated Codex, compatible Harness
 authentication, and no Sandbox Driver. The separate
-worker Token Service holds the App key and GitHub tokens. OCC gives the Agent
+worker CredentialService holds the App key and GitHub tokens. OCC gives the Agent
 gateway session credentials with a time limit and repository permissions. Do not put keys, tokens, or gateway bearers
 in Agent configuration, images, examples, or logs.
 
@@ -59,7 +59,7 @@ access.
 
 5. [Generate an App private key](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
    Transfer the downloaded PEM through your approved secret-management process
-   to the worker Token Service's protected input. Keep it out of the Agent, API,
+   to the worker CredentialService's protected input. Keep it out of the Agent, API,
    native sender, source tree, shell arguments, and diagnostic output.
 
 `example/project`, the numeric IDs in the examples, and `agent@example.invalid`
@@ -245,4 +245,4 @@ gets material at once when GitHub refused the old attempt. If GitHub's answer wa
 lost, it waits until no token from that attempt can be valid, 72 minutes after the
 attempt began. Preserve
 unresolved retirement with its original owner; see
-[Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).
+[CredentialService lifecycle](../../reference/repository-credentials.md#credentialservice-lifecycle).

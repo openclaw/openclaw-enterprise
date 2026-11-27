@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { inspect } from "node:util";
-import { retireToken } from "../../apps/controller/src/backends/token-service/retirement.ts";
+import { retireToken } from "../../apps/controller/src/backends/credential-service/retirement.ts";
 
 test("token retirement preserves failed stages without replay or disclosing errors", async () => {
   function startRetirement({

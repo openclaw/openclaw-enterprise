@@ -10,7 +10,7 @@ environment variable. Use the path that matches the consumer:
 | Model API key                     | [Agent `harnessAuth`](../../reference/agents.md#harness-authentication); the selected Harness receives it.                                                                                                  |
 | Gateway credential                | [Configuration `secretBindings`](../../reference/configuration/secrets.md#secret-bindings); select a supported static Credential Source for Slack. Other Gateway consumers can still use Namespace Secrets. |
 | Backend-issued model access token | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                                                                                                         |
-| Managed model credential          | [Credential Source](../../reference/credential-sources.md); TokenService owns custody and Credential Proxy delivers it.                                                                                     |
+| Managed model credential          | [Credential Source](../../reference/credential-sources.md); CredentialService owns custody and Credential Proxy delivers it.                                                                                |
 
 ## Create and bind a Secret
 

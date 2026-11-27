@@ -18,7 +18,7 @@ import type {
   NetworkAccessPolicy,
 } from "../../credential-deployment.ts";
 import { repositoryGitDeliveryProfile } from "../repo/index.ts";
-import type { ResolvedCredential } from "../token-service/index.ts";
+import type { ResolvedCredential } from "../credential-service/index.ts";
 
 export { repositoryGitDeliveryProfile } from "../repo/index.ts";
 import type {
@@ -763,7 +763,7 @@ export function assertExecutionAdmission(revision: ExecutionAdmissionRevision): 
     const auth = revision.harnessAuth;
     if (
       auth?.method === "credential_source" &&
-      auth.tokenServiceInstanceId !== undefined &&
+      auth.credentialServiceInstanceId !== undefined &&
       (Object.hasOwn(auth, "credentialGatewayId") || Object.hasOwn(auth, "loginMode"))
     ) {
       throw new Error("Invalid staged credential source snapshot.");
@@ -773,8 +773,8 @@ export function assertExecutionAdmission(revision: ExecutionAdmissionRevision): 
   if (
     revision.credentialDeployment !== undefined ||
     (revision.harnessAuth?.method === "credential_source" &&
-      revision.harnessAuth.tokenServiceInstanceId !== undefined) ||
-    revision.credentialSources?.some((source) => source.tokenServiceInstanceId !== undefined)
+      revision.harnessAuth.credentialServiceInstanceId !== undefined) ||
+    revision.credentialSources?.some((source) => source.credentialServiceInstanceId !== undefined)
   ) {
     throw new Error("Staged credential deployment requires its own execution admission.");
   }

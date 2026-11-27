@@ -118,7 +118,7 @@ test(
   },
 );
 test(
-  "PostgreSQL pins managed sources to a durable TokenService instance",
+  "PostgreSQL pins managed sources to a durable CredentialService instance",
   requiresPostgres,
   async (context) => {
     const [{ randomUUID }, { Pool }, { PostgresPlatformState }, { databaseUrl }] =
@@ -155,15 +155,15 @@ test(
     );
     const candidate = {
       id: randomUUID(),
-      driverId: "selected-token-service",
+      driverId: "selected-credential-service",
       storeIdentity: `store-${randomUUID()}`,
     };
     const selected = await state.transact((unit) =>
-      unit.installations.selectTokenServiceInstance(candidate),
+      unit.installations.selectCredentialServiceInstance(candidate),
     );
     assert.deepEqual(
       await state.transact((unit) =>
-        unit.installations.selectTokenServiceInstance({ ...candidate, id: randomUUID() }),
+        unit.installations.selectCredentialServiceInstance({ ...candidate, id: randomUUID() }),
       ),
       selected,
     );
@@ -175,8 +175,8 @@ test(
         name: "Managed source",
         type: "static",
         config: {},
-        ownerCapability: "token_service",
-        tokenServiceInstanceId: selected.id,
+        ownerCapability: "credential_service",
+        credentialServiceInstanceId: selected.id,
         state: "ready",
         createdAt,
       }),
@@ -184,15 +184,17 @@ test(
     const ready = await state.read((view) =>
       view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
-    assert.equal(ready?.ownerCapability, "token_service");
+    assert.equal(ready?.ownerCapability, "credential_service");
     assert.equal(ready?.state, "ready");
     assert.equal(
-      ready?.ownerCapability === "token_service" ? ready.tokenServiceInstanceId : undefined,
+      ready?.ownerCapability === "credential_service"
+        ? ready.credentialServiceInstanceId
+        : undefined,
       selected.id,
     );
     await assert.rejects(
       state.transact((unit) =>
-        unit.installations.selectTokenServiceInstance({
+        unit.installations.selectCredentialServiceInstance({
           id: randomUUID(),
           driverId: "replacement",
           storeIdentity: "different-store",
@@ -213,7 +215,9 @@ test(
       storeIdentity: "different-store",
     };
     assert.deepEqual(
-      await state.transact((unit) => unit.installations.selectTokenServiceInstance(replacement)),
+      await state.transact((unit) =>
+        unit.installations.selectCredentialServiceInstance(replacement),
+      ),
       replacement,
     );
   },

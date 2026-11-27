@@ -19,7 +19,7 @@ const source = (id: string, name: string): StaticSource => ({
   createdAt: "2026-09-01T12:00:00.000Z",
 });
 
-// Public metadata only. Storybook never receives TokenService material.
+// Public metadata only. Storybook never receives CredentialService material.
 export const previewModelSources = [
   source(sourceId, "Research model"),
   source(replacementId, "Replacement model"),
@@ -291,7 +291,7 @@ export const credentialSourceScenarios = {
       { selector: 'button[form="credential-source-action-form"]', click: true },
     ],
     description:
-      "The simulated authorized account-owner disconnect removes the OAuth Source from the inventory. Storybook does not verify real IAM, revocation, or TokenService custody.",
+      "The simulated authorized account-owner disconnect removes the OAuth Source from the inventory. Storybook does not verify real IAM, revocation, or CredentialService custody.",
   },
   credentialsSourceCreatedUnreadable: {
     group: "Pages/Credentials",

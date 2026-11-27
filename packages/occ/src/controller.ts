@@ -707,24 +707,25 @@ export class OpenClawController {
       registrationSource,
     );
   }
-  async refreshTokenServiceSource(
+  async refreshCredentialServiceSource(
     namespaceId: string,
     sourceId: string,
   ): Promise<CredentialRefreshStatus> {
     const source = await this.composition.transactions.read((state) =>
       state.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
-    if (source?.ownerCapability !== "token_service" || source.type === "static") {
+    if (source?.ownerCapability !== "credential_service" || source.type === "static") {
       throw new ScopeViolationError("The renewable Source is unavailable.");
     }
-    const driver = this.composition.credentials.managedCredentialSources.ownedTokenServiceDriver(
-      source.tokenServiceInstanceId,
-    );
+    const driver =
+      this.composition.credentials.managedCredentialSources.ownedCredentialServiceDriver(
+        source.credentialServiceInstanceId,
+      );
     const signal = AbortSignal.timeout(30_000);
     const operation = await driver.forceRefresh(
       {
         sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
-        tokenServiceInstanceId: source.tokenServiceInstanceId,
+        credentialServiceInstanceId: source.credentialServiceInstanceId,
       },
       signal,
     );
@@ -1168,15 +1169,18 @@ export class OpenClawController {
   }
 
   /** Bind the configured adapter to the actual durable credential store before use. */
-  async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
-    return this.composition.credentials.managedCredentialSources.activateTokenServiceInstance(
+  async activateCredentialServiceInstance(
+    driverId: string,
+    storeIdentity: string,
+  ): Promise<string> {
+    return this.composition.credentials.managedCredentialSources.activateCredentialServiceInstance(
       driverId,
       storeIdentity,
     );
   }
 
-  currentTokenServiceInstanceId(): string {
-    return this.composition.credentials.managedCredentialSources.currentTokenServiceInstanceId();
+  currentCredentialServiceInstanceId(): string {
+    return this.composition.credentials.managedCredentialSources.currentCredentialServiceInstanceId();
   }
 
   async createManagedCredentialSource(

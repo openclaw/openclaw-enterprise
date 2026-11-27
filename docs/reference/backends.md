@@ -182,7 +182,7 @@ Its closed `configuration` accepts:
   `endpoint` at an IP address sends no TLS server name, so the gateway
   certificate must carry that IP address.
 - `operatorTls`: optional `{ certificatePath, privateKeyPath }`, both absolute
-  paths. This requires HTTPS. Authorized OpenShell TokenService callers can use
+  paths. This requires HTTPS. Authorized OpenShell CredentialService callers can use
   this separate certificate-only connection to read Provider credentials. Other
   RPCs use the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
@@ -194,9 +194,9 @@ Its closed `configuration` accepts:
 
 Either `endpoint` or `serviceName` is required. `drivers.sandbox` must match the
 selected bundled [OpenShell SandboxDriver](drivers/openshell-sandbox.md).
-With OCC TokenService, the Sandbox registration supplies native Credential Proxy
-delivery. The [OpenShell TokenService preview](credential-sources/managed-static.md#preview-openshell-custody)
-also requires a matching `token_service` Backend member. One OpenShell Backend
+With OCC CredentialService, the Sandbox registration supplies native Credential Proxy
+delivery. The [OpenShell CredentialService preview](credential-sources/managed-static.md#preview-openshell-custody)
+also requires a matching `credential_service` Backend member. One OpenShell Backend
 is supported.
 
 The API and worker share the Backend connection within each process. Mount
@@ -206,7 +206,7 @@ rotating an operator certificate to replace cached TLS connections.
 The deprecated `drivers.credential_proxy` member identifies the paired legacy
 credential-egress adapter for qualified protected exchanges. It remains pending
 removal while those exchanges depend on it; it is not the native
-`credential_proxy_delivery` capability used with TokenService. Preserve the
+`credential_proxy_delivery` capability used with CredentialService. Preserve the
 recorded authenticated Backend and enforcement boundary for existing protected
 work.
 

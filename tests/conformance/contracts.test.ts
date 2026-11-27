@@ -215,7 +215,7 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "credential_refresh",
     "credential_proxy",
     "credential_proxy_delivery",
-    "token_service",
+    "credential_service",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -562,7 +562,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
 test("an admitted standalone credential policy cannot be retargeted through its draft", () => {
   const namespaceId = `ns_${randomUUID()}`;
   const sourceId = `cs_${randomUUID()}`;
-  const tokenServiceInstanceId = randomUUID();
+  const credentialServiceInstanceId = randomUUID();
   const request = {
     binary: "/usr/bin/node",
     host: "api.openai.com",
@@ -593,10 +593,10 @@ test("an admitted standalone credential policy cannot be retargeted through its 
     harnessAuth: {
       method: "credential_source",
       sourceId,
-      tokenServiceInstanceId,
+      credentialServiceInstanceId,
       sourceType: "static",
     },
-    credentialSources: [{ sourceId, tokenServiceInstanceId, sourceType: "static" }],
+    credentialSources: [{ sourceId, credentialServiceInstanceId, sourceType: "static" }],
     credentialDeployment: {
       driver: { id: "openshell", implementation: "openshell", configurationId: "a".repeat(64) },
       proxyDriverId: "native-proxy",

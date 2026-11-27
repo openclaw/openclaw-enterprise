@@ -32,7 +32,7 @@ import {
   installationGitAdoption,
   selectedGitAdoption,
 } from "../../drivers/repo/access/protected-repository-git-installation.ts";
-import { TokenService } from "../token-service/service.ts";
+import { CredentialService } from "../credential-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
 export interface PreparedRepositoryGitConfiguration {
@@ -66,7 +66,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   startWorker?: boolean;
   /** Private host selection; never derived from issuer configuration or a request. */
   repositoryGitCustody: RepositoryGitCustody;
-  tokenService?: TokenService;
+  credentialService?: CredentialService;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -344,7 +344,7 @@ export async function startPreparedGitHubGitOwner(
               : use(input, signal),
         );
   let sources: Awaited<ReturnType<typeof store.discover>> = [];
-  const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
+  const maintenance = (options.credentialService ?? new CredentialService()).ownFamilies({
     async discover() {
       sources = await store.discover(({ providerExpiresAt, ...context }) =>
         options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {

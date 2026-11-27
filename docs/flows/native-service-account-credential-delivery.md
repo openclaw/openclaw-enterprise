@@ -8,14 +8,14 @@ last_updated_session: authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e
 
 ## Overview
 
-Select an OCC Secret or TokenService Credential Source through Agent `harnessAuth`.
+Select an OCC Secret or CredentialService Credential Source through Agent `harnessAuth`.
 Deployment freezes the authorized binding and the Worker rechecks it. Kubernetes
 projects a direct Secret into the model-executing workload. For a managed Source,
 Credential Proxy serves the admitted model requests and the Sandbox receives a
 placeholder. The workload authenticates before activation. SSH `runtime` uses
 operator credentials and checks Gateway readiness without model authentication.
 
-TokenService owns Codex OAuth grants. See the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
+CredentialService owns Codex OAuth grants. See the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
 
 ## Entry Points
 
@@ -36,11 +36,11 @@ config:
 ---
 flowchart TB
   Secret["<b>Namespace Secret</b><br/>API key or imported PAT"] --> Binding
-  Managed["<b>TokenService Source</b><br/>Managed model credential"] --> Binding
+  Managed["<b>CredentialService Source</b><br/>Managed model credential"] --> Binding
   Host["<b>Protected SSH host</b><br/>Operator supplies host env"] --> Binding
   Binding["<b>Agent deployment</b><br/>Authorize and save binding"] --> Worker["<b>Worker</b><br/>Recheck authorization"]
   Worker -->|Namespace Secret| Project["<b>Kubernetes</b><br/>Project into model workload"]
-  Worker -->|TokenService Source| Deliver["<b>Credential Proxy</b><br/>Prepare placeholder delivery"]
+  Worker -->|CredentialService Source| Deliver["<b>Credential Proxy</b><br/>Prepare placeholder delivery"]
   Worker -->|SSH runtime| Ready["<b>SSH</b><br/>Check Gateway readiness"]
   Project --> Probe{"Model probe<br/>passes?"}
   Deliver --> Probe
@@ -64,8 +64,8 @@ flowchart TB
 `packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow` handles start, poll, and cancel.
 
 After [device authorization](credential-source-lifecycle.md#device-authorization-and-configuration),
-TokenService creates a ready Source. Console saves its `credential_source`
-reference. Hosted Apps discovery resolves that Source through TokenService
+CredentialService creates a ready Source. Console saves its `credential_source`
+reference. Hosted Apps discovery resolves that Source through CredentialService
 after checking exact Source access. Closing the completed login session
 leaves the Source available for subsequent discovery.
 
@@ -85,13 +85,13 @@ OCC-managed ChatGPT ServiceAccount creates a static `codex-pat` Source. Select
 the issued Source by ID. OCC rejects a direct ServiceAccount binding.
 
 The caller needs exact Source `operate`. The Source must belong to the Agent's
-Namespace and the selected TokenService instance. The model Source appears in
+Namespace and the selected CredentialService instance. The model Source appears in
 both `harnessAuth` and `credentialSources` on direct Agent writes. Namespace
 locks serialize reference changes against Source deletion.
 
 When PATCH changes Harness authentication but keeps the source list, OCC checks
 the previous Harness source without taking a source row lock. If that source
-belongs to a TokenService, the caller must remove it from the list in the same
+belongs to a CredentialService, the caller must remove it from the list in the same
 update.
 
 The [Secret storage flow](secret-storage-and-delivery.md) owns value storage;
@@ -113,7 +113,7 @@ PAT. Managed Codex PAT and OAuth Sources require dedicated Codex, a compatible
 Sandbox, and Credential Proxy.
 Unsupported combinations fail before OCC queues deployment.
 
-For a managed TokenService Source, deployment checks the caller's and Agent principal's source `operate` grants, the approved model route, and the applicable saved or preset network grant. Supported admission saves the Source reference and separate network and injection policies in the Agent revision; see the [credential lifecycle](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision). Unsupported routes are refused before revision or work creation. If admission fails after Native IAM creates the Agent's source grant, the transaction rolls back that grant, any new Role, and its success audit. Agent save records Source references only.
+For a managed CredentialService Source, deployment checks the caller's and Agent principal's source `operate` grants, the approved model route, and the applicable saved or preset network grant. Supported admission saves the Source reference and separate network and injection policies in the Agent revision; see the [credential lifecycle](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision). Unsupported routes are refused before revision or work creation. If admission fails after Native IAM creates the Agent's source grant, the transaction rolls back that grant, any new Role, and its success audit. Agent save records Source references only.
 
 Host credential changes can affect a runtime version after restart without
 redeployment; see the
@@ -155,7 +155,7 @@ indefinitely; drafts, selected versions, and pending deployments block source de
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareHarnessAuth`,
 `KubernetesComputeDriver.prepareRevision`
 
-For a TokenService Source, Compute matches the revision's model binding
+For a CredentialService Source, Compute matches the revision's model binding
 against the Source, configured provider, credential environment, and Bearer
 presentation. The Worker rechecks Source access and asks Credential Proxy to
 prepare the placeholder. Compute never projects the Source's material into a
@@ -241,7 +241,7 @@ Secret values.
 Compute matches the admitted model projection to `harnessAuth.sourceId`.
 The launcher receives a placeholder and trusted account metadata. It writes
 temporary `chatgptAuthTokens` state without a refresh token and runs the
-native model probe before app-server startup. TokenService retains and renews
+native model probe before app-server startup. CredentialService retains and renews
 the grant, and Credential Proxy substitutes the access token only for the
 admitted requests. Recovery requires an authorized model binding. See
 [credential withdrawal](../reference/credential-sources/withdrawal.md).
@@ -249,7 +249,7 @@ admitted requests. Recovery requires an authorized model binding. See
 ## Debugging and Verification
 
 - The [Agent credential-binding PostgreSQL test](../../tests/integration/postgres-staged-agent-credential-binding.test.ts)
-  exercises Fastify, PostgreSQL, Native IAM, and the concrete TokenService and
+  exercises Fastify, PostgreSQL, Native IAM, and the concrete CredentialService and
   Secret Drivers. It checks exact draft authorization, partial PATCH behavior,
   deployment refusal without revision or work, and detach after owner loss. The
   Kubernetes API transport is simulated; this does not prove runtime delivery.

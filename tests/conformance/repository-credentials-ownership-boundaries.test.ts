@@ -21,7 +21,7 @@ import {
   startGitHubFixture,
 } from "../fixtures/repository-credentials/github.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
-import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.ts";
+import { createGitHubCredentialServiceFactory } from "../fixtures/repository-credentials/service-resources.ts";
 import {
   createServiceConfiguration,
   eventually,
@@ -95,7 +95,7 @@ test(
         const upstream = await startGitHubFixture(t, { clock });
         const token = `gho_${"t".repeat(36)}`;
         upstream.acceptStatic(token);
-        const factory: unknown = await createGitHubTokenServiceFactory(t, {
+        const factory: unknown = await createGitHubCredentialServiceFactory(t, {
           config,
           token,
           clock,

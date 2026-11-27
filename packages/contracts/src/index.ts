@@ -97,7 +97,7 @@ export type {
   PreparedTokenRegistration,
   PreparedTokenRef,
   TokenResolveOptions,
-  TokenService,
+  CredentialService,
 } from "./prepared-token.ts";
 export {
   preparedGitHubType,
@@ -362,7 +362,7 @@ export interface OpenShellBackendDefinition {
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
-    readonly token_service?: string;
+    readonly credential_service?: string;
   };
 }
 
@@ -380,9 +380,9 @@ export interface InstallationCapabilities {
   /** The API can configure Agent browser access during creation or provisioning. */
   readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
-  /** The selected TokenService supports Codex device authorization. */
+  /** The selected CredentialService supports Codex device authorization. */
   readonly deviceAuthorization?: true;
-  /** Model presets that enroll credentials through the selected TokenService and native delivery. */
+  /** Model presets that enroll credentials through the selected CredentialService and native delivery. */
   readonly modelCredentialSourcePresets?: readonly import("./model-providers.ts").SourceProviderPresetId[];
   /** Source types offered by independently selected protected request transports. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
@@ -640,25 +640,25 @@ export interface OAuthBuiltinCodexSourceConsent extends OAuthSourceConsentBase {
 /** The original, nonsecret authorization attached to an OAuth Source. */
 export type OAuthSourceConsent = OAuthTemplateSourceConsent | OAuthBuiltinCodexSourceConsent;
 
-interface TokenServiceCredentialSource {
+interface CredentialServiceCredentialSource {
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
-  readonly ownerCapability: "token_service";
-  readonly tokenServiceInstanceId: string;
-  /** Private, nonsecret reference interpreted by the selected TokenService. */
+  readonly ownerCapability: "credential_service";
+  readonly credentialServiceInstanceId: string;
+  /** Private, nonsecret reference interpreted by the selected CredentialService. */
   readonly backendRef?: Readonly<Record<string, string>>;
   readonly state: "ready" | "deleting";
   readonly createdAt: string;
 }
 
-export interface StaticCredentialSource extends TokenServiceCredentialSource {
+export interface StaticCredentialSource extends CredentialServiceCredentialSource {
   readonly type: "static";
   readonly connectionTemplateId?: string;
   readonly config: Readonly<Record<string, string>>;
 }
 
-interface OAuthCredentialSourceBase extends TokenServiceCredentialSource {
+interface OAuthCredentialSourceBase extends CredentialServiceCredentialSource {
   readonly type: "oauth2-refresh-token";
 }
 
@@ -676,14 +676,14 @@ export interface GitHubAppInstallationScope {
   readonly permissions: Readonly<Record<string, string>>;
 }
 
-export interface GitHubAppInstallationCredentialSource extends TokenServiceCredentialSource {
+export interface GitHubAppInstallationCredentialSource extends CredentialServiceCredentialSource {
   readonly type: "github-app-installation";
   readonly connectionTemplateId?: never;
   readonly clientId: string;
   readonly scope: GitHubAppInstallationScope;
 }
 
-/** The selected TokenService creates and owns managed Sources. */
+/** The selected CredentialService creates and owns managed Sources. */
 export type CredentialSource =
   StaticCredentialSource | OAuthCredentialSource | GitHubAppInstallationCredentialSource;
 
@@ -800,17 +800,17 @@ export type CredentialSourceSnapshot = {
   | {
       readonly credentialGatewayId: string;
       readonly credentialProxyId?: never;
-      readonly tokenServiceInstanceId?: never;
+      readonly credentialServiceInstanceId?: never;
       readonly connectionTemplate?: never;
     }
   | {
       readonly credentialProxyId: string;
       readonly credentialGatewayId?: never;
-      readonly tokenServiceInstanceId?: never;
+      readonly credentialServiceInstanceId?: never;
       readonly connectionTemplate?: never;
     }
   | {
-      readonly tokenServiceInstanceId: string;
+      readonly credentialServiceInstanceId: string;
       /** The approved Template version used to admit this Source for a Plugin. */
       readonly connectionTemplate?: { readonly id: string; readonly version: number };
       readonly credentialGatewayId?: never;
@@ -827,22 +827,22 @@ export function credentialSourceMatchesSnapshot(
     return false;
   }
   switch (source.ownerCapability) {
-    case "token_service":
+    case "credential_service":
       return (
         snapshot.credentialGatewayId === undefined &&
         snapshot.credentialProxyId === undefined &&
-        source.tokenServiceInstanceId !== undefined &&
-        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId
+        source.credentialServiceInstanceId !== undefined &&
+        snapshot.credentialServiceInstanceId === source.credentialServiceInstanceId
       );
     case "credential_gateway":
       return (
-        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialServiceInstanceId === undefined &&
         snapshot.credentialProxyId === undefined &&
         snapshot.credentialGatewayId === source.driverId
       );
     case "credential_proxy":
       return (
-        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialServiceInstanceId === undefined &&
         snapshot.credentialGatewayId === undefined &&
         snapshot.credentialProxyId === source.driverId
       );
@@ -907,10 +907,10 @@ export type HarnessAuthSnapshot =
       | {
           readonly credentialGatewayId: string;
           readonly loginMode: CredentialSourceLoginMode;
-          readonly tokenServiceInstanceId?: never;
+          readonly credentialServiceInstanceId?: never;
         }
       | {
-          readonly tokenServiceInstanceId: string;
+          readonly credentialServiceInstanceId: string;
           readonly credentialGatewayId?: never;
           readonly loginMode?: never;
         }
@@ -926,7 +926,7 @@ export type ResolvedHarnessAuth =
     })
   | (Extract<
       HarnessAuthSnapshot,
-      { method: "credential_source"; tokenServiceInstanceId: string }
+      { method: "credential_source"; credentialServiceInstanceId: string }
     > & {
       readonly source?: never;
     })
@@ -1396,7 +1396,7 @@ export interface AgentRevision extends Scope {
   readonly secretDriverId?: string;
   readonly secretBindings?: SecretBindings;
   /** Private selected owner for this revision's Gateway Source bindings. */
-  readonly gatewayTokenServiceInstanceId?: string;
+  readonly gatewayCredentialServiceInstanceId?: string;
   readonly plugins?: PluginRevisionState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryCredentials?: RepositoryRevisionState | SourceBackedRepositoryRevisionState;
@@ -1847,10 +1847,10 @@ export {
 } from "./api/connection-templates.ts";
 export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
 export {
-  RegisterGitHubAppTokenServiceSourceBody,
-  RegisterTokenServiceSourceBody,
-  UpdateTokenServiceSourceBody,
-} from "./api/token-service-sources.ts";
+  RegisterGitHubAppCredentialServiceSourceBody,
+  RegisterCredentialServiceSourceBody,
+  UpdateCredentialServiceSourceBody,
+} from "./api/credential-service-sources.ts";
 export {
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
@@ -1948,11 +1948,11 @@ export type {
 export type {
   CredentialClientPurpose,
   CredentialClientScope,
-  TokenServiceClientScopes,
+  CredentialServiceClientScopes,
   OAuthClientSecretInstance,
   GitHubAppClientSecretInstance,
   CredentialClientSecretInstance,
-  TokenServiceSourceInstance,
+  CredentialServiceSourceInstance,
   SourceLifecycleConfig,
   SourceRegistrationInput,
   SourceUpdate,
@@ -1960,10 +1960,10 @@ export type {
   CredentialRefreshStatus,
   SourceRefreshOperation,
   CredentialSourceDeviceAuthorization,
-  TokenServiceDeviceAuthorizationContext,
-  TokenServiceDeviceAuthorizationResult,
-  TokenServiceDriver,
-} from "./drivers/token-service/index.ts";
+  CredentialServiceDeviceAuthorizationContext,
+  CredentialServiceDeviceAuthorizationResult,
+  CredentialServiceDriver,
+} from "./drivers/credential-service/index.ts";
 
 export { intersectCredentialRequests } from "./deployment-request-match.ts";
 

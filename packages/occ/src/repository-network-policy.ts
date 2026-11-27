@@ -213,7 +213,7 @@ export async function readRepositoryEditTopology(
     source?.state !== "ready" ||
     source.namespaceId !== namespaceId ||
     source.id !== sourceId ||
-    source.ownerCapability === "token_service"
+    source.ownerCapability === "credential_service"
   ) {
     return undefined;
   }
@@ -511,7 +511,7 @@ export function supportsScopedRepositoryHistory(
       bindings?.length !== 1 ||
       model?.consumer.kind !== "model" ||
       auth.method !== "credential_source" ||
-      !auth.tokenServiceInstanceId ||
+      !auth.credentialServiceInstanceId ||
       model.sourceRef.id !== auth.sourceId ||
       revision.credentialSources?.some(({ sourceType }) => sourceType === "github-app-installation")
     ) {

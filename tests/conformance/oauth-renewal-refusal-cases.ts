@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import test from "node:test";
 
-import type { OAuthGrantStore } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import type { OAuthGrantStore } from "../../apps/controller/src/backends/credential-service/oauth-connection.ts";
 import type {
   OAuthConnectionClient,
   OAuthConnectionGrant,

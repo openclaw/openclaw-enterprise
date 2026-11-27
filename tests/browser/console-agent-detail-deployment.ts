@@ -21,7 +21,7 @@ import {
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { installCredentialServiceDriver } from "../../apps/controller/src/composition/credential-service.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
@@ -2410,7 +2410,7 @@ async function createNativeModelConsoleFixture(
   const runtime = await loadSelectedOpenShellAgentInstallation(t, {
     installation,
     computeId: "console-native-compute",
-    tokenServiceId: "occ",
+    credentialServiceId: "occ",
     core,
     gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
   });
@@ -2436,7 +2436,7 @@ async function createNativeModelConsoleFixture(
   assert.ok(state);
   fixture.controller.registerDriver(runtime.computeDriver);
   fixture.controller.selectDriver("compute", runtime.computeDriver.id);
-  await installTokenServiceDriver(fixture.controller, runtime, state);
+  await installCredentialServiceDriver(fixture.controller, runtime, state);
   installSelectedSandboxDrivers(fixture.controller, runtime);
   return { fixture, namespace, state };
 }
@@ -3101,7 +3101,7 @@ test("Agent draft plugin browsing explains a missing hosted credential", async (
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog
     .getByText(
-      "Hosted plugin browsing requires a TokenService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
+      "Hosted plugin browsing requires a CredentialService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
     )
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);

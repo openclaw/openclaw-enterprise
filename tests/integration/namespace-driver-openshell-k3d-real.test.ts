@@ -35,7 +35,7 @@ import {
   runBootstrapInstallation,
 } from "../helpers/bootstrap-installation.mjs";
 import {
-  createOpenShellTokenServiceInstallationConfiguration,
+  createOpenShellCredentialServiceInstallationConfiguration,
   createOpenShellKubernetesFixture,
   openshellHash,
   openShellChartImageValues,
@@ -171,7 +171,7 @@ test(
       platformNamespace,
       kubeconfig,
     );
-    // Match the chart's private TokenService store and its separate API and worker grants.
+    // Match the chart's private CredentialService store and its separate API and worker grants.
     await fixture.kubectl("create", "namespace", custodyNamespace);
     for (const [account, verbs] of [
       [identity.apiIdentity.account, "get,create,update,delete"],
@@ -262,13 +262,13 @@ test(
       ...gatewayHelpers,
       gatewayImage,
     });
-    const configuration = createOpenShellTokenServiceInstallationConfiguration({
+    const configuration = createOpenShellCredentialServiceInstallationConfiguration({
       authentication: identity.authentication,
       platformNamespace,
       cluster: env.OCC_TEST_KUBERNETES_CONTEXT,
       gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
       codexImage: env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
-    }) as ReturnType<typeof createOpenShellTokenServiceInstallationConfiguration> & {
+    }) as ReturnType<typeof createOpenShellCredentialServiceInstallationConfiguration> & {
       backend: { configuration: { serviceName: string; insecureTransport: string } }[];
       drivers: {
         sandbox: { configuration: OpenShellSandboxDriverOptions };

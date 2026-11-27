@@ -27,9 +27,9 @@ import {
 import type { GitHubFixture as RegistryGitHubFixture } from "../fixtures/repository-credentials/registry/provider.ts";
 import {
   gatewayRequest,
-  startTokenServiceScope,
+  startCredentialServiceScope,
 } from "../fixtures/repository-credentials/service-fixture.ts";
-import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
+import { startStaticCredentialService } from "../fixtures/repository-credentials/service-resources.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { listen } from "../helpers/listen.ts";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -90,7 +90,7 @@ type GitHubFixture = Pick<
   acceptStatic(token: string): number;
 };
 
-async function startTokenService(
+async function startCredentialService(
   t: TestContext,
   limits: Partial<ServiceLimits> = {},
   configuration: Partial<GitHubTokenConfiguration> = {},
@@ -108,7 +108,7 @@ async function startTokenService(
     tls: Awaited<ReturnType<typeof createTlsMaterial>>;
     config: ServiceConfig;
     github: GitHubFixture | undefined;
-  } = await startTokenServiceScope(t, scopeOptions);
+  } = await startCredentialServiceScope(t, scopeOptions);
   assert.ok(github);
   const git: GitFixture = await startGitSmartHttpFixture(resources, {
     authorize: github.authorize,
@@ -125,7 +125,7 @@ async function startTokenService(
     tokenIndex: number;
     service: CredentialServiceOwner;
     listeners: BoundListeners;
-  } = await startStaticTokenService(resources, {
+  } = await startStaticCredentialService(resources, {
     config,
     clock,
     tls,
@@ -145,7 +145,7 @@ async function startTokenService(
 // per ref update) as Node children of an allowlisted environment, so the compile cache
 // is passed explicitly.
 const compileCache = await fileCompileCache("repository-credentials-github-token");
-type TokenFixture = Awaited<ReturnType<typeof startTokenService>>;
+type TokenFixture = Awaited<ReturnType<typeof startCredentialService>>;
 type OpenedTokenFixture = TokenFixture & { opened: RepositoryCredentialSessionResult };
 type GatewayAnswer = { status: number | undefined; body: string };
 
@@ -181,7 +181,7 @@ async function stockGit(
 }
 
 test("development token sessions clone, push allowed refs and call REST without issuing tokens", async (t) => {
-  const fixture = await startTokenService(t);
+  const fixture = await startCredentialService(t);
   const { github, git, service } = fixture;
   const opened = service.open({ durationSeconds: 3600, profile: "git-write" });
   const session = { ...fixture, opened };
@@ -262,7 +262,7 @@ test("development token sessions clone, push allowed refs and call REST without 
 });
 
 test("development token git-read sessions are refused receive-pack before any acquisition", async (t) => {
-  const fixture = await startTokenService(t);
+  const fixture = await startCredentialService(t);
   const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-read" });
   const gitCommand = await stockGit(t, fixture, opened);
   const checkout = join(await temporaryDirectory(t, "repository-token-read-"), "checkout");
@@ -282,7 +282,7 @@ test("development token git-read sessions are refused receive-pack before any ac
 
 test("an oversized development token push is answered 413 before the token is used", async (t) => {
   const pushLimit = 1048576;
-  const fixture = await startTokenService(t, { gitPushInputBytes: pushLimit });
+  const fixture = await startCredentialService(t, { gitPushInputBytes: pushLimit });
   const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-write" });
   const gitCommand = await stockGit(t, fixture, opened);
   const checkout = join(await temporaryDirectory(t, "repository-token-large-"), "checkout");
@@ -374,7 +374,7 @@ const receivePacks = (fixture: TokenFixture) =>
 
 test("development token pushes admit UTF-8 branch names and match the allowlist byte for byte", async (t) => {
   const composed = "refs/heads/caf\u00e9";
-  const fixture = await startTokenService(
+  const fixture = await startCredentialService(
     t,
     {},
     {
@@ -469,7 +469,7 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
 });
 
 test("a development token push of more than 256 refs is refused with its own code", async (t) => {
-  const fixture = await startTokenService(t);
+  const fixture = await startCredentialService(t);
   const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-write" });
   const { gitCommand, checkout, commit } = await committedCheckout(t, fixture, opened, "many");
   const refspecs = (count: number) =>

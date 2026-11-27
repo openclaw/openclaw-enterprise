@@ -1,7 +1,7 @@
 # GitHub access levels
 
 For Credential Design 1.0, choose repository **Read** or **Read/write**.
-TokenService supplies credentials for admitted Git operations. Either access
+CredentialService supplies credentials for admitted Git operations. Either access
 level can permit [public repository metadata](#public-repository-metadata).
 Read/write can also authorize [pull request creation](#pull-request-creation)
 when the additional conditions are met. The prepared broker and deprecated
@@ -32,7 +32,7 @@ For a legacy session with one `github-repository` binding, the Installation and 
 The approved scope includes the exact repository identity and permission map.
 Legacy sessions for multiple selected repositories remain finite.
 
-A TokenService Git Source can cover several repositories in one Namespace. Deploy can reuse it when the caller can operate the Source and it covers every selected repository. The revision records only the Agent's approved repositories and access levels. Token renewal preserves those grants.
+A CredentialService Git Source can cover several repositories in one Namespace. Deploy can reuse it when the caller can operate the Source and it covers every selected repository. The revision records only the Agent's approved repositories and access levels. Token renewal preserves those grants.
 
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
@@ -42,7 +42,7 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
-### TokenService registry example
+### CredentialService registry example
 
 This registry permits read-only Git access to `project` in one Namespace.
 Replace the example Namespace, App, and installation IDs. Set `backendId` to
@@ -84,7 +84,7 @@ repositoryNetworkPolicyCeiling:
 
 ### Native Git delivery
 
-Use a Dedicated Agent with a supported TokenService model Source, Kubernetes
+Use a Dedicated Agent with a supported CredentialService model Source, Kubernetes
 Compute, and the paired OpenShell Sandbox and Credential Proxy.
 [Installation and Agent setup](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
@@ -102,7 +102,7 @@ verified by GitHub. A separately saved `repositoryNetworkPolicy`, even an empty
 list, conflicts with the selection and blocks deployment. Use an Agent draft
 without that list. [Repository network policy](../sandbox-policies.md#repository-network-policy)
 
-TokenService holds the installation token. Credential Proxy injects it only
+CredentialService holds the installation token. Credential Proxy injects it only
 on the Agent's admitted Git and pull request creation requests. Read-only permits
 Git discovery, clone, and fetch. Read/write also permits push.
 

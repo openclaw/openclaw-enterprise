@@ -451,10 +451,10 @@ export class RecoveryPasswordPolicyError extends ScopeViolationError {
   }
 }
 
-/** A submitted source field failed validation by the selected TokenService. */
-export class TokenServiceSourceInputError extends ScopeViolationError {}
+/** A submitted source field failed validation by the selected CredentialService. */
+export class CredentialServiceSourceInputError extends ScopeViolationError {}
 
-/** This registration was refused before the TokenService attempted any material write. */
+/** This registration was refused before the CredentialService attempted any material write. */
 
 /** A device login's private binding does not match the admitted request scope. */
 export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {

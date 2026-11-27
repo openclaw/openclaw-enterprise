@@ -80,19 +80,19 @@ export async function loadSelectedOpenShellAgentInstallation(
   {
     installation,
     computeId,
-    tokenServiceId,
+    credentialServiceId,
     core,
     gatewayClient,
   }: {
     installation: ReturnType<typeof buildSandboxInstallation>;
     computeId: string;
-    tokenServiceId: string;
+    credentialServiceId: string;
     core: object;
     gatewayClient: OpenShellGatewayClient;
   },
 ) {
   Object.assign(installation.drivers, {
-    token_service: { id: tokenServiceId, configuration: {} },
+    credential_service: { id: credentialServiceId, configuration: {} },
   });
   installation.drivers.compute.id = computeId;
   Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");

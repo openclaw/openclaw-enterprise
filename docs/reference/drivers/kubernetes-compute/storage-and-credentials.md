@@ -313,7 +313,7 @@ is rejected.
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
 selects the model credential. For a direct API key or imported PAT, Compute
 configures login and projects the selected Secret into the embedded workload
-or dedicated Harness. For a [TokenService model Source](../../credential-sources.md),
+or dedicated Harness. For a [CredentialService model Source](../../credential-sources.md),
 Compute renders no model Secret. Credential Proxy delivers the credential
 through the Sandbox on approved requests.
 

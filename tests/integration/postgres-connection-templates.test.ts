@@ -16,7 +16,7 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { oauthIssuerWithTransport } from "../helpers/oauth-issuer.ts";
 
 const issuer = "https://accounts.example.test";
@@ -75,7 +75,7 @@ async function installClientOwner(
 ) {
   const { core, driver } = useInstallationSecretDriver(controller);
   assert.ok(driver.privateSecrets);
-  const ownerId = "template-client-token-service";
+  const ownerId = "template-client-credential-service";
   const storeIdentity = clientStoreIdentity;
   if (worker) {
     // A separately composed Worker discovers the same selected private-store identity at startup.
@@ -87,8 +87,8 @@ async function installClientOwner(
       storeIdentity,
     );
   }
-  const instanceId = await controller.activateTokenServiceInstance(ownerId, storeIdentity);
-  const owner = new OCCTokenServiceDriver(
+  const instanceId = await controller.activateCredentialServiceInstance(ownerId, storeIdentity);
+  const owner = new OCCCredentialServiceDriver(
     ownerId,
     controller.installation.id,
     driver.privateSecrets,
@@ -96,7 +96,7 @@ async function installClientOwner(
     state,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   return { core, driver, owner, instanceId, storeIdentity };
 }
 const manual = {
@@ -738,9 +738,9 @@ test(
       state,
       true,
     );
-    await recovered.activateTokenServiceInstance(owner.id, storeIdentity);
+    await recovered.activateCredentialServiceInstance(owner.id, storeIdentity);
     recovered.registerDriver(owner);
-    recovered.selectDriver("token_service", owner.id);
+    recovered.selectDriver("credential_service", owner.id);
     recovered.registerDriver(driver);
     recovered.selectDriver("secret", driver.id);
     const input = clientInput();
@@ -772,7 +772,7 @@ test(
     closed = true;
     assert.equal((await response).statusCode, 503);
     assert.equal(core.secrets.size, 3);
-    // The Worker composes the selected TokenService from the same private Secret Driver.
+    // The Worker composes the selected CredentialService from the same private Secret Driver.
     const expired = await pool.query(
       "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE client_id=$1 AND cleanup_after IS NOT NULL RETURNING id",
       [stagedClientId],
@@ -781,7 +781,7 @@ test(
     const { worker } = recovery.startWorker({
       backends: [],
       secretDriver: driver,
-      tokenServiceDriverId: owner.id,
+      credentialServiceDriverId: owner.id,
     });
     await worker.start();
     await waitFor("the worker to retire the hidden registration", async () => {

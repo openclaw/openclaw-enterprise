@@ -214,7 +214,7 @@ export function openCredentialClientRegistration(
   const keyField = field({
     label: "Private key file",
     control: key,
-    help: "The selected TokenService verifies and stores this key. It cannot be read back.",
+    help: "The selected CredentialService verifies and stores this key. It cannot be read back.",
   });
   const githubFields = element(
     "fieldset",

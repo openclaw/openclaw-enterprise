@@ -79,7 +79,7 @@ test(
         assert.equal(refused.status, 400);
         assert.match(
           JSON.stringify(refused.body),
-          /Register static credentials or OAuth through TokenService/,
+          /Register static credentials or OAuth through CredentialService/,
         );
         assert.equal(countSecretReads(), readsBeforeAdmission);
 

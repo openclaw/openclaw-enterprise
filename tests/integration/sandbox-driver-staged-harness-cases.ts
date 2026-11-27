@@ -118,13 +118,13 @@ export async function verifyStagedModelPolicyObservation(
       method: "credential_source",
       sourceId: binding.sourceRef.id,
       sourceType: "static",
-      tokenServiceInstanceId: "tokens-fixture",
+      credentialServiceInstanceId: "tokens-fixture",
     }),
     credentialSources: [
       {
         sourceId: binding.sourceRef.id,
         sourceType: "static",
-        tokenServiceInstanceId: "tokens-fixture",
+        credentialServiceInstanceId: "tokens-fixture",
       },
     ],
     executionAdmission: { version: 8, mode: "standalone" },
@@ -276,7 +276,7 @@ export async function verifyStagedModelPolicyObservation(
       {
         sourceId: repositoryBinding.sourceRef.id,
         sourceType: "github-app-installation",
-        tokenServiceInstanceId: "tokens-fixture",
+        credentialServiceInstanceId: "tokens-fixture",
       },
     ],
     repositoryCredentials: {
@@ -861,12 +861,12 @@ export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>>
       method: "credential_source",
       sourceId: model.sourceRef.id,
       sourceType: "static",
-      tokenServiceInstanceId: "tokens",
+      credentialServiceInstanceId: "tokens",
     }),
     credentialSources: [model, slack].map(({ sourceRef }) => ({
       sourceId: sourceRef.id,
       sourceType: "static",
-      tokenServiceInstanceId: "tokens",
+      credentialServiceInstanceId: "tokens",
     })),
     plugins: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
@@ -879,7 +879,7 @@ export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>>
   const proxy = new OpenShellCredentialProxyDriver({
     id: driver.id,
     implementation: driver.implementation,
-    tokenServiceImplementation: "occ/token-service",
+    credentialServiceImplementation: "occ/credential-service",
     backend: occBackend,
     sandbox: driver,
   });
@@ -889,7 +889,7 @@ export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>>
   );
   const nativeBackend = {
     ...occBackend,
-    drivers: { sandbox: driver.id, token_service: "openshell-token-service" },
+    drivers: { sandbox: driver.id, credential_service: "openshell-credential-service" },
   };
   const nativeDriver = new OpenShellSandboxDriver(configuration, {
     id: driver.id,
@@ -899,7 +899,7 @@ export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>>
   const nativeProxy = new OpenShellCredentialProxyDriver({
     id: driver.id,
     implementation: driver.implementation,
-    tokenServiceImplementation: "openshell/token-service",
+    credentialServiceImplementation: "openshell/credential-service",
     backend: nativeBackend,
     sandbox: nativeDriver,
   });
@@ -1075,7 +1075,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
     method: "credential_source",
     sourceId: modelSourceId,
     sourceType: "static",
-    tokenServiceInstanceId: "tokens",
+    credentialServiceInstanceId: "tokens",
   });
   const grant = {
     id: "model",
@@ -1145,7 +1145,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
   const pluginSource = {
     sourceId: pluginBinding.sourceRef.id,
     sourceType: "oauth2-refresh-token" as const,
-    tokenServiceInstanceId: "tokens",
+    credentialServiceInstanceId: "tokens",
   };
   const revision: AgentRevision = {
     ...base,
@@ -1154,7 +1154,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
       plugins: { [google.id]: selection },
     },
     credentialSources: [
-      { sourceId: modelSourceId, sourceType: "static", tokenServiceInstanceId: "tokens" },
+      { sourceId: modelSourceId, sourceType: "static", credentialServiceInstanceId: "tokens" },
       pluginSource,
     ],
     executionAdmission: { version: 8, mode: "standalone" },
@@ -1317,7 +1317,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
   const proxy = new OpenShellCredentialProxyDriver({
     id: driver.id,
     implementation: driver.implementation,
-    tokenServiceImplementation: "occ/token-service",
+    credentialServiceImplementation: "occ/credential-service",
     backend: backendFor(gateway),
     sandbox: driver,
   });

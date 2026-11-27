@@ -97,7 +97,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       );
       linked = { ...linked, externalCredentialId: null };
     }
-    const owner = this.controller.selectedDriver("token_service");
+    const owner = this.controller.selectedDriver("credential_service");
     const credential = await this.client.createCredential({
       accountId: linked.externalAccountId,
       name: `occ-${account.id}`,
@@ -150,13 +150,15 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       AbortSignal.timeout(30_000),
     );
     if (
-      created.ownerCapability !== "token_service" ||
+      created.ownerCapability !== "credential_service" ||
       created.type !== "static" ||
       created.namespaceId !== account.namespaceId ||
       created.state !== "ready" ||
       created.config.provider_preset !== "codex-pat"
     ) {
-      throw new DependencyUnavailableError("The selected TokenService returned an invalid Source.");
+      throw new DependencyUnavailableError(
+        "The selected CredentialService returned an invalid Source.",
+      );
     }
     source = created;
 
@@ -190,10 +192,10 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     await this.controller.transact(async (unit) => {
       await unit.credentialSources.markCredentialSourceDeleting(source.namespaceId, source.id);
     });
-    await this.controller.selectedDriver("token_service").removeSource(
+    await this.controller.selectedDriver("credential_service").removeSource(
       {
         sourceRef: { kind: "credential_source", namespaceId: source.namespaceId, id: source.id },
-        tokenServiceInstanceId: source.tokenServiceInstanceId,
+        credentialServiceInstanceId: source.credentialServiceInstanceId,
       },
       AbortSignal.timeout(30_000),
     );

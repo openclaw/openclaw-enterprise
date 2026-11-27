@@ -104,7 +104,7 @@ function productionInstallation(adminKeyPath) {
           },
         },
       },
-      token_service: { id: "occ", configuration: {} },
+      credential_service: { id: "occ", configuration: {} },
       sandbox: {
         id: "sandbox-openshell",
         configuration: {

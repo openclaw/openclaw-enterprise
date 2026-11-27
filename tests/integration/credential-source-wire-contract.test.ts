@@ -4,11 +4,11 @@ import test, { type TestContext } from "node:test";
 import {
   occApiRoutes,
   PushAgentCredentialsResponse,
-  type UpdateTokenServiceSourceBody,
+  type UpdateCredentialServiceSourceBody,
 } from "../../packages/contracts/src/index.ts";
 
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
-import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/credential-service/codex-oauth-preset.ts";
 
 const uuid = "0000000a-0000-4000-8000-00000000000b";
 const id = `cs_${uuid}`;
@@ -39,11 +39,11 @@ async function publishedCredentialComponents(t: TestContext) {
   return { route, validatorCompiler, serializerCompiler, published, document };
 }
 
-test("published TokenService source request schemas validate managed static material and config", async (t) => {
+test("published CredentialService source request schemas validate managed static material and config", async (t) => {
   const { route, validatorCompiler, published } = await publishedCredentialComponents(t);
   const writeOnlySecret = { properties: { secret: { writeOnly: true } } };
-  assert.partialDeepStrictEqual(published("RegisterTokenServiceSourceBody"), writeOnlySecret);
-  assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), writeOnlySecret);
+  assert.partialDeepStrictEqual(published("RegisterCredentialServiceSourceBody"), writeOnlySecret);
+  assert.partialDeepStrictEqual(published("UpdateCredentialServiceSourceBody"), writeOnlySecret);
 
   const credential = "synthetic-registration-material";
   const refs = { api_key: { kind: "secret", namespaceId, id: `sec_${uuid}` } };
@@ -56,9 +56,12 @@ test("published TokenService source request schemas validate managed static mate
   for (const resolve of [registered, published]) {
     const register = validatorCompiler({
       ...route,
-      schema: resolve("RegisterTokenServiceSourceBody"),
+      schema: resolve("RegisterCredentialServiceSourceBody"),
     });
-    const update = validatorCompiler({ ...route, schema: resolve("UpdateTokenServiceSourceBody") });
+    const update = validatorCompiler({
+      ...route,
+      schema: resolve("UpdateCredentialServiceSourceBody"),
+    });
     assert.equal(register({ ...source, config, secret: credential }), true);
     // Credential material is a string and does not use a client-selected field name.
     assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), false);
@@ -77,10 +80,10 @@ test("published TokenService source request schemas validate managed static mate
     assert.equal(register({ ...source, secret: refs }), false);
     assert.equal(register({ ...source, secrets: refs }), false);
     assert.equal(register({ ...source, driverId: "chosen-owner" }), false);
-    assert.equal(update({ secret: credential } satisfies UpdateTokenServiceSourceBody), true);
-    assert.equal(update({ config } satisfies UpdateTokenServiceSourceBody), true);
+    assert.equal(update({ secret: credential } satisfies UpdateCredentialServiceSourceBody), true);
+    assert.equal(update({ config } satisfies UpdateCredentialServiceSourceBody), true);
     assert.equal(
-      update({ config, secret: credential } satisfies UpdateTokenServiceSourceBody),
+      update({ config, secret: credential } satisfies UpdateCredentialServiceSourceBody),
       true,
     );
     assert.equal(update({}), false);
@@ -93,7 +96,7 @@ test("published TokenService source request schemas validate managed static mate
   }
 });
 
-test("namespace Source registration distinguishes TokenService material from protected Proxy references", async (t) => {
+test("namespace Source registration distinguishes CredentialService material from protected Proxy references", async (t) => {
   const { route, validatorCompiler } = await publishedCredentialComponents(t);
   const create = occApiRoutes.find(
     (candidate) => candidate.operationId === "createCredentialSource",
@@ -130,13 +133,13 @@ test("namespace Source registration distinguishes TokenService material from pro
   assert.equal(register({ ...prepared, connectionTemplateId: `ctp_${uuid}` }), false);
   assert.equal(register({ ...managed, type: "openai" }), false);
   assert.equal(register({ ...managed, secret: { first: "one", second: "two" } }), false);
-  assert.equal(register({ ...managed, ownerCapability: "token_service" }), false);
+  assert.equal(register({ ...managed, ownerCapability: "credential_service" }), false);
   assert.equal(patch({ secret: material }), true);
   assert.equal(patch({ config: { provider_preset: "openai" } }), true);
   assert.equal(patch({ secrets: prepared.secrets }), false);
   assert.equal(patch({ secret: material, secrets: prepared.secrets }), false);
   assert.equal(patch({ config: managed.config, secrets: prepared.secrets }), false);
-  assert.equal(patch({ secret: material, ownerCapability: "token_service" }), false);
+  assert.equal(patch({ secret: material, ownerCapability: "credential_service" }), false);
 });
 
 test("existing Source responses serialize sanitized managed metadata for detail and list", async (t) => {
@@ -187,9 +190,9 @@ test("existing Source responses serialize sanitized managed metadata for detail 
     const privateSource = {
       ...source,
       secret: "synthetic-material",
-      ownerCapability: "token_service",
+      ownerCapability: "credential_service",
       secrets: {},
-      tokenServiceInstanceId: "private-instance",
+      credentialServiceInstanceId: "private-instance",
       ...("consent" in source
         ? { consent: { ...source.consent, refreshToken: "synthetic-refresh" } }
         : {}),

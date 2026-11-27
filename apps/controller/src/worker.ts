@@ -1,7 +1,7 @@
 import { oauthIssuerOperations } from "./connections/oauth-issuer.ts";
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
 import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
-import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "./drivers/credential-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { reduceCredentialPolicy, supportsScopedRepositoryHistory } from "@openclaw-enterprise/occ";
@@ -74,7 +74,7 @@ import type {
   SecretDriver,
   RuntimeFailureEvidence,
   SecretReference,
-  TokenServiceDriver,
+  CredentialServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
@@ -141,9 +141,9 @@ import {
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import {
-  installTokenServiceDriver,
+  installCredentialServiceDriver,
   gatewayStartupSourceDelivery,
-} from "./composition/token-service.ts";
+} from "./composition/credential-service.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import { ConfigurationFailure as ComputeConfigurationFailure } from "./drivers/compute/configuration-failure.ts";
@@ -1389,7 +1389,7 @@ export class ControllerWorker {
   private readonly nativeWorkerSupport: NativeWorkerSupport | undefined;
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
-  private gatewayStartupOwner: TokenServiceDriver | undefined;
+  private gatewayStartupOwner: CredentialServiceDriver | undefined;
   private readonly sandbox: SandboxDriver | undefined;
   private connectionRevocationCursor: string | undefined;
   private connectionRevocationScanAfter = 0;
@@ -1401,8 +1401,8 @@ export class ControllerWorker {
   private get credentialDeploymentProxy(): CredentialProxyDriver | undefined {
     return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   }
-  private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
-  private readonly tokenServiceDrivers: InstallationRuntimeDrivers | undefined;
+  private readonly preparedTokens: InstallationRuntimeDrivers["credentialService"];
+  private readonly credentialServiceDrivers: InstallationRuntimeDrivers | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1503,7 +1503,7 @@ export class ControllerWorker {
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      preparedTokenProof: drivers?.credentialService?.postgresCurrentProof,
     });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
     this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
@@ -1553,8 +1553,8 @@ export class ControllerWorker {
     }
     this.protectedDriver = drivers?.protectedDriver;
     this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
-    this.preparedTokens = drivers?.tokenService;
-    this.tokenServiceDrivers = drivers;
+    this.preparedTokens = drivers?.credentialService;
+    this.credentialServiceDrivers = drivers;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ??
       this.credentialDeliveryRegistration?.require("sandbox") ??
@@ -1699,11 +1699,11 @@ export class ControllerWorker {
     this.startedAt = this.healthClock();
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
-    const qualifyGatewayDelivery = gatewayStartupSourceDelivery(this.tokenServiceDrivers);
+    const qualifyGatewayDelivery = gatewayStartupSourceDelivery(this.credentialServiceDrivers);
     const provisioningOptions = {
       oauthIssuer: oauthIssuerOperations,
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
-      credentialSourceDelivery: credentialSourceDeliveryBinding(this.tokenServiceDrivers),
+      credentialSourceDelivery: credentialSourceDeliveryBinding(this.credentialServiceDrivers),
       gatewayStartupSourceDelivery: qualifyGatewayDelivery,
       preparedTokens: this.preparedTokens,
       state: this.state,
@@ -1755,9 +1755,9 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    const installedExportOwner = await installTokenServiceDriver(
+    const installedExportOwner = await installCredentialServiceDriver(
       provisioning,
-      this.tokenServiceDrivers,
+      this.credentialServiceDrivers,
       this.state,
       {
         role: "worker",
@@ -1986,7 +1986,7 @@ export class ControllerWorker {
   /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
   private async sweepConnectionRevocation(): Promise<void> {
     if (
-      !this.tokenServiceDrivers?.installation.drivers.token_service ||
+      !this.credentialServiceDrivers?.installation.drivers.credential_service ||
       !this.provisioningController ||
       this.connectionRevocationScanAfter > Date.now()
     ) {
@@ -2090,8 +2090,8 @@ export class ControllerWorker {
     return {
       secretDriverId: this.secretDriverId,
       proxyDriver: this.proxyDriver,
-      currentTokenServiceInstanceId: () =>
-        this.provisioningController?.currentTokenServiceInstanceId(),
+      currentCredentialServiceInstanceId: () =>
+        this.provisioningController?.currentCredentialServiceInstanceId(),
     };
   }
 
@@ -3081,7 +3081,7 @@ export class ControllerWorker {
         view.credentialSources.findCredentialSource(revision.namespaceId, binding.sourceRef.id),
       );
       if (
-        source?.ownerCapability !== "token_service" ||
+        source?.ownerCapability !== "credential_service" ||
         source.type !== "github-app-installation"
       ) {
         return "retire-runtime";
@@ -4860,11 +4860,11 @@ export class ControllerWorker {
   private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     let ownerMatches: boolean;
-    if (source.ownerCapability === "token_service") {
+    if (source.ownerCapability === "credential_service") {
       ownerMatches =
-        source.tokenServiceInstanceId !== undefined &&
-        source.tokenServiceInstanceId ===
-          this.provisioningController?.currentTokenServiceInstanceId();
+        source.credentialServiceInstanceId !== undefined &&
+        source.credentialServiceInstanceId ===
+          this.provisioningController?.currentCredentialServiceInstanceId();
     } else {
       ownerMatches =
         source.ownerCapability === "credential_proxy" && source.driverId === this.proxyDriver?.id;
@@ -6320,7 +6320,7 @@ export class ControllerWorker {
             let resolved: ResolvedCredential;
             try {
               resolved = await current.owner.resolveCredential(
-                { sourceRef: source, tokenServiceInstanceId: current.instanceId },
+                { sourceRef: source, credentialServiceInstanceId: current.instanceId },
                 signal,
               );
             } catch (error) {
@@ -6369,17 +6369,18 @@ export class ControllerWorker {
     context: ComputeRevisionContext,
     signal: AbortSignal,
     exactSource?: CredentialSourceReference,
-  ): Promise<{ readonly owner: TokenServiceDriver; readonly instanceId: string }> {
+  ): Promise<{ readonly owner: CredentialServiceDriver; readonly instanceId: string }> {
     signal.throwIfAborted();
     if (
       claim.namespaceId !== revision.namespaceId ||
       claim.agentId !== revision.agentId ||
       claim.revisionId !== revision.id ||
-      !revision.gatewayTokenServiceInstanceId ||
+      !revision.gatewayCredentialServiceInstanceId ||
       !this.gatewayStartupOwner ||
-      this.provisioningController?.selectedDriver("token_service") !== this.gatewayStartupOwner ||
-      this.provisioningController.currentTokenServiceInstanceId() !==
-        revision.gatewayTokenServiceInstanceId
+      this.provisioningController?.selectedDriver("credential_service") !==
+        this.gatewayStartupOwner ||
+      this.provisioningController.currentCredentialServiceInstanceId() !==
+        revision.gatewayCredentialServiceInstanceId
     ) {
       throw new DependencyUnavailableError(
         "The Gateway credential owner or work does not match the revision.",
@@ -6407,7 +6408,7 @@ export class ControllerWorker {
         agent.servicePrincipalId !== revision.servicePrincipalId ||
         (newest?.id !== revision.id && agent.activeRevisionId !== revision.id) ||
         stored?.configurationId !== revision.configurationId ||
-        stored.gatewayTokenServiceInstanceId !== revision.gatewayTokenServiceInstanceId ||
+        stored.gatewayCredentialServiceInstanceId !== revision.gatewayCredentialServiceInstanceId ||
         !isDeepStrictEqual(stored.secretBindings, revision.secretBindings)
       ) {
         return undefined;
@@ -6448,8 +6449,8 @@ export class ControllerWorker {
           if (
             value?.state !== "ready" ||
             value.type !== "static" ||
-            value.ownerCapability !== "token_service" ||
-            value.tokenServiceInstanceId !== revision.gatewayTokenServiceInstanceId ||
+            value.ownerCapability !== "credential_service" ||
+            value.credentialServiceInstanceId !== revision.gatewayCredentialServiceInstanceId ||
             withdrawal !== undefined
           ) {
             return undefined;
@@ -6494,7 +6495,10 @@ export class ControllerWorker {
       throw new CredentialDeploymentAuthorizationError(denied);
     }
     signal.throwIfAborted();
-    return { owner: this.gatewayStartupOwner, instanceId: revision.gatewayTokenServiceInstanceId };
+    return {
+      owner: this.gatewayStartupOwner,
+      instanceId: revision.gatewayCredentialServiceInstanceId,
+    };
   }
 
   private async authorizeGatewaySource(
@@ -6587,8 +6591,8 @@ export class ControllerWorker {
     if (denied) {
       throw new CredentialDeploymentAuthorizationError(denied);
     }
-    const owner = this.provisioningController.selectedDriver("token_service");
-    const instanceId = this.provisioningController.currentTokenServiceInstanceId();
+    const owner = this.provisioningController.selectedDriver("credential_service");
+    const instanceId = this.provisioningController.currentCredentialServiceInstanceId();
     const sources = new Map<string, Readonly<CredentialSource>>();
     for (const { sourceRef, consumer } of policy.bindings) {
       if (
@@ -6603,9 +6607,9 @@ export class ControllerWorker {
         continue;
       }
       const snapshot = revisionCredentialSourceSnapshot(revision, sourceRef.id);
-      if (!snapshot || snapshot.tokenServiceInstanceId !== instanceId) {
+      if (!snapshot || snapshot.credentialServiceInstanceId !== instanceId) {
         throw new DependencyUnavailableError(
-          "The staged source does not belong to the selected TokenService instance.",
+          "The staged source does not belong to the selected CredentialService instance.",
         );
       }
       const { source, withdrawal } = await resolveRevisionCredentialSource(
@@ -6622,8 +6626,8 @@ export class ControllerWorker {
       if (
         withdrawal !== undefined ||
         !source ||
-        source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== instanceId
+        source.ownerCapability !== "credential_service" ||
+        source.credentialServiceInstanceId !== instanceId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
@@ -6640,15 +6644,15 @@ export class ControllerWorker {
         !isNativeStagedRepositoryRevision(revision) ||
         !repository ||
         !grants ||
-        source?.ownerCapability !== "token_service" ||
+        source?.ownerCapability !== "credential_service" ||
         source.type !== "github-app-installation" ||
-        !(owner instanceof OCCTokenServiceDriver)
+        !(owner instanceof OCCCredentialServiceDriver)
       ) {
         throw new DependencyUnavailableError("The staged Repository authority is unavailable.");
       }
       await owner.assertCurrentGitHubAppSourceScope(source);
       const matches = admitOpenShellRepositoryCredentials(
-        this.tokenServiceDrivers?.repositoryRegistry,
+        this.credentialServiceDrivers?.repositoryRegistry,
         {
           namespaceId: revision.namespaceId,
           source,
@@ -6724,8 +6728,8 @@ export class ControllerWorker {
         const source = current.sources.get(binding.sourceRef.id);
         if (
           !source ||
-          source.ownerCapability !== "token_service" ||
-          source.tokenServiceInstanceId !== current.instanceId
+          source.ownerCapability !== "credential_service" ||
+          source.credentialServiceInstanceId !== current.instanceId
         ) {
           throw new DependencyUnavailableError("The authorized staged source is unavailable.");
         }
@@ -6734,7 +6738,7 @@ export class ControllerWorker {
           value = current.owner.resolveCredential(
             {
               sourceRef: binding.sourceRef,
-              tokenServiceInstanceId: current.instanceId,
+              credentialServiceInstanceId: current.instanceId,
             },
             signal,
           );
@@ -6802,7 +6806,7 @@ export class ControllerWorker {
           }
           const account =
             binding.consumer.kind === "model" &&
-            source.ownerCapability === "token_service" &&
+            source.ownerCapability === "credential_service" &&
             source.type === "oauth2-refresh-token" &&
             source.consent.kind === "builtin_codex"
               ? source.consent.account

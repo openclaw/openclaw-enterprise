@@ -7,7 +7,7 @@ last_verified: "2026-11-02"
 # Set up OCE locally with OpenShell and Codex
 
 Install OpenClaw Enterprise (OCE) in a private k3d cluster. The OpenShell profile
-selects OCC TokenService and native Credential Proxy delivery for dedicated Codex.
+selects OCC CredentialService and native Credential Proxy delivery for dedicated Codex.
 
 ## Before you start
 
@@ -94,7 +94,7 @@ The launcher enables TLS, mutual TLS and authentication for the OpenShell Gatewa
 
 ## 3. Prepare model credential delivery
 
-The launcher selects OCC TokenService and the OpenShell Sandbox that supplies
+The launcher selects OCC CredentialService and the OpenShell Sandbox that supplies
 native Credential Proxy delivery. See [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
 before changing the generated configuration.
 

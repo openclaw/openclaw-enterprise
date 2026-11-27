@@ -1283,8 +1283,8 @@ export const occApiRoutes = [
       params: NamespaceParams,
       body: Type.Union([
         CreateCredentialSourceBody,
-        Type.Ref("RegisterTokenServiceSourceBody"),
-        Type.Ref("RegisterGitHubAppTokenServiceSourceBody"),
+        Type.Ref("RegisterCredentialServiceSourceBody"),
+        Type.Ref("RegisterGitHubAppCredentialServiceSourceBody"),
       ]),
       response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
@@ -1334,7 +1334,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: Type.Ref("UpdateTokenServiceSourceBody"),
+      body: Type.Ref("UpdateCredentialServiceSourceBody"),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },

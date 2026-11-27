@@ -46,7 +46,7 @@ before applying the selected policy. A runtime without `--no-enable` cannot
 prepare the package. Identity or integrity failure prevents Gateway startup.
 Dedicated OpenClaw uses managed package material shipped in the controller and
 runtime images. Compute prepares the Google skill and worker CLI, or the Slack
-worker MCP server and selected tool filter. TokenService resolves each admitted
+worker MCP server and selected tool filter. CredentialService resolves each admitted
 Source and the selected Proxy supplies its credential under the Sandbox policy.
 Delivery through a running Plugin Agent still requires qualification. See
 [Credential Sources](../credential-sources.md).

@@ -1,7 +1,7 @@
 # Give an Agent repository access
 
 For Dedicated Codex with an OpenShell Sandbox, use [native GitHub App access](repository-credentials/openshell-git-push.md).
-TokenService owns the Source. Sandbox installs each Agent's approved Repository
+CredentialService owns the Source. Sandbox installs each Agent's approved Repository
 network rules, and Credential Proxy prepares the token Provider. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
@@ -13,7 +13,7 @@ and do not require the legacy egress proxy.
 
 ## Set GitHub App access for an OpenShell Agent
 
-Select TokenService, the paired OpenShell Sandbox and Credential Proxy, and the
+Select CredentialService, the paired OpenShell Sandbox and Credential Proxy, and the
 GitHub Backend with its approved repository registry. Register an eligible GitHub
 App Client, select repositories and access levels on the Agent, then deploy. Follow
 the [native Git walkthrough](repository-credentials/openshell-git-push.md) for setup,

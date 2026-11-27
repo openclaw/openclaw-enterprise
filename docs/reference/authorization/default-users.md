@@ -257,7 +257,7 @@ the Agent or the source removes them, as
 A Default user cannot read the Installation, so the console's Create Agent
 reads `GET /namespaces/:namespaceId/agent-capabilities` instead. The caller
 needs `agent:create` in that Namespace. The answer holds the Installation
-capabilities the form uses, including the supported TokenService provider
+capabilities the form uses, including the supported CredentialService provider
 presets. For a managed model credential, the Console saves a draft with the
 selected Source. Enrollment requires `credential_source:create`. Saving or
 deploying with an existing Source requires `credential_source:operate`.

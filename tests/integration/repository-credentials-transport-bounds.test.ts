@@ -23,10 +23,10 @@ import { fixtureRepository } from "../fixtures/repository-credentials/github.ts"
 import { listen } from "../fixtures/repository-credentials/process.ts";
 import {
   eventually,
-  startTokenServiceScope,
+  startCredentialServiceScope,
 } from "../fixtures/repository-credentials/service-fixture.ts";
 import { appModule } from "../fixtures/repository-credentials/runtime.ts";
-import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
+import { startStaticCredentialService } from "../fixtures/repository-credentials/service-resources.ts";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;
 const upload = `/${fixtureRepository}.git/git-upload-pack`;
@@ -60,7 +60,7 @@ async function startTransport(
       ...limits,
     },
   };
-  const scope = await startTokenServiceScope(t, options);
+  const scope = await startCredentialServiceScope(t, options);
   const { resources, tls, github, config, clock } = scope;
   assert.ok(github);
   const received: { method: string | undefined; path: string | undefined }[] = [];
@@ -76,7 +76,7 @@ async function startTransport(
   const origin = await listen(resources, upstream);
   const trustedOrigins = new Set([origin]);
   const logs: RefusalRecord[] = [];
-  const started = await startStaticTokenService(resources, {
+  const started = await startStaticCredentialService(resources, {
     config,
     clock,
     tls,

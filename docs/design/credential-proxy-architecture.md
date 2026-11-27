@@ -1,6 +1,6 @@
 # Credential Proxy architecture
 
-OCC decides which credentials an Agent revision can use. TokenService maintains
+OCC decides which credentials an Agent revision can use. CredentialService maintains
 the credentials. Sandbox enforces network access and Credential Proxy configures
 injection for approved requests. In native OpenShell delivery, the Sandbox
 supervisor applies both policies when the Agent sends a request. Network policy
@@ -19,7 +19,7 @@ credential binding's policy.
    send. Each credential injection policy limits the requests that can carry
    its credential.
 3. Compute prepares an idle Sandbox. Credential Proxy configures injection. For
-   OCC custody, it resolves the Source through TokenService and attaches a
+   OCC custody, it resolves the Source through CredentialService and attaches a
    delivery Provider. For native custody, it attaches the Source's Provider.
    OpenShell loads the policies. The Worker rechecks authorization and releases
    the Agent after Compute confirms policy and delivery are ready. The Harness
@@ -54,7 +54,7 @@ config:
 flowchart TB
   subgraph Deployment["At deployment"]
     OCC["<b>OCC</b><br/>Saves repository grants"] --> Sandbox["<b>Sandbox</b><br/>Installs Git network rules"]
-    TS["<b>TokenService</b><br/>Supplies installation token"] --> Proxy
+    TS["<b>CredentialService</b><br/>Supplies installation token"] --> Proxy
     Proxy["<b>Credential Proxy</b><br/>Prepares token Provider"] -->|Provider| Sandbox
   end
   subgraph Request["On each Git request"]
@@ -79,11 +79,11 @@ destination, HTTP method, repository path, and Git service query where
 applicable. A push needs the write rules for
 `git-receive-pack`. OpenShell injects the installation token only on a match.
 GitHub then applies the token's permissions and its own branch rules. See the
-[native Git flow](../flows/agent-repository-credentials.md#tokenservice-git).
+[native Git flow](../flows/agent-repository-credentials.md#credentialservice-git).
 
 ## Renew or withdraw delivery
 
-TokenService commits a credential update. With OCC custody, it notifies
+CredentialService commits a credential update. With OCC custody, it notifies
 Credential Proxy to update the delivery copy. After a delivery failure, retry
 with the committed value. With native custody, the Source's Provider holds the
 updated value. Git renewal keeps the Agent's saved repository grants. OCC marks a

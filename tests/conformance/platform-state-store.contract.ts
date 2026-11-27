@@ -22,9 +22,9 @@ export async function verifyPlatformStateStoreContract(
   await verifyPlatformStateTransactions(store, seed);
   await verifyStandaloneCredentialStateContract(store, seed);
   const instance = await store.transact((transaction) =>
-    transaction.installations.selectTokenServiceInstance({
+    transaction.installations.selectCredentialServiceInstance({
       id: randomUUID(),
-      driverId: "platform-state-token-service",
+      driverId: "platform-state-credential-service",
       storeIdentity: "platform-state-contract",
     }),
   );

@@ -15,7 +15,7 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { kubernetesRequest } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
   explicitK3dSelection,
@@ -408,19 +408,19 @@ test(
     controller.registerDriver(driver);
     controller.selectDriver("secret", driver.id);
     assert.ok(driver.privateSecrets);
-    const instanceId = await controller.activateTokenServiceInstance(
-      "private-real-token-service",
+    const instanceId = await controller.activateCredentialServiceInstance(
+      "private-real-credential-service",
       randomUUID(),
     );
-    const owner = new OCCTokenServiceDriver(
-      "private-real-token-service",
+    const owner = new OCCCredentialServiceDriver(
+      "private-real-credential-service",
       installation.id,
       driver.privateSecrets,
       instanceId,
       state,
     );
     controller.registerDriver(owner);
-    controller.selectDriver("token_service", owner.id);
+    controller.selectDriver("credential_service", owner.id);
     const auth = await createPostgresControllerAuth({
       ...authOptions(installation.id),
       pool,
@@ -606,7 +606,7 @@ test(
         await assertHidden(value, response);
         const reserved = (
           await pool.query<{ hidden: boolean; owner: string }>(
-            "SELECT cleanup_after IS NOT NULL AS hidden, token_service_instance_id AS owner FROM occ.oauth_clients WHERE client_id=$1",
+            "SELECT cleanup_after IS NOT NULL AS hidden, credential_service_instance_id AS owner FROM occ.oauth_clients WHERE client_id=$1",
             [value.clientId],
           )
         ).rows;

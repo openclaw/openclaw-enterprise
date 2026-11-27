@@ -83,8 +83,8 @@ export const installation = occSchema.table(
   ],
 );
 
-export const tokenServiceInstances = occSchema.table(
-  "token_service_instances",
+export const credentialServiceInstances = occSchema.table(
+  "credential_service_instances",
   {
     installationId: text("installation_id")
       .primaryKey()
@@ -95,15 +95,15 @@ export const tokenServiceInstances = occSchema.table(
   },
   (table) => [
     check(
-      "token_service_instances_id_valid",
+      "credential_service_instances_id_valid",
       sql`${table.id} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
     ),
     check(
-      "token_service_instances_driver_valid",
+      "credential_service_instances_driver_valid",
       sql`char_length(${table.driverId}) BETWEEN 1 AND 200 AND ${table.driverId} = btrim(${table.driverId})`,
     ),
     check(
-      "token_service_instances_store_valid",
+      "credential_service_instances_store_valid",
       sql`char_length(${table.storeIdentity}) BETWEEN 1 AND 200 AND ${table.storeIdentity} = btrim(${table.storeIdentity})`,
     ),
   ],
@@ -559,8 +559,8 @@ export const credentialSources = occSchema.table(
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id"),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
-    tokenServiceInstanceId: text("token_service_instance_id").references(
-      () => tokenServiceInstances.id,
+    credentialServiceInstanceId: text("credential_service_instance_id").references(
+      () => credentialServiceInstances.id,
       { onDelete: "restrict", onUpdate: "restrict" },
     ),
     backendRef: jsonb("backend_ref").$type<Readonly<Record<string, string>>>(),
@@ -622,7 +622,7 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_github_app_scope_valid",
-      sql`CASE WHEN ${table.ownerCapability}='token_service' AND ${table.type}='github-app-installation' THEN
+      sql`CASE WHEN ${table.ownerCapability}='credential_service' AND ${table.type}='github-app-installation' THEN
         ${table.githubAppClientId} IS NOT NULL AND ${table.connectionTemplateId} IS NULL AND ${table.config}='{}'::jsonb AND occ.github_app_source_scope_is_valid(${table.githubAppScope})
       ELSE ${table.githubAppClientId} IS NULL AND ${table.githubAppScope} IS NULL END IS TRUE`,
     ),
@@ -642,12 +642,12 @@ export const credentialSources = occSchema.table(
       .onUpdate("restrict"),
     check(
       "credential_sources_owner_capability_valid",
-      sql`CASE WHEN ${table.ownerCapability}='token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token','github-app-installation') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND ${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL END IS TRUE`,
+      sql`CASE WHEN ${table.ownerCapability}='credential_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.credentialServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token','github-app-installation') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.credentialServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND ${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL END IS TRUE`,
     ),
     check(
       "credential_sources_backend_ref_valid",
       sql`${table.backendRef} IS NULL OR (
-      ${table.tokenServiceInstanceId} IS NOT NULL
+      ${table.credentialServiceInstanceId} IS NOT NULL
       AND jsonb_typeof(${table.backendRef}) = 'object'
       AND ${table.backendRef} <> '{}'::jsonb
       AND NOT jsonb_path_exists(${table.backendRef}, 'strict $.* ? (@.type() != "string" || @ == "")', '{}'::jsonb, true)
@@ -655,7 +655,7 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_oauth_shape",
-      sql`CASE WHEN ${table.ownerCapability}='token_service' AND ${table.type}='oauth2-refresh-token' THEN
+      sql`CASE WHEN ${table.ownerCapability}='credential_service' AND ${table.type}='oauth2-refresh-token' THEN
       ((${table.oauthProvenance}='connection_template' AND ${table.connectionTemplateId} IS NOT NULL AND ${table.oauthConsentVersion}>0 AND ${table.oauthClientId} IS NOT NULL AND ${table.oauthAccount} IS NULL)
       OR (${table.oauthProvenance}='builtin_codex' AND ${table.connectionTemplateId} IS NULL AND ${table.oauthConsentVersion} IS NULL AND ${table.oauthClientId} IS NULL AND jsonb_typeof(${table.oauthAccount})='object'
       AND ${table.oauthAccount} - ARRAY['accountId','planType','isFedramp','userId','email','accountUserId']::text[]='{}'::jsonb
@@ -929,8 +929,8 @@ export const agentRevisions = occSchema.table(
         )
         AND (${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone' OR (
           NOT (${table.admittedSpec} ? 'credential_deployment')
-          AND NOT ((${table.admittedSpec}->'harness_auth') ? 'tokenServiceInstanceId')
-          AND NOT COALESCE(jsonb_path_exists(${table.admittedSpec}->'credential_sources', '$[*] ? (exists(@.tokenServiceInstanceId))'), false)
+          AND NOT ((${table.admittedSpec}->'harness_auth') ? 'credentialServiceInstanceId')
+          AND NOT COALESCE(jsonb_path_exists(${table.admittedSpec}->'credential_sources', '$[*] ? (exists(@.credentialServiceInstanceId))'), false)
         )), false)`,
     ),
     check(
@@ -950,7 +950,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
-          - 'secret_driver_id' - 'secret_bindings' - 'gateway_token_service_instance_id' - 'harness_auth' - 'credential_sources' - 'plugins'
+          - 'secret_driver_id' - 'secret_bindings' - 'gateway_credential_service_instance_id' - 'harness_auth' - 'credential_sources' - 'plugins'
           - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission' - 'credential_deployment') = '{}'::jsonb
     AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
@@ -1031,13 +1031,13 @@ export const agentRevisions = occSchema.table(
         )`.inlineParams(),
     ),
     check(
-      "agent_revisions_gateway_token_service_owner",
+      "agent_revisions_gateway_credential_service_owner",
       sql`CASE WHEN COALESCE(jsonb_path_exists(${table.admittedSpec}->'secret_bindings',
         '$.* ? (@.source.kind == "credential_source")'), false)
-      THEN jsonb_typeof(${table.admittedSpec}->'gateway_token_service_instance_id') = 'string'
-        AND ${table.admittedSpec}->>'gateway_token_service_instance_id'
+      THEN jsonb_typeof(${table.admittedSpec}->'gateway_credential_service_instance_id') = 'string'
+        AND ${table.admittedSpec}->>'gateway_credential_service_instance_id'
           ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-      ELSE NOT (${table.admittedSpec} ? 'gateway_token_service_instance_id') END IS TRUE`,
+      ELSE NOT (${table.admittedSpec} ? 'gateway_credential_service_instance_id') END IS TRUE`,
     ),
   ],
 );
@@ -2598,8 +2598,8 @@ export const oauthClients = occSchema.table(
       import("@openclaw-enterprise/contracts").OAuthClientAuthMethod
     >(),
     appId: text("app_id"),
-    tokenServiceInstanceId: text("token_service_instance_id").references(
-      () => tokenServiceInstances.id,
+    credentialServiceInstanceId: text("credential_service_instance_id").references(
+      () => credentialServiceInstances.id,
       { onDelete: "restrict", onUpdate: "restrict" },
     ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -2611,12 +2611,12 @@ export const oauthClients = occSchema.table(
           ${table.issuer} IS NOT NULL AND ${table.clientId} IS NOT NULL
           AND ${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')
           AND ${table.appId} IS NULL
-          AND ((${table.tokenEndpointAuthMethod}='none')=(${table.tokenServiceInstanceId} IS NULL))
+          AND ((${table.tokenEndpointAuthMethod}='none')=(${table.credentialServiceInstanceId} IS NULL))
         WHEN ${table.kind}='github-app' THEN
           ${table.issuer} IS NULL AND ${table.clientId} IS NULL
           AND ${table.tokenEndpointAuthMethod} IS NULL
           AND CASE WHEN ${table.appId} ~ '^[1-9][0-9]{0,15}$' THEN ${table.appId}::numeric <= 9007199254740991 ELSE false END
-          AND ${table.tokenServiceInstanceId} IS NOT NULL
+          AND ${table.credentialServiceInstanceId} IS NOT NULL
         ELSE false END IS TRUE`,
     ),
     uniqueIndex("oauth_clients_pair_unique")
@@ -2636,7 +2636,7 @@ export const oauthClients = occSchema.table(
     ),
     check(
       "oauth_clients_cleanup_confidential",
-      sql`${table.cleanupAfter} IS NULL OR ${table.tokenServiceInstanceId} IS NOT NULL`,
+      sql`${table.cleanupAfter} IS NULL OR ${table.credentialServiceInstanceId} IS NOT NULL`,
     ),
     check(
       "oauth_clients_client_id_valid",
@@ -2894,10 +2894,10 @@ export const authenticationStates = occSchema.table(
       AND ${table.connectionTemplateId} IS NULL
       AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL AND ${table.version} > 0
       AND jsonb_typeof(${table.binding}) = 'object'
-      AND ${table.binding} ?& ARRAY['harnessId','tokenServiceInstanceId','intervalSeconds']
-      AND ${table.binding} - ARRAY['agentId','harnessId','tokenServiceInstanceId','intervalSeconds'] = '{}'::jsonb
+      AND ${table.binding} ?& ARRAY['harnessId','credentialServiceInstanceId','intervalSeconds']
+      AND ${table.binding} - ARRAY['agentId','harnessId','credentialServiceInstanceId','intervalSeconds'] = '{}'::jsonb
       AND (NOT (${table.binding} ? 'agentId') OR jsonb_typeof(${table.binding}->'agentId') = 'string')
-      AND jsonb_typeof(${table.binding}->'harnessId') = 'string' AND jsonb_typeof(${table.binding}->'tokenServiceInstanceId') = 'string'
+      AND jsonb_typeof(${table.binding}->'harnessId') = 'string' AND jsonb_typeof(${table.binding}->'credentialServiceInstanceId') = 'string'
       AND ((${table.phase} = 'ready') = (${table.credentialSourceId} IS NOT NULL))
       AND (${table.credentialSourceId} IS NULL OR ${table.credentialSourceId} ~ ${identifierPatterns.credentialSource})
       AND CASE WHEN jsonb_typeof(${table.binding}->'intervalSeconds') = 'number' THEN

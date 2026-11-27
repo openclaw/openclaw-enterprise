@@ -333,7 +333,7 @@ export function registerOpenShellAdmissionCases() {
     };
     const endpointRefusal = /The first-Agent installer requires the public OpenAI endpoint/u;
     const presetRefusal =
-      /The native First Agent proof requires the approved TokenService OpenAI preset/u;
+      /The native First Agent proof requires the approved CredentialService OpenAI preset/u;
     const cases = [
       {
         variables: {},

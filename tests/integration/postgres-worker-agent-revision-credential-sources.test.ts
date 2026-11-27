@@ -23,8 +23,8 @@ import { installationControllerOptions } from "../../apps/controller/src/composi
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import {
   gatewayStartupSourceDelivery,
-  installTokenServiceDriver,
-} from "../../apps/controller/src/composition/token-service.ts";
+  installCredentialServiceDriver,
+} from "../../apps/controller/src/composition/credential-service.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   MANAGED_BY,
@@ -32,10 +32,10 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/credential-service/codex-oauth-preset.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
-import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
+import { prepareOccCredentialServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import type {
   OpenShellGatewayClient,
@@ -44,7 +44,7 @@ import type {
   OpenShellSandboxProviderStatus,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
@@ -87,7 +87,7 @@ async function gatewaySourceWorkerFixture(
   const installation = createInstallationDriverConfiguration();
   installation.drivers.compute.id = compute.id;
   Object.assign(installation.drivers, {
-    token_service: { id: "occ", configuration: {} },
+    credential_service: { id: "occ", configuration: {} },
   });
   const loaded = await loadInstallationFile(context, installation);
   assert.ok(loaded);
@@ -120,8 +120,8 @@ async function gatewaySourceWorkerFixture(
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
   }
-  await installTokenServiceDriver(controller, runtime, fixture.state);
-  assert.ok(controller.selectedDriver("token_service") instanceof OCCTokenServiceDriver);
+  await installCredentialServiceDriver(controller, runtime, fixture.state);
+  assert.ok(controller.selectedDriver("credential_service") instanceof OCCCredentialServiceDriver);
 
   const namespaceId = fixture.namespace.id;
   const namespace = core.addNamespace(namespaceId);
@@ -546,7 +546,8 @@ cases.revisionTest(
     controller.selectDriver("compute", otherCompute.id);
     try {
       await assert.rejects(controller.provisionAgent(callerId, request()), {
-        message: "The selected Compute and TokenService do not support Gateway Source delivery.",
+        message:
+          "The selected Compute and CredentialService do not support Gateway Source delivery.",
       });
       assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
     } finally {
@@ -570,7 +571,7 @@ cases.revisionTest(
           (error: unknown) => Promise.reject(error),
         ),
       ]);
-      // Revocation commits while TokenService awaits the actual Kubernetes custody read.
+      // Revocation commits while CredentialService awaits the actual Kubernetes custody read.
       await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, botGrant.id);
       gate.release.resolve();
       await assert.rejects(denied, (error: Error) => error.name === "AuthorizationDeniedError");
@@ -582,7 +583,7 @@ cases.revisionTest(
       assert.equal(
         effects.botCustodyReads,
         1,
-        "a denied Source must not reach TokenService custody",
+        "a denied Source must not reach CredentialService custody",
       );
       const work = await fixture.observerPool.query(
         "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
@@ -706,7 +707,7 @@ cases.revisionTest(
       );
       gate.release.resolve();
       await assert.rejects(pending, {
-        message: "Channel credentials require a ready static TokenService Credential Source.",
+        message: "Channel credentials require a ready static CredentialService Credential Source.",
       });
       assert.equal(effects.providerCalls, 0);
       const work = await fixture.observerPool.query(
@@ -810,7 +811,7 @@ cases.revisionTest(
 );
 
 cases.revisionTest(
-  "the Worker rechecks the exact Source grant after OCC TokenService reads custody and before Gateway launch",
+  "the Worker rechecks the exact Source grant after OCC CredentialService reads custody and before Gateway launch",
   async (fixture, context) => {
     const {
       compute,
@@ -904,7 +905,7 @@ cases.revisionTest(
         transformDrivers: () => runtime,
         emit: (event) => events.push(event),
       });
-      await waitFor("the OCC TokenService custody read", async () => {
+      await waitFor("the OCC CredentialService custody read", async () => {
         if (reached) {
           return true;
         }
@@ -1632,7 +1633,7 @@ async function stagedCredentialScenario(
   const installation = buildSandboxInstallation();
   Reflect.deleteProperty(installation.drivers, "credential_gateway");
   Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
-  Object.assign(installation.drivers, { token_service: { id: "occ", configuration: {} } });
+  Object.assign(installation.drivers, { credential_service: { id: "occ", configuration: {} } });
   installation.drivers.compute.id = fixture.compute.id;
   const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
   baseline.name = "baseline";
@@ -1717,16 +1718,16 @@ async function stagedCredentialScenario(
   controller.selectDriver("compute", compute.id);
   installSelectedSandboxDrivers(controller, runtime);
   const { core, driver: secretDriver } = useInstallationSecretDriver(controller);
-  await installTokenServiceDriver(controller, { ...runtime, secretDriver }, fixture.state);
+  await installCredentialServiceDriver(controller, { ...runtime, secretDriver }, fixture.state);
   const namespaceId = fixture.namespace.id;
   const actorId = fixture.actor.id;
   const enrolledCredential = randomUUID();
   const source =
     credential === "builtin_codex"
       ? await (async () => {
-          // The selected TokenService receives this synthetic grant at the same trusted
+          // The selected CredentialService receives this synthetic grant at the same trusted
           // post-exchange boundary used by the built-in device authorization flow.
-          const registered = await controller.selectedDriver("token_service").createSource(
+          const registered = await controller.selectedDriver("credential_service").createSource(
             {
               type: "oauth2-refresh-token",
               namespaceId,
@@ -1850,26 +1851,26 @@ async function attachActiveSource(
   const { controller, source, namespaceId, placedName, gatewayTransport } = scenario;
   const nativeProxy = controller.selectedDriver("credential_proxy_delivery");
   assert.ok(nativeProxy instanceof OpenShellCredentialProxyDriver);
-  const tokenService = controller.selectedDriver("token_service");
+  const credentialService = controller.selectedDriver("credential_service");
   const sourceInstance = {
     sourceRef: source.ref,
-    tokenServiceInstanceId: controller.currentTokenServiceInstanceId(),
+    credentialServiceInstanceId: controller.currentCredentialServiceInstanceId(),
   };
   const gateway = recordingActiveGateway(namespaceId, placedName, sandboxId, source.id);
   Object.assign(gatewayTransport, gateway.client);
-  const preparedProvider = await prepareOccTokenServiceProviderCopy({
+  const preparedProvider = await prepareOccCredentialServiceProviderCopy({
     client: gateway.client,
     workspace: placedName,
     namespaceId,
     binding: revision.credentialDeployment!.bindings[0]!,
     requireCurrentVersion:
       revisionCredentialSourceSnapshot(revision, source.id)?.sourceType === "oauth2-refresh-token",
-    resolveCredential: () => tokenService.resolveCredential(sourceInstance, signal),
+    resolveCredential: () => credentialService.resolveCredential(sourceInstance, signal),
     signal,
   });
   // Worker deployment is controlled in this fixture; explicitly model its existing attachment.
   gateway.sandbox.spec.providers.push(preparedProvider.name);
-  return { nativeProxy, tokenService, sourceInstance, gateway, preparedProvider };
+  return { nativeProxy, credentialService, sourceInstance, gateway, preparedProvider };
 }
 
 async function authenticatedSourceOperator(
@@ -2015,7 +2016,7 @@ cases.revisionTest(
       installationId: fixture.installation.id,
       id: JSON.stringify([
         "token_service",
-        controller.currentTokenServiceInstanceId(),
+        controller.currentCredentialServiceInstanceId(),
         "credential_source",
         namespaceId,
         source.id,
@@ -2223,10 +2224,10 @@ cases.revisionTest(
     );
     assert.equal((await scenario.currentAgent())?.activeRevisionId, revision.id);
     await fixture.stop();
-    const { nativeProxy, tokenService, sourceInstance, gateway, preparedProvider } =
+    const { nativeProxy, credentialService, sourceInstance, gateway, preparedProvider } =
       await attachActiveSource(scenario, revision, sandboxId, context.signal);
-    assert.ok(tokenService instanceof OCCTokenServiceDriver);
-    const initial = await tokenService.resolveCredential(sourceInstance, context.signal);
+    assert.ok(credentialService instanceof OCCCredentialServiceDriver);
+    const initial = await credentialService.resolveCredential(sourceInstance, context.signal);
     const unbound = await controller.createManagedCredentialSource(
       actorId,
       namespaceId,
@@ -2263,12 +2264,12 @@ cases.revisionTest(
     let resolutions = 0;
     let resolutionFailure: Error | undefined;
     const notify = nativeProxy.notifyCredentialUpdated.bind(nativeProxy);
-    const resolve = tokenService.resolveCredential.bind(tokenService);
+    const resolve = credentialService.resolveCredential.bind(credentialService);
     nativeProxy.notifyCredentialUpdated = (...args) => {
       notifications += 1;
       return notify(...args);
     };
-    tokenService.resolveCredential = (...args) => {
+    credentialService.resolveCredential = (...args) => {
       resolutions += 1;
       if (resolutionFailure) {
         return Promise.reject(resolutionFailure);
@@ -2363,7 +2364,7 @@ cases.revisionTest(
         unit.oauthCredentials.recordTokenSchedule(namespaceId, source.id, "due"),
       );
       gateway.setStale(true);
-      const failedRenewal = await tokenService.maintainOAuthSources(4);
+      const failedRenewal = await credentialService.maintainOAuthSources(4);
       assert.equal(failedRenewal.deliveryFailed, true);
       const committed = await resolve(sourceInstance, context.signal);
       assert.equal(committed.credential, replacement);
@@ -2378,11 +2379,11 @@ cases.revisionTest(
       assert.equal(gateway.updates.length, 1);
 
       // The next pass must keep stale delivery due without rewriting the already-current Provider.
-      assert.deepEqual(await tokenService.maintainOAuthSources(4), failedRenewal);
+      assert.deepEqual(await credentialService.maintainOAuthSources(4), failedRenewal);
       assert.equal((await schedule())?.due, true);
       assert.equal(gateway.updates.length, 1);
       gateway.observeCurrentEnvironment();
-      assert.equal((await tokenService.maintainOAuthSources(4)).deliveryFailed, false);
+      assert.equal((await credentialService.maintainOAuthSources(4)).deliveryFailed, false);
       const observedSchedule = await schedule();
       assert.equal(observedSchedule?.due, false);
       assert.equal(observedSchedule?.scheduledVersion, committed.version);
@@ -2515,7 +2516,7 @@ cases.revisionTest(
       assert.equal(resolutions, 0);
     } finally {
       nativeProxy.notifyCredentialUpdated = notify;
-      tokenService.resolveCredential = resolve;
+      credentialService.resolveCredential = resolve;
       await app.close();
     }
   },
@@ -2575,12 +2576,12 @@ cases.revisionTest(
         activations += 1;
       },
     }));
-    const tokenService = controller.selectedDriver("token_service");
+    const credentialService = controller.selectedDriver("credential_service");
     const sourceInstance = {
       sourceRef: source.ref,
-      tokenServiceInstanceId: controller.currentTokenServiceInstanceId(),
+      credentialServiceInstanceId: controller.currentCredentialServiceInstanceId(),
     };
-    const canonical = await tokenService.resolveCredential(
+    const canonical = await credentialService.resolveCredential(
       sourceInstance,
       AbortSignal.timeout(5_000),
     );
@@ -2653,7 +2654,7 @@ cases.revisionTest(
     } finally {
       await app.close();
     }
-    const current = await tokenService.resolveCredential(sourceInstance, context.signal);
+    const current = await credentialService.resolveCredential(sourceInstance, context.signal);
     assert.equal(current.credential, replacement);
     assert.notEqual(current.version, canonical.version);
     assert.equal(gateway.updates.length, 1);

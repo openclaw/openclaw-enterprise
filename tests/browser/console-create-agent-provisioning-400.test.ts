@@ -33,7 +33,7 @@ import {
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
@@ -43,7 +43,7 @@ import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { controlledOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { installDeviceCredentialService } from "../helpers/device-credential-service.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -54,7 +54,7 @@ import {
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { installCredentialServiceDriver } from "../../apps/controller/src/composition/credential-service.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
@@ -241,7 +241,7 @@ async function modelSourceFixture(
     runtime = await loadSelectedOpenShellAgentInstallation(t, {
       installation,
       computeId: "console-source-compute",
-      tokenServiceId: "occ",
+      credentialServiceId: "occ",
       core: new FakeSecretCoreV1Api(),
       gatewayClient: gatewayClient ?? completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
     });
@@ -295,19 +295,19 @@ async function modelSourceFixture(
   const { core, driver } = useInstallationSecretDriver(controller);
   assert.ok(driver.privateSecrets);
   assert.ok(state);
-  const instanceId = await controller.activateTokenServiceInstance(
-    "console-token-service",
+  const instanceId = await controller.activateCredentialServiceInstance(
+    "console-credential-service",
     randomUUID(),
   );
-  const owner = new OCCTokenServiceDriver(
-    "console-token-service",
+  const owner = new OCCCredentialServiceDriver(
+    "console-credential-service",
     controller.installation.id,
     driver.privateSecrets,
     instanceId,
     state,
   );
   controller.registerDriver(owner);
-  controller.selectDriver("token_service", owner.id);
+  controller.selectDriver("credential_service", owner.id);
   if (runtime) {
     const delivery = present(runtime.credentialDeliveryRegistration);
     namespaceLifecycleBindings.push(
@@ -319,7 +319,7 @@ async function modelSourceFixture(
     );
     controller.installDriver(delivery, ["sandbox", "credential_proxy_delivery"]);
   }
-  return { fixture, core, namespaceLifecycleBindings, tokenServiceInstanceId: instanceId };
+  return { fixture, core, namespaceLifecycleBindings, credentialServiceInstanceId: instanceId };
 }
 
 // Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
@@ -931,11 +931,11 @@ async function enrollModelSource(
   return resourceId(result.data);
 }
 
-// Source maintenance uses exact IAM and the recorded TokenService owner; readable metadata alone
+// Source maintenance uses exact IAM and the recorded CredentialService owner; readable metadata alone
 // must not authorize replacement, and a saved Agent reference must block deletion.
 test("Credential Source maintenance checks exact update authority, replaces custody, and refuses referenced deletion", async (t) => {
   const gateway = workspaceGatewayClient();
-  const { fixture, tokenServiceInstanceId } = await modelSourceFixture(t, {
+  const { fixture, credentialServiceInstanceId } = await modelSourceFixture(t, {
     gatewayClient: completeOpenShellGatewayClient(gateway),
   });
   const namespace = await readyNamespace(fixture, "Source maintenance");
@@ -999,13 +999,13 @@ test("Credential Source maintenance checks exact update authority, replaces cust
   assert.equal(patch.status(), 200);
   assert.equal(JSON.stringify(await patch.json()).includes(replacement), false);
   await page.getByText("Bound model Source was updated.", { exact: true }).waitFor();
-  const owner = controllerOf(fixture).selectedDriver("token_service");
+  const owner = controllerOf(fixture).selectedDriver("credential_service");
   assert.equal(
     (
       await owner.resolveCredential(
         {
           sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: sourceId },
-          tokenServiceInstanceId,
+          credentialServiceInstanceId,
         },
         AbortSignal.timeout(5_000),
       )
@@ -1386,7 +1386,7 @@ test("Credentials creates an OAuth Template Source only after eligible-client co
     },
   });
   assert.ok(state);
-  await installDeviceTokenService(controllerOf(fixture), state, secrets);
+  await installDeviceCredentialService(controllerOf(fixture), state, secrets);
   const sibling = await readyNamespace(fixture, "Other OAuth availability");
   const template = await fixture.request("POST", "/connection-templates", {
     body: {
@@ -1984,7 +1984,7 @@ test("Replacing an OpenAI Source with a fixed Codex Source drops the prior model
   const runtime = await loadSelectedOpenShellAgentInstallation(t, {
     installation,
     computeId: "console-pat-replacement-compute",
-    tokenServiceId: "occ",
+    credentialServiceId: "occ",
     core,
     gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
   });
@@ -2009,12 +2009,12 @@ test("Replacing an OpenAI Source with a fixed Codex Source drops the prior model
   const controller = controllerOf(fixture);
   controller.registerDriver(runtime.computeDriver);
   controller.selectDriver("compute", runtime.computeDriver.id);
-  const owner = present(await installTokenServiceDriver(controller, runtime, present(state)));
+  const owner = present(await installCredentialServiceDriver(controller, runtime, present(state)));
   installSelectedSandboxDrivers(controller, runtime);
 
   const openaiSource = await enrollModelSource(fixture, namespace.id, "OpenAI model");
   const patSource = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
-  // Seed the selected TokenService at the trusted post-exchange boundary. The separate OAuth
+  // Seed the selected CredentialService at the trusted post-exchange boundary. The separate OAuth
   // browser test covers issuing this grant through the controlled device issuer.
   const oauthSource = await owner.createSource(
     {
@@ -2916,7 +2916,7 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
 });
 
-// Placement validation must run before TokenService takes custody of the API key.
+// Placement validation must run before CredentialService takes custody of the API key.
 test("Create Agent refuses an unplaceable Dedicated Agent before static Source custody", async (t) => {
   const { fixture } = await modelSourceFixture(t, {
     compute: { channelRuntime: true, routed: false },

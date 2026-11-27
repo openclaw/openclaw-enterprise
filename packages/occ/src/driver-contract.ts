@@ -75,7 +75,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.readCredentialInput === "function")
     );
   }
-  if (driver.capability === "token_service") {
+  if (driver.capability === "credential_service") {
     return (
       [
         "registerClientSecret",

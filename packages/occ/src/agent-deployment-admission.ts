@@ -52,7 +52,7 @@ import {
   type SandboxDriver,
   type SandboxNetworkGrant,
   type SourceProviderPresetId,
-  type TokenServiceDriver,
+  type CredentialServiceDriver,
   type GitHubAppInstallationCredentialSource,
   type StaticKeyTemplateValues,
   type SecretDriver,
@@ -102,7 +102,10 @@ import {
   type createConfigurationOperations,
 } from "./configuration-operations.ts";
 import type { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
-import { credentialSourceRef, isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import {
+  credentialSourceRef,
+  isManagedCredentialServiceSource,
+} from "./credential-source-metadata.ts";
 import { secretOperation } from "./secret-operations.ts";
 import type {
   createDeploymentChannelChecks,
@@ -208,7 +211,7 @@ export interface DeploymentAdmissionDependencies {
     "authorizeBindings"
   >;
   readonly gatewayStartupSourceDelivery:
-    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
+    ((compute: ComputeDriver, owner: CredentialServiceDriver) => boolean) | undefined;
   readonly modelPolicyAgent: (
     mode: HarnessExecutionMode,
     resolveHarness: HarnessResolver,
@@ -228,7 +231,7 @@ export interface DeploymentAdmissionDependencies {
   readonly egress: Pick<ReturnType<typeof createCredentialEgressAdmission>, "admitProxyPlan">;
   readonly selectedProxyOwner: () => InstalledDriver;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
-  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly ownedCredentialServiceDriver: (instanceId: string) => CredentialServiceDriver;
   readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   readonly modelCredentialPreset:
     | ((input: {
@@ -273,7 +276,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     agent: Readonly<Agent>,
     auth: HarnessAuthSnapshot,
   ): Promise<CredentialSource | undefined> {
-    if (auth.method !== "credential_source" || auth.tokenServiceInstanceId === undefined) {
+    if (auth.method !== "credential_source" || auth.credentialServiceInstanceId === undefined) {
       return undefined;
     }
     const source = await state.credentialSources.lockCredentialSource(
@@ -281,10 +284,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       auth.sourceId,
     );
     if (
-      !isManagedTokenServiceSource(source) ||
+      !isManagedCredentialServiceSource(source) ||
       source.state !== "ready" ||
       source.connectionTemplateId !== undefined ||
-      source.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+      source.credentialServiceInstanceId !== auth.credentialServiceInstanceId ||
       source.type !== auth.sourceType
     ) {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
@@ -602,8 +605,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       agent.namespaceId,
       secretBindings,
     );
-    if (bound.gatewayTokenServiceInstanceId !== undefined) {
-      requireGatewaySourceDelivery(compute, bound.gatewayTokenServiceInstanceId);
+    if (bound.gatewayCredentialServiceInstanceId !== undefined) {
+      requireGatewaySourceDelivery(compute, bound.gatewayCredentialServiceInstanceId);
     }
     const proxySecret = await authorizeNetworkProxySecret(
       state,
@@ -647,18 +650,18 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     return {
       secretBindings,
       secretDriver,
-      gatewayTokenServiceInstanceId: bound.gatewayTokenServiceInstanceId,
+      gatewayCredentialServiceInstanceId: bound.gatewayCredentialServiceInstanceId,
     };
   }
 
   function requireGatewaySourceDelivery(compute: ComputeDriver, instanceId: string): void {
-    const owner = dependencies.ownedTokenServiceDriver(instanceId);
+    const owner = dependencies.ownedCredentialServiceDriver(instanceId);
     if (
       dependencies.selectedCompute() !== compute ||
       dependencies.gatewayStartupSourceDelivery?.(compute, owner) !== true
     ) {
       throw new ResourceStateConflictError(
-        "The selected Compute and TokenService do not support Gateway Source delivery.",
+        "The selected Compute and CredentialService do not support Gateway Source delivery.",
       );
     }
   }
@@ -820,7 +823,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         candidate.harnessAuth?.method !== "credential_source"
       ) {
         throw new ResourceStateConflictError(
-          "GitHub App repository access requires a Dedicated Agent using a TokenService model credential.",
+          "GitHub App repository access requires a Dedicated Agent using a CredentialService model credential.",
         );
       }
       const modelSourceId = candidate.harnessAuth.sourceId;
@@ -834,15 +837,15 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         modelSourceId,
       );
       if (
-        !isManagedTokenServiceSource(model) ||
+        !isManagedCredentialServiceSource(model) ||
         model.type === "github-app-installation" ||
         model.state !== "ready"
       ) {
         throw new ResourceStateConflictError(
-          "Select a ready TokenService model credential before deploying GitHub access.",
+          "Select a ready CredentialService model credential before deploying GitHub access.",
         );
       }
-      dependencies.ownedTokenServiceDriver(model.tokenServiceInstanceId);
+      dependencies.ownedCredentialServiceDriver(model.credentialServiceInstanceId);
       return candidate;
     });
     const registration = agent && dependencies.repositoryPolicy.prepareRepositorySource(agent);
@@ -1126,7 +1129,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       if (
         lockedAgent.activeRevisionId !== undefined &&
         harnessAuth.method === "credential_source" &&
-        harnessAuth.tokenServiceInstanceId !== undefined
+        harnessAuth.credentialServiceInstanceId !== undefined
       ) {
         throw new ResourceStateConflictError(
           "Replacing an active Agent revision with a staged managed credential is not supported.",
@@ -1207,7 +1210,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         selectedPlugins,
       );
       const credentialSources = admittedSources.snapshots;
-      const { secretBindings, secretDriver, gatewayTokenServiceInstanceId } =
+      const { secretBindings, secretDriver, gatewayCredentialServiceInstanceId } =
         await admitConfigurationSecrets(
           state,
           principalId,
@@ -1303,13 +1306,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           repositorySources.length !== 1 ||
           repositorySources[0]?.sourceId !== repository.sourceId ||
           !stagedModel ||
-          !isManagedTokenServiceSource(source) ||
+          !isManagedCredentialServiceSource(source) ||
           source.type !== "github-app-installation" ||
           source.state !== "ready" ||
-          source.tokenServiceInstanceId !== stagedModel.source.tokenServiceInstanceId
+          source.credentialServiceInstanceId !== stagedModel.source.credentialServiceInstanceId
         ) {
           throw new ResourceStateConflictError(
-            "GitHub repository access requires a ready Source owned by the Agent's TokenService.",
+            "GitHub repository access requires a ready Source owned by the Agent's CredentialService.",
           );
         }
         repositoryGrants = repository.resolveGrants(source);
@@ -1379,7 +1382,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       if (
         stagedCredential &&
         ((repositoryCredentials !== undefined && stagedRepository === undefined) ||
-          credentialSources.some((source) => source.tokenServiceInstanceId === undefined))
+          credentialSources.some((source) => source.credentialServiceInstanceId === undefined))
       ) {
         throw new ResourceStateConflictError(
           "Staged credential delivery cannot share an execution with other credential delivery.",
@@ -1537,7 +1540,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id }),
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
-        ...(gatewayTokenServiceInstanceId === undefined ? {} : { gatewayTokenServiceInstanceId }),
+        ...(gatewayCredentialServiceInstanceId === undefined
+          ? {}
+          : { gatewayCredentialServiceInstanceId }),
         ...(pluginState === undefined ? {} : { plugins: pluginState }),
         ...(lockedAgent.pluginApprovers === undefined
           ? {}
@@ -1628,8 +1633,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
 
       const candidate = policyAdmittedRevision ?? prepareComputeRevision(compute, revisionDraft);
-      if (gatewayTokenServiceInstanceId !== undefined) {
-        requireGatewaySourceDelivery(compute, gatewayTokenServiceInstanceId);
+      if (gatewayCredentialServiceInstanceId !== undefined) {
+        requireGatewaySourceDelivery(compute, gatewayCredentialServiceInstanceId);
       }
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
@@ -1637,8 +1642,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
       if (delivery !== undefined) {
         for (const source of credentialSources) {
-          if (source.tokenServiceInstanceId !== undefined) {
-            dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+          if (source.credentialServiceInstanceId !== undefined) {
+            dependencies.ownedCredentialServiceDriver(source.credentialServiceInstanceId);
           }
         }
         let owner: InstalledDriver | undefined;

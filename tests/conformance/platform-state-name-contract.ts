@@ -58,10 +58,10 @@ export async function verifyDuplicateNameContract(store: PlatformStateStore) {
     namespaceId: namespace.id,
     name: "Taken account " + randomUUID(),
   };
-  const tokenServiceInstanceId = await store.transact(async (transaction) => {
-    const instance = await transaction.installations.selectTokenServiceInstance({
+  const credentialServiceInstanceId = await store.transact(async (transaction) => {
+    const instance = await transaction.installations.selectCredentialServiceInstance({
       id: randomUUID(),
-      driverId: "platform-state-token-service",
+      driverId: "platform-state-credential-service",
       storeIdentity: "platform-state-contract",
     });
     return instance.id;
@@ -72,8 +72,8 @@ export async function verifyDuplicateNameContract(store: PlatformStateStore) {
     name: "Taken source " + randomUUID(),
     type: "static",
     config: { provider_preset: "openai" },
-    ownerCapability: "token_service",
-    tokenServiceInstanceId,
+    ownerCapability: "credential_service",
+    credentialServiceInstanceId,
     state: "ready",
     createdAt,
   };
@@ -180,10 +180,10 @@ export async function verifyNameLengthContract(store: PlatformStateStore) {
     namespaceId: namespace.id,
     name,
   });
-  const tokenServiceInstanceId = await store.transact(async (transaction) => {
-    const instance = await transaction.installations.selectTokenServiceInstance({
+  const credentialServiceInstanceId = await store.transact(async (transaction) => {
+    const instance = await transaction.installations.selectCredentialServiceInstance({
       id: randomUUID(),
-      driverId: "platform-state-token-service",
+      driverId: "platform-state-credential-service",
       storeIdentity: "platform-state-contract",
     });
     return instance.id;
@@ -194,8 +194,8 @@ export async function verifyNameLengthContract(store: PlatformStateStore) {
     name,
     type: "static",
     config: { provider_preset: "openai" },
-    ownerCapability: "token_service",
-    tokenServiceInstanceId,
+    ownerCapability: "credential_service",
+    credentialServiceInstanceId,
     state: "ready",
     createdAt,
   });

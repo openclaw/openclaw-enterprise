@@ -1,6 +1,6 @@
 # Set up and operate Credential Proxy
 
-OCC admits each Credential Source binding. TokenService owns the credential,
+OCC admits each Credential Source binding. CredentialService owns the credential,
 Credential Proxy prepares and updates its delivery, and Sandbox enforces the
 network policy when the Agent sends a request. See the
 [credential Source reference](../reference/credential-sources.md) for the current
@@ -8,11 +8,11 @@ contract.
 
 ## Choose the path before changing an installation
 
-- For managed model Sources, use OCC TokenService and an OpenShell Sandbox
+- For managed model Sources, use OCC CredentialService and an OpenShell Sandbox
   registration that exposes native Credential Proxy delivery.
   [Driver selections](../reference/drivers/selection.md#supported-selections)
 - For native Git, follow [GitHub App setup](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
-  TokenService renews the GitHub installation token, and Credential Proxy
+  CredentialService renews the GitHub installation token, and Credential Proxy
   injects it only on requests admitted for the Agent.
 - For public metadata on a native Git Agent, allow `/usr/bin/curl` to reach
   `api.github.com:443` in the Installation's Sandbox network ceiling. OpenShell
@@ -26,7 +26,7 @@ contract.
 
 ## Register, authorize, and deploy an OpenAI static inference source
 
-1. Select OCC TokenService and the paired OpenShell Sandbox and native Proxy.
+1. Select OCC CredentialService and the paired OpenShell Sandbox and native Proxy.
    [Driver selections](../reference/drivers/selection.md#supported-selections)
 2. [Register a static Source](../reference/credential-sources/managed-static.md#register-a-source)
    in the Agent's Namespace with the `openai` provider preset.
@@ -93,7 +93,7 @@ Prepared Git uses a separate standing or finite session procedure.
 deprecated and pending removal. Credential Design 1.0 retires their special
 protected metadata and repository exchanges instead of migrating them. Do not
 select this Driver for new model, Git, Plugin, or metadata workflows. Use
-TokenService and native Credential Proxy for credentials.
+CredentialService and native Credential Proxy for credentials.
 Sandbox network policy and ordinary Channel egress are separate capabilities.
 
 For an existing qualified exchange, retain its matching release, authority,
@@ -104,7 +104,7 @@ New local protected static-inference launches are [retired](deploy/local-openshe
 ## Diagnose before retrying
 
 - For a failed Source, check its status and reason. If the new value was
-  committed and delivery failed, [retry delivery](deploy/credential-lifecycle.md#replace-an-occ-tokenservice-managed-model-key).
+  committed and delivery failed, [retry delivery](deploy/credential-lifecycle.md#replace-an-occ-credentialservice-managed-model-key).
 - If the Proxy cannot reach OpenShell, check the management endpoint, TLS
   trust, Driver selections, and the affected Agent revision.
 - For pending withdrawal, inspect the reported reason and

@@ -184,9 +184,9 @@ test("released Google and Slack slots accept authorized typed Template Sources w
   const slackTemplateId = id("ctp");
   const staticTemplateId = id("ctp");
   const oauth = {
-    ownerCapability: "token_service",
+    ownerCapability: "credential_service",
     type: "oauth2-refresh-token",
-    tokenServiceInstanceId: randomUUID(),
+    credentialServiceInstanceId: randomUUID(),
     namespaceId: id("ns"),
     state: "ready",
     createdAt,
@@ -215,9 +215,9 @@ test("released Google and Slack slots accept authorized typed Template Sources w
     consent: slackConsent,
   };
   const staticSlack: CredentialSource = {
-    ownerCapability: "token_service",
+    ownerCapability: "credential_service",
     type: "static",
-    tokenServiceInstanceId: oauth.tokenServiceInstanceId,
+    credentialServiceInstanceId: oauth.credentialServiceInstanceId,
     namespaceId: oauth.namespaceId,
     state: "ready",
     createdAt,
@@ -386,7 +386,7 @@ test("managed Plugin placement requires staged credential delivery for every bou
   // Staging Slack does not authorize the separate Google binding.
   assert.throws(
     () => driver.validatePlacement(plugins, harness, "occ/kubernetes", runtime),
-    /Bound Plugin credentials require TokenService Sources and staged credential delivery/,
+    /Bound Plugin credentials require CredentialService Sources and staged credential delivery/,
   );
   assert.throws(
     () =>
@@ -394,7 +394,7 @@ test("managed Plugin placement requires staged credential delivery for every bou
         ...runtime,
         stagedPluginIds: new Set([slack.pluginId]),
       }),
-    /Bound Plugin credentials require TokenService Sources and staged credential delivery/,
+    /Bound Plugin credentials require CredentialService Sources and staged credential delivery/,
   );
   assert.doesNotThrow(() =>
     driver.validatePlacement(plugins, harness, "occ/kubernetes", {
@@ -408,6 +408,6 @@ test("managed Plugin placement requires staged credential delivery for every bou
         ...runtime,
         gateway: "openshell",
       }),
-    /Bound Plugin credentials require TokenService Sources and staged credential delivery/,
+    /Bound Plugin credentials require CredentialService Sources and staged credential delivery/,
   );
 });

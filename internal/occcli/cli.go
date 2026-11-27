@@ -514,7 +514,7 @@ func (app *application) presetCommand() *cobra.Command {
 func (app *application) credentialSourceCommand() *cobra.Command {
 	command := commandGroup(
 		"credential-source",
-		"Manage credential sources maintained by TokenService",
+		"Manage credential sources maintained by CredentialService",
 	)
 
 	var createFile string

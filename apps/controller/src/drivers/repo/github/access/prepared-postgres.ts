@@ -30,7 +30,7 @@ import type {
   CurrentTokenVersion,
   InstalledTokenVersion,
   TokenMaterialReader,
-} from "../../../../backends/token-service/material.ts";
+} from "../../../../backends/credential-service/material.ts";
 
 // The provider expiry is an authenticated issuance result. The same clock-skew allowance
 // subtracted for use is added before we can conclude that the provider lifetime elapsed.

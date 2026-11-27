@@ -40,7 +40,7 @@ config:
 flowchart TB
   Form["<b>Create Agent</b><br/>Model, Plugins, Git"] --> Gate{"<b>Check selections</b>"}
   Gate -->|Required Git missing| Refused["<b>Explain missing access</b>"]
-  Gate -->|Enroll a model Source| Source["<b>TokenService</b><br/>Enroll credential"]
+  Gate -->|Enroll a model Source| Source["<b>CredentialService</b><br/>Enroll credential"]
   Gate -->|Source already saved,<br/>scoped Git, or other draft| Draft["<b>Save Agent draft</b><br/>Configuration and bindings"]
   Gate -->|Eligible guided setup| Queue["<b>Queue provisioning</b><br/>Inline Configuration"]
   Source --> Draft
@@ -174,7 +174,7 @@ lists readable, ready Namespace Sources compatible with the selected API-key/PAT
 preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse
 skips enrollment and login. Save checks exact Source `operate` and records its ID
 in `harnessAuth.sourceId` and `credentialSources`. **Add new credential…** enrolls
-a key or PAT through TokenService and clears the input; **Sign in with OAuth**
+a key or PAT through CredentialService and clears the input; **Sign in with OAuth**
 starts device login. Both bind the resulting Source.
 
 Capabilities do not report whether Compute supplies a Preset's fixed `runtime` binding. `checkRuntimeBinding` preflights it; a `harnessAuth.method` refusal disables **Create Agent** and names the required administrator action.

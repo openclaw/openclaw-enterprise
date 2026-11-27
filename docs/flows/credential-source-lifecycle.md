@@ -16,13 +16,13 @@ OpenClaw Control Plane (OCC) authorizes selected Sources and records approved po
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 - Source: `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`
-- Context: a ready Namespace, selected TokenService, Sandbox and Credential Proxy, and the caller's and Agent's required Source permissions.
+- Context: a ready Namespace, selected CredentialService, Sandbox and Credential Proxy, and the caller's and Agent's required Source permissions.
 
 ## Flow
 
 ```mermaid
 graph TD
-  Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
+  Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>CredentialService</b><br/>Store credential and Source"]
   Register --> Associate["<b>OCC</b><br/>Grant creator access and audit"]
   Associate --> Kind{"Template-associated Source?"}
   Kind -->|Yes| Discover["<b>OCC</b><br/>Resolve current Template for a selected Plugin Source"]
@@ -33,7 +33,7 @@ graph TD
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
   Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
   Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
-  Traffic --> Update["<b>TokenService</b><br/>Commit replacement credential"]
+  Traffic --> Update["<b>CredentialService</b><br/>Commit replacement credential"]
   Update --> Notify["<b>Proxy</b><br/>Update delivery copy or<br/>verify native Provider"]
   Notify -->|delivery failed| Retry["<b>Operator</b><br/>Request manual retry"]
   Retry --> Preflight["<b>OCC</b><br/>Authorize all selected Sources"]
@@ -57,23 +57,23 @@ graph TD
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC checks `credential_source:create` and validates any static Template. TokenService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between commits.
+OCC checks `credential_source:create` and validates any static Template. CredentialService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](credential-service-static-custody.md) for failures between commits.
 
-The OpenShell TokenService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
+The OpenShell CredentialService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
 
 The deprecated legacy Proxy still exposes a separate [protected metadata Source](../reference/credential-sources/protected-repository-metadata.md). Credential 1.0 retires it; ordinary metadata reads have only a Sandbox network rule.
 
-After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
+After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), CredentialService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 
 #### Device authorization and configuration
 
 `packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow`
 
 OCC binds the private login session to the actor, Namespace, optional Agent,
-and selected TokenService instance. Before polling the provider, OCC claims the
+and selected CredentialService instance. Before polling the provider, OCC claims the
 session in PostgreSQL. Before grant exchange, OCC rechecks Agent and Source
-creation permissions, session version, expiry, and TokenService ownership.
-TokenService exchanges the grant and saves the Source. Cancelling a pending
+creation permissions, session version, expiry, and CredentialService ownership.
+CredentialService exchanges the grant and saves the Source. Cancelling a pending
 login creates no Source. Closing a completed session leaves the authorized
 Source available.
 
@@ -94,11 +94,11 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevisionWorkloads`, `apps/controller/src/worker.ts:configureCredentialDeployment`, `apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`
 
-Compute records an idle Sandbox with model credential routes withheld, opens the authenticated operator enrollment route, and requests Worker configuration. Worker rechecks the deploying actor and Agent's Source access, matches each Source's identity, type, and TokenService instance to the revision snapshot, and refuses withdrawn or unavailable Sources. Proxy receives a resolver limited to admitted Sources.
+Compute records an idle Sandbox with model credential routes withheld, opens the authenticated operator enrollment route, and requests Worker configuration. Worker rechecks the deploying actor and Agent's Source access, matches each Source's identity, type, and CredentialService instance to the revision snapshot, and refuses withdrawn or unavailable Sources. Proxy receives a resolver limited to admitted Sources.
 
 For OCC custody, OpenShell Proxy creates or reuses a Provider per projection, resolving each Source at most once for new copies. Existing Providers attach without renewal. Each binding receives a fresh placeholder; failed attachment triggers cleanup. OpenShell refuses to delete an attached Provider.
 
-For [OpenShell custody](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies Source, Workspace, and Provider identity. Proxy attaches that Provider. `apps/controller/src/drivers/sandbox/openshell.ts:prepareStagedHarness` maps its Source-specific supervisor placeholder to the binding's environment and removes the internal variable before starting the Harness.
+For [OpenShell custody](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/credential-service/openshell.ts:resolveNativeProvider` verifies Source, Workspace, and Provider identity. Proxy attaches that Provider. `apps/controller/src/drivers/sandbox/openshell.ts:prepareStagedHarness` maps its Source-specific supervisor placeholder to the binding's environment and removes the internal variable before starting the Harness.
 
 Admission freezes the [three OAuth requests](../reference/credential-sources.md#codex-account-model-requests) or [seven PAT requests](../reference/credential-sources/managed-static.md#codex-pat) for one stock executable within the Installation ceiling. Both receive placeholders. Worker also projects trusted account metadata for OAuth.
 
@@ -120,7 +120,7 @@ OCC checks exact `agent:operate`, records pending withdrawals, and queues reconc
 
 Worker derives active bindings from the revision and confirmed withdrawals, omitting revoked optional Plugin bindings. Pending withdrawal, a missing required model, or failed readiness blocks activation. Proxy remains pending until the loaded policy and Provider fingerprint agree.
 
-With OCC custody, Proxy attempts to retire copies and profiles after detachment. OpenShell refuses deletion while a Sandbox still uses the copy. With OpenShell custody, the authoritative Provider and profile remain in the Workspace. TokenService retains the Source credential. Already-sent requests can complete. See the [same-name detach limit](../reference/credential-sources.md#implementation-status).
+With OCC custody, Proxy attempts to retire copies and profiles after detachment. OpenShell refuses deletion while a Sandbox still uses the copy. With OpenShell custody, the authoritative Provider and profile remain in the Workspace. CredentialService retains the Source credential. Already-sent requests can complete. See the [same-name detach limit](../reference/credential-sources.md#implementation-status).
 
 <a id="2-update-a-source"></a>
 <a id="5-retire-a-source"></a>
@@ -129,19 +129,19 @@ With OCC custody, Proxy attempts to retire copies and profiles after detachment.
 
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
-OCC checks permission on the exact Source and dispatches static credential replacement to its TokenService owner. An active Agent revision can keep using the Source during replacement. Changing or removing the provider preset requires an unbound Source and a separate request.
+OCC checks permission on the exact Source and dispatches static credential replacement to its CredentialService owner. An active Agent revision can keep using the Source during replacement. Changing or removing the provider preset requires an unbound Source and a separate request.
 
 #### Deliver Source updates
 
-`apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
+`apps/controller/src/composition/credential-service.ts:installCredentialServiceDriver`, `apps/controller/src/drivers/credential-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-For OCC custody, Proxy uses trusted Namespace placement. TokenService sends the
+For OCC custody, Proxy uses trusted Namespace placement. CredentialService sends the
 Source, committed version, and instance-bound resolver. Proxy resolves the
 credential once for existing Providers, updates copies as needed, and checks
 active Sandbox receipts. A versioned retry checks serving readiness for matching copies
 without rewriting them.
 
-With OpenShell custody, TokenService updates the authoritative Workspace Provider. Proxy checks its resource version after the update. OpenShell propagates the change to attached Sandboxes.
+With OpenShell custody, CredentialService updates the authoritative Workspace Provider. Proxy checks its resource version after the update. OpenShell propagates the change to attached Sandboxes.
 
 Delivery failure leaves committed material in custody. PATCH audits the update and failure separately and returns `503 DEPENDENCY_UNAVAILABLE`. OAuth leaves the old schedule due and retries the committed version without exchanging the rotated grant again.
 
@@ -149,11 +149,11 @@ Delivery failure leaves committed material in custody. PATCH audits the update a
 
 #### Issue and renew a GitHub installation token
 
-`apps/controller/src/drivers/token-service/occ.ts:createGitHubAppSource`, `apps/controller/src/drivers/token-service/github-app-issuer.ts:mintInstallationToken`, `apps/controller/src/composition/token-service.ts:scheduleTokenServiceMaintenance`
+`apps/controller/src/drivers/credential-service/occ.ts:createGitHubAppSource`, `apps/controller/src/drivers/credential-service/github-app-issuer.ts:mintInstallationToken`, `apps/controller/src/composition/credential-service.ts:scheduleCredentialServiceMaintenance`
 
-OCC TokenService reads the registered GitHub App Client and checks Namespace readiness and registry grants. It releases the database connection before GitHub enrollment. If registry IDs are missing, the issuer checks the installation account with a signed App request and mints by repository name. Otherwise it mints by ID. Both requests use verified HTTPS. It verifies exact repository scope, IDs, permissions, and expiry, then locks and rechecks the Namespace and Client before saving the Source and private token. The Client keeps its signing key. A known failed save triggers best-effort token revocation; an unknown commit outcome does not.
+OCC CredentialService reads the registered GitHub App Client and checks Namespace readiness and registry grants. It releases the database connection before GitHub enrollment. If registry IDs are missing, the issuer checks the installation account with a signed App request and mints by repository name. Otherwise it mints by ID. Both requests use verified HTTPS. It verifies exact repository scope, IDs, permissions, and expiry, then locks and rechecks the Namespace and Client before saving the Source and private token. The Client keeps its signing key. A known failed save triggers best-effort token revocation; an unknown commit outcome does not.
 
-The API scans ready GitHub App Sources every five seconds. When a token is within 45 seconds of expiry, TokenService mints using verified IDs under the Source lock, commits a replacement, and notifies Proxy. Before renewal is due, a pending delivery record retries the same committed version across API restarts. The [OAuth scan](connection-templates.md#5-renew-the-grant) runs independently. Shutdown drains both scans before closing PostgreSQL.
+The API scans ready GitHub App Sources every five seconds. When a token is within 45 seconds of expiry, CredentialService mints using verified IDs under the Source lock, commits a replacement, and notifies Proxy. Before renewal is due, a pending delivery record retries the same committed version across API restarts. The [OAuth scan](connection-templates.md#5-renew-the-grant) runs independently. Shutdown drains both scans before closing PostgreSQL.
 
 #### Retry delivery
 
@@ -163,21 +163,21 @@ For an Agent credential push, OCC selects unwithdrawn bindings from the active r
 
 A principal denial requests restored access and names only explicitly selected or readable Sources.
 
-OCC sends Proxy each authorized Source reference and TokenService-bound resolver. For OCC custody, Proxy retries the conditional update and verifies serving receipts, including stale targets at the same version. The update can affect other Agents using that Provider. For OpenShell custody, success verifies Provider metadata; verify delivery on the running Sandbox. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. See [verification scope](../reference/credential-sources.md#implementation-status).
+OCC sends Proxy each authorized Source reference and CredentialService-bound resolver. For OCC custody, Proxy retries the conditional update and verifies serving receipts, including stale targets at the same version. The update can affect other Agents using that Provider. For OpenShell custody, success verifies Provider metadata; verify delivery on the running Sandbox. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. See [verification scope](../reference/credential-sources.md#implementation-status).
 
 #### Retire the Source
 
-OCC returns `409` while Agent, revision, deployment, provisioning or Plugin slot references block removal. When they clear, OCC records any OAuth revocation intent. For OCC custody, Proxy retires delivery copies before TokenService removes custody. Proxy failure returns `503` and retains custody for retry. Worker retries pending OAuth retirement. For OpenShell custody, TokenService deletes the authoritative Provider and profile. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+OCC returns `409` while Agent, revision, deployment, provisioning or Plugin slot references block removal. When they clear, OCC records any OAuth revocation intent. For OCC custody, Proxy retires delivery copies before CredentialService removes custody. Proxy failure returns `503` and retains custody for retry. Worker retries pending OAuth retirement. For OpenShell custody, CredentialService deletes the authoritative Provider and profile. See the [static custody flow](credential-service-static-custody.md#4-retire-the-source).
 
 ### 7. Enroll a Codex PAT Source
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`, `packages/occ/src/plugin-discovery.ts:withPluginDiscoveryCredential`, `apps/controller/src/drivers/plugin/hosted-catalog.ts`
 
-A caller enrolls the PAT as a static Source with the `codex-pat` preset. OCC uses the ordinary Source creation grant, and TokenService stores the material. Hosted Apps resolves the authorized Source and the Plugin Driver verifies the account with the issuer. Agent admission records the Source for selected Proxy delivery. See [Enroll a Codex PAT Source](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source).
+A caller enrolls the PAT as a static Source with the `codex-pat` preset. OCC uses the ordinary Source creation grant, and CredentialService stores the material. Hosted Apps resolves the authorized Source and the Plugin Driver verifies the account with the issuer. Agent admission records the Source for selected Proxy delivery. See [Enroll a Codex PAT Source](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source).
 
 ## Debugging and Verification
 
-The [staged Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) covers DELETE, Stop, and withdrawal through Fastify and PostgreSQL with controlled Kubernetes and OpenShell transports. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers active PATCH, retry authorization, and Proxy receipts with modeled attachments. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for test setup and runtime proof limits.
+The [staged Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) covers DELETE, Stop, and withdrawal through Fastify and PostgreSQL with controlled Kubernetes and OpenShell transports. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers active PATCH, retry authorization, and Proxy receipts with modeled attachments. See the [custody verification notes](credential-service-static-custody.md#debugging-and-verification) for test setup and runtime proof limits.
 
 For a failed retry result, check `credential.resolution_failed` or `credential.delivery_failed` logs and the mutation audit. Logs identify the Namespace, Source, request, and fixed error code without exposing credential material or backend errors.
 
@@ -185,7 +185,7 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 
 - [Credential sources](../reference/credential-sources.md)
 - [Managed static Sources](../reference/credential-sources/managed-static.md)
-- [Credential custody](token-service-static-custody.md)
+- [Credential custody](credential-service-static-custody.md)
 
 [Refresh flow history](https://github.com/openclaw/openclaw-enterprise/blob/2ed738ba4cb4c54802879a4c41ca98221f9716e8/docs/flows/credential-source-refresh.md) records the retired implementation.
 

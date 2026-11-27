@@ -744,13 +744,13 @@ function createOpenShellSandboxConfiguration({
   return configuration;
 }
 
-export function createOpenShellTokenServiceInstallationConfiguration(options) {
+export function createOpenShellCredentialServiceInstallationConfiguration(options) {
   const installation = createOpenShellSandboxConfiguration(options);
-  installation.drivers.token_service = { id: "occ", configuration: {} };
+  installation.drivers.credential_service = { id: "occ", configuration: {} };
   return installation;
 }
 
-// TODO(TokenService qualification): port the remaining Gateway-owned refresh and policy proofs.
+// TODO(CredentialService qualification): port the remaining Gateway-owned refresh and policy proofs.
 export function createOpenShellInstallationConfiguration(options) {
   const installation = createOpenShellSandboxConfiguration(options);
   installation.backend[0].drivers.credential_gateway = "credential-gateway-openshell-kubernetes";

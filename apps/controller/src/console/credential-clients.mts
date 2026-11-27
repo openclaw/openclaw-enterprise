@@ -117,7 +117,7 @@ export function renderCredentialClients(
       label: github ? "New private key file" : "New client secret",
       control: value,
       help: github
-        ? "The selected TokenService verifies the key before replacement. Subsequent mints use it without a restart."
+        ? "The selected CredentialService verifies the key before replacement. Subsequent mints use it without a restart."
         : "Subsequent OAuth exchanges use the replacement secret.",
     });
     const cancel = button("Cancel", () => dialog.close());

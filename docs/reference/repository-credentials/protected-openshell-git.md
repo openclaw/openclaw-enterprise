@@ -39,7 +39,7 @@ Driver. For an existing qualified release, retain its recorded sender, trust,
 custody, and network settings until its work is settled. The
 [earlier release-specific configuration](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release)
 records the former setup procedure. Use
-[native TokenService Git](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+[native CredentialService Git](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 for new access.
 
 ## Grant access to a GitHub App installation
@@ -208,7 +208,7 @@ revision; replacement does not automatically deploy one.
 Stop or revision replacement withdraws the binding; starting requires new authority.
 The observed-only preview forbids process recovery and worker adoption.
 See [Provider write deadlines](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty),
-[Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
+[CredentialService lifecycle](../repository-credentials.md#credentialservice-lifecycle) and
 [prepared Git recovery](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership)
 for expiry, quarantine and retirement.
 

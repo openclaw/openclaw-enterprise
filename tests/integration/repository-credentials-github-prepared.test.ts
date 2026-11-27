@@ -4,7 +4,7 @@ import https, { get } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
-import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
+import { createWarmTokenReader } from "../../apps/controller/src/backends/credential-service/warm-reader.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.ts";
 import {
@@ -20,7 +20,7 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import type {
   TokenMaterial,
   TokenFamily,
-} from "../../apps/controller/src/backends/token-service/custody.ts";
+} from "../../apps/controller/src/backends/credential-service/custody.ts";
 import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
 import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 

@@ -32,7 +32,7 @@ import type {
   ComputeDriver,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OCCCredentialServiceDriver } from "../../apps/controller/src/drivers/credential-service/occ.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   createGitHubProtocol,
@@ -1093,7 +1093,7 @@ test("Agent policy under protected execution offers only removal of saved networ
 async function repositoryPolicyConsole(
   t: TestContext,
   appId = "123",
-  issuer?: ConstructorParameters<typeof OCCTokenServiceDriver>[7],
+  issuer?: ConstructorParameters<typeof OCCCredentialServiceDriver>[7],
 ) {
   const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
@@ -1134,7 +1134,7 @@ async function repositoryPolicyConsole(
     profile: "repository",
     id: sandboxId,
     registry,
-    tokenService: true,
+    credentialService: true,
     createOpenShellBackend: (definition) =>
       createOpenShellBackend(definition, {
         gatewayClient: completeOpenShellGatewayClient({
@@ -1248,11 +1248,11 @@ async function repositoryPolicyConsole(
   controller.selectDriver("repo", repositoryAdmission.policy.id);
   const store = controller.selectedDriver("secret").privateSecrets;
   assert.ok(store);
-  const instance = await controller.activateTokenServiceInstance(
+  const instance = await controller.activateCredentialServiceInstance(
     "console-model-owner",
     crypto.randomUUID(),
   );
-  const tokenService = new OCCTokenServiceDriver(
+  const credentialService = new OCCCredentialServiceDriver(
     "console-model-owner",
     controller.installation.id,
     store,
@@ -1262,8 +1262,8 @@ async function repositoryPolicyConsole(
     undefined,
     issuer,
   );
-  controller.registerDriver(tokenService);
-  controller.selectDriver("token_service", tokenService.id);
+  controller.registerDriver(credentialService);
+  controller.selectDriver("credential_service", credentialService.id);
   Object.assign(compute, {
     validateRepositoryCredentialSupport() {},
     validateWorkspaceSetup() {},
@@ -1351,7 +1351,7 @@ test("Console requires a registered GitHub App Client for per-repository Agent a
 });
 
 test("Console saves, reopens, and edits GitHub repository access through Agent-scoped options", async (t) => {
-  // Register through the real Client route and TokenService signing-key verifier; no live credentials are used.
+  // Register through the real Client route and CredentialService signing-key verifier; no live credentials are used.
   const clock = createControlledClock();
   const tls = await createTlsMaterial(t);
   const github = createGitHubProtocol({ clock });
@@ -1459,7 +1459,7 @@ test("Create Agent saves a Source-backed draft when eligible GitHub repositories
   );
 });
 
-test("a Namespace member enrolls a TokenService model credential before saving a deployable draft", async (t) => {
+test("a Namespace member enrolls a CredentialService model credential before saving a deployable draft", async (t) => {
   const { fixture, namespaceId } = await repositoryPolicyConsole(t);
   const member = await fixture.createNamespaceMember("source-member", namespaceId, [
     ...MEMBER_WRITE,

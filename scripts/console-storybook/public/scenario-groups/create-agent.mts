@@ -590,7 +590,7 @@ export const createAgentFormScenarios = {
   },
   createPluginsRequirePatSource: {
     group: "Pages/Create Agent",
-    name: "Hosted Apps needs a TokenService Source",
+    name: "Hosted Apps needs a CredentialService Source",
     path: create,
     pluginDiscovery,
     pluginCapabilities,
@@ -602,7 +602,7 @@ export const createAgentFormScenarios = {
       click("Configure plugins"),
     ],
     description:
-      "The selected TokenService enrolls the service account token as a Source for model access and hosted Apps.",
+      "The selected CredentialService enrolls the service account token as a Source for model access and hosted Apps.",
     steps: [
       "Close Configure plugins, name the Agent, and enter a simulated service account token.",
       "Choose Save service account token, then open Configure plugins and load the catalog.",
@@ -1282,7 +1282,7 @@ export const createAgentProvisioningScenarios = {
         method: "POST",
         status: 409,
         code: "RESOURCE_CONFLICT",
-        message: "The TokenService cannot complete this source operation.",
+        message: "The CredentialService cannot complete this source operation.",
       },
     ],
     actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
@@ -1542,7 +1542,7 @@ export const createAgentProvisioningScenarios = {
     modelCredentialSourcePresets: ["openai"],
     actions: managedStaticForm,
     description:
-      "Enter a dummy API key directly. The selected TokenService owns its static Credential Source; the Agent saves as a draft using that Source.",
+      "Enter a dummy API key directly. The selected CredentialService owns its static Credential Source; the Agent saves as a draft using that Source.",
     steps: [
       "Confirm Model credential offers Add new credential and the entered API key stays masked. The guidance explains Source custody and the draft save.",
       "Create the Agent. Its draft opens with authentication bound to the returned Credential Source.",
@@ -1559,12 +1559,12 @@ export const createAgentProvisioningScenarios = {
         method: "POST",
         status: 503,
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "The selected TokenService is unavailable.",
+        message: "The selected CredentialService is unavailable.",
       },
     ],
     actions: [...managedStaticForm, click("Create Agent")],
     description:
-      "A simulated TokenService outage leaves the Source creation outcome unknown. The form clears the entered key and does not retry the write automatically.",
+      "A simulated CredentialService outage leaves the Source creation outcome unknown. The form clears the entered key and does not retry the write automatically.",
     steps: [
       "Read the unknown-outcome guidance. Confirm the password field is empty and a duplicate write is unavailable.",
     ],
@@ -2935,21 +2935,21 @@ export const createAgentProvisioningScenarios = {
         method: "POST",
         status: 501,
         code: "NOT_IMPLEMENTED",
-        message: "Device authorization is unavailable for the selected TokenService.",
+        message: "Device authorization is unavailable for the selected CredentialService.",
       },
     ],
     actions: startOAuthLogin,
     description:
-      "The selected TokenService reports device authorization but refuses the start. The form shows the API reason and does not display a device code.",
+      "The selected CredentialService reports device authorization but refuses the start. The form shows the API reason and does not display a device code.",
   },
   createOAuthNotOffered: {
     group: "Pages/Create Agent",
-    name: "ChatGPT login not offered by TokenService (Experimental)",
+    name: "ChatGPT login not offered by CredentialService (Experimental)",
     path: create,
     credentialSourceTypes: modelCredentialSourceTypes,
     actions: oauthForm,
     description:
-      "The selected TokenService does not offer device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
+      "The selected CredentialService does not offer device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",

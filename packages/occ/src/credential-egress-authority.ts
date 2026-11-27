@@ -22,7 +22,7 @@ import {
   type ProtectedEgressSource,
   type ResourceRef,
   type SecretDriver,
-  type TokenService,
+  type CredentialService,
 } from "@openclaw-enterprise/contracts";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 import {
@@ -73,7 +73,7 @@ interface EgressAuthorityDependencies {
     source: LegacyCredentialSource,
     revision: AgentRevision,
   ) => boolean;
-  readonly preparedTokens: TokenService | undefined;
+  readonly preparedTokens: CredentialService | undefined;
   readonly resolvePrepared: NonNullable<EgressAuthorityPorts["resolvePrepared"]>;
   readonly receipts: EgressAuthorityPorts["receipts"];
 }
@@ -221,7 +221,7 @@ export function createEgressAuthority(
     );
     if (
       !source ||
-      source.ownerCapability === "token_service" ||
+      source.ownerCapability === "credential_service" ||
       source.state !== "ready" ||
       withdrawal !== undefined
     ) {

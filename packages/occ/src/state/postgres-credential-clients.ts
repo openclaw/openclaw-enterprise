@@ -34,9 +34,9 @@ function registrationFromRow(row: Row): Readonly<StoredCredentialClient> {
     ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     displayName: text(row, "display_name"),
     createdAt: timestamp(row, "created_at"),
-    ...(row.token_service_instance_id === null
+    ...(row.credential_service_instance_id === null
       ? {}
-      : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+      : { credentialServiceInstanceId: text(row, "credential_service_instance_id") }),
   };
   if (row.kind === "github-app") {
     return immutableCopy({ ...common, kind: "github-app", appId: text(row, "app_id") });
@@ -122,7 +122,7 @@ export function postgresCredentialClients(
       const oauth = registration.kind === "oauth2" ? registration : undefined;
       await client.query(
         `INSERT INTO occ.oauth_clients
-         (id, kind, namespace_id, issuer, client_id, token_service_instance_id, created_at, display_name,
+         (id, kind, namespace_id, issuer, client_id, credential_service_instance_id, created_at, display_name,
           token_endpoint_auth_method, app_id, cleanup_after)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
@@ -131,7 +131,7 @@ export function postgresCredentialClients(
           registration.namespaceId ?? null,
           oauth?.issuer ?? null,
           oauth?.clientId ?? null,
-          registration.tokenServiceInstanceId ?? null,
+          registration.credentialServiceInstanceId ?? null,
           registration.createdAt,
           registration.displayName,
           oauth?.tokenEndpointAuthMethod ?? null,

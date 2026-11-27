@@ -23,7 +23,7 @@ The [Agent plugin reference](../agent-plugins.md) owns the shared Agent API and
 policy fields.
 
 The Driver supports two discovery sources. `hosted`, the default, searches the
-ChatGPT plugin service's GLOBAL catalog using a TokenService Source for a Codex
+ChatGPT plugin service's GLOBAL catalog using a CredentialService Source for a Codex
 personal access token (PAT) or Codex OAuth login. `openai-curated` searches recorded
 catalog entries without a discovery credential. Both use selection IDs of the
 form `codex-plugin:<plugin>@openai-curated-remote`; neither source grants app or

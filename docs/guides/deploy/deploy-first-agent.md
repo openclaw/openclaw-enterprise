@@ -1,8 +1,8 @@
 # Deploy your first Agent
 
-Deploy a dedicated Codex Agent with OCC TokenService and the native OpenShell Credential Proxy.
+Deploy a dedicated Codex Agent with OCC CredentialService and the native OpenShell Credential Proxy.
 
-<a id="evaluate-the-tokenservice-and-credential-proxy-cutover"></a>
+<a id="evaluate-the-credentialservice-and-credential-proxy-cutover"></a>
 <a id="deploy-on-a-pre-cutover-release"></a>
 
 ## Prepare the Installation
@@ -12,7 +12,7 @@ Complete [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or
 session at the root of the matching release checkout. Use the API connection,
 Namespace, and browser origin from setup.
 
-This workflow uses bundled Kubernetes Compute, OCC TokenService, and the
+This workflow uses bundled Kubernetes Compute, OCC CredentialService, and the
 OpenShell Sandbox that provides native Credential Proxy delivery.
 [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
 
@@ -47,7 +47,7 @@ name=fred
 resource_prefix="$name-$(date +%s)"
 ```
 
-If you already have a ready TokenService Source in this Namespace, set
+If you already have a ready CredentialService Source in this Namespace, set
 `modelSource` to its ID and continue to [Agent creation](#2-create-the-configuration-and-agent).
 Otherwise, use one of the methods below.
 
@@ -125,7 +125,7 @@ modelSource=$(jq -er '.data | select(.status=="ready") | .source.id' "$RUN_DIR/d
 
 ### Use an OpenAI API key
 
-Set `credential_file` to the path of your private API-key file. Send the value directly to TokenService through the Source API. The response contains Source metadata.
+Set `credential_file` to the path of your private API-key file. Send the value directly to CredentialService through the Source API. The response contains Source metadata.
 
 ```bash
 credential_file=/secure/oce/openai-api-key

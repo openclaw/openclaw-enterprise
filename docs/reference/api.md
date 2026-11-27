@@ -5399,7 +5399,7 @@ Create a new Agent and queue first-time provisioning
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
-| `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409. |
+| `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. CredentialService Sources require direct Agent creation; guided provisioning returns 409. |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
@@ -9158,7 +9158,7 @@ Replace one Agent network policy additions
 | `additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless TokenService Git qualifies an earlier dedicated standalone model-only history. A qualified TokenService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless CredentialService Git qualifies an earlier dedicated standalone model-only history. A qualified CredentialService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
 | `repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
@@ -11403,9 +11403,9 @@ Register a credential source
 | `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 
-**RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
+**RegisterCredentialServiceSourceBody (required fields: `name`, `type`, `secret`)**
 
-Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.
+Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before CredentialService takes custody.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
@@ -11415,7 +11415,7 @@ Register a managed static Source. Optionally supply connectionTemplateId. OCC va
 | `secret` | `string` | Yes | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Opaque credential value. |
 | `type` | `"static"` | Yes | — |
 
-**RegisterGitHubAppTokenServiceSourceBody (required fields: `name`, `type`, `clientId`, `repositoryRefs`)**
+**RegisterGitHubAppCredentialServiceSourceBody (required fields: `name`, `type`, `clientId`, `repositoryRefs`)**
 
 Register a GitHub App installation Source. Select a registered App client. The Installation's GitHub registry verifies the App and supplies the installation and permissions for the selected repositories. Agent access requires a separate grant.
 
@@ -14201,9 +14201,9 @@ Reusable schema names are referenced by operation request and response tables.
 | --- | --- |
 | `PushAgentCredentialsBody` | `object` |
 | `PushAgentCredentialsResponse` | `object` |
-| `RegisterGitHubAppTokenServiceSourceBody` | `object` |
-| `RegisterTokenServiceSourceBody` | `object` |
-| `UpdateTokenServiceSourceBody` | `object` |
+| `RegisterCredentialServiceSourceBody` | `object` |
+| `RegisterGitHubAppCredentialServiceSourceBody` | `object` |
+| `UpdateCredentialServiceSourceBody` | `object` |
 | `SafeJsonValue` | `string or boolean or number or null or array<SafeJsonValue> or object<string, SafeJsonValue>` |
 | `PluginDriverIdentity` | `object` |
 | `AgentRuntimeLogsResponse` | `object` |

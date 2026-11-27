@@ -8,7 +8,7 @@ and needs no Source or credential. The Git grant itself does not authorize REST.
 The current code still exposes this deprecated `LegacyEgressProxyDriver` path
 until removal. The details below apply only to existing legacy deployments.
 
-Use [TokenService enrollment](../credential-sources.md#register-a-source) for
+Use [CredentialService enrollment](../credential-sources.md#register-a-source) for
 model credentials, OAuth and GitHub installation Sources. A qualified selected
 legacy egress Driver can offer **credential-free repository metadata** for one
 approved repository identity read. The sender applies request and response

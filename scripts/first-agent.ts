@@ -1234,11 +1234,11 @@ async function main(options: Options) {
           );
       if (source === undefined && record.credentialSourceId) {
         throw new Error(
-          "The model Source was removed. Run first-Agent with a new Agent name and enroll the credential through TokenService.",
+          "The model Source was removed. Run first-Agent with a new Agent name and enroll the credential through CredentialService.",
         );
       }
       if (source === undefined) {
-        progress("Enrolling the model credential in TokenService...");
+        progress("Enrolling the model credential in CredentialService...");
         modelCredential = await objectResponse(api, "name", "POST", `${base}/credential-sources`, {
           name: record.credentialSourceName,
           type: "static",

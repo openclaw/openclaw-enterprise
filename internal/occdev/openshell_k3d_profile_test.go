@@ -186,9 +186,9 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 
 	var installation struct {
 		Drivers struct {
-			TokenService struct {
+			CredentialService struct {
 				ID string `yaml:"id"`
-			} `yaml:"token_service"`
+			} `yaml:"credential_service"`
 			Sandbox struct {
 				Configuration struct {
 					StartupDelayMs *int `yaml:"startupDelayMs"`
@@ -222,8 +222,8 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	if sandbox.StartupDelayMs != nil {
 		t.Fatalf("development must use observed readiness without a fixed delay: %d", *sandbox.StartupDelayMs)
 	}
-	if installation.Drivers.TokenService.ID != "occ" || strings.Contains(text, "credential_gateway:") {
-		t.Fatal("the local OpenShell profile must use OCC TokenService for Source enrollment")
+	if installation.Drivers.CredentialService.ID != "occ" || strings.Contains(text, "credential_gateway:") {
+		t.Fatal("the local OpenShell profile must use OCC CredentialService for Source enrollment")
 	}
 	// Only OpenShell supervisors may use the tenant callback egress rule.
 	if len(sandbox.Gateway.NetworkPolicyResources) == 0 || !reflect.DeepEqual(

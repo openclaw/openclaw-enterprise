@@ -195,7 +195,7 @@ identities under Namespace and Agent locks. External credential writes can
 survive a database rollback. Read stored status before retrying. If credentials
 are missing after a revision exists, restore them before deploying. These methods
 verify stored transport credentials. They cannot rotate them or verify model
-authentication. TokenService owns [Codex device login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
+authentication. CredentialService owns [Codex device login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 
 ### Startup failure evidence
 

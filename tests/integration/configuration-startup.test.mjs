@@ -119,15 +119,15 @@ async function fixture(t, configuration = installation()) {
   return path;
 }
 
-test("TokenService registration selection does not require a Sandbox or Credential Proxy", async (t) => {
+test("CredentialService registration selection does not require a Sandbox or Credential Proxy", async (t) => {
   const configuration = installation();
-  configuration.drivers.token_service = { id: "occ", configuration: {} };
+  configuration.drivers.credential_service = { id: "occ", configuration: {} };
   const path = await fixture(t, configuration);
   const loaded = await loadInstallationConfiguration({
     mode: "development",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(loaded.installation.drivers.token_service.id, "occ");
+  assert.equal(loaded.installation.drivers.credential_service.id, "occ");
   assert.equal(loaded.installation.drivers.sandbox, undefined);
   assert.equal(loaded.installation.drivers.credential_proxy, undefined);
 });

@@ -3296,7 +3296,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly repositoryAccess?: NonNullable<SandboxDriver["repositoryAccess"]>;
 
   private get nativeSourceOwner(): boolean {
-    return this.backend.drivers.token_service !== undefined;
+    return this.backend.drivers.credential_service !== undefined;
   }
 
   static validateConfiguration(
@@ -3662,7 +3662,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         const accountRequired =
           binding?.consumer.kind === "model" &&
           auth.method === "credential_source" &&
-          auth.tokenServiceInstanceId !== undefined &&
+          auth.credentialServiceInstanceId !== undefined &&
           auth.sourceType === "oauth2-refresh-token" &&
           binding.sourceRef.id === auth.sourceId;
         const account = projection.account;
@@ -4950,7 +4950,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           context.revision.executionAdmission.mode === "standalone" &&
           context.revision.harness.mode === "dedicated" &&
           auth.method === "credential_source" &&
-          auth.tokenServiceInstanceId !== undefined &&
+          auth.credentialServiceInstanceId !== undefined &&
           auth.sourceType === "static" &&
           context.revision.credentialDeployment?.bindings.some(
             ({ consumer, sourceRef, projection }) =>
