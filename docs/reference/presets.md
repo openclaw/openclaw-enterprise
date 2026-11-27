@@ -28,7 +28,8 @@ object. Relative paths resolve beside the Installation YAML. The Helm chart moun
 only that YAML, so on Helm list only files shipped in the controller image, by
 absolute path. Missing, malformed, invalid, or duplicate-name files, and names
 that break the API Name rule (edge whitespace, control characters, line or
-paragraph separators, more than 200 characters), prevent
+paragraph separators, more than 200 characters), and templates with a
+Harness authentication or Secret binding that Namespace seeding refuses, prevent
 startup (`PRESET_FILE_INVALID`); a file named like a bundled default, such
 as `default-codex`, replaces it; the API (not the worker, which never applies
 defaults) logs `presets.bundled-default-shadowed`.

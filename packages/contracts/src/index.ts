@@ -1882,7 +1882,7 @@ export type {
   PresetLaunchSettings,
   PresetVariable,
 } from "./presets.ts";
-export { normalizePresetTemplate } from "./presets.ts";
+export { normalizePresetTemplate, validatePresetFileCredentials } from "./presets.ts";
 export {
   PRESET_JSON_MAX_BYTES,
   PresetValidationError,
