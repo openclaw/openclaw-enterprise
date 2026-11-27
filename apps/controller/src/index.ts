@@ -1614,6 +1614,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
 
+  function requireRequestContext(request: FastifyRequest): RequestContext {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    return context;
+  }
+
   async function perform(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -1623,10 +1631,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       reply.send({ data, meta: { requestId: request.id } });
     }
 
-    const context = contexts.get(request);
-    if (!context) {
-      throw dependencyUnavailable();
-    }
+    const context = requireRequestContext(request);
     if (operation.operationId === "chatWithAgent") {
       const admission = admissions.get(request);
       if (controller === undefined || admission === undefined) {
@@ -2248,10 +2253,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
-          const context = contexts.get(request);
-          if (!context) {
-            throw dependencyUnavailable();
-          }
+          const context = requireRequestContext(request);
           if (!controller) {
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
           }
@@ -2736,10 +2738,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...accountAdmission(accountReadOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const actor = await humanAccountActor(request, accountReadOperation, context);
         if (!options.auth.readAccount) {
           throw accountControlsUnsupported();
@@ -2805,10 +2804,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...accountAdmission(operation),
         },
         async (request, reply) => {
-          const context = contexts.get(request);
-          if (!context) {
-            throw dependencyUnavailable();
-          }
+          const context = requireRequestContext(request);
           const { userId } = request.params as { userId: string };
           const actor = await humanAccountActor(request, operation, context, userId);
           if (!options.auth.readAccount || !options.auth.changeAccount) {
@@ -2856,10 +2852,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preValidation: async (request) => resolveIdentity(request, recoveryReadOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const actor = await humanAccountActor(request, recoveryReadOperation, context);
         if (!options.auth.readRecovery) {
           throw accountControlsUnsupported();
@@ -2885,10 +2878,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...accountAdmission(recoveryReplaceOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const { userId, expectedCurrentUserId, expectedVersion } = request.body as {
           userId: string;
           expectedCurrentUserId: string;
@@ -2963,10 +2953,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...accountAdmission(enrolOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const actor = await humanAccountActor(request, enrolOperation, context);
         if (!options.auth.enrolAccount) {
           throw accountControlsUnsupported();
@@ -3091,10 +3078,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         if (options.provisionAuthAccount === undefined) {
           throw dependencyUnavailable();
         }
