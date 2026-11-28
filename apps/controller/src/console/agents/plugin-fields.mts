@@ -471,8 +471,7 @@ export function createPluginFields({
     }
   }
 
-  function selections() {
-    const diagnostic = jsonObjectDiagnostic(input.value);
+  function selections(diagnostic = jsonObjectDiagnostic(input.value)) {
     // Keep the original object, including Driver-specific and unrecognized fields.
     return diagnostic.kind === "valid" && isPluginSelections(diagnostic.value)
       ? diagnostic.value
@@ -1133,7 +1132,8 @@ export function createPluginFields({
     const focusedTool = active?.closest<HTMLElement>("[data-tool]")?.dataset.tool;
     const focusedHeading = active?.matches(".plugin-detail h3");
     const focusedBack = active?.matches(".plugin-back");
-    const values = selections();
+    const diagnostic = jsonObjectDiagnostic(input.value);
+    const values = selections(diagnostic);
     const catalogLoading = !configuredOnly && catalog?.status === "loading";
     const reloadRequired = catalog?.reloadRequired === true;
     // Recovery controls must stay visible when a narrow layout shows only the detail pane.
@@ -1155,14 +1155,15 @@ export function createPluginFields({
     );
     const hasDefaultReviewers = Boolean(capabilities?.toolDefaults.reviewer?.length);
     const hasToolReviewers = Boolean(capabilities?.tools.reviewer?.length);
-    setText(
-      feedback,
-      values === null
-        ? "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept."
-        : "",
-    );
     if (values === null) {
+      const problem =
+        diagnostic.kind === "valid"
+          ? "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies."
+          : diagnostic.message;
+      setText(feedback, `${problem} Your JSON has been kept.`);
       json.open = true;
+    } else {
+      setText(feedback, "");
     }
     const entries = new Map(
       (catalog?.knownEntries ?? catalog?.entries ?? []).map((entry) => [entry.id, entry]),
