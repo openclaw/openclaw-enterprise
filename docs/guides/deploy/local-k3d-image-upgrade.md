@@ -285,44 +285,57 @@ script, and a compatible installed `occ` CLI. Confirm
 `git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
 overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
 and Python 3. Follow `engines.node` in this checkout's `package.json` even without
-repository credentials. Use a fresh
-`UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
-interrupted release. The script changes the protected
-input files as well as the cluster; it saves their previous contents in that
-private evidence directory before cluster mutation.
+repository credentials. Keep a fresh private `UPGRADE_EVIDENCE` directory per
+release through resume. The helper backs up protected inputs there before
+updating them or the cluster.
 
-Older `dev-up` installations set `agentNativeAdmin.sharedCookieDomain`,
-which the chart refuses; pass a copy without it:
+Legacy `dev-up` copies omit only `agentNativeAdmin.sharedCookieDomain`.
+Record any `$candidate` path. Keep that private file unchanged. On `--resume`,
+skip this block even if `VALUES` changed. Reuse the exact `--candidate-values` path
+only if originally supplied.
 
 ```bash
 CANDIDATE_ARGS=()
-if [[ "$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES")" == true ]]; then
-  (umask 077; yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml)
-  CANDIDATE_ARGS=(--candidate-values /secure/occ/candidate-values.yaml)
-fi
+candidate_failed() { echo "$1 failed. Check readability of $VALUES and yq v4." >&2; exit 1; }
+cookie=$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES" 2>/dev/null) || candidate_failed Detection
+case "$cookie" in
+  true)
+    candidate=$(umask 077; mktemp "${VALUES}.candidate.XXXXXX") || candidate_failed mktemp
+    yq -e 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > "$candidate" 2>/dev/null || candidate_failed Conversion
+    CANDIDATE_ARGS=(--candidate-values "$candidate")
+    ;;
+  false) ;;
+  *) candidate_failed Validation ;;
+esac
 ```
 
-Choose exactly one invocation below. Both options together perform a combined
-release; omitting one leaves that image selection unchanged.
+Choose exactly one. Omitted images remain unchanged.
+
+**Controller only (does not create Agent revisions).**
 
 ```bash
-# Controller only: no Agent revisions are requested.
 scripts/upgrade-production-images \
   --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
+```
 
-# Runtime only: use a fresh UPGRADE_EVIDENCE for a new release.
+**Runtime only.**
+
+```bash
 scripts/upgrade-production-images \
   --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
+```
 
-# Combined: use a fresh UPGRADE_EVIDENCE for a new release.
+**Combined.**
+
+```bash
 scripts/upgrade-production-images \
   --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" --release "$RELEASE" \
@@ -382,10 +395,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 
 Helm must be deployed, initialization successful, both rollouts complete, and
 both displayed images equal the selected controller image (or the previous one
-for runtime-only). To inspect the live runtime selection after a runtime change,
-recover the Installation Secret with the commands above into a separate private
-file and check `drivers.compute.configuration.images.gateway` and `.agent` with
-`yq`; both must equal `RUNTIME_IMAGE`. Compare the before and after Installation ID, Namespace and
+for runtime-only). For runtime changes, set `VALUES` and `INSTALLATION` to
+distinct unused private paths inside the retrieval subshell. After recovery
+succeeds, confirm there with `yq` that the new Installation's
+`.drivers.compute.configuration.images.gateway` and
+`.drivers.compute.configuration.images.agent` equal `RUNTIME_IMAGE`.
+Compare the before and after Installation ID, Namespace and
 Agent inventory, and each PVC's UID and bound volume name. A different UID for
 the same namespace and claim name identifies a replacement claim. Verify
 representative PostgreSQL records, Secrets, workspace and gateway data, and a
