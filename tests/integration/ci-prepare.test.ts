@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   appendFile,
@@ -26,6 +24,13 @@ import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prep
 import { registerNativeProfileUpgradeCases } from "./ci-prepare-native-profile-upgrade-cases.ts";
 import { registerOpenShellCredentialCases } from "./ci-prepare-openshell-credential-cases.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
+import {
+  checkStateLockControls,
+  checkStateLockDebugger,
+  checkStateLockLongBasename,
+  checkStateLockRecovery,
+  checkStateLockTicketReaping,
+} from "../helpers/ci-state-lock.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
@@ -1283,55 +1288,11 @@ await template.cleanup();
 
   test("the CI state lock removes an exited holder's lock and waits for a live one", async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state.json");
-    const lockPath = `${statePath}.lock`;
-    const exited = spawnSync(process.execPath, ["-e", ""]);
-    assert.equal(exited.status, 0);
-    await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
-    // Places in the queue older than any live waiter's: the exited process's, and one past
-    // its deadline whose pid reads as alive (reused, here this process's).
-    const ticket = (clock: string, expiry: string, pid: number) =>
-      writeFile(
-        join(
-          root,
-          `.state.json.lock.${clock.padStart(20, "0")}.${expiry.padStart(20, "0")}.${pid}.${randomUUID()}.ticket`,
-        ),
-        `${pid} queued\n`,
-        { mode: 0o600 },
-      );
-    await ticket("1", String(process.hrtime.bigint() + 10n ** 12n), exited.pid);
-    await ticket("2", "3", process.pid);
-    // A nested call in the same async context reuses the held lock.
-    assert.equal(
-      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran"), {
-        timeoutMs: 10_000,
-      }),
-      "ran",
-    );
-    assert.deepEqual(await readdir(root), []);
-
-    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
-      stdio: "ignore",
-    });
-    t.after(() => holder.kill());
-    await writeFile(lockPath, `${holder.pid} live\n`, { mode: 0o600 });
-    let ran = false;
-    await assert.rejects(
-      () =>
-        withStateLock(
-          statePath,
-          async () => {
-            ran = true;
-          },
-          { timeoutMs: 300 },
-        ),
-      new RegExp(
-        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}, 0 waiting ahead\\)`,
-      ),
-    );
-    assert.equal(ran, false);
-    assert.equal(await readFile(lockPath, "utf8"), `${holder.pid} live\n`);
-    assert.deepEqual((await readdir(root)).sort(), ["state.json.lock"]);
+    await checkStateLockDebugger(t, root);
+    await checkStateLockRecovery(t, root);
+    await checkStateLockControls(t, root);
+    await checkStateLockTicketReaping(t, root);
+    await checkStateLockLongBasename(t, root);
   });
 
   test("the CI state lock serves waiters in arrival order across processes", async (t) => {

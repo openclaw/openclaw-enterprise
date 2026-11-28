@@ -252,6 +252,18 @@ server/network deletion and volume checks. After a persisted mutation marker,
 fixture fallback requires completed cleanup. Verified pre-mutation refusals permit fallback.
 See [named-volume limits](../testing/local.md#staged-sign-in-cleanup).
 
+`scripts/ci/state-lock.ts:withStateLock` serializes state-file updates through
+an atomically published ownership directory. Recovery removes only the marker
+of an owner confirmed dead; release removes only its own marker.
+Malformed ownership, uncertain process liveness and legacy file locks stop the
+operation rather than permit an unprotected update.
+
+All users of a state path must share a PID namespace and use the same
+directory-lock protocol on a shared local POSIX filesystem. Before moving from
+file locks, stop and reap every old user and reclaimer, then remove legacy lock
+and ticket files only while the path is quiescent. An absent lock file does not
+prove an old reclaimer has exited; mixed-version operation is unsupported.
+
 `scripts/ci/command-supervision.ts:runCommand` awaits exit and pipe closure for preparation and cleanup.
 For POSIX groups, `scripts/ci/cleanup-command.ts` stops the group when caller IPC closes.
 At [timeout](../testing/ci/configuration.md#runner-overrides), the caller sends TERM, then KILL after one grace period.
