@@ -389,6 +389,35 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
 
+export async function checkCodexWorkspaceFile(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  content: string,
+  { write = false } = {},
+) {
+  const name = "USER.md";
+  const path = `/namespaces/${stack.namespaceId}/agents/${agent.id}/workspace/files/${name}`;
+  // The API client can include the request path and server error in exceptions.
+  // Report only the operation, including when the outcome of a write is unknown.
+  if (write) {
+    try {
+      await stack.api("PUT", path, { content });
+    } catch {
+      throw new Error("Codex workspace file write could not be confirmed");
+    }
+  }
+  let file: unknown;
+  try {
+    file = await stack.api("GET", path);
+  } catch {
+    throw new Error("Codex workspace file read failed");
+  }
+  assert.ok(
+    file != null && wireField(file, "name") === name && wireField(file, "content") === content,
+    "Codex workspace file did not match the expected edit",
+  );
+}
+
 export async function readLogs(stack: SmokeStack, agent: SmokeAgent, source: "gateway" | "agent") {
   const { stdout } = await cli(stack, [
     "agent",
