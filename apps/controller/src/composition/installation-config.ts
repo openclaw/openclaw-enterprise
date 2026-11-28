@@ -518,7 +518,11 @@ function iamConfiguration(value: unknown): InstallationIAMConfiguration | undefi
     return undefined;
   }
   const configuration = object(value, "iam");
-  closed(configuration, ["roles", "defaultUserGroups", "ownerRole", "roleBindings"], "iam");
+  closed(
+    configuration,
+    ["roles", "defaultUserGroups", "ownerRole", "roleBindings", "namespacePrincipalBindings"],
+    "iam",
+  );
   const listed = (field: string): readonly unknown[] => {
     const entries = configuration[field] ?? [];
     if (!Array.isArray(entries)) {
@@ -554,6 +558,24 @@ function iamConfiguration(value: unknown): InstallationIAMConfiguration | undefi
     }
     return name;
   };
+  const namespacePrincipalBindings = listed("namespacePrincipalBindings").map((entry, index) => {
+    const path = `iam.namespacePrincipalBindings[${index}]`;
+    const binding = object(entry, path);
+    closed(binding, ["principalId", "role", "namespaceId"], path);
+    const principalId = nonempty(binding.principalId, `${path}.principalId`);
+    const namespaceId = nonempty(binding.namespaceId, `${path}.namespaceId`);
+    if (!/^ns_[0-9a-f-]{36}$/.test(namespaceId))
+      throw new Error(`${path}: exact Namespace ID required`);
+    return Object.freeze({
+      principalId,
+      namespaceId,
+      role: configuredRole(binding.role, `${path}.role`),
+    });
+  });
+  unique(
+    namespacePrincipalBindings.map((b) => JSON.stringify(b)),
+    "iam.namespacePrincipalBindings",
+  );
   const defaultUserGroups = listed("defaultUserGroups").map((group, index) =>
     iamName(group, `iam.defaultUserGroups[${index}]`),
   );
@@ -589,6 +611,9 @@ function iamConfiguration(value: unknown): InstallationIAMConfiguration | undefi
       ? {}
       : { ownerRole: configuredRole(configuration.ownerRole, "iam.ownerRole") }),
     roleBindings: Object.freeze(roleBindings),
+    ...(namespacePrincipalBindings.length
+      ? { namespacePrincipalBindings: Object.freeze(namespacePrincipalBindings) }
+      : {}),
   });
 }
 

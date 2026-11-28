@@ -44,6 +44,11 @@ export interface InstallationIAMConfiguration {
   readonly defaultUserGroups: readonly string[];
   /** The configured Role that OCC binds to each creator on what it creates. */
   readonly ownerRole?: string;
+  readonly namespacePrincipalBindings?: readonly {
+    readonly principalId: string;
+    readonly namespaceId: string;
+    readonly role: string;
+  }[];
   readonly roleBindings: readonly {
     readonly group: string;
     readonly role: string;
@@ -748,6 +753,17 @@ export function createIAMPolicyOperations({
           roleId: configuredRoleId(role),
         });
       }
+    }
+    for (const { principalId, namespaceId, role } of configuration.namespacePrincipalBindings ??
+      []) {
+      if (!namespaces.some((n) => n.id === namespaceId)) continue;
+      bindings.push({
+        id: configuredBindingId("identity:" + principalId, role, namespaceId),
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: principalId,
+        roleId: configuredRoleId(role),
+      });
     }
     return Object.freeze({
       roles: configuration.roles.map((role) => ({

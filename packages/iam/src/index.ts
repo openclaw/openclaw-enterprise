@@ -1490,8 +1490,11 @@ export class NativeIAMDriver implements IAMDriver {
     for (const binding of policy.bindings) {
       assertCondition(
         binding.id.startsWith(CONFIGURED_IAM_ID_PREFIXES.binding) &&
-          binding.subjectKind === "group" &&
-          groupIds.has(binding.subjectId) &&
+          ((binding.subjectKind === "group" && groupIds.has(binding.subjectId)) ||
+            (binding.subjectKind === "identity" &&
+              isNonEmptyString(binding.subjectId) &&
+              typeof binding.namespaceId === "string" &&
+              /^ns_[0-9a-f-]{36}$/.test(binding.namespaceId))) &&
           roleIds.has(binding.roleId) &&
           binding.resourceKind === undefined &&
           binding.resourceId === undefined,
