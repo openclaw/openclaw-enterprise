@@ -271,6 +271,19 @@ func (app *application) namespaceCommand() *cobra.Command {
 	return command
 }
 
+func (app *application) deleteHandler(kind string, remove func(*occclient.Client, string, string) error) func(*cobra.Command, []string) error {
+	return func(_ *cobra.Command, args []string) error {
+		namespace, client, err := app.namespaceClient()
+		if err != nil {
+			return err
+		}
+		if err := remove(client, namespace, args[0]); err != nil {
+			return err
+		}
+		return app.printDeletion(kind, args[0])
+	}
+}
+
 func (app *application) configurationCommand() *cobra.Command {
 	command := commandGroup("configuration", "Manage Configurations in the selected Namespace")
 	command.Args = missingCommandArgs(map[string]string{
@@ -340,16 +353,7 @@ func (app *application) configurationCommand() *cobra.Command {
 		Use:   "delete ID",
 		Short: "Delete an unreferenced Configuration",
 		Args:  idArgs(configurationIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteConfiguration(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("configuration", args[0])
-		},
+		RunE:  app.deleteHandler("configuration", (*occclient.Client).DeleteConfiguration),
 	}
 
 	command.AddCommand(create, get, update, deleteCommand)
@@ -421,16 +425,7 @@ func (app *application) secretCommand() *cobra.Command {
 		Use:   "delete ID",
 		Short: "Delete an unbound Secret",
 		Args:  idArgs(secretIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteSecret(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("secret", args[0])
-		},
+		RunE:  app.deleteHandler("secret", (*occclient.Client).DeleteSecret),
 	}
 
 	list := &cobra.Command{
@@ -495,16 +490,7 @@ func (app *application) presetCommand() *cobra.Command {
 		Use:   "delete ID",
 		Short: "Delete a Preset; Agents and Configurations created from it are unchanged",
 		Args:  idArgs(presetIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeletePreset(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("preset", args[0])
-		},
+		RunE:  app.deleteHandler("preset", (*occclient.Client).DeletePreset),
 	}
 
 	command.AddCommand(list, get, deleteCommand)
@@ -577,16 +563,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		Use:   "delete ID",
 		Short: "Delete a credential source and retire its credential",
 		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteCredentialSource(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("credential-source", args[0])
-		},
+		RunE:  app.deleteHandler("credential-source", (*occclient.Client).DeleteCredentialSource),
 	}
 
 	var updateFile string
@@ -1184,29 +1161,22 @@ func matchesRevisionIdentity(record map[string]any, namespace, agentID, revision
 // It stops below the revision's number, or returns nil when the list does not
 // include it.
 func revisionSummary(client *occclient.Client, namespace, agentID, revisionID string, number float64) (map[string]any, error) {
-	cursor := ""
-	for {
-		page, err := client.ListAgentRevisions(namespace, agentID, 100, cursor)
+	for item, err := range client.AgentRevisions(namespace, agentID, 100) {
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range page.Revisions {
-			summary, _ := item.(map[string]any)
-			if summary["id"] == revisionID {
-				if !matchesRevisionIdentity(summary, namespace, agentID, revisionID) {
-					return nil, fmt.Errorf("OCC returned a revision summary that does not match the requested Namespace and Agent")
-				}
-				return summary, nil
+		summary, _ := item.(map[string]any)
+		if summary["id"] == revisionID {
+			if !matchesRevisionIdentity(summary, namespace, agentID, revisionID) {
+				return nil, fmt.Errorf("OCC returned a revision summary that does not match the requested Namespace and Agent")
 			}
-			if listed, ok := summary["revision"].(float64); ok && number > 0 && listed < number {
-				return nil, nil
-			}
+			return summary, nil
 		}
-		if page.NextCursor == "" || page.NextCursor == cursor {
+		if listed, ok := summary["revision"].(float64); ok && number > 0 && listed < number {
 			return nil, nil
 		}
-		cursor = page.NextCursor
 	}
+	return nil, nil
 }
 
 // A lost connection or interrupted request can leave a mutation unconfirmed.
