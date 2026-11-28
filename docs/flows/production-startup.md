@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-24"
-last_updated_session: "authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c"
+updated: "2026-11-25"
+last_updated_session: "authoring-run/178ebf38-4eb3-485d-9582-a65c54236dbf"
 ---
 
 # Production Startup Flow
@@ -81,13 +81,13 @@ Queries reconnect.
 ### 1. Prepare native production inputs
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
-[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
-It pins the kubeconfig, disables kubectl preferences and rejects redirects over
-private Unix sockets. Exec plugins require opt-in. For a Service dependency, it
-reads the Service and checks the named NetworkPolicy's egress grants.
+[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md).
+It pins kubeconfig and rejects redirects. `--require-kuberc` pins the operator's
+credential plugin policy. Otherwise preferences are disabled and exec requires
+opt-in. Each read connects to the private proxy, rechecks any required policy
+and sends one GET. A disconnect never triggers another GET. Service checks compare NetworkPolicy grants.
 [EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
-requires opt-in for all credentials. It verifies the account, ARN, endpoint
-and CA before reading API Service and EndpointSlice addresses.
+verifies account, ARN, endpoint and CA before reading Service and EndpointSlice addresses.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
@@ -242,29 +242,26 @@ Git owner, receipt listener, metrics, and database. It continues after errors an
 until grace expires. Failed startup closes the installed Driver package, even
 if refused, and preserves the original error.
 
-When set, `controlPlane.nodeSelector` places the API, worker, migration,
-bootstrap, and private proxy on reviewed control-plane nodes. The
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` template sets
-`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute owns tenant
-Gateway and Agent placement.
+Optional `controlPlane.nodeSelector` places API, worker, migration,
+bootstrap and private proxy on reviewed nodes.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` sets
+`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute places tenant
+Gateways and Agents.
 
-With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
-active client mounts. It normalizes relative paths, dot segments, and trailing
-slashes for comparison and emits accepted paths as supplied.
+With `database.caSecretName`, `_helpers.tpl` rejects paths masking active client
+mounts. It normalizes relative paths, dot segments and trailing slashes for
+comparison only.
 
-The [control-plane NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-keep release ingress restricted. The release-wide default deny selects API and
-worker Pods, but Kubernetes combines selected egress grants: a policy for
-components `api` and `worker` allows unrestricted egress. Initialization has a
-separate DNS, database, and Kubernetes API grant. Agent, Sandbox, collector, and
-proxy Pods do not receive the control-plane grant. Pre-install initialization
-retains its hook DNS and database grants.
+[NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
+restrict release ingress. Kubernetes combines grants. Despite release-wide
+default deny, only `api` and `worker` components receive the unrestricted
+control-plane egress grant. Initialization allows DNS, database and Kubernetes
+API access. Pre-install hooks retain DNS and database grants.
 
-Managed channel egress uses one installation configuration for the reserved
-OCC provider listener and per-Agent listener allocation. The listener fleet
-restricts ingress to its authorized callers. Startup records an unavailable
-listener as a warning; channel operations fail closed while OCC stays available.
-See [channel egress](channel-egress.md).
+[Channel egress](channel-egress.md) configures the reserved OCC provider
+listener and per-Agent listener allocation together. Listeners admit only
+authorized callers. If unavailable, startup warns, channel operations fail
+closed and OCC stays available.
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs
@@ -371,6 +368,8 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-25 04:07: Wait for the private proxy before a read. (authoring-run/178ebf38-4eb3-485d-9582-a65c54236dbf - 5d3ecae51db52a4b559e0731cf6b6801617f5761)
+- 2026-11-24 23:03: Check the selected credential plugin policy before Kubernetes reads. (authoring-run/16c42be4-2ccf-4749-aa31-ff8545237a2d - a012271e4e3b5d6688fcfb49c2803e4c7faf4390)
 - 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
 
 - 2026-11-24 10:41: Trace unrestricted API and refresh Worker egress while preserving initialization isolation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)

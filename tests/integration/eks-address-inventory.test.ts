@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { writeCommand } from "../helpers/fake-commands.ts";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 
 const clusterArn = "arn:aws:eks:us-west-2:123456789012:cluster/oce-test";
 const endpoint = "https://eks.example.test";
@@ -71,6 +71,15 @@ process.stdout.write(JSON.stringify({
 }));`,
     helpers,
   );
+  const stderr = expectInventoryFailure(kubeconfig, {
+    PATH: directory,
+    FAULT: fault,
+    ...(fault === "preferences-managed" ? {} : { KUBECTL_KUBERC: "false" }),
+  });
+  return { stderr, awsLog, proxyLog };
+}
+
+function expectInventoryFailure(kubeconfig: string, env: NodeJS.ProcessEnv, ...args: string[]) {
   const result = spawnSync(
     process.execPath,
     [
@@ -81,21 +90,14 @@ process.stdout.write(JSON.stringify({
       kubeconfig,
       "--context",
       "oce-test",
+      ...args,
     ],
-    {
-      encoding: "utf8",
-      timeout: 15_000,
-      env: {
-        PATH: directory,
-        FAULT: fault,
-        ...(fault === "preferences-managed" ? {} : { KUBECTL_KUBERC: "false" }),
-      },
-    },
+    { encoding: "utf8", timeout: 15_000, env },
   );
   assert.ifError(result.error);
   assert.equal(result.status, 2, result.stderr);
   assert.equal(result.stdout, "");
-  return { stderr: result.stderr, awsLog, proxyLog };
+  return result.stderr;
 }
 
 test("EKS inventory refuses mixed-cluster and partial provider observations", async (t) => {
@@ -125,4 +127,90 @@ test("EKS inventory requires the credential owner's opt-in before provider or AP
   assert.match(stderr, /requires explicit KUBECTL_KUBERC=false/u);
   await assert.rejects(readFile(awsLog), { code: "ENOENT" });
   await assert.rejects(readFile(proxyLog), { code: "ENOENT" });
+});
+
+const denyAll = {
+  apiVersion: "kubectl.config.k8s.io/v1beta1",
+  kind: "Preference",
+  credentialPluginPolicy: "DenyAll",
+};
+
+test("required kuberc rejects invalid policy or a conflicting opt-out before any command runs", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-inventory-policy-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, "commands");
+  for (const name of ["aws", "kubectl"]) {
+    await writeCommand(directory, name, "exit 1", { log: calls });
+  }
+  const path = join(directory, "kuberc");
+  const valid = JSON.stringify(denyAll);
+  for (const [contents, gate] of [
+    [valid.slice(0, -1), undefined],
+    [`{"credentialPluginPolicy":"AllowAll",${valid.slice(1)}`, undefined],
+    [
+      JSON.stringify({
+        ...denyAll,
+        defaults: [{ command: "proxy", options: [{ name: "address", default: "0.0.0.0" }] }],
+      }),
+      undefined,
+    ],
+    [
+      JSON.stringify({
+        ...denyAll,
+        credentialPluginPolicy: "Allowlist",
+        credentialPluginAllowlist: [{ command: "aws" }],
+      }),
+      undefined,
+    ],
+    [valid, "false"],
+  ] as const) {
+    await writeFile(path, contents);
+    const stderr = expectInventoryFailure(
+      join(directory, "kubeconfig"),
+      { PATH: directory, KUBERC: path, KUBECTL_KUBERC: gate },
+      "--require-kuberc",
+    );
+    assert.match(stderr, /kuberc/iu);
+    await assert.rejects(readFile(calls), { code: "ENOENT" });
+  }
+});
+
+test("required kuberc rejects unqualified kubectl releases and platforms before reading the selected context", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-inventory-client-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const policy = join(directory, "kuberc");
+  await writeFile(policy, JSON.stringify(denyAll));
+  // Only the client version probe should run. Genuine supported clients exercise
+  // both plugin policies in the installation prerequisite transport suite.
+  const calls = join(directory, "commands");
+  await writeCommand(directory, "kubectl", `printf '%s\\n' "$CLIENT_VERSION"`, { log: calls });
+  await writeCommand(directory, "aws", "exit 1", { log: calls });
+  const client = {
+    major: "1",
+    minor: "36",
+    gitVersion: "v1.36.4",
+    gitTreeState: "clean",
+    platform: "linux/amd64",
+  };
+  for (const change of [
+    { gitVersion: "v1.36.5" },
+    { minor: "35", gitVersion: "v1.35.1" },
+    { platform: "linux/arm64" },
+    { platform: "darwin/amd64" },
+  ]) {
+    await rm(calls, { force: true });
+    const stderr = expectInventoryFailure(
+      join(directory, "kubeconfig"),
+      {
+        PATH: directory,
+        KUBERC: policy,
+        CLIENT_VERSION: JSON.stringify({ clientVersion: { ...client, ...change } }),
+      },
+      "--require-kuberc",
+    );
+    const [probe, ...laterCalls] = await commandCalls(calls);
+    assert.ok(probe?.includes("--kubeconfig /dev/null version --client"));
+    assert.deepEqual(laterCalls, [], JSON.stringify(change));
+    assert.match(stderr, /stock kubectl/u);
+  }
 });

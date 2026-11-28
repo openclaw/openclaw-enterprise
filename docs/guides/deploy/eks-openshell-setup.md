@@ -16,11 +16,9 @@ After preparation, [install OCE](eks-openshell-installation.md) in the same prot
 ## Before you start
 
 Check credential policy before provisioning resources. The EKS kubeconfig below
-uses the AWS CLI as a credential plugin. Run the [prerequisite commands](prerequisite-diagnosis.md)
-with this trusted kubeconfig only when the credential owner permits running the
-plugin without kubectl preferences. If policy requires those preferences,
-obtain the address inventory through the infrastructure workflow. For diagnosis,
-follow the [credential requirements](prerequisite-diagnosis.md#select-the-resources-and-expected-addresses).
+uses the AWS CLI as a credential plugin. For both prerequisite commands, follow
+the [credential owner's policy](prerequisite-diagnosis.md#keep-the-credential-plugin-policy-in-force).
+If the policy cannot be used, obtain the inventory through the infrastructure workflow.
 
 ### Prepare AWS infrastructure
 
@@ -137,7 +135,8 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 After both node groups are ready, set `EKS_CLUSTER_ARN` from your infrastructure
 outputs. Follow the [credential and permissions requirements](prerequisite-diagnosis.md#collect-eks-addresses).
 Run this example only with approval to disable kubectl preferences for the
-command. Otherwise use the infrastructure owner's reviewed inventory. Refresh
+command. To retain a required plugin policy, set `KUBERC` instead and add
+[`--require-kuberc`](prerequisite-diagnosis.md#keep-the-credential-plugin-policy-in-force). Refresh
 the addresses before installing or upgrading OCC, or after webhook timeouts.
 
 ```bash
@@ -210,7 +209,8 @@ reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
 and put the intended cluster ARN in `eks.clusterArn`.
 
 Run with the trusted EKS kubeconfig if the credential owner approves disabling
-kubectl preferences for this invocation.
+kubectl preferences for this invocation. Otherwise follow the
+[required policy instructions](prerequisite-diagnosis.md#keep-the-credential-plugin-policy-in-force).
 
 ```bash
 KUBECTL_KUBERC=false TMPDIR="$RUN_DIR" node scripts/diagnose-kubernetes-prerequisites.ts \
