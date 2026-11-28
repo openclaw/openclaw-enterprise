@@ -343,29 +343,34 @@ before retrying. Verify existing PVC identities, sessions and channels after cut
 
 ### Rotate the service key and certificates
 
-For service-key rotation, first add the new key under another client ID in the
-Envoy Secret while keeping `occ` unchanged. After Envoy accepts it, move the new
-key to `occ` while retaining the previous value under a different client ID.
-Wait for the API's mounted Secret to update and verify a new request, then
-remove the previous key and verify rejection. OCC reads the file for each
-operation; it does not require a restart for key rotation.
+**Service key.** OCC rereads the key per operation without restarting.
 
-The generated root has a ten-year lifetime and reuses its private key on
-renewal. The leaf has a 90-day lifetime; cert-manager renews both certificates
-30 days before expiry. Leaf renewal needs no OCC restart: new WSS connections
-keep normal CA and hostname verification while the issuing CA remains trusted.
+1. Keep `occ` unchanged. Add the new key under another client ID in the Envoy Secret.
+2. Once Envoy accepts it, set `occ` to it and keep the previous key under another ID.
+3. Verify the file at `OCC_GATEWAY_API_KEY_PATH` matches the new key in every API
+   and worker Pod without displaying either key. Requests can succeed with either.
+4. Remove the old key. Confirm Envoy rejects it and accepts the new key.
+   Read a workspace file through OCC.
 
-Automatic setup does not coordinate CA rollover: preserve the CA Secret, plan
-backups, and control trust changes. For a CA key replacement, distribute an
-overlapping old/new public trust bundle and restart the API to load it before
-switching Envoy's certificate. Remove the old root only after no serving
-certificate depends on it, including after a move to an external issuer, which
-leaves the generated root Secret behind. Any private root bundle change requires an API
-restart because Node reads `NODE_EXTRA_CA_CERTS` only at process startup.
-With [private IdP trust](oidc-sign-in.md#trust-a-private-idp-ca), replace the API Pod
-to rebuild its combined bundle. This
-integration uses API-key authentication over WSS; the pinned native client does
-not expose mTLS client-certificate options.
+**Renewal.** The generated ten-year root reuses its key. The leaf lasts 90 days.
+cert-manager renews both 30 days before expiry. Leaf renewal under the trusted
+CA needs no restart.
+
+**CA rollover.** Back up the signing Secret. A separate trust bundle requires an
+[explicit issuer](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
+It replaces the listener issuer and removes the chart’s generated issuers
+and root Certificate. Stage trust first or plan downtime.
+
+1. Serve the old chain through an independent issuer. Select both roots with
+   `gatewayRouting.caSecretName` and `gatewayRouting.caSecretKey`.
+2. Replace API and worker Pods. API replacement rebuilds [IdP trust](oidc-sign-in.md#trust-a-private-idp-ca).
+   Once they load the bundle, [deploy new versions](../topics/agent-revisions.md#update-and-deploy)
+   of affected Agents through OCC. Confirm each new workspace node trusts the intended roots.
+3. Switch Envoy’s certificate. Verify fresh OCC and authenticated Harness connections.
+4. Remove the old root once no chain needs it. Repeat step 2 and connection checks.
+
+OCC uses the service key over WSS with CA and hostname verification.
+The pinned native client has no mTLS client-certificate option.
 
 ### Troubleshooting
 
