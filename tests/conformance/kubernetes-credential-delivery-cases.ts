@@ -615,6 +615,7 @@ export function checkSlackCredentialBindings(
     channelConfiguration({ slack: { appToken: envRef("SLACK_APP_TOKEN"), botToken } });
   const slackAccount = (account: OpenClawConfigurationDocument) =>
     channelConfiguration({ slack: { accounts: { ops: account } } });
+  const slackConfig = slackToken(envRef("SLACK_BOT_TOKEN"));
   const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
   const unboundBotRefusal = {
     name: "ConfigurationHarnessError",
@@ -625,7 +626,7 @@ export function checkSlackCredentialBindings(
   // satisfy a Slack token reference that requires a Credential Source.
   assert.throws(
     () =>
-      validate(slackToken(envRef("SLACK_BOT_TOKEN")), {
+      validate(slackConfig, {
         ...appBinding,
         SLACK_BOT_TOKEN: {
           source: {
@@ -637,12 +638,14 @@ export function checkSlackCredentialBindings(
       }),
     unboundBotRefusal,
   );
-  assert.throws(
-    () => validate(slackToken(envRef("SLACK_BOT_TOKEN")), appBinding),
-    unboundBotRefusal,
-  );
+  assert.throws(() => validate(slackConfig, appBinding), unboundBotRefusal);
+  assert.throws(() => validate(slackConfig, { SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN }), {
+    name: "ConfigurationHarnessError",
+    message: unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN"),
+  });
+  validate(slackConfig, secretBindings);
   // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
-  validate(slackToken(envRef("SLACK_BOT_TOKEN")), null);
+  validate(slackConfig, null);
   // Inherited keys cannot satisfy a binding. Quote non-plain names and shorten long names
   // without losing the setting path prefix or exceeding the diagnostic limit.
   const unboundId = `constructor ${"x".repeat(300)}`;
