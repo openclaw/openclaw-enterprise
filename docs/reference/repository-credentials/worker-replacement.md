@@ -79,7 +79,8 @@ produced a different combined fingerprint.
 
 For the first upgrade from a controller that returns inventory without this
 assessment, even a revision without repository access cannot establish
-`not-applicable`. Stop and settle retained running Agents before preparation, or
+`not-applicable`. The helper refuses with `assessment-unavailable`, not
+`unknown`. Stop and settle retained running Agents before preparation, or
 use the authorized runtime replacement workflow. A complete inventory with no
 retained running revisions needs no assessment. The helper never infers an empty
 fleet or bypasses this check to upgrade the controller first.
