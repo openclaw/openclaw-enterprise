@@ -2476,7 +2476,7 @@
     },
     {
       "driver": "ssh",
-      "path": "tests/integration/ssh-compute-real.test.mjs",
+      "path": "tests/integration/ssh-compute-real.test.ts",
       "start": 92,
       "end": 113,
       "description": "Explicit host/systemd/runtime prerequisites; tests real SSH lifecycle; not run by this audit."

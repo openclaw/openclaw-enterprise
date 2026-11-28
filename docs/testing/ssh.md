@@ -91,7 +91,7 @@ OCC_TEST_SSH_OPENCLAW_PATH=/opt/openclaw/current/dist/index.js \
 OCC_TEST_SSH_RUNTIME_USER=openclaw \
 OCC_TEST_SSH_ROOT=/var/lib/openclaw-enterprise \
 OCC_TEST_SSH_UNIT_DIRECTORY=/etc/systemd/system \
-node --test tests/integration/ssh-compute-real.test.mjs
+node --test tests/integration/ssh-compute-real.test.ts
 ```
 
 The host must have ports `18800`–`18899` available. The suite creates unique
@@ -113,7 +113,7 @@ readiness fails; keep logs free of credential values.
 With the disposable SSH host inputs above, also set `OCC_TEST_SSH_MODEL=1`,
 `OCC_TEST_OPENAI_API_KEY_FILE` to a protected local file containing an authorized
 OpenAI API key, and optionally `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`). Run the
-same `tests/integration/ssh-compute-real.test.mjs` file. This selector requires
+same `tests/integration/ssh-compute-real.test.ts` file. This selector requires
 the SSH inputs and fails if the host or credential is unavailable; it never
 substitutes the local systemd fixture.
 
