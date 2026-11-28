@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-19 23:19"
-last_updated_session: "authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60"
+updated: "2026-11-20 05:35"
+last_updated_session: "authoring-run/7370feb3-e0a5-4983-a8b4-62f810b36402"
 ---
 
 # CI resource preparation
@@ -241,12 +241,12 @@ return no callback. The standalone CLI refuses consumers before extraction;
 the runner owns their callback. Lane cleanup removes journaled image tags.
 Invalid images, source commits, or binary versions produce fixed errors.
 
-The suite map owns fixed selection flags, required input names, and the resources each lane needs. Preparation consumes those descriptors instead of maintaining parallel lane lists. External model, ChatGPT and Slack credentials come only from the selected protected environment. Missing selected inputs fail rather than turning the lane into a skipped success.
+Preparation derives flags, required inputs and resources from the suite map. Model, ChatGPT and Slack credentials come from the selected protected environment. Missing required inputs fail the lane.
 
-Routing preparation installs pinned Gateway API, cert-manager v1.18.4, and Envoy
-Gateway v1.6.7 controllers and creates a private test CA. It imports immutable
-controller and runtime references so OCC can reach Envoy through its ClusterIP
-Service.
+Routing installs pinned Gateway API, cert-manager v1.18.4 and Envoy Gateway v1.6.7,
+creates a test CA, and imports pinned OCC images. For a [cert-manager mirror](../../testing/ci/run-lanes.md#cert-manager-image-mirrors),
+`prepareK3dGatewayRouting` checks the owned AMD64 nodes and imports all three image
+digests before applying the manifest with the cluster's selected kubectl.
 
 OpenShell preparation uses digest-pinned K3s v1.36.4, installs matching kubectl
 and Agent Sandbox resources, obtains the OpenShell CLI and chart, and imports
@@ -274,7 +274,7 @@ The OpenShell test owns management port-forwards throughout the test. Teardown s
 
 ## Debugging and Verification
 
-Preparation errors go to stderr; successful CLI output lists exported names.
+Preparation reports errors on stderr and lists exported names on success.
 See [lane verification](../../testing/ci/run-lanes.md).
 
 ## Related docs
@@ -284,6 +284,8 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 05:35: Bind cert-manager mirror images before apply. (authoring-run/7370feb3-e0a5-4983-a8b4-62f810b36402 - e057841137387505ce6f5305ca0f146d5789a8e4)
 
 - 2026-11-19 23:19: Stop queued logging pulls after failure. (authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60 - d271eef41c4169a072750dca326fd4a00d19da00)
 

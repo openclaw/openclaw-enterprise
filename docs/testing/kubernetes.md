@@ -296,6 +296,8 @@ trusts the issuer, clean up and retry preparation with
 `node --use-system-ca scripts/ci/prepare.ts` and the same arguments.
 TLS and SHA-256 checks stay enabled.
 
+See [cert-manager image mirrors](ci/run-lanes.md#cert-manager-image-mirrors).
+
 ### Native workspace identity
 
 Prepare native runtime and Envoy images, then set both `OCC_TEST_RUNTIME_IMAGE`

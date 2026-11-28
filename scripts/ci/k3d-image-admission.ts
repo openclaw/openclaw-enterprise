@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type { preloadAgentSandboxController } from "./agent-sandbox.ts";
 import type { createK3dNodeImages } from "./k3d-node-images.ts";
 import {
   isPreparationResource,
@@ -14,7 +13,7 @@ import { pullImage } from "./image-pull.ts";
 import { execFile } from "./prepare-command.ts";
 import { randomSuffix, slug } from "./resource-names.ts";
 
-type NativeImageSelection = Parameters<Parameters<typeof preloadAgentSandboxController>[2]>[2];
+export type NativeImageSelection = { platform: string; configDigest: string; cacheIndex?: string };
 type NodeImages = ReturnType<typeof createK3dNodeImages>;
 type ImageCluster = Pick<K3dCluster, "name"> & { nodes: readonly string[] };
 type ImageOwnership = Pick<PreparationState, "resources"> &
@@ -57,6 +56,21 @@ function stateOwnsImageTag(state: ImageOwnership, image: string) {
 
 function localImportTag(cluster: ImageCluster, envName: string) {
   return `localhost/${cluster.name}/${slug(envName)}-${randomSuffix()}:local`;
+}
+
+function repositoryDigestAliases(reference: string): string[] {
+  const hubPath = /^(?:index\.)?docker\.io\/(.+)$/u.exec(reference)?.[1];
+  if (!hubPath) {
+    return [reference];
+  }
+  const aliases = [`docker.io/${hubPath}`, `index.docker.io/${hubPath}`];
+  const [namespace] = hubPath.split("/", 1);
+  // Docker reports familiar Hub names. A registry-looking first component
+  // would instead select a different registry if its prefix were removed.
+  if (namespace !== "localhost" && /^[a-z0-9_-]+$/u.test(namespace ?? "")) {
+    aliases.push(hubPath.replace(/^library\/(?=[^/]+$)/u, ""));
+  }
+  return aliases;
 }
 
 // Each image inspect or tag on the host engine, and each check or tag on a k3d node, is
@@ -186,12 +200,14 @@ export async function selectNativeSourceImage(
       : name;
   };
   assertImmutableImageReference(image, envName);
-  assertImmutableImageReference(selection.cacheIndex, envName);
   assertDockerImageId(selection.configDigest, envName);
-  if (
-    repository(image) !== repository(selection.cacheIndex) ||
-    !selection.platform.startsWith("linux/")
-  ) {
+  if (selection.cacheIndex !== undefined) {
+    assertImmutableImageReference(selection.cacheIndex, envName);
+    if (repository(image) !== repository(selection.cacheIndex)) {
+      throw new Error(`${envName} has an invalid native image selection.`);
+    }
+  }
+  if (!selection.platform.startsWith("linux/")) {
     throw new Error(`${envName} has an invalid native image selection.`);
   }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -215,11 +231,11 @@ export async function selectNativeSourceImage(
         details?.exitCode === 1 &&
         !details.signal &&
         ["", "[]"].includes(stdout) &&
-        [
-          `Error response from daemon: No such image: ${expected}`,
-          `Error response from daemon: No such image: ${reference}`,
-          `Error: ${expected}: image not known`,
-        ].includes(diagnostic)
+        [reference, ...repositoryDigestAliases(expected)].some(
+          (alias) =>
+            diagnostic === `Error response from daemon: No such image: ${alias}` ||
+            diagnostic === `Error: ${alias}: image not known`,
+        )
       ) {
         return undefined;
       }
@@ -256,7 +272,11 @@ export async function selectNativeSourceImage(
       return undefined;
     }
     const expected = `${repository(reference)}@sha256:${immutableDigest(reference)}`;
-    if (!Array.isArray(held.repoDigests) || !held.repoDigests.includes(expected)) {
+    const digests = held.repoDigests;
+    if (
+      !Array.isArray(digests) ||
+      !repositoryDigestAliases(expected).some((alias) => digests.includes(alias))
+    ) {
       throw new Error(`${envName} does not match its exact repository digest.`);
     }
     if (
@@ -307,7 +327,7 @@ export async function selectNativeSourceImage(
     }
     return { acquisitionReference: reference, hostImageId: held.id };
   };
-  for (const reference of [image, selection.cacheIndex]) {
+  for (const reference of selection.cacheIndex ? [image, selection.cacheIndex] : [image]) {
     const held = await usable(reference);
     if (held) {
       return held;
@@ -347,7 +367,7 @@ function isK3dImageResource(value: unknown): value is K3dImageResource {
     (resource.nativeSelection === undefined ||
       (typeof selection?.platform === "string" &&
         typeof selection.configDigest === "string" &&
-        typeof selection.cacheIndex === "string")) &&
+        (selection.cacheIndex === undefined || typeof selection.cacheIndex === "string"))) &&
     [
       resource.sourceImage,
       resource.acquisitionReference,

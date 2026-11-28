@@ -7,6 +7,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { preloadAgentSandboxController } from "./agent-sandbox.ts";
+import type { NativeImageSelection } from "./k3d-image-admission.ts";
 import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
 import { downloadPinnedArtifact } from "./routing.ts";
 import { isRecord } from "./records.ts";
@@ -15,7 +16,6 @@ type Environment = Parameters<typeof selectOpenShellCandidate>[0];
 type ExecuteFile = Parameters<typeof verifyOpenShellCandidate>[1]["execFile"];
 type AgentSandboxNodes = Parameters<typeof preloadAgentSandboxController>[1];
 type RegisterControllerImage = Parameters<typeof preloadAgentSandboxController>[2];
-type NativeImageSelection = Parameters<RegisterControllerImage>[2];
 type RegisterImage = (
   image: string,
   description: string,

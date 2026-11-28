@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 
@@ -41,43 +41,61 @@ function writeEnvironmentTest(
   );
 }
 
-export async function checkGatewayRoutingEnvironment(t: TestContext) {
+async function routingFixture(t: TestContext, certManagerManifest?: string) {
   const directory = await temporaryDirectory(t, "openclaw-k8s-routing-selection-");
-  const prepared = await prepareGatewayRouting({
-    cluster: {
-      name: "openclaw-k8s-routing",
-      directory,
-      kubeconfig: join(directory, "kubeconfig"),
-      context: "k3d-openclaw-k8s-routing",
-    },
-    // Only infrastructure I/O is simulated; the environment comes from the real producer.
-    downloadArtifact: async ({ artifact, directory: artifactDirectory }) => {
-      const path = join(artifactDirectory, artifact.path);
-      await writeFile(path, "apiVersion: v1\nkind: List\nitems: []\n");
-      return path;
-    },
-    execFile: async (command, args) => {
-      if (command === "openssl") {
-        const certificatePath = args.find((_, index) => args[index - 1] === "-out");
-        const keyPath = args.find((_, index) => args[index - 1] === "-keyout");
-        assert.ok(
-          certificatePath && !certificatePath.startsWith("-"),
-          "expected -out certificate path",
-        );
-        assert.ok(keyPath && !keyPath.startsWith("-"), "expected -keyout key path");
-        await writeFile(certificatePath, "synthetic certificate");
-        await writeFile(keyPath, "synthetic key");
-      } else {
+  const commands: string[][] = [];
+  const applied: { path: string; manifest: string }[] = [];
+  const cluster = {
+    name: "openclaw-k8s-routing",
+    directory,
+    kubeconfig: join(directory, "kubeconfig"),
+    context: "k3d-openclaw-k8s-routing",
+  };
+  return {
+    directory,
+    commands,
+    applied,
+    options: {
+      cluster,
+      // Only external I/O is simulated. The routing owner prepares and applies its artifacts.
+      downloadArtifact: (async ({ artifact, directory: artifactDirectory }) => {
+        const path = join(artifactDirectory, artifact.path);
+        const manifest = artifact.name === "cert-manager" ? certManagerManifest : undefined;
+        await writeFile(path, manifest ?? "apiVersion: v1\nkind: List\nitems: []\n");
+        return path;
+      }) satisfies NonNullable<Parameters<typeof prepareGatewayRouting>[0]["downloadArtifact"]>,
+      execFile: async (command: string, args: string[]) => {
+        if (command === "openssl") {
+          const certificatePath = args.find((_, index) => args[index - 1] === "-out");
+          const keyPath = args.find((_, index) => args[index - 1] === "-keyout");
+          assert.ok(certificatePath, "expected -out certificate path");
+          assert.ok(keyPath, "expected -keyout key path");
+          await writeFile(certificatePath, "synthetic certificate");
+          await writeFile(keyPath, "synthetic key");
+          commands.push([command]);
+          return;
+        }
         assert.deepEqual(args.slice(0, 4), [
           "--kubeconfig",
-          join(directory, "kubeconfig"),
+          cluster.kubeconfig,
           "--context",
-          "k3d-openclaw-k8s-routing",
+          cluster.context,
         ]);
-      }
-      return { stdout: "", stderr: "" };
+        const operation = args.slice(4);
+        commands.push(operation);
+        if (operation[0] === "apply") {
+          const path = operation.at(-1);
+          assert.ok(path, "expected a manifest path");
+          applied.push({ path, manifest: await readFile(path, "utf8") });
+        }
+      },
     },
-  });
+  };
+}
+
+export async function checkGatewayRoutingEnvironment(t: TestContext) {
+  const { directory, options } = await routingFixture(t);
+  const prepared = await prepareGatewayRouting(options);
 
   // Shared routing preparation must leave opt-in selection to the runner's lane/file inputs.
   const env: NodeJS.ProcessEnv = prepared.env;
@@ -91,6 +109,140 @@ export async function checkGatewayRoutingEnvironment(t: TestContext) {
     OCC_TEST_GATEWAY_CA_KEY_PATH: join(caDirectory, "key.pem"),
     NODE_EXTRA_CA_CERTS: join(caDirectory, "cert.pem"),
   });
+}
+
+const certManagerMirrorImages = [
+  {
+    deployment: "cert-manager-cainjector",
+    image: "cert-manager-cainjector",
+    digest: "7d76b4378f6fd5521322e9836b655f16a4adc3b25a17cd11f85a174193459513",
+    config: "ad1b7e44d0855e7f33a846363dc693142b98cb73c7e2f9adadf6bb01aa8086bd",
+  },
+  {
+    deployment: "cert-manager",
+    image: "cert-manager-controller",
+    digest: "c05a0e8f600db90be597b88ecd922b469e238846647779ce9ab1fd919ff55866",
+    config: "df7ffea66a7c13783be15587323d51038564d4880cc6b30ca09f3937f2ddc251",
+  },
+  {
+    deployment: "cert-manager-webhook",
+    image: "cert-manager-webhook",
+    digest: "02cb2d48cea58f1d8ae8ac4438a92c8c3e2e9892c3f53ad59f047a07e6d5f2e6",
+    config: "f5665e37afc016001c1eb87bed62694bdea9aa05cac27468f43fbfe2633cda6d",
+  },
+];
+
+export async function checkGatewayRoutingImageMirror(t: TestContext) {
+  const prefix = "registry.example:5000/dependencies";
+  const platform = "linux/amd64";
+  const images = certManagerMirrorImages.map(({ deployment, image, digest, config }, index) => ({
+    deployment,
+    image,
+    upstream: `quay.io/jetstack/${image}:v1.18.4`,
+    mirrored: `${prefix}/${image}@sha256:${digest}`,
+    configDigest: `sha256:${config}`,
+    // A native container archive can have a different manifest digest from its registry source.
+    alias: `localhost/openclaw-k8s-routing/${image}@sha256:${String(index + 1).repeat(64)}`,
+  }));
+  const pinnedManifest = images
+    .map(({ deployment, image, upstream }) =>
+      [
+        "apiVersion: apps/v1",
+        "kind: Deployment",
+        "metadata:",
+        `  name: ${deployment}`,
+        "  namespace: cert-manager",
+        "spec:",
+        "  template:",
+        "    spec:",
+        "      containers:",
+        `        - name: ${image}`,
+        `          image: "${upstream}"`,
+        "          imagePullPolicy: IfNotPresent",
+        "          args:",
+        "          - --v=2",
+        "",
+      ].join("\n"),
+    )
+    .join("---\n");
+
+  for (const webhookAvailable of [false, true]) {
+    await t.test(
+      webhookAvailable
+        ? "applies admitted aliases before readiness"
+        : "withholds apply when the last image is missing",
+      async (scenario) => {
+        const { directory, options, commands, applied } = await routingFixture(
+          scenario,
+          pinnedManifest,
+        );
+        const artifactDirectory = join(directory, "gateway-routing");
+        const originalPath = join(artifactDirectory, "cert-manager-v1.18.4.yaml");
+        const kubectl = join(directory, "pinned-kubectl");
+        const preparation = prepareGatewayRouting({
+          ...options,
+          cluster: { ...options.cluster, kubectl },
+          execFile: (command, args) => {
+            if (command !== "openssl") {
+              assert.equal(command, kubectl);
+            }
+            return options.execFile(command, args);
+          },
+          certManagerMirror: {
+            prefix,
+            platform,
+            registerImage: async (image, _description, selection) => {
+              commands.push(["admit", image, selection.platform, selection.configDigest]);
+              const expected = images.find(({ mirrored }) => mirrored === image);
+              assert.ok(expected, `unexpected mirror image ${image}`);
+              if (!webhookAvailable && expected.image === "cert-manager-webhook") {
+                throw new Error("webhook mirror image was unavailable");
+              }
+              return expected.alias;
+            },
+          },
+        });
+        const admissions = images.map(({ mirrored, configDigest }) => [
+          "admit",
+          mirrored,
+          platform,
+          configDigest,
+        ]);
+        if (!webhookAvailable) {
+          await assert.rejects(preparation, /webhook mirror image was unavailable/u);
+          assert.deepEqual(commands, admissions);
+          assert.deepEqual((await readdir(artifactDirectory)).sort(), [
+            "cert-manager-v1.18.4.yaml",
+            "envoy-gateway-v1.6.7-install.yaml",
+          ]);
+        } else {
+          const result = await preparation;
+          const appliedCertManager = applied[0];
+          assert.ok(appliedCertManager);
+          assert.equal(result.artifacts.manifests.certManager, originalPath);
+          assert.notEqual(appliedCertManager.path, originalPath);
+          let expectedManifest = pinnedManifest.replaceAll(
+            "imagePullPolicy: IfNotPresent",
+            "imagePullPolicy: Never",
+          );
+          for (const { upstream, alias } of images) {
+            expectedManifest = expectedManifest.replace(upstream, alias);
+          }
+          assert.equal(appliedCertManager.manifest, expectedManifest);
+          assert.deepEqual(commands.slice(0, admissions.length), admissions);
+          assert.equal(commands[admissions.length + 1]?.[0], "apply");
+          assert.ok(
+            commands.some(
+              ([command, , deployment]) =>
+                command === "rollout" && deployment === "deployment/cert-manager-webhook",
+            ),
+          );
+          assert.equal(result.env.OCC_TEST_GATEWAY_ROUTING_REAL, "1");
+        }
+        assert.equal(await readFile(originalPath, "utf8"), pinnedManifest);
+      },
+    );
+  }
 }
 
 export async function checkFileEnvironmentPrecedence(t: TestContext) {

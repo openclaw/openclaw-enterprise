@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { isIPv6 } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
+import type { NativeImageSelection } from "./k3d-image-admission.ts";
 
 interface ArtifactSource {
   name: string;
@@ -35,16 +37,28 @@ interface RoutingCluster {
   directory: string;
   kubeconfig: string;
   context: string;
+  kubectl?: string;
   disabledK3sAddons?: string | readonly string[] | null | undefined;
 }
 
 // The command's completion or rejection matters. Its output is unused.
 type ExecFile = (command: string, args: string[]) => void;
 
+interface CertManagerMirror {
+  prefix: string;
+  platform: string;
+  registerImage: (
+    image: string,
+    description: string,
+    selection: NativeImageSelection,
+  ) => Promise<string>;
+}
+
 interface RoutingPreparation {
   cluster: RoutingCluster;
   execFile: ExecFile;
   downloadArtifact?: (request: ArtifactDownload) => string | PromiseLike<string>;
+  certManagerMirror?: CertManagerMirror;
 }
 
 const envoyGateway = Object.freeze({
@@ -67,6 +81,24 @@ const certManager = Object.freeze({
   namespace: "cert-manager",
   deployments: ["cert-manager", "cert-manager-cainjector", "cert-manager-webhook"],
 });
+
+const certManagerAmd64Images = [
+  {
+    name: "cert-manager-cainjector",
+    manifestDigest: "sha256:7d76b4378f6fd5521322e9836b655f16a4adc3b25a17cd11f85a174193459513",
+    configDigest: "sha256:ad1b7e44d0855e7f33a846363dc693142b98cb73c7e2f9adadf6bb01aa8086bd",
+  },
+  {
+    name: "cert-manager-controller",
+    manifestDigest: "sha256:c05a0e8f600db90be597b88ecd922b469e238846647779ce9ab1fd919ff55866",
+    configDigest: "sha256:df7ffea66a7c13783be15587323d51038564d4880cc6b30ca09f3937f2ddc251",
+  },
+  {
+    name: "cert-manager-webhook",
+    manifestDigest: "sha256:02cb2d48cea58f1d8ae8ac4438a92c8c3e2e9892c3f53ad59f047a07e6d5f2e6",
+    configDigest: "sha256:f5665e37afc016001c1eb87bed62694bdea9aa05cac27468f43fbfe2633cda6d",
+  },
+];
 
 const gatewayApiCrds = Object.freeze([
   "gatewayclasses.gateway.networking.k8s.io",
@@ -116,7 +148,7 @@ function assertCluster(cluster: RoutingCluster): RoutingCluster {
 }
 
 async function kubectl(cluster: RoutingCluster, execFile: ExecFile, ...args: string[]) {
-  await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+  await execFile(cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl", [
     "--kubeconfig",
     cluster.kubeconfig,
     "--context",
@@ -312,6 +344,89 @@ export async function downloadPinnedArtifact({ artifact, directory }: ArtifactDo
   return destination;
 }
 
+export function assertCertManagerMirrorPrefix(prefix: string) {
+  const [registry = "", ...repository] = prefix.split("/");
+  const [, host, port] =
+    /^(\[[a-f0-9:.]+\]|[a-z0-9.-]+)(?::([1-9]\d{0,4}))?$/u.exec(registry) ?? [];
+  const ipv6 = host?.startsWith("[") && isIPv6(host.slice(1, -1));
+  if (
+    !host ||
+    !(
+      ipv6 ||
+      host.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label))
+    ) ||
+    !(ipv6 || host === "localhost" || host.includes(".") || port) ||
+    (port !== undefined && Number(port) > 65535) ||
+    repository.length === 0 ||
+    !repository.every((component) => /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/u.test(component))
+  ) {
+    throw new Error(
+      "OCC_CI_CERT_MANAGER_IMAGE_MIRROR must be a qualified registry/repository prefix.",
+    );
+  }
+}
+
+async function prepareMirroredCertManagerManifest(
+  cluster: RoutingCluster,
+  directory: string,
+  originalPath: string,
+  { prefix, platform, registerImage }: CertManagerMirror,
+) {
+  const original = await readFile(originalPath, "utf8");
+  // Match the container blocks of the pinned release without reserializing its other resources.
+  const containers = [
+    ...original.matchAll(
+      /^ {6}containers:\n {8}- name: ([a-z0-9-]+)\n {10}image: "([^"\n]+)"\n {10}imagePullPolicy: IfNotPresent$/gmu,
+    ),
+  ];
+  const imageFields = original.match(/^[ \t]*image(?:PullPolicy)?:/gmu);
+  if (
+    containers.length !== certManagerAmd64Images.length ||
+    imageFields?.length !== containers.length * 2
+  ) {
+    throw new Error(
+      "The pinned cert-manager manifest has unexpected container images or pull policies.",
+    );
+  }
+  const inputs = certManagerAmd64Images.map(({ name, manifestDigest, configDigest }) => {
+    const upstream = `quay.io/jetstack/${name}:${certManager.version}`;
+    const block = containers.find(
+      ([, container, image]) => container === name && image === upstream,
+    );
+    if (!block) {
+      throw new Error(
+        `The pinned cert-manager manifest has an unexpected container image for ${name}.`,
+      );
+    }
+    return { name, manifestDigest, configDigest, upstream, block: block[0] };
+  });
+
+  let prepared = original;
+  const localPrefix = `localhost/${cluster.name}/`;
+  for (const { name, manifestDigest, configDigest, upstream, block } of inputs) {
+    const reference = await registerImage(`${prefix}/${name}@${manifestDigest}`, name, {
+      platform,
+      configDigest,
+    });
+    if (
+      typeof reference !== "string" ||
+      !reference.startsWith(localPrefix) ||
+      !/^[a-z0-9]+(?:-[a-z0-9]+)*@sha256:[a-f0-9]{64}$/u.test(reference.slice(localPrefix.length))
+    ) {
+      throw new Error(`${name} admission did not return an immutable alias for ${cluster.name}.`);
+    }
+    prepared = prepared.replace(
+      block,
+      block
+        .replace(`image: "${upstream}"`, `image: "${reference}"`)
+        .replace("IfNotPresent", "Never"),
+    );
+  }
+  const preparedPath = join(directory, `cert-manager-${certManager.version}-prepared.yaml`);
+  await writePrivateFile(preparedPath, prepared);
+  return preparedPath;
+}
+
 async function createPrivateTestCa(directory: string, execFile: ExecFile) {
   const caDirectory = join(directory, "test-ca");
   assertInsideDirectory(directory, caDirectory, "test CA directory");
@@ -416,6 +531,7 @@ export async function prepareGatewayRouting({
   cluster,
   execFile,
   downloadArtifact = downloadPinnedArtifact,
+  certManagerMirror,
 }: RoutingPreparation) {
   assert.equal(typeof execFile, "function", "prepareGatewayRouting requires an execFile callback.");
   const ownedCluster = assertCluster(cluster);
@@ -425,15 +541,29 @@ export async function prepareGatewayRouting({
     !ownedCluster.disabledK3sAddons?.includes("traefik"),
     "Gateway routing needs K3s's Traefik add-on, which this lane's cluster disables; remove the lane from lanesWithoutK3sAddons in scripts/ci/prepare.ts.",
   );
+  if (certManagerMirror) {
+    assertCertManagerMirrorPrefix(certManagerMirror.prefix);
+    if (certManagerMirror.platform !== "linux/amd64") {
+      throw new Error("The cert-manager image mirror requires linux/amd64 k3d nodes.");
+    }
+  }
   const directory = join(ownedCluster.directory, "gateway-routing");
   assertInsideDirectory(ownedCluster.directory, directory, "routing artifact directory");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
 
-  const [certManagerManifest, envoyGatewayManifest] = await Promise.all([
+  const [originalCertManagerManifest, envoyGatewayManifest] = await Promise.all([
     downloadArtifact({ artifact: certManager, directory }),
     downloadArtifact({ artifact: envoyGateway, directory }),
   ]);
+  const certManagerManifest = certManagerMirror
+    ? await prepareMirroredCertManagerManifest(
+        ownedCluster,
+        directory,
+        originalCertManagerManifest,
+        certManagerMirror,
+      )
+    : originalCertManagerManifest;
   const ca = await createPrivateTestCa(directory, execFile);
   await applyControllers(ownedCluster, execFile, certManagerManifest, envoyGatewayManifest);
 
@@ -450,7 +580,7 @@ export async function prepareGatewayRouting({
       directory,
       ca,
       manifests: {
-        certManager: certManagerManifest,
+        certManager: originalCertManagerManifest,
         envoyGateway: envoyGatewayManifest,
       },
       pins: {
