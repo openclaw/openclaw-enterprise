@@ -249,12 +249,14 @@ API stopped. The Worker response must confirm UID, next generation and zero
 replicas. After drain, recheck UIDs, zero replicas and receipt. Separate
 handoff also requires both generations before Helm.
 
-Separate mode rechecks Secret identities, records writer UIDs and generations,
-and exits 3. Keep writers stopped. Managed apply requires irreversible SQL
-approval. Recheck both writers and the Worker receipt before new intent or a
-SQL-capable Job. Unknown effects retain the lock and kubeconfig. Retry requires
-cleanup of failed verification. Resume requires completed verification and
-matching Secret identities. Keep referenced Secrets unchanged.
+Separate mode rechecks Secrets, records writer UIDs and generations, then exits 3.
+Require irreversible SQL approval. Recheck stopped writers and the Worker receipt
+before intent or SQL submission.
+[Pending apply](../guides/deploy/separate-database-upgrade.md) locks existing
+tables and rechecks Installation ownership transactionally.
+Unknown effects retain the lock and kubeconfig. Clean up failed verification
+before retry. Managed resume requires verified completed history, confirmed Job
+and Pod cleanup, and unchanged Secret identities. Freeze Secrets.
 
 Preserve evidence and [reconcile partial quiescence](../guides/deploy/production-upgrade-recovery.md#restore-incumbent-api-access-after-partial-quiescence).
 Destructive recovery requires human risk review.
@@ -372,6 +374,8 @@ requires no Agents or Secrets.
 - 2026-11-24 11:03: Detect extra writers. (authoring-run/65f2170e-577d-4f04-84c2-0403229d45f7 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
 - 2026-11-24 03:54: Preserve writer stop evidence. (authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4 - 7f069277c2659c8f2fc5f46b702e6062a852c3b0)
+
+- 2026-11-24 03:23: Guard separate apply. (authoring-run/12c5a182-c126-478a-a686-f210351f21be - 3ab8f42b0e1933c0d9510c3f2331d089d244ba1a)
 
 - 2026-11-24 02:21: Recheck writer generations before Helm. (authoring-run/b49fd055-c8ec-4d10-8ba1-536c248c8f66 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 - 2026-11-23 04:18: Preview API. (authoring-run/80b539ac-f508-454c-a905-70939d30ec31 - b24f6ec158b861b13f2baff95bf661346de7f767)

@@ -821,6 +821,13 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
       }
       return { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
     }
+    if (code === 1 && output.includes('"code":"MIGRATION_DATABASE_BUSY"')) {
+      assert.equal(stdout, "");
+      if (refusal !== undefined) {
+        assert.ok(refusal.test(output), "Expected recovery instructions for a busy database.");
+      }
+      return { ok: false, code: "MIGRATION_DATABASE_BUSY" };
+    }
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }

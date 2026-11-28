@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import pg from "pg";
 import type { Client, Pool, PoolClient } from "pg";
+import { waitFor, within } from "../helpers/wait-for.ts";
 import type {
   MigrationCommandResult,
   MigrationReceipt,
@@ -1011,12 +1012,42 @@ export async function assertGuardedInstallationUpgrade(
     assert.deepEqual(await historySnapshot(pending), before);
     assert.deepEqual(await canonicalData(pending), data);
   }
-  // A supported pending history is eligible for downtime, but the check itself
-  // must leave the catalog and the receipts unchanged.
-  assert.deepEqual(
-    await runHistoryCommand(pending, "production", "--check-for-installation", undefined, expected),
-    { ok: true, history: "preAuthenticationStates" },
-  );
+  // An application transaction can outlive the Pod that submitted it. Preflight
+  // must remain readable, but the maintenance Job cannot apply SQL yet.
+  const writeNamespace = () =>
+    pending.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Pending write','ready',now())",
+      [`ns_${randomUUID()}`],
+    );
+  let applying: Promise<MigrationCommandResult> | undefined;
+  await pending.app.query("BEGIN");
+  try {
+    await writeNamespace();
+    assert.deepEqual(
+      await runHistoryCommand(
+        pending,
+        "production",
+        "--check-for-installation",
+        undefined,
+        expected,
+      ),
+      { ok: true, history: "preAuthenticationStates" },
+    );
+    applying = runHistoryCommand(
+      pending,
+      "production",
+      "--apply-for-installation",
+      /Keep writers stopped/,
+      expected,
+    );
+    assert.deepEqual(await within(applying, "refusal of an outstanding write", 10_000), {
+      ok: false,
+      code: "MIGRATION_DATABASE_BUSY",
+    });
+  } finally {
+    await pending.app.query("ROLLBACK");
+    await applying;
+  }
   assert.deepEqual(await historySnapshot(pending), before);
   assert.deepEqual(
     await runHistoryCommand(
@@ -1030,10 +1061,40 @@ export async function assertGuardedInstallationUpgrade(
   );
   assert.deepEqual(await historySnapshot(pending), before);
 
-  assert.deepEqual(
-    await runHistoryCommand(pending, "production", "--apply-for-installation", undefined, expected),
-    { ok: true, history: "preAuthenticationStates" },
-  );
+  // Hold the first pending DROP open with a reader. A different table must
+  // remain protected until Drizzle commits, even after its preflight returned.
+  await pending.migrator.query("BEGIN");
+  try {
+    await pending.migrator.query("LOCK TABLE occ.connection_sessions IN ACCESS SHARE MODE");
+    const migrationUrl = new URL(pending.migrationUrl);
+    migrationUrl.searchParams.set("options", "-c default_transaction_isolation=repeatable\\ read");
+    applying = runHistoryCommand(
+      { ...pending, migrationUrl: migrationUrl.href },
+      "production",
+      "--apply-for-installation",
+      undefined,
+      expected,
+    );
+    void applying.catch(() => {});
+    await waitFor("migration waiting for its first DDL lock", async () => {
+      const { rows } = await pending.migrator.query<{ blocked: boolean }>(`
+        SELECT EXISTS (SELECT FROM pg_locks WHERE NOT granted
+          AND relation = 'occ.connection_sessions'::regclass
+          AND pg_backend_pid() = ANY(pg_blocking_pids(pid))) AS blocked`);
+      return rows[0]?.blocked || undefined;
+    });
+    await pending.app.query("BEGIN");
+    try {
+      await pending.app.query("SET LOCAL lock_timeout = '300ms'");
+      await assert.rejects(writeNamespace(), { code: "55P03" });
+    } finally {
+      await pending.app.query("ROLLBACK");
+    }
+  } finally {
+    await pending.migrator.query("ROLLBACK");
+    await applying;
+  }
+  assert.deepEqual(await applying, { ok: true, history: "preAuthenticationStates" });
   // Compare the complete canonical ledger and preserve every original receipt,
   // including its ID, regardless of how many migrations follow the predecessor.
   await assertCompletedHistory(pending, before.receipts);

@@ -291,6 +291,50 @@ function catalogAtMigrationCount(count, completedCount) {
   refuse("an incomplete or unsupported development history is installed");
 }
 
+/** @param {import("pg").PoolClient} client @param {string} installationId */
+async function requireInstallation(client, installationId) {
+  const { rows: installations } = await client.query(
+    "SELECT id = $1 AS matches FROM occ.installation LIMIT 2",
+    [installationId],
+  );
+  if (installations.length !== 1 || installations[0]?.matches !== true) {
+    refuse("the selected migration database does not own the expected Installation");
+  }
+}
+
+// Resolve and quote table names before BEGIN. LOCK must precede the first
+// snapshot so a REPEATABLE READ migrator sees commits up to lock acquisition.
+/** @param {import("pg").PoolClient} client */
+async function maintenanceLockStatement(client) {
+  const { rows } = await client.query(`
+    SELECT pg_catalog.string_agg(pg_catalog.format('%I.%I', schemaname, tablename),
+                                 ', ' ORDER BY schemaname, tablename) AS tables
+    FROM pg_catalog.pg_tables WHERE schemaname IN ('occ', 'drizzle')`);
+  const tables = rows[0]?.tables;
+  if (typeof tables !== "string" || !tables) {
+    refuse("no tables found for a pending separate migration");
+  }
+  return `LOCK TABLE ${tables} IN SHARE MODE NOWAIT`;
+}
+
+/** @param {import("pg").PoolClient} client @param {string} statement */
+async function lockMaintenanceTables(client, statement) {
+  try {
+    await client.query(statement);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "55P03")) {
+      throw error;
+    }
+    throw Object.assign(
+      new Error(
+        "A conflicting database lock blocked the separate migration. Keep writers stopped, " +
+          "reconcile outstanding transactions, the original Job and migration history. Do not replay the Job.",
+      ),
+      { code: "MIGRATION_DATABASE_BUSY" },
+    );
+  }
+}
+
 /**
  * @param {Pick<import("pg").Pool, "connect">} pool
  * @param {{ checkOnly?: boolean; expectEmpty?: boolean; requireCurrent?: boolean; installationId?: string | undefined }} [options]
@@ -331,15 +375,7 @@ export async function migrateWithHistory(
       if (history === "empty") {
         refuse("the selected migration database has empty Installation history");
       }
-      // Read the actual ledger owner before applying SQL, on the same client
-      // and under the same advisory lock used by the stock migrator.
-      const { rows: installations } = await client.query(
-        "SELECT id = $1 AS matches FROM occ.installation LIMIT 2",
-        [installationId],
-      );
-      if (installations.length !== 1 || installations[0]?.matches !== true) {
-        refuse("the selected migration database does not own the expected Installation");
-      }
+      await requireInstallation(client, installationId);
     }
     if (requireCurrent) {
       if (history !== "completed") {
@@ -383,7 +419,26 @@ export async function migrateWithHistory(
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable
       // source files again. Its receipt read and transaction share this backend.
       const db = drizzle(client);
-      await db.dialect.migrate(migrations, db.session, { migrationsFolder: directory });
+      const session = db.session;
+      // Only the Installation-specific maintenance Job requires stopped writers.
+      // Preserve Drizzle's own receipt selection, transaction and SQL bytes.
+      const migrationSession =
+        installationId === undefined || history === "completed"
+          ? session
+          : {
+              execute: session.execute.bind(session),
+              all: session.all.bind(session),
+              /** @param {(tx: unknown) => Promise<void>} apply */
+              transaction: async (apply) => {
+                const statement = await maintenanceLockStatement(client);
+                return session.transaction(async (/** @type {unknown} */ tx) => {
+                  await lockMaintenanceTables(client, statement);
+                  await requireInstallation(client, installationId);
+                  await apply(tx);
+                });
+              },
+            };
+      await db.dialect.migrate(migrations, migrationSession, { migrationsFolder: directory });
     }
     return history;
   } finally {
