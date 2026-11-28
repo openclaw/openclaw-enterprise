@@ -11,8 +11,8 @@ last_verified: "2026-11-04"
 
 First Agent Smoke installs the Kubernetes platform from images built from the checkout
 and exercises embedded OpenClaw and dedicated Codex Agents. It uses a simulated
-model provider, so it tests deployment, chat, logs, and stop/start without proving access to a
-real model service.
+model provider, so it tests deployment, chat, logs, stop/start, and saved workspace edits
+without proving access to a real model service.
 
 <a id="when-it-runs"></a>
 
@@ -46,7 +46,7 @@ it does not use a suite manifest.
 | Create an embedded OpenClaw Agent and a dedicated Codex Agent; send chat requests. | Both Agents return the expected simulated-provider response.                                                                                                                              | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
 | Read gateway logs and dedicated Agent logs through the CLI.                        | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
 | Withdraw public Git reader access and deploy a revision without that access.       | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
-| Stop and start both Agents, then chat again.                                       | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
+| Write and read Codex `USER.md`, then stop and start both Agents.                   | Stopped Pods terminate and new revisions start. Before another write, the Codex file matches the saved edit. A new edit also reads back exactly, and both Agents can chat.                | `checkCodexWorkspaceFile`, `stopAgent`, `deployAgent`, and `chatTurn`.              |
 
 <a id="run-it"></a>
 

@@ -33,6 +33,7 @@ import {
 } from "./first-agent-smoke/setup.ts";
 import {
   chatTurn,
+  checkCodexWorkspaceFile,
   createCodexAgent,
   deployAgent,
   readLogs,
@@ -152,6 +153,10 @@ async function smoke() {
       await readLogs(stack, codex.agent, "gateway");
       await readLogs(stack, codex.agent, "agent");
     });
+    const workspaceBeforeStop = `<!-- First Agent Smoke before stop ${randomUUID()} -->\n`;
+    await step("write and read Codex workspace before stop", () =>
+      checkCodexWorkspaceFile(stack, codex.agent, workspaceBeforeStop, { write: true }),
+    );
     await smokeStep("stop-agents", () =>
       Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
     );
@@ -159,7 +164,15 @@ async function smoke() {
       Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
-    assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
+    assert.ok(codexRevision !== retiredRevision, "Codex start must admit a new revision");
+    // Read the previous edit before writing again so a fresh workspace cannot pass.
+    await step("read saved Codex workspace after start", () =>
+      checkCodexWorkspaceFile(stack, codex.agent, workspaceBeforeStop),
+    );
+    const workspaceAfterStart = `<!-- First Agent Smoke after start ${randomUUID()} -->\n`;
+    await step("write and read Codex workspace after start", () =>
+      checkCodexWorkspaceFile(stack, codex.agent, workspaceAfterStart, { write: true }),
+    );
     await smokeStep("chat-after-start", () =>
       Promise.all([
         chatTurn(stack, embedded.agent, embeddedRevision),
