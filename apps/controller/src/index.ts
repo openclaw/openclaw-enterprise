@@ -430,14 +430,19 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
+type EarlyWrite = { resource: "preset" | "configuration"; update: boolean };
+
+const WRITE_BODY_LIMITS = { preset: PRESET_BODY_LIMIT, configuration: CONFIGURATION_BODY_LIMIT };
+
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
-function authorizesBeforeBody(operation: OccApiRoute): boolean {
-  return (
-    operation.operationId === "createPreset" ||
-    operation.operationId === "updatePreset" ||
-    operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration"
-  );
+function earlyWrite(id: OccApiRoute["operationId"]): EarlyWrite | undefined {
+  if (id === "createPreset" || id === "updatePreset") {
+    return { resource: "preset", update: id === "updatePreset" };
+  }
+  if (id === "createConfiguration" || id === "updateConfiguration") {
+    return { resource: "configuration", update: id === "updateConfiguration" };
+  }
+  return undefined;
 }
 
 function operationTarget(
@@ -445,7 +450,13 @@ function operationTarget(
   installationId: string,
   params: Readonly<Record<string, unknown>>,
 ): ResourceRef {
-  const namespaceId = typeof params.namespaceId === "string" ? params.namespaceId : undefined;
+  if (operation.operationId === "createNamespace") {
+    return { kind: "namespace", id: installationId };
+  }
+  const namespaceId = params.namespaceId;
+  if (typeof namespaceId !== "string" || !namespaceId) {
+    return { kind: "installation", id: installationId };
+  }
   const configurationId =
     typeof params.configurationId === "string" ? params.configurationId : undefined;
   const serviceAccountId =
@@ -456,81 +467,69 @@ function operationTarget(
     typeof params.credentialSourceId === "string" ? params.credentialSourceId : undefined;
   const agentId = typeof params.agentId === "string" ? params.agentId : undefined;
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
-  if (operation.operationId === "createNamespace") {
-    return { kind: "namespace", id: installationId };
-  }
-  if (operation.resourceKind === "preset" && namespaceId) {
+  if (operation.resourceKind === "preset") {
     return { kind: "preset", id: presetId ?? namespaceId, namespaceId };
   }
-  if (operation.operationId === "createConfiguration" && namespaceId) {
+  if (operation.operationId === "createConfiguration") {
     return { kind: "configuration", id: namespaceId, namespaceId };
   }
-  if (configurationId && namespaceId) {
+  if (configurationId) {
     return { kind: "configuration", id: configurationId, namespaceId };
   }
-  if (operation.operationId === "createServiceAccount" && namespaceId) {
+  if (operation.operationId === "createServiceAccount") {
     return { kind: "service_account", id: namespaceId, namespaceId };
   }
-  if (serviceAccountId && namespaceId) {
+  if (serviceAccountId) {
     return { kind: "service_account", id: serviceAccountId, namespaceId };
   }
-  if (
-    (operation.operationId === "createSecret" || operation.operationId === "listSecrets") &&
-    namespaceId
-  ) {
+  if (operation.operationId === "createSecret" || operation.operationId === "listSecrets") {
     return { kind: "secret", id: namespaceId, namespaceId };
   }
-  if (operation.operationId.endsWith("DeviceAuthorization") && namespaceId) {
+  if (operation.operationId.endsWith("DeviceAuthorization")) {
     return { kind: "agent", id: agentId ?? namespaceId, namespaceId };
   }
-  if (secretId && namespaceId) {
+  if (secretId) {
     return { kind: "secret", id: secretId, namespaceId };
   }
   if (
-    (operation.operationId === "createCredentialSource" ||
-      operation.operationId === "listCredentialSources" ||
-      operation.operationId === "listUsableConnectionTemplates" ||
-      operation.operationId === "listEligibleOAuthClients" ||
-      operation.operationId === "startNamespaceConnection") &&
-    namespaceId
+    operation.operationId === "createCredentialSource" ||
+    operation.operationId === "listCredentialSources" ||
+    operation.operationId === "listUsableConnectionTemplates" ||
+    operation.operationId === "listEligibleOAuthClients" ||
+    operation.operationId === "startNamespaceConnection"
   ) {
     return { kind: "credential_source", id: namespaceId, namespaceId };
   }
   // A route naming a credential source authorizes the resource kind it declares: withdrawal
   // routes declare the Agent.
-  if (credentialSourceId && namespaceId) {
+  if (credentialSourceId) {
     return operation.resourceKind === "agent" && agentId
       ? { kind: "agent", id: agentId, namespaceId }
       : { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
-    (operation.operationId === "createAgent" ||
-      operation.operationId === "validateAgentCreate" ||
-      operation.operationId === "getNamespaceAgentCapabilities" ||
-      operation.operationId === "provisionAgent" ||
-      operation.operationId === "listRepositoryOptions") &&
-    namespaceId
+    operation.operationId === "createAgent" ||
+    operation.operationId === "validateAgentCreate" ||
+    operation.operationId === "getNamespaceAgentCapabilities" ||
+    operation.operationId === "provisionAgent" ||
+    operation.operationId === "listRepositoryOptions"
   ) {
     return { kind: "agent", id: namespaceId, namespaceId };
   }
   if (
     (operation.operationId === "getAgentProvisioning" ||
       operation.operationId === "retryAgentProvisioning") &&
-    namespaceId &&
     typeof params.workId === "string"
   ) {
     return { kind: "agent", id: params.workId, namespaceId };
   }
-  if (operation.operationId === "getAgentRevision" && namespaceId && revisionId) {
+  if (operation.operationId === "getAgentRevision" && revisionId) {
     return { kind: "agent_revision", id: revisionId, namespaceId };
   }
-  if (agentId && namespaceId) {
+  if (agentId) {
     return { kind: "agent", id: agentId, namespaceId };
   }
-  if (namespaceId) {
-    return { kind: "namespace", id: namespaceId, namespaceId };
-  }
-  return { kind: "installation", id: installationId };
+  return { kind: "namespace", id: namespaceId, namespaceId };
 }
 
 function clientInstallation(
@@ -1564,7 +1563,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
    * handler, and the controller never buffers the body. The handler repeats the check in its
    * transaction, with the Secret binding checks that need the body.
    */
-  async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
+  async function authorizeBeforeBody(request: FastifyRequest, write: EarlyWrite) {
     const context = contexts.get(request);
     if (!context) {
       throw dependencyUnavailable();
@@ -1573,22 +1572,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
-    if (
-      operation.operationId === "createConfiguration" ||
-      operation.operationId === "updateConfiguration"
-    ) {
-      await controller.authorizeConfigurationWrite(
-        context.actorId,
-        params.namespaceId as string,
-        operation.operationId === "updateConfiguration" ? params.configurationId : undefined,
-      );
-      return;
+    const namespaceId = params.namespaceId as string;
+    if (write.resource === "configuration") {
+      const id = write.update ? params.configurationId : undefined;
+      await controller.authorizeConfigurationWrite(context.actorId, namespaceId, id);
+    } else {
+      const id = write.update ? params.presetId : undefined;
+      await controller.authorizePresetWrite(context.actorId, namespaceId, id);
     }
-    await controller.authorizePresetWrite(
-      context.actorId,
-      params.namespaceId as string,
-      operation.operationId === "updatePreset" ? params.presetId : undefined,
-    );
   }
 
   // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
@@ -3396,6 +3387,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
     }
     for (const operation of occApiRoutes) {
+      const write = earlyWrite(operation.operationId);
       // Bootstrap has its own transactional evidence. Runtime log reads have their own
       // disclosure gate and can also return a download.
       const routeAuditSink =
@@ -3424,22 +3416,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" ||
-              operation.operationId === "validateAgentCreate" ||
-              operation.operationId === "provisionAgent"
-            ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
-              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : operation.operationId === "createConfiguration" ||
-                  operation.operationId === "updateConfiguration"
-                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
-                : {}),
+          : {}),
+        ...(operation.operationId === "createAgent" ||
+        operation.operationId === "validateAgentCreate" ||
+        operation.operationId === "provisionAgent"
+          ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
+          : {}),
+        ...(write ? { bodyLimit: options.maxBodyBytes ?? WRITE_BODY_LIMITS[write.resource] } : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);
-          if (authorizesBeforeBody(operation)) {
+          if (write) {
             await resolveIdentity(request, operation);
-            await authorizeBeforeBody(request, operation);
+            await authorizeBeforeBody(request, write);
           }
         },
         preValidation: async (request) => {
@@ -3466,7 +3455,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
-        ...(authorizesBeforeBody(operation)
+        ...(write
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => {
