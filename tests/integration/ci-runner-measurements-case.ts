@@ -21,26 +21,34 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function readMeasurementResult(resultsPath: string) {
-  const artifact = await readFile(resultsPath, "utf8");
+function parseMeasurementResult(artifact: string) {
   const summary: unknown = JSON.parse(artifact);
   assert.ok(isJsonObject(summary) && Array.isArray(summary.files), "Expected result files");
   const files: unknown[] = summary.files;
   const [file] = files;
   assert.ok(isJsonObject(file) && Array.isArray(file.measurements), "Expected file measurements");
   const rows: unknown[] = file.measurements;
-  const measurements = rows.map((row) => {
+  const [sibling, revocation, ...remainingMeasurements] = rows.map((row) => {
     assert.ok(isJsonObject(row) && typeof row.kind === "string", "Expected a measurement kind");
     return row;
   });
-  const receipts = measurements.filter((row): row is RetentionReceipt => {
+  assert.ok(sibling && revocation, "Expected both leading stage measurements");
+  for (const [receipt, stage] of [
+    [sibling, "scratch-sibling-isolation"],
+    [revocation, "scratch-queued-actor-revocation"],
+  ] as const) {
+    const { elapsedMs, ...outcome } = receipt;
+    assert.deepEqual(outcome, { kind: "openshell-stage", stage, outcome: "passed" });
+    assert.ok(typeof elapsedMs === "number" && Number.isSafeInteger(elapsedMs) && elapsedMs >= 0);
+  }
+  const receipts = remainingMeasurements.filter((row): row is RetentionReceipt => {
     if (row.kind !== retentionKind) {
       return false;
     }
     assert.ok(typeof row.event === "string", "Expected a Git retention event");
     return true;
   });
-  return { artifact, summary, file, measurements, receipts };
+  return { summary, file, remainingMeasurements, receipts };
 }
 
 async function checkGitExpiryObservations(uuid: string, opaque: string, forbidden: string) {
@@ -229,6 +237,47 @@ async function checkGitExpiryObservations(uuid: string, opaque: string, forbidde
   return { expiryObservation, expiryDiagnostic, expectedExpiryObservations };
 }
 
+function modelProbeSamples() {
+  const oneMs = { elapsedMs: 1, capMs: 1, cpuWaitMs: 1, setupMs: 1, probeDoneMs: 1, readyMs: 1 };
+  return [
+    {
+      case: "gateway-500m-answer",
+      code: "READY",
+      elapsedMs: 61_234,
+      capMs: 110_000,
+      cpuWaitMs: 4_321,
+      setupMs: 2_345,
+      probeDoneMs: 63_456,
+      readyMs: null,
+      extra: "secretauthvalue-extra",
+    },
+    {
+      case: "gateway-1cpu-answer",
+      code: "secretauthvalue-code",
+      ...oneMs,
+      capMs: 65_000,
+      cpuWaitMs: null,
+    },
+    {
+      case: "gateway-500m-contended",
+      code: null,
+      elapsedMs: null,
+      capMs: null,
+      cpuWaitMs: null,
+      setupMs: 1,
+      probeDoneMs: null,
+      readyMs: null,
+    },
+    { case: "secretauthvalue-case", code: "READY", ...oneMs },
+    {
+      case: "gateway-500m-hang",
+      code: "MODEL_PROBE_TIMEOUT",
+      ...oneMs,
+      elapsedMs: "secretauthvalue-elapsed",
+    },
+  ];
+}
+
 export async function checkAllowlistedMeasurements(t: TestContext) {
   const root = await createRunnerFixture(t);
   const resultsPath = join(root, "results/measurements.json");
@@ -278,6 +327,16 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   const opaqueHash = createHash("sha256").update(opaque).digest("hex");
   const time = "2026-11-05T12:00:00.123456789Z";
   const forbidden = "unregistered-retention-private-text";
+
+  // Check raw output before parsing or comparing it so a failure cannot print a marker.
+  function checkOutput(run: string, outputs: Record<string, string>) {
+    for (const [name, output] of Object.entries(outputs)) {
+      for (const marker of ["secretauthvalue", forbidden, opaque, migrationCanary]) {
+        assert.ok(!output.includes(marker), `Private marker in ${run} ${name}`);
+      }
+    }
+  }
+
   const runtimeReceipt = {
     revisionId: opaque,
     sandboxId: opaque,
@@ -367,9 +426,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     startedAt: 1_800_000_000_000,
     endedAt: 1_800_000_001_000,
   }));
-  const maintenanceDiagnostic = {
-    event: "worker-maintenance-unconfirmed",
-    reason: "own-budget-exhausted",
+  const maintenanceLogSummary = {
     logReads: 3,
     logReadSuccesses: 2,
     logReadFailures: 1,
@@ -378,28 +435,36 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     parseFailures: 4,
     tailLimitReads: 1,
     completionsTruncated: false,
+  } as const;
+  const unchangedMaintenanceCompletions = [
+    { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
+    // Ordinary revision readiness must remain distinguishable from Git cleanup.
+    { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
+    { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
+    { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
+    // Keep the optional runtime failure separate from the maintenance wait code.
+    {
+      outcome: "pending",
+      code: "REVISION_INCOMPLETE",
+      failure: "REPOSITORY_ROUTE_BLOCKED",
+    },
+    {
+      outcome: "pending",
+      code: "REVISION_FINALIZATION_INCOMPLETE",
+      failure: "MODEL_PROBE_FAILED",
+    },
+  ] as const;
+  const maintenanceDiagnostic = {
+    event: "worker-maintenance-unconfirmed",
+    reason: "own-budget-exhausted",
+    ...maintenanceLogSummary,
     completions: [
       { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING", error: forbidden },
       { outcome: "retry", code: forbidden, failure: forbidden },
-      { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
-      // Ordinary revision readiness must remain distinguishable from Git cleanup.
-      { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
-      { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
-      { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
-      // Keep the optional runtime failure separate from the maintenance wait code.
-      {
-        outcome: "pending",
-        code: "REVISION_INCOMPLETE",
-        failure: "REPOSITORY_ROUTE_BLOCKED",
-      },
-      {
-        outcome: "pending",
-        code: "REVISION_FINALIZATION_INCOMPLETE",
-        failure: "MODEL_PROBE_FAILED",
-      },
+      ...unchangedMaintenanceCompletions,
       {
         outcome: "pending",
         code: `REPOSITORY_GIT_ROUTE_PENDING_${forbidden}`,
@@ -901,59 +966,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
           { volume: "secretauthvalue-volume", nudge: "none", sample: 0, seconds: 1 },
           { volume: "configmap", nudge: "none", sample: 0, seconds: "secretauthvalue-seconds" },
         ]),
-        ...measurements("runtime-model-probe", [
-          {
-            case: "gateway-500m-answer",
-            code: "READY",
-            elapsedMs: 61_234,
-            capMs: 110_000,
-            cpuWaitMs: 4_321,
-            setupMs: 2_345,
-            probeDoneMs: 63_456,
-            readyMs: null,
-            extra: "secretauthvalue-extra",
-          },
-          {
-            case: "gateway-1cpu-answer",
-            code: "secretauthvalue-code",
-            elapsedMs: 1,
-            capMs: 65_000,
-            cpuWaitMs: null,
-            setupMs: 1,
-            probeDoneMs: 1,
-            readyMs: 1,
-          },
-          {
-            case: "gateway-500m-contended",
-            code: null,
-            elapsedMs: null,
-            capMs: null,
-            cpuWaitMs: null,
-            setupMs: 1,
-            probeDoneMs: null,
-            readyMs: null,
-          },
-          {
-            case: "secretauthvalue-case",
-            code: "READY",
-            elapsedMs: 1,
-            capMs: 1,
-            cpuWaitMs: 1,
-            setupMs: 1,
-            probeDoneMs: 1,
-            readyMs: 1,
-          },
-          {
-            case: "gateway-500m-hang",
-            code: "MODEL_PROBE_TIMEOUT",
-            elapsedMs: "secretauthvalue-elapsed",
-            capMs: 1,
-            cpuWaitMs: 1,
-            setupMs: 1,
-            probeDoneMs: 1,
-            readyMs: 1,
-          },
-        ]),
+        ...measurements("runtime-model-probe", modelProbeSamples()),
         ...measurements("runtime-sigterm", [
           {
             case: "gateway-model-probe",
@@ -1035,26 +1048,12 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   );
 
   const result = runRunnerSync(laneArgs(root, "measure", "state/measurements.jsonl", resultsPath));
-  assert.equal(result.status, 0, result.stderr);
-  const {
-    artifact,
-    summary,
-    file,
-    measurements: recorded,
-    receipts,
-  } = await readMeasurementResult(resultsPath);
-  const [sibling, revocation, ...otherMeasurements] = recorded;
-  assert.ok(sibling && revocation, "Expected both leading stage measurements");
-  for (const [receipt, stage] of [
-    [sibling, "scratch-sibling-isolation"],
-    [revocation, "scratch-queued-actor-revocation"],
-  ] as const) {
-    const { elapsedMs, ...outcome } = receipt;
-    assert.deepEqual(outcome, { kind: "openshell-stage", stage, outcome: "passed" });
-    assert.ok(typeof elapsedMs === "number" && Number.isSafeInteger(elapsedMs) && elapsedMs >= 0);
-  }
+  assert.equal(result.status, 0, "Expected the measurement run to succeed");
+  const artifact = await readFile(resultsPath, "utf8");
+  checkOutput("successful run", { stdout: result.stdout, stderr: result.stderr, artifact });
+  const { summary, file, remainingMeasurements, receipts } = parseMeasurementResult(artifact);
   assert.deepEqual(
-    otherMeasurements.filter(({ kind }) => kind !== retentionKind),
+    remainingMeasurements.filter(({ kind }) => kind !== retentionKind),
     [
       { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
       ...migrationTimings,
@@ -1152,7 +1151,6 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       lateTurnover,
     ],
   );
-  assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
   assert.deepEqual(
     receipts.filter(({ event }) => event.startsWith("finite-removal-")),
     [
@@ -1303,34 +1301,11 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       kind: retentionKind,
       event: "worker-maintenance-unconfirmed",
       reason,
-      logReads: 3,
-      logReadSuccesses: 2,
-      logReadFailures: 1,
-      linesRead: 2004,
-      parsedEvents: 2000,
-      parseFailures: 4,
-      tailLimitReads: 1,
-      completionsTruncated: false,
+      ...maintenanceLogSummary,
       completions: [
         { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING" },
         { outcome: "retry", code: "unrecognized", failure: "UNRECOGNIZED" },
-        { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
-        { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
-        { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
-        { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
-        {
-          outcome: "pending",
-          code: "REVISION_INCOMPLETE",
-          failure: "REPOSITORY_ROUTE_BLOCKED",
-        },
-        {
-          outcome: "pending",
-          code: "REVISION_FINALIZATION_INCOMPLETE",
-          failure: "MODEL_PROBE_FAILED",
-        },
+        ...unchangedMaintenanceCompletions,
         { outcome: "pending", code: "unrecognized", failure: "UNRECOGNIZED" },
       ],
     })),
@@ -1348,11 +1323,6 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   assert.equal(unconfirmed.driverSuccessSeen, true);
   assert.equal(unconfirmed.workerAcknowledgementSeen, false);
   assert.equal(unconfirmed.observationsTruncated, true);
-  for (const output of [result.stdout, result.stderr, artifact]) {
-    assert.ok(!output.includes(forbidden));
-    assert.ok(!output.includes(opaque));
-    assert.ok(!output.includes(migrationCanary));
-  }
 
   // A later failure makes the reporter emit its raw output buffer. Invalid
   // receipts and unselected fields must still not fall through into that buffer.
@@ -1365,12 +1335,19 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   const failed = runRunnerSync(
     laneArgs(root, "measure", "state/failed-measurements.json", resultsPath),
   );
-  assert.equal(failed.status, 1, failed.stderr);
-  const failure = await readMeasurementResult(resultsPath);
+  assert.equal(failed.status, 1, "Expected the deliberate child failure");
+  const failedArtifact = await readFile(resultsPath, "utf8");
   const diagnostics = await readFile(
     join(root, "state/failed-measurements.json.diagnostics.json"),
     "utf8",
   );
+  checkOutput("failed run", {
+    stdout: failed.stdout,
+    stderr: failed.stderr,
+    artifact: failedArtifact,
+    diagnostics,
+  });
+  const failure = parseMeasurementResult(failedArtifact);
   assert.equal(failure.file.nodeExitCode, 1);
   const diagnosticReport: unknown = JSON.parse(diagnostics);
   assert.ok(
@@ -1390,14 +1367,5 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       ),
     "Expected the deliberate child failure in diagnostics",
   );
-  assert.deepEqual(failure.receipts, receipts);
-  assert.deepEqual(
-    failure.measurements.filter(({ kind }) => kind === migrationBootstrap.kind),
-    migrationTimings,
-  );
-  for (const output of [failed.stdout, failed.stderr, failure.artifact, diagnostics]) {
-    assert.ok(!output.includes(forbidden));
-    assert.ok(!output.includes(opaque));
-    assert.ok(!output.includes(migrationCanary));
-  }
+  assert.deepEqual(failure.remainingMeasurements, remainingMeasurements);
 }

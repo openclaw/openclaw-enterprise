@@ -283,16 +283,65 @@ export function lifecycleReady(path: string) {
   }
 }
 
-// Field 5 of /proc/<pid>/stat is the process group; the name in parentheses may hold spaces.
-export function procStat(pid: number) {
+type ProcReader = (path: string, encoding: "utf8") => string;
+
+function readProcFile(path: string, read: ProcReader) {
   try {
-    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /su, "")
-      .split(" ");
-    return { state: fields[0], pgid: Number(fields[2]), start: fields[19] };
+    return read(path, "utf8");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error.code === "ENOENT" || error.code === "ESRCH")
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export function readProcStat(pid: number, read: ProcReader = readFileSync) {
+  const text = readProcFile(`/proc/${pid}/stat`, read);
+  if (text === undefined) {
+    return undefined;
+  }
+
+  // The process name can contain spaces and parentheses. Fields 3, 5 and 22
+  // are the state, process group and start time. Require a delimiter after
+  // each identity field so a short read cannot turn it into a different number.
+  const fields = text.slice(text.lastIndexOf(")") + 1);
+  const identity = /^ ([a-zA-Z]) \d+ ([1-9]\d*) (?:-?\d+ ){16}(\d+) /u.exec(fields);
+  const state = identity?.[1];
+  const pgid = Number(identity?.[2]);
+  const start = identity?.[3];
+  assert.ok(
+    text.startsWith(`${pid} (`) && state && start && pgid <= 0x7fffffff,
+    `Invalid process group or start time in /proc/${pid}/stat`,
+  );
+  return { state, pgid, start };
+}
+
+// Best effort only. An unknown identity cannot authorize a signal or prove exit.
+export function procStat(pid: number, read: ProcReader = readFileSync) {
+  try {
+    return readProcStat(pid, read);
   } catch {
     return undefined;
   }
+}
+
+function hasExited(state: string) {
+  return state === "Z" || state === "X";
+}
+
+export function detachedProcessLive(
+  record: { pid: number; start: string },
+  purpose: "assert" | "teardown",
+  read: ProcReader = readFileSync,
+) {
+  const observe = purpose === "teardown" ? procStat : readProcStat;
+  const current = observe(record.pid, read);
+  return current?.start === record.start && !hasExited(current.state);
 }
 
 export function killRecordedProcessGroupMembers(
@@ -329,20 +378,18 @@ export function killRecordedProcessGroupMembers(
 // needs no deadline. Waiting for the processes to disappear did: on a busy host a killed
 // multithreaded Node process can take seconds to finish exiting (a zombie leader with
 // another thread still running its exit, or a process still being reaped).
-export function unkilled(pids: readonly number[], pgid: number) {
+export function unkilled(pids: readonly number[], pgid: number, read: ProcReader = readFileSync) {
   return pids.filter((pid) => {
-    const stat = procStat(pid);
-    if (stat === undefined || stat.pgid !== pgid || stat.state === "Z" || stat.state === "X") {
+    const stat = readProcStat(pid, read);
+    if (!stat || stat.pgid !== pgid || hasExited(stat.state)) {
       return false;
     }
-    let status;
-    try {
-      status = readFileSync(`/proc/${pid}/status`, "utf8");
-    } catch {
+    const status = readProcFile(`/proc/${pid}/status`, read);
+    if (status === undefined) {
       return false;
     }
     // Signal masks are hexadecimal with bit (signal number - 1) set; SIGKILL is 9.
-    const sharedPending = /^ShdPnd:\s*([0-9a-f]+)$/mu.exec(status);
+    const sharedPending = /^ShdPnd:[ \t]*([0-9a-f]+)\n/mu.exec(status);
     return sharedPending === null || (BigInt(`0x${sharedPending[1]}`) & (1n << 8n)) === 0n;
   });
 }

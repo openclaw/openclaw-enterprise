@@ -9,10 +9,11 @@ import { fileURLToPath } from "node:url";
 import { isRecord } from "../../scripts/ci/records.ts";
 import {
   createRunnerFixture as fixture,
+  detachedProcessLive,
   heldClock,
   killRecordedProcessGroupMembers,
   laneArgs,
-  procStat,
+  readProcStat,
   runnerArtifactPaths,
   runnerEnv,
   runRunnerAsync,
@@ -103,7 +104,9 @@ function readProcessReceipt(path: string) {
   assert.ok(isProcessId(grandchild));
   assert.ok(file === undefined || isProcessId(file));
   assert.ok(grandchildPgid === undefined || grandchildPgid === runner);
-  assert.notEqual(pgid, procStat(process.pid)?.pgid);
+  const self = readProcStat(process.pid);
+  assert.ok(self, "expected to observe the test runner process group");
+  assert.notEqual(pgid, self.pgid);
   return { runner, pgid: runner, grandchild, file, grandchildPgid };
 }
 
@@ -160,6 +163,66 @@ test("run records timeout cancellation without leaking child output", async (t) 
   assert.doesNotMatch(report, timeoutSecret);
   const record = timeoutRecord(report);
   assert.equal(record.timeoutMs, 100);
+});
+
+test("cleanup assertions distinguish process exit from failed /proc reads", () => {
+  // Supply just the kernel records so either read can fail independently of process timing.
+  const tail = `42${" 0".repeat(15)} 123 0`; // Fields 6–23, including start time 123.
+  const live = `43 (worker ) name) S 1 42 ${tail}`;
+  function reader(stat: string | Error, status: string | Error = "ShdPnd:\t0\n") {
+    return (path: string) => {
+      assert.ok(path === "/proc/43/stat" || path === "/proc/43/status");
+      const record = path === "/proc/43/stat" ? stat : status;
+      if (record instanceof Error) {
+        throw record;
+      }
+      return record;
+    };
+  }
+  function survivors(stat: string | Error, status?: string | Error) {
+    return unkilled([43], 42, reader(stat, status));
+  }
+
+  const detached = { pid: 43, start: "123" };
+  assert.deepEqual(survivors(live), [43]);
+  const io = Object.assign(new Error("read failed"), { code: "EIO" });
+  assert.throws(() => survivors(io), io);
+  assert.throws(() => survivors(live, io), io);
+  assert.throws(() => detachedProcessLive(detached, "assert", reader(io)), io);
+  for (const code of ["ENOENT", "ESRCH"]) {
+    const gone = Object.assign(new Error(code), { code });
+    assert.deepEqual(survivors(gone), []);
+    assert.deepEqual(survivors(live, gone), []);
+    assert.equal(detachedProcessLive(detached, "assert", reader(gone)), false);
+  }
+  // A short read ending mid-PGID could look like a different group.
+  assert.throws(() => survivors("43 (worker) S 1 4"), /Invalid process group/u);
+  for (const group of ["", "invalid", "0", "1e2", "2147483648"]) {
+    assert.throws(() => survivors(`43 (worker) S 1 ${group} ${tail}`), /Invalid process group/u);
+  }
+
+  // A cut inside the start time can look like PID reuse.
+  assert.throws(() => survivors(live.slice(0, -3)), /Invalid process group or start time/u);
+  // Even a matching start prefix cannot prove exit or authorize teardown.
+  const truncated = reader(live.slice(0, -2));
+  assert.throws(() => detachedProcessLive(detached, "assert", truncated), /Invalid process group/u);
+  assert.equal(detachedProcessLive(detached, "teardown", truncated), false);
+  for (const purpose of ["assert", "teardown"] as const) {
+    // Detached identities follow the original start time, even with SIGKILL pending.
+    assert.equal(detachedProcessLive(detached, purpose, reader(live, "ShdPnd:\t100\n")), true);
+    assert.equal(detachedProcessLive({ ...detached, start: "12" }, purpose, reader(live)), false);
+  }
+
+  assert.deepEqual(survivors(`43 (worker) S 1 44 ${tail}`, io), []);
+  for (const state of ["Z", "X"]) {
+    const dead = `43 (worker) ${state} 1 42 ${tail}`;
+    assert.deepEqual(survivors(dead, io), []);
+    assert.equal(detachedProcessLive(detached, "assert", reader(dead, io)), false);
+  }
+  // Cutting the last digit from 0x1000 makes it look like SIGKILL (0x100).
+  assert.deepEqual(survivors(live, "ShdPnd:\t100"), [43]);
+  assert.deepEqual(survivors(live, "ShdPnd:\t4100\n"), []); // SIGTERM and SIGKILL
+  assert.deepEqual(survivors(live, "SigPnd:\t100\nShdPnd:\t4000\n"), [43]);
 });
 
 test(

@@ -3,13 +3,14 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
+import type { collectInstallationPhases } from "../../scripts/ci/openshell-installation-phase.ts";
 import { projectFailureDiagnostic } from "../../scripts/ci/reporter-diagnostics.ts";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
+import type { RunnerIssue } from "../../scripts/ci/runner-inputs.ts";
 import {
   readFileEvidence,
   splitCaseFailure,
@@ -18,9 +19,11 @@ import {
 import {
   createRunnerFixture,
   laneArgs,
+  requireTestResult,
   runnerEnv,
   runRunnerAsync,
   runRunnerSync,
+  waitFor,
   writeCleanupFixture,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
@@ -29,34 +32,28 @@ import {
 const runnerPath = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
 const progressUrl = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url);
 
+type PhaseCollector = ReturnType<typeof collectInstallationPhases>;
+
 interface RunSummary {
   status: string;
   exitCode: number;
   counts: { passed: number; failed: number; skipped: number; todo: number; total: number };
-  issues: { code: string }[];
+  issues: RunnerIssue[];
   files: {
     path: string;
     status: string;
-    nodeExitCode: number;
-    measurements?: unknown[];
-    installationPhases?: {
-      truncated: boolean;
-      phases: {
-        invocation: number;
-        stage: string;
-        outcome: string;
-        enteredMs: number;
-        elapsedMs?: number;
-      }[];
-    };
-    cleanup: { status: string };
-    fileFailure?: unknown;
+    nodeExitCode: number | null;
+    measurements?: FileEvidence["measurements"];
+    installationPhases?: ReturnType<PhaseCollector["result"]>;
+    cleanup: { status: string } | null;
+    fileFailure?: FileEvidence["fileFailure"];
     tests: { name: string; status: string; error?: { message?: string; diagnostic?: unknown } }[];
   }[];
 }
 
 async function readSummary(path: string) {
-  return JSON.parse(await readFile(path, "utf8")) as RunSummary;
+  const artifact = await readFile(path, "utf8");
+  return { artifact, summary: JSON.parse(artifact) as RunSummary };
 }
 
 function onlyFile(summary: RunSummary) {
@@ -120,8 +117,7 @@ test(${JSON.stringify(title)}, async (t) => {
     assert.equal(result.signal, null);
     const cleaned = await readFile(join(root, state), "utf8");
     assert.deepEqual(cleaned.trimEnd().split("\n").sort(), [...files].sort());
-    const artifact = await readFile(results, "utf8");
-    const summary = JSON.parse(artifact) as RunSummary;
+    const { artifact, summary } = await readSummary(results);
     assert.equal(summary.exitCode, result.status);
     assert.deepEqual(summary.files.map(({ path }) => path).sort(), [...files].sort());
     for (const text of [artifact, result.stdout, result.stderr]) {
@@ -158,12 +154,8 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
   const root = await createRunnerFixture(t);
   await writeRunnerManifest(root, {
     lanes: {
-      exits: {
-        files: [{ path: "tests/integration/exits.test.mjs" }],
-      },
-      empty: {
-        files: [{ path: "tests/integration/empty.test.mjs" }],
-      },
+      exits: { files: [{ path: "tests/integration/exits.test.mjs" }] },
+      empty: { files: [{ path: "tests/integration/empty.test.mjs" }] },
     },
   });
   await writeFile(join(root, "tests/integration/exits.test.mjs"), "process.exit(42);\n");
@@ -172,14 +164,18 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
   const exits = runRunnerSync(laneArgs(root, "exits", "state/exits.jsonl", "results/exits.json"));
   assert.ifError(exits.error);
   assert.equal(exits.signal, null);
-  assert.notEqual(exits.status, 0);
-  const exitSummary = await readSummary(join(root, "results/exits.json"));
+  assert.ok(exits.status !== null && exits.status !== 0);
+  const { summary: exitSummary } = await readSummary(join(root, "results/exits.json"));
   assert.equal(onlyFile(exitSummary).nodeExitCode, exits.status);
   assert.equal(exitSummary.exitCode, exits.status);
 
   const empty = runRunnerSync(laneArgs(root, "empty", "state/empty.jsonl", "results/empty.json"));
   assert.equal(empty.status, 1);
-  const emptySummary = await readSummary(join(root, "results/empty.json"));
+  const { summary: emptySummary } = await readSummary(join(root, "results/empty.json"));
+  const emptyFile = onlyFile(emptySummary);
+  assert.equal(emptyFile.nodeExitCode, 0);
+  assert.deepEqual(emptyFile.tests, []);
+  assert.equal(emptySummary.exitCode, empty.status);
   assert.deepEqual(
     emptySummary.issues.map((entry) => entry.code),
     ["selected-zero"],
@@ -247,10 +243,7 @@ test("private-case-canary", () => {
     const firstFailureCommands = [failureCommand, `${ordinalHint} 2.`];
     let code: number | null;
     try {
-      const deadline = Date.now() + 10_000;
-      while (commands(stderr).length < firstFailureCommands.length && Date.now() < deadline) {
-        await setTimeout(50);
-      }
+      await waitFor(() => commands(stderr).length >= firstFailureCommands.length, 10_000);
       assert.equal(commands(stderr)[0], failureCommand);
       // This is file 2's cleanup, while the lane and its later cleanup are still pending.
       assert.equal(await readFile(join(root, state), "utf8"), `${second}\n`);
@@ -265,8 +258,8 @@ test("private-case-canary", () => {
     // Match entire commands to exclude child-controlled text and repeated hints.
     assert.deepEqual(commands(stderr), firstFailureCommands);
     assert.equal(await readFile(join(root, state), "utf8"), `${second}\n${first}\n`);
-    const result = await readSummary(resultsPath);
-    assert.equal(result.counts.failed, 2);
+    const { summary } = await readSummary(resultsPath);
+    assert.equal(summary.counts.failed, 2);
 
     const focused = await runRunnerAsync(
       [
@@ -354,11 +347,11 @@ import { runOpenShellStage } from ${JSON.stringify(stageModule)};
     const split = await policyRun("split");
     assert.ifError(split.error);
     assert.equal(split.status, 1, split.stderr);
-    const splitSummary = await readSummary(join(root, "results/split.json"));
+    const { summary: splitSummary } = await readSummary(join(root, "results/split.json"));
     assert.equal(splitSummary.counts.failed, 1);
     const failedPolicy = onlyFile(splitSummary);
     assert.equal(failedPolicy.path, credentialsPath);
-    assert.equal(failedPolicy.cleanup.status, "passed");
+    assert.equal(failedPolicy.cleanup?.status, "passed");
     assert.deepEqual(commands(split.stderr), [
       ...unknownOrdinalCommands,
       `${splitHint} 1.`,
@@ -467,7 +460,7 @@ test(${JSON.stringify(parentCase)}, async (t) => {
     );
     assert.ifError(installerSplit.error);
     assert.equal(installerSplit.status, 1, installerSplit.stderr);
-    const installerSummary = await readSummary(installerResults);
+    const { summary: installerSummary } = await readSummary(installerResults);
     assert.equal(installerSummary.exitCode, 1);
     assert.deepEqual(
       installerSummary.files.map(({ path, status }) => [path, status]),
@@ -634,13 +627,12 @@ syncBuiltinESMExports();
   assert.ifError(result.error);
   assert.equal(result.signal, null);
   assert.equal(await readFile(injected, "utf8"), "faulted");
-  const artifact = await readFile(resultPath, "utf8");
-  const summary = JSON.parse(artifact) as RunSummary;
+  const { artifact, summary } = await readSummary(resultPath);
   const outcome = onlyFile(summary);
-  assert.equal(outcome.cleanup.status, "passed");
+  assert.equal(outcome.cleanup?.status, "passed");
   assert.equal(await readFile(state, "utf8"), `${file}\n`);
   // The runner preserves native child exit codes, including failures other than 1.
-  assert.notEqual(result.status, 0);
+  assert.ok(result.status !== null && result.status !== 0);
   assert.equal(result.status, outcome.nodeExitCode);
   assert.equal(result.status, summary.exitCode);
   assert.doesNotMatch(
@@ -656,22 +648,20 @@ test("run records a sanitized file failure after all reported cases pass", async
     root,
     "failure",
     "tests/integration/file-failure.test.mjs",
-    [
-      'import test from "node:test";',
-      'test("first pass", () => {});',
-      'setImmediate(() => { throw new Error("secretauthvalue-root-failure"); });',
-      'test("second pass", () => {});',
-      "",
-    ].join("\n"),
+    `import test from "node:test";
+test("first pass", () => {});
+setImmediate(() => { throw new Error("secretauthvalue-root-failure"); });
+test("second pass", () => {});
+`,
   );
 
   const result = runRunnerSync(laneArgs(root, "failure", "state/file-failure.jsonl", resultsPath));
-  const artifact = await readFile(resultsPath, "utf8");
-  const summary = JSON.parse(artifact) as RunSummary;
+  const { artifact, summary } = await readSummary(resultsPath);
   const file = onlyFile(summary);
   assert.equal(result.status, 1);
   assert.equal(file.status, "failed");
   assert.equal(file.nodeExitCode, result.status);
+  assert.equal(summary.exitCode, result.status);
   assert.equal(summary.counts.passed, 2);
   assert.equal(summary.counts.failed, 0);
   assert.deepEqual(
@@ -702,27 +692,30 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
     root,
     "dispositions",
     "tests/integration/dispositions.test.mjs",
-    [
-      'import assert from "node:assert/strict";',
-      'import test from "node:test";',
-      'test("passes", () => assert.equal(1, 1));',
-      'test("fails", () => assert.equal(1, 2));',
-      'test("skips", { skip: "expected" }, () => {});',
-      'test("todo case", { todo: "expected" }, () => {});',
-      "",
-    ].join("\n"),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("passes", () => assert.equal(1, 1));
+test("fails", () => assert.equal(1, 2));
+test("skips", { skip: "expected" }, () => {});
+test("todo case", { todo: "expected" }, () => {});
+`,
   );
 
   const result = runRunnerSync(
     laneArgs(root, "dispositions", "state/dispositions.jsonl", resultsPath),
   );
 
-  assert.notEqual(result.status, 0);
-  const summary = await readSummary(resultsPath);
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  const { summary } = await readSummary(resultsPath);
+  const file = onlyFile(summary);
+  assert.equal(summary.exitCode, result.status);
+  assert.equal(file.nodeExitCode, result.status);
   assert.equal(summary.status, "failed");
   assert.deepEqual(summary.counts, { passed: 1, failed: 1, skipped: 1, todo: 1, total: 4 });
   assert.deepEqual(
-    onlyFile(summary).tests.map((entry) => [entry.name, entry.status]),
+    file.tests.map(({ name, status }) => [name, status]),
     [
       ["passes", "passed"],
       ["fails", "failed"],
@@ -750,15 +743,15 @@ test("run reports only settled released-controller history statuses", async (t) 
     extra: privateValue,
   });
   const outcomes = [
-    { code: 0, stdout: completed },
-    { code: 1, stderr: `${privateValue}\n${refused}\n` },
-    { code: 0, stdout: `${completed}\n${completed}` },
-    { code: 0, stdout: `{"event":${privateValue}` },
-    { code: 0, stderr: completed },
-    { code: 0, stdout: completed, stderr: refused },
-    { code: 1, stderr: `${privateValue} text containing ${refused}` },
-    { code: 1, stdout: completed, stderr: refused },
-    { code: 1, stderr: `${refused}\n${refused}` },
+    { expected: "current", code: 0, stdout: completed },
+    { expected: "unsupported", code: 1, stderr: `${privateValue}\n${refused}\n` },
+    { expected: "unconfirmed", code: 0, stdout: `${completed}\n${completed}` },
+    { expected: "unconfirmed", code: 0, stdout: `{"event":${privateValue}` },
+    { expected: "unconfirmed", code: 0, stderr: completed },
+    { expected: "unconfirmed", code: 0, stdout: completed, stderr: refused },
+    { expected: "unconfirmed", code: 1, stderr: `${privateValue} text containing ${refused}` },
+    { expected: "unconfirmed", code: 1, stdout: completed, stderr: refused },
+    { expected: "unconfirmed", code: 1, stderr: `${refused}\n${refused}` },
     // Valid-looking events cannot establish a result after interruption or Docker failure.
     { code: 0, killed: true, stdout: completed },
     { code: 1, signal: "SIGTERM", stderr: refused },
@@ -770,16 +763,18 @@ test("run reports only settled released-controller history statuses", async (t) 
     root,
     "released-history",
     "tests/integration/released-history.test.ts",
-    `import test from "node:test";
+    `import assert from "node:assert/strict";
+import test from "node:test";
 import { releasedControllerHistoryStatus } from ${JSON.stringify(helper.href)};
 test("released history measurements", (t) => {
   const prefix = "openclaw-ci-measurement ";
   const kind = ${JSON.stringify(kind)};
   const privateValue = ${JSON.stringify(privateValue)};
-  for (const outcome of ${JSON.stringify(outcomes)}) {
+  for (const [index, { expected, ...outcome }] of ${JSON.stringify(outcomes)}.entries()) {
     const status = releasedControllerHistoryStatus({
       killed: false, signal: null, stdout: "", stderr: "", ...outcome,
     });
+    assert.equal(status, expected, "released history input " + index);
     if (status !== undefined) {
       t.diagnostic(prefix + JSON.stringify({ kind, status, argv: privateValue }));
     }
@@ -794,8 +789,7 @@ test("released history measurements", (t) => {
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.signal, null);
-  const artifact = await readFile(resultsPath, "utf8");
-  const summary = JSON.parse(artifact) as RunSummary;
+  const { artifact, summary } = await readSummary(resultsPath);
   assert.deepEqual(
     onlyFile(summary).measurements,
     ["current", "unsupported", ...Array.from({ length: 7 }, () => "unconfirmed")].map((status) => ({
@@ -812,12 +806,12 @@ test("run keeps the enrollment operation pending when the parent is interrupted"
   const root = await createRunnerFixture(t);
   const helper = new URL("../helpers/keycloak-enrollment-wait.ts", import.meta.url);
   const modes = ["body", "cleanup", "untracked", "passed", "rejected", "unavailable"] as const;
-  const files = modes.map((mode) => ({ path: `tests/integration/${mode}.test.mjs` }));
-  for (const [index, mode] of modes.entries()) {
-    const file = files[index];
-    assert.ok(file);
+  const files: { path: string }[] = [];
+  for (const mode of modes) {
+    const path = `tests/integration/${mode}.test.mjs`;
+    files.push({ path });
     await writeFile(
-      join(root, file.path),
+      join(root, path),
       `
         import assert from "node:assert/strict";
         import test from "node:test";
@@ -860,36 +854,31 @@ test("run keeps the enrollment operation pending when the parent is interrupted"
   const run = runRunnerSync(laneArgs(root, "enrollment", "state/enrollment.jsonl", results));
   assert.ifError(run.error);
   assert.equal(run.status, 1);
-  const summary = await readSummary(join(root, results));
-  assert.equal(summary.files.length, modes.length);
+  const { summary } = await readSummary(join(root, results));
+  assert.deepEqual(
+    summary.files.map(({ path }) => ({ path })),
+    files,
+  );
   assert.equal(await readFile(join(root, "late-body-finished"), "utf8"), "yes");
   for (const [index, mode] of modes.entries()) {
     const file = summary.files[index];
     assert.ok(file);
     assert.equal(file.nodeExitCode, mode === "passed" ? 0 : 1);
     assert.equal(file.tests.length, 2);
+    const row = requireTestResult(file.tests, "row");
+    const parent = requireTestResult(file.tests, "parent");
     if (mode === "rejected") {
-      assert.equal(
-        file.tests.find(({ name }) => name === "row")?.error?.message,
-        "synthetic fixture error",
-      );
+      assert.equal(row.error?.message, "synthetic fixture error");
     } else if (mode !== "passed") {
-      assert.match(
-        file.tests.find(({ name }) => name === "parent")?.error?.message ?? "",
-        /test timed out after 100ms/,
-      );
+      assert.match(parent.error?.message ?? "", /test timed out after 100ms/);
     }
-    assert.deepEqual(
-      file.measurements ?? [],
-      mode === "body" || mode === "cleanup"
-        ? [
-            {
-              kind: "keycloak-enrollment-interrupted",
-              row: 2,
-              operation: mode === "body" ? "open-page" : "close-context",
-            },
-          ]
-        : [],
-    );
+    if (mode === "body" || mode === "cleanup") {
+      const operation = mode === "body" ? "open-page" : "close-context";
+      assert.deepEqual(file.measurements, [
+        { kind: "keycloak-enrollment-interrupted", row: 2, operation },
+      ]);
+    } else {
+      assert.deepEqual(file.measurements ?? [], []);
+    }
   }
 });

@@ -8,9 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   createRunnerFixture,
+  detachedProcessLive,
   laneArgs,
   lifecycleReady,
   procStat,
+  readProcStat,
   runnerEnv,
   runRunnerAsync,
   runRunnerSync,
@@ -294,20 +296,6 @@ async function lifecycleFixture(
   };
 }
 
-function lifecycleProcess(pid: number) {
-  const stat = procStat(pid);
-  if (!stat) {
-    return undefined;
-  }
-  const { state, pgid, start } = stat;
-  return state === undefined || start === undefined ? undefined : { state, pgid, start };
-}
-
-function lifecycleProcessLive(record: DetachedProcess) {
-  const current = lifecycleProcess(record.pid);
-  return current?.start === record.start && !["Z", "X"].includes(current.state);
-}
-
 async function startLifecycleFixture(
   t: TestContext,
   options: LifecycleFixtureOptions,
@@ -321,7 +309,7 @@ async function startLifecycleFixture(
   // evidence. Assertions below check termination before this fallback can run.
   t.after(async () => {
     for (const record of owned.processes) {
-      if (lifecycleProcessLive(record)) {
+      if (detachedProcessLive(record, "teardown")) {
         try {
           process.kill(record.pid, "SIGKILL");
         } catch {
@@ -1067,29 +1055,24 @@ test(${JSON.stringify(name)}, () => writeFile("ran", "ran"));
           const phase = records.find((record) => record.pid === anchor.ppid);
           assert.ok(phase, "the group owner belongs to the lifecycle run phase");
           assert.equal(phase.ppid, coordinatorPid);
-          const testRunner = lifecycleProcess(process.pid);
+          const live = (record: DetachedProcess) => detachedProcessLive(record, "assert");
+          const testRunner = readProcStat(process.pid);
           assert.ok(testRunner, "expected to observe the test runner process group");
           assert.notEqual(body.pgid, testRunner.pgid);
-          assert.ok(
-            records.every(lifecycleProcessLive),
-            "readiness records live fixture processes",
-          );
+          assert.ok(records.every(live), "readiness records live fixture processes");
           if (cause === "deadline") {
             // Stop only the phase, leaving its detached Node group live. Its own
             // timer cannot hide a failure of the outer owner's deadline cleanup.
             process.kill(phase.pid, "SIGSTOP");
-            assert.equal(
-              await waitFor(() => lifecycleProcess(phase.pid)?.state === "T", 1_000),
-              true,
-            );
-            assert.ok(lifecycleProcessLive(body));
+            assert.equal(await waitFor(() => readProcStat(phase.pid)?.state === "T", 1_000), true);
+            assert.ok(live(body));
           } else {
             // Killing the real coordinator closes IPC naturally; no synthetic
             // disconnect event or replacement handler supplies the behavior.
             process.kill(coordinatorPid, "SIGKILL");
           }
           assert.equal(
-            await waitFor(() => records.every((record) => !lifecycleProcessLive(record)), 15_000),
+            await waitFor(() => records.every((record) => !live(record)), 15_000),
             true,
             "owned detached test processes must terminate before fixture teardown",
           );

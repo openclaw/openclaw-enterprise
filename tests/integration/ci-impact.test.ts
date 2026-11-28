@@ -25,6 +25,7 @@ import {
   settled,
 } from "../helpers/child-processes.mjs";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
+import { aggregateArgs, laneArgs } from "../helpers/ci-runner-fixture.ts";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.ts";
 
@@ -77,6 +78,20 @@ function textRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(
     Object.entries(record(value)).map(([key, entry]) => [key, text(entry)]),
   );
+}
+
+function readStepOutputs(path: string, expected: string[]): Record<string, string> {
+  const lines = readFileSync(path, "utf8").split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  const entries = lines.map((line): [string, string] => {
+    const split = line.indexOf("=");
+    assert.ok(split > 0 && !line.includes("\r"), "expected a single-line name=value output");
+    return [line.slice(0, split), line.slice(split + 1)];
+  });
+  assert.deepEqual(entries.map(([name]) => name).sort(), [...expected].sort());
+  return Object.fromEntries(entries);
 }
 
 function json(value: string): unknown {
@@ -238,6 +253,7 @@ function workflowJob(value: unknown) {
     environment,
     needs:
       job.needs === undefined || typeof job.needs === "string" ? job.needs : textArray(job.needs),
+    outputs: job.outputs,
     steps: job.steps === undefined ? [] : array(job.steps).map(workflowStep),
     strategy: { matrix: { include } },
     "runs-on": optionalText(job["runs-on"]),
@@ -276,30 +292,33 @@ function loadYaml(path: string) {
 function evaluateInContext(code: string, context: object): unknown {
   return runInNewContext(code, context);
 }
-const reasons = [
-  "docs_only",
-  "tests_only",
-  "ineligible_change",
-  "manifest_change",
-  "manifest_unavailable",
-  "unmapped_test",
-  "referenced_test",
+const fullSummaryReasons = [
   "non_pr_event",
   "invalid_event",
   "invalid_identity",
   "event_unavailable",
   "checkout_mismatch",
   "git_inspection_failed",
+  "malformed_diff",
+  "empty_diff",
+  "unsupported_change",
+  "filename_not_utf8",
+  "ineligible_change",
   "bootstrap_non_pr_event",
   "bootstrap_event_unavailable",
   "bootstrap_invalid_identity",
   "bootstrap_checkout_mismatch",
   "bootstrap_git_inspection_failed",
   "bootstrap_policy_unavailable",
-  "malformed_diff",
-  "empty_diff",
-  "unsupported_change",
-  "filename_not_utf8",
+];
+const reasons = [
+  ...fullSummaryReasons,
+  "docs_only",
+  "tests_only",
+  "manifest_change",
+  "manifest_unavailable",
+  "unmapped_test",
+  "referenced_test",
   "unavailable",
 ].join("|");
 
@@ -307,8 +326,8 @@ const reasons = [
 // processes run concurrently, about one per CPU (each spawns more of its own).
 const limit = concurrencyLimit();
 type ChildResult<T extends string | Buffer> = {
-  status: number | null;
-  signal: string | null;
+  status: number;
+  signal: null;
   stdout: T;
   stderr: T;
 };
@@ -327,8 +346,9 @@ async function run(
   const capture = (): unknown => Reflect.apply(captureChild, undefined, [program, args, options]);
   const value: unknown = await limit(capture);
   assert.ok(value !== null && typeof value === "object");
-  assert.ok("status" in value && (value.status === null || typeof value.status === "number"));
-  assert.ok("signal" in value && (value.signal === null || typeof value.signal === "string"));
+  assert.ok("signal" in value);
+  assert.ok(value.signal === null, `${program} terminated by ${String(value.signal)}`);
+  assert.ok("status" in value && typeof value.status === "number");
   assert.ok(
     "stdout" in value && (typeof value.stdout === "string" || Buffer.isBuffer(value.stdout)),
   );
@@ -481,15 +501,21 @@ function classifyIn(cwd: string, env: NodeJS.ProcessEnv) {
   }
 }
 
-// The selector's exit status for a command line and a classification: main()
-// exits 1 when it refuses the command line or the mode does not verify.
-function verifyStatus(args: string[], result: ReturnType<typeof classify>) {
+const selectorRefusal = "CI impact: unable to select or verify mode\n";
+function validSelectorArgs(args: string[]) {
   try {
     checkArguments(args);
-  } catch {
-    return 1;
+    return true;
+  } catch (error) {
+    if (!(error instanceof Error && error.message.startsWith("usage: impact.ts "))) {
+      throw error;
+    }
+    return false;
   }
-  return respond(args, result).verified ? 0 : 1;
+}
+
+function verifyStatus(args: string[], result: ReturnType<typeof classify>) {
+  return validSelectorArgs(args) && respond(args, result).verified ? 0 : 1;
 }
 
 // The selections a selector process has made, by mode and reason. expect,
@@ -605,96 +631,68 @@ async function fixture(
     GITHUB_EVENT_PATH: eventPath,
     GITHUB_SHA: tested,
   };
-  let outputs = 0;
-  const output = (content = "") => {
-    const path = join(dir, `output-${(outputs += 1)}`);
-    writeFileSync(path, content);
-    return path;
-  };
   const runSelector = (args: string[], overrides: NodeJS.ProcessEnv = {}) =>
     run(process.execPath, [selector, ...args], { cwd: repo, env: { ...env, ...overrides } });
-  // The selector's GitHub output for the current checkout and event.
-  const select = async (overrides: NodeJS.ProcessEnv = {}) => {
-    const path = output();
-    const selected = await runSelector(["--github-output", path], overrides);
-    assert.equal(selected.status, 0, selected.stderr);
-    return readFileSync(path, "utf8");
-  };
-  // Exit statuses of --verify-mode command lines for the current checkout and
-  // event, and the GitHub output the same evidence selects (null with
-  // `cliVerify`). With `cliVerify` each command line is its own selector
-  // process. Otherwise the selector classifies once in this process and answers
-  // each command line with the code its CLI runs (checkArguments, respond), so
-  // a selection's verifications cost one Git inspection instead of one
-  // selector process each; its caller still runs the CLI selection and checks
-  // that the CLI wrote the same output.
-  const verify = async (commandLines: string[][], overrides: NodeJS.ProcessEnv = {}) => {
-    if (cliVerify) {
-      const results = await settle(commandLines.map((args) => runSelector(args, overrides)));
-      return { statuses: results.map((result) => result.status), output: null };
-    }
-    const result = classifyIn(repo, { ...env, ...overrides });
-    return {
-      statuses: commandLines.map((args) => verifyStatus(args, result)),
-      output: present(respond(["--github-output", "-"], result).output),
-    };
-  };
-  // The selection for the verified evidence: the in-process classification's
-  // output, which a selector process must also write when it is the first of its
-  // mode and reason (see cliSelections) or the case runs every check as a CLI.
-  // The CLI appends to an output file that already holds a line.
-  const selection = async (
-    verified: Awaited<ReturnType<typeof verify>>,
-    overrides: NodeJS.ProcessEnv,
-  ) => {
-    if (verified.output !== null && !needsCliSelection(verified.output)) {
-      return verified.output;
-    }
-    const path = output("prior=value\n");
+  let outputs = 0;
+  const select = async (overrides: NodeJS.ProcessEnv = {}, prior = "") => {
+    const path = join(dir, `output-${(outputs += 1)}`);
+    writeFileSync(path, prior);
     const selected = await runSelector(["--github-output", path], overrides);
     assert.equal(selected.status, 0, selected.stderr);
     const written = readFileSync(path, "utf8");
-    assert.ok(written.startsWith("prior=value\n"), written);
-    const cli = written.slice("prior=value\n".length);
-    if (verified.output !== null) {
-      assert.equal(cli, verified.output);
-    }
-    return cli;
+    assert.ok(written.startsWith(prior), written);
+    return written.slice(prior.length);
   };
-  // `reason`, when given, is the exact reason the selection must report.
-  const expect = async (mode: string, overrides: NodeJS.ProcessEnv = {}, reason = reasons) => {
-    const lanes = JSON.stringify(["checks-baseline-1"]);
-    const verified = await verify(
+  // The first argv must verify, all others must be refused on the same evidence.
+  const verifySelection = async (commandLines: string[][], overrides: NodeJS.ProcessEnv) => {
+    const prior = "prior=value\n";
+    if (cliVerify) {
+      const results = await settle(commandLines.map((args) => runSelector(args, overrides)));
+      const accepted = present(results[0]);
+      for (const [i, args] of commandLines.entries()) {
+        const result = present(results[i]);
+        const context = `${JSON.stringify(args)}: ${result.stderr}`;
+        assert.equal(result.status, i === 0 ? 0 : 1, context);
+        if (i === 0) {
+          assert.match(result.stdout, /^CI impact: /, context);
+        } else {
+          // Invalid argv fails before the CLI prints its classification. A valid
+          // but mismatched request prints the same decision as the accepted one.
+          assert.equal(result.stderr, selectorRefusal, context);
+          assert.equal(result.stdout, validSelectorArgs(args) ? accepted.stdout : "", context);
+        }
+      }
+      return select(overrides, prior);
+    }
+
+    // Classify once in-process. Sample a real CLI append for each mode and reason.
+    const result = classifyIn(repo, { ...env, ...overrides });
+    for (const [i, args] of commandLines.entries()) {
+      assert.equal(verifyStatus(args, result), i === 0 ? 0 : 1, JSON.stringify(args));
+    }
+    const expected = present(respond(["--github-output", "-"], result).output);
+    if (needsCliSelection(expected)) {
+      assert.equal(await select(overrides, prior), expected);
+    }
+    return expected;
+  };
+  const expect = async (mode: string, overrides: NodeJS.ProcessEnv = {}, reason?: string) => {
+    const selected = await verifySelection(
       [
         ["--verify-mode", mode],
         ["--verify-mode", mode === "docs" ? "full" : "docs"],
-        ["--verify-mode", "tests", "--lanes", lanes],
+        ["--verify-mode", "tests", "--lanes", JSON.stringify(["checks-baseline-1"])],
       ],
       overrides,
     );
-    const [same, other, tests] = verified.statuses;
-    assert.match(
-      await selection(verified, overrides),
-      new RegExp(`^mode=${mode}\nreason=(?:${reason})\n$`),
-    );
-    assert.equal(same, 0);
-    assert.notEqual(other, 0);
-    assert.notEqual(tests, 0);
+    if (reason === undefined) {
+      assert.match(selected, new RegExp(`^mode=${mode}\nreason=(?:${reasons})\n$`));
+    } else {
+      assert.equal(selected, `mode=${mode}\nreason=${reason}\n`);
+    }
   };
-  // Full mode with an exact reason, verified as full and not as docs.
-  const expectReason = async (reason: string, overrides: NodeJS.ProcessEnv = {}) => {
-    const verified = await verify(
-      [
-        ["--verify-mode", "full"],
-        ["--verify-mode", "docs"],
-      ],
-      overrides,
-    );
-    const [full, docs] = verified.statuses;
-    assert.equal(await selection(verified, overrides), `mode=full\nreason=${reason}\n`);
-    assert.equal(full, 0);
-    assert.notEqual(docs, 0);
-  };
+  const expectReason = (reason: string, overrides?: NodeJS.ProcessEnv) =>
+    expect("full", overrides, reason);
   const expectTests = async (lanes: string[], overrides: NodeJS.ProcessEnv = {}) => {
     const json = JSON.stringify(lanes);
     const bad = [
@@ -710,17 +708,10 @@ async function fixture(
         ? [["--verify-mode", "tests", "--lanes", JSON.stringify([...lanes].reverse())]]
         : []),
     ];
-    const verifications = await verify(
-      [["--verify-mode", "tests", "--lanes", json], ...bad],
-      overrides,
-    );
-    const [verified, ...rejected] = verifications.statuses;
     assert.equal(
-      await selection(verifications, overrides),
+      await verifySelection([["--verify-mode", "tests", "--lanes", json], ...bad], overrides),
       `mode=tests\nreason=tests_only\nlanes=${json}\n`,
     );
-    assert.equal(verified, 0);
-    rejected.forEach((status, i) => assert.notEqual(status, 0, present(bad[i]).join(" ")));
   };
   return {
     dir,
@@ -737,7 +728,6 @@ async function fixture(
     tested,
     run: runSelector,
     select,
-    verify,
     expect,
     expectReason,
     expectTests,
@@ -762,8 +752,16 @@ function workspaceFiles(): Record<string, string> {
   };
 }
 
-const sharedChange = ({ put }: Pick<ChangeContext, "put">) =>
-  put("packages/shared/src/example.ts", "export const value = 1;\n");
+const writeFiles =
+  (files: Files): Change =>
+  ({ put }) => {
+    for (const [path, content] of Object.entries(files)) {
+      put(path, content);
+    }
+  };
+
+const sharedFile = { "packages/shared/src/example.ts": "export const value = 1;\n" };
+const sharedChange = writeFiles(sharedFile);
 const affected = {
   status: "affected",
   reason: "workspace_typescript",
@@ -771,12 +769,8 @@ const affected = {
 };
 const unavailable = (reason: string) => ({ status: "unavailable", reason, packages: [] });
 
-async function pnpmImpactOutput(
-  f: Fixture,
-  overrides: NodeJS.ProcessEnv = {},
-  args: string[] = [],
-) {
-  const result = await run(process.execPath, [pnpmImpact, ...args], {
+function runPnpmImpact(f: Fixture, overrides: NodeJS.ProcessEnv = {}, args: string[] = []) {
+  return run(process.execPath, [pnpmImpact, ...args], {
     cwd: f.repo,
     env: {
       ...process.env,
@@ -789,18 +783,16 @@ async function pnpmImpactOutput(
       ...overrides,
     },
   });
+}
+
+async function pnpmImpactOutput(...args: Parameters<typeof runPnpmImpact>) {
+  const result = await runPnpmImpact(...args);
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
 }
 
 async function affectedPackages(f: Fixture, overrides: NodeJS.ProcessEnv = {}) {
-  const advisory = jsonRecord(await pnpmImpactOutput(f, overrides));
-  return {
-    ...advisory,
-    status: text(advisory.status),
-    reason: text(advisory.reason),
-    packages: textArray(advisory.packages),
-  };
+  return jsonRecord(await pnpmImpactOutput(f, overrides));
 }
 
 test("asset reader shadow uses the CI manifest and includes the standalone Storybook build", async (t) => {
@@ -844,7 +836,8 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   for (const path of [storybookWorkflow, preparer]) {
     initial[path] = existsSync(join(repositoryRoot, path)) ? read(path) : "";
   }
-  const change: Change = ({ put }) => put(asset, "export const paths = ['/console/'];\n");
+  const assetEdit = { [asset]: "export const paths = ['/console/'];\n" };
+  const change = writeFiles(assetEdit);
   const f = await fixture(t, change, initial);
   // The advisory must tolerate an unrelated change to the workflow or preparer
   // on main. Exercise the positive receipt for the verified consumer revisions
@@ -884,14 +877,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   const readShadow = async (input: Fixture, env: NodeJS.ProcessEnv = {}) =>
     shadowData(await pnpmImpactOutput(input, env, ["--shadow"]));
   const alongsideAsset = (path: string, content: string) =>
-    fixture(
-      t,
-      (ctx) => {
-        change(ctx);
-        ctx.put(path, content);
-      },
-      initial,
-    );
+    fixture(t, writeFiles({ ...assetEdit, [path]: content }), initial);
   const expectUnverified = async (input: Fixture) => {
     const shadow = await readShadow(input);
     assert.equal(shadow.mode, "broad");
@@ -911,14 +897,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   assert.equal(incomplete.reason, "incomplete_manifest");
   assert.deepEqual(incomplete.lanes, []);
 
-  const other = await fixture(
-    t,
-    (ctx) => {
-      change(ctx);
-      sharedChange(ctx);
-    },
-    initial,
-  );
+  const other = await fixture(t, writeFiles({ ...assetEdit, ...sharedFile }), initial);
   const mixed = await readShadow(other);
   assert.equal(mixed.mode, "broad");
   assert.equal(mixed.reason, knownConsumer ? "mixed_scope" : "unverified_storybook");
@@ -981,31 +960,32 @@ test("pnpm impact reports a changed workspace package and its dependents", async
   }
 });
 
-test("pnpm impact reports affected packages from a depth-two merge checkout", async (t) => {
-  const f = await fixture(t, sharedChange, workspaceFiles());
-  const shallow = join(f.dir, "shallow");
+async function shallowClone(f: Fixture, branch?: string) {
+  const checkout = join(f.dir, "shallow");
   await command(f.dir, "git", [
     "clone",
-    "--quiet",
+    "-q",
     "--depth=2",
+    ...(branch === undefined ? [] : ["--branch", branch]),
     pathToFileURL(f.repo).href,
-    shallow,
+    checkout,
   ]);
-  assert.equal(await command(shallow, "git", ["rev-parse", "HEAD"]), f.tested);
+  assert.equal(await command(checkout, "git", ["rev-parse", "--is-shallow-repository"]), "true");
+  assert.equal(await command(checkout, "git", ["rev-parse", "HEAD"]), f.tested);
+  return checkout;
+}
+
+test("pnpm impact reports affected packages from a depth-two merge checkout", async (t) => {
+  const f = await fixture(t, sharedChange, workspaceFiles());
+  const shallow = await shallowClone(f);
   assert.deepEqual(await affectedPackages({ ...f, repo: shallow }), affected);
 });
 
 test("pnpm impact keeps non-workspace and unverified changes unclassified", async (t) => {
+  const goFile = { "cmd/tool.go": "package main\n" };
   const [f, mixed] = await settle([
-    fixture(t, ({ put }) => put("cmd/tool.go", "package main\n"), workspaceFiles()),
-    fixture(
-      t,
-      ({ put }) => {
-        sharedChange({ put });
-        put("cmd/tool.go", "package main\n");
-      },
-      workspaceFiles(),
-    ),
+    fixture(t, writeFiles(goFile), workspaceFiles()),
+    fixture(t, writeFiles({ ...sharedFile, ...goFile }), workspaceFiles()),
   ]);
   await each(
     [
@@ -1041,15 +1021,30 @@ test("pnpm impact does not classify workspace manifest or symlink changes", asyn
   );
 });
 
+function failingPnpm(f: Fixture) {
+  const dir = join(f.dir, "bin");
+  const env = shim(
+    dir,
+    "pnpm",
+    "#!/bin/sh\n: > \"$0.called\"\nprintf 'untrusted tool output\\n' >&2\nexit 1\n",
+  );
+  return { env, marker: join(dir, "pnpm.called") };
+}
+
 test("pnpm impact reports unavailable without exposing a failed tool's output", async (t) => {
   const f = await fixture(t, sharedChange, workspaceFiles());
-  for (const body of [
-    "#!/bin/sh\nprintf 'untrusted tool output\\n' >&2\nexit 1\n",
-    "#!/bin/sh\nprintf 'not valid json with private text\\n'\n",
-  ]) {
-    const path = shim(join(f.dir, "bin"), "pnpm", body);
-    assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
-  }
+  const expectUnavailable = async (overrides: NodeJS.ProcessEnv) => {
+    const { status, stderr, stdout } = await runPnpmImpact(f, overrides);
+    assert.equal(stderr.length, 0, "failed pnpm inspection should not write to stderr");
+    assert.equal(status, 0);
+    assert.deepEqual(jsonRecord(stdout), unavailable("inspection_failed"));
+  };
+  const { env, marker } = failingPnpm(f);
+  await expectUnavailable(env);
+  assert.ok(existsSync(marker), "expected pnpm to run on a clean checkout");
+  await expectUnavailable(
+    shim(join(f.dir, "bin"), "pnpm", "#!/bin/sh\nprintf 'not valid json with private text\\n'\n"),
+  );
 });
 
 test("pnpm impact safely handles non-record JSON values from the event and pnpm", async (t) => {
@@ -1094,8 +1089,9 @@ test("pnpm impact rejects dirty tracked and untracked checkout inputs before run
       mkdirSync(dir);
       writeFileSync(join(dir, "package.json"), "{}\n");
     }
-    const path = shim(join(f.dir, "unavailable-bin"), "pnpm", "#!/bin/sh\nexit 1\n");
-    assert.deepEqual(await affectedPackages(f, path), unavailable("dirty_checkout"), kind);
+    const { env, marker } = failingPnpm(f);
+    assert.deepEqual(await affectedPackages(f, env), unavailable("dirty_checkout"), kind);
+    assert.equal(existsSync(marker), false, kind);
   });
 });
 
@@ -1185,12 +1181,28 @@ type ChangeCase = [change: Change, initial?: Files];
 const expectAll = (t: TestContext, mode: string, cases: ChangeCase[]) =>
   each(cases, async ([change, initial]) => (await fixture(t, change, initial)).expect(mode));
 
-const rename =
-  (from: string, to: string): Change =>
+const addFiles =
+  (...paths: string[]): Change =>
+  ({ put }) => {
+    for (const path of paths) {
+      put(path);
+    }
+  };
+
+const addExecutable =
+  (path: string): Change =>
+  ({ put, repo }) => {
+    put(path);
+    chmodSync(join(repo, path), 0o755);
+  };
+
+const renameCase = (from: string, to: string): ChangeCase => [
   async ({ git, repo }) => {
     mkdirSync(dirname(join(repo, to)), { recursive: true });
     await git("mv", from, to);
-  };
+  },
+  { [from]: "same\n" },
+];
 
 test("verified merge selects documentation and handles unusual names and deletions", async (t) => {
   const f = await fixture(
@@ -1232,11 +1244,11 @@ test("mixed code, Helm, workflow and tooling changes select full", async (t) => 
       "specs/rfcs/0034-reusable-model-providers/provider.png.ts",
       "AGENTS.md",
     ].map((path) => [
-      ({ put }) => {
-        put("docs/change.md");
-        put("specs/rfcs/0034-reusable-model-providers/agent-selection.png");
-        put(path);
-      },
+      addFiles(
+        "docs/change.md",
+        "specs/rfcs/0034-reusable-model-providers/agent-selection.png",
+        path,
+      ),
     ]),
   );
 });
@@ -1246,11 +1258,11 @@ test("generated API reference changes select full across additions, edits, delet
     t,
     "full",
     ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].flatMap((path) => [
-      [({ put }) => put(path)],
+      [addFiles(path)],
       [({ put }) => put(path, "changed\n"), { [path]: "old\n" }],
       [({ repo }) => rmSync(join(repo, path)), { [path]: "old\n" }],
-      [rename(path, "docs/ordinary.md"), { [path]: "same\n" }],
-      [rename("docs/ordinary.md", path), { "docs/ordinary.md": "same\n" }],
+      renameCase(path, "docs/ordinary.md"),
+      renameCase("docs/ordinary.md", path),
     ]),
   );
 });
@@ -1266,7 +1278,7 @@ test("Markdown near generated API reference paths remains documentation", async 
       "docs/reference/cheatsheets/api-extra.md",
       "docs/reference/cheatsheets/other.md",
       "specs/reference/api.md",
-    ].map((path) => [({ put }) => put(path)]),
+    ].map((path) => [addFiles(path)]),
   );
 });
 
@@ -1290,35 +1302,18 @@ test("instruction files under docs and specs select full when added or modified"
 
 test("renames across the allowlist boundary in either direction select full", async (t) => {
   await expectAll(t, "full", [
-    [rename("docs/old.md", "src/old.md"), { "docs/old.md": "same\n" }],
-    [rename("src/old.md", "docs/old.md"), { "src/old.md": "same\n" }],
-    [
-      rename("specs/rfcs/0034-reusable-model-providers/old.png", "tests/fixtures/old.png"),
-      { "specs/rfcs/0034-reusable-model-providers/old.png": "same\n" },
-    ],
-    [
-      rename("tests/fixtures/old.png", "specs/rfcs/0034-reusable-model-providers/old.png"),
-      { "tests/fixtures/old.png": "same\n" },
-    ],
+    renameCase("docs/old.md", "src/old.md"),
+    renameCase("src/old.md", "docs/old.md"),
+    renameCase("specs/rfcs/0034-reusable-model-providers/old.png", "tests/fixtures/old.png"),
+    renameCase("tests/fixtures/old.png", "specs/rfcs/0034-reusable-model-providers/old.png"),
   ]);
 });
 
 test("all changes are inspected beyond API file-list limits", async (t) => {
-  const manyDocs = (put: Repository["put"]) => {
-    for (let i = 0; i < 305; i += 1) {
-      put(`docs/${i}.md`);
-    }
-  };
+  const docs = Array.from({ length: 305 }, (_, i) => `docs/${i}.md`);
   await settle([
-    expectAll(t, "docs", [[({ put }) => manyDocs(put)]]),
-    expectAll(t, "full", [
-      [
-        ({ put }) => {
-          manyDocs(put);
-          put("z-code.ts");
-        },
-      ],
-    ]),
+    expectAll(t, "docs", [[addFiles(...docs)]]),
+    expectAll(t, "full", [[addFiles(...docs, "z-code.ts")]]),
   ]);
 });
 
@@ -1337,12 +1332,7 @@ test("symlinks and executable documentation select full", async (t) => {
           symlinkSync("../base.txt", join(repo, path));
         },
       ],
-      [
-        ({ put, repo }) => {
-          put(path);
-          chmodSync(join(repo, path), 0o755);
-        },
-      ],
+      [addExecutable(path)],
       [
         ({ repo }) => {
           rmSync(join(repo, path));
@@ -1431,48 +1421,43 @@ test("output must be an existing regular file and mode must verify", async (t) =
     ],
     async (args) => {
       const result = await f.run(args);
-      assert.notEqual(result.status, 0, args.join(" "));
-      assert.match(result.stderr, /CI impact: unable to select or verify mode/, args.join(" "));
+      const context = `${JSON.stringify(args)}: ${result.stderr}`;
+      assert.equal(result.status, 1, context);
+      assert.equal(result.stderr, selectorRefusal, context);
+      if (args[0] === "--github-output") {
+        assert.match(result.stdout, /^CI impact: docs /, context);
+      } else {
+        assert.equal(result.stdout, "", context);
+      }
     },
   );
 });
 
-function workflowBootstrap(step: string) {
-  const start = ciWorkflow.indexOf(step);
-  assert.notEqual(start, -1, "workflow step exists");
-  const block = ciWorkflow.slice(start).split("        run: |\n")[1];
-  assert.ok(block, "workflow step has an inline bootstrap");
-  const lines = [];
-  for (const line of block.split("\n")) {
-    if (line && !line.startsWith("          ")) {
-      break;
-    }
-    lines.push(line.slice(10));
-  }
-  return lines.join("\n");
+const { jobs: ciJobs } = loadYaml(".github/workflows/ci.yml");
+
+function workflowRunStep(job: string, key: "id" | "name", value: string) {
+  const label = `${job} step with ${key} "${value}"`;
+  const matches = present(ciJobs[job]).steps.filter((step) => step[key] === value);
+  assert.equal(matches.length, 1, `expected exactly one ${label}`);
+  const step = present(matches[0]);
+  const { run } = step;
+  assert.ok(run && run.trim(), `expected a nonempty run for ${label}`);
+  return { ...step, run };
 }
 
+const summarizeRun = workflowRunStep("impact", "name", "Summarize impact selection").run;
+const matrixStep = workflowRunStep("impact", "id", "matrix");
+const verifyModeStep = workflowRunStep("ci-required", "name", "Verify selected mode");
 const bootstrapSteps = {
-  select: "      - id: select\n",
-  advisory: "      - name: Report main test advisory\n",
-  verify: "      - name: Verify selected mode\n",
+  select: workflowRunStep("impact", "id", "select").run,
+  advisory: workflowRunStep("impact", "name", "Report main test advisory").run,
+  verify: verifyModeStep.run,
 };
 
 async function shallowBootstrap(f: Fixture) {
   // Model the merge checkout Actions obtains with fetch-depth 2, including both parents.
   await f.git("branch", "checkout-target", f.tested);
-  const checkout = join(f.dir, "shallow");
-  await command(f.dir, "git", [
-    "clone",
-    "-q",
-    "--depth",
-    "2",
-    "--branch",
-    "checkout-target",
-    `file://${f.repo}`,
-    checkout,
-  ]);
-  assert.equal(await command(checkout, "git", ["rev-parse", "--is-shallow-repository"]), "true");
+  const checkout = await shallowClone(f, "checkout-target");
   let outputs = 0;
   const runStep = async (
     action: keyof typeof bootstrapSteps,
@@ -1481,24 +1466,20 @@ async function shallowBootstrap(f: Fixture) {
   ) => {
     const output = join(f.dir, `github-output-${(outputs += 1)}`);
     writeFileSync(output, "");
-    const result = await run(
-      "bash",
-      ["-e", "-o", "pipefail", "-c", workflowBootstrap(bootstrapSteps[action])],
-      {
-        cwd: checkout,
-        env: {
-          ...process.env,
-          RUNNER_TEMP: f.dir,
-          GITHUB_EVENT_NAME: "pull_request",
-          GITHUB_EVENT_PATH: f.eventPath,
-          GITHUB_SHA: f.tested,
-          GITHUB_OUTPUT: output,
-          IMPACT_ACTION: action,
-          EXPECTED_MODE: expected,
-          ...overrides,
-        },
+    const result = await run("bash", ["-e", "-o", "pipefail", "-c", bootstrapSteps[action]], {
+      cwd: checkout,
+      env: {
+        ...process.env,
+        RUNNER_TEMP: f.dir,
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: f.eventPath,
+        GITHUB_SHA: f.tested,
+        GITHUB_OUTPUT: output,
+        IMPACT_ACTION: action,
+        EXPECTED_MODE: expected,
+        ...overrides,
       },
-    );
+    });
     return { ...result, output: readFileSync(output, "utf8") };
   };
   const select = async (overrides: NodeJS.ProcessEnv = {}) => {
@@ -1515,28 +1496,21 @@ async function shallowBootstrap(f: Fixture) {
       runStep("verify", mode === "docs" ? "full" : "docs", overrides),
     ]);
     assert.equal(selected.status, 0, selected.stderr);
-    assert.match(
-      selected.output,
-      new RegExp(
-        reason === undefined
-          ? `^mode=${mode}\n(?:reason=(?:${reasons})\n)?$`
-          : `^mode=${mode}\nreason=${reason}\n$`,
-      ),
-      selected.stdout,
-    );
+    if (reason === undefined) {
+      // Older trusted policies can select a mode without reporting a reason.
+      assert.match(
+        selected.output,
+        new RegExp(`^mode=${mode}\n(?:reason=(?:${reasons})\n)?$`),
+        selected.stdout,
+      );
+    } else {
+      assert.equal(selected.output, `mode=${mode}\nreason=${reason}\n`, selected.stdout);
+    }
     assert.equal(same.status, 0);
     assert.notEqual(other.status, 0);
   };
-  const expectReason = async (reason: string, overrides: NodeJS.ProcessEnv = {}) => {
-    const [selected, full, docs] = await settle([
-      select(overrides),
-      runStep("verify", "full", overrides),
-      runStep("verify", "docs", overrides),
-    ]);
-    assert.equal(selected, `mode=full\nreason=${reason}\n`);
-    assert.equal(full.status, 0);
-    assert.notEqual(docs.status, 0);
-  };
+  const expectReason = (reason: string, overrides?: NodeJS.ProcessEnv) =>
+    expect("full", overrides, reason);
   // Each caller also runs f.expectTests on the same evidence, which checks that the
   // selector refuses every other lane list and mode in process. Here the workflow
   // step refuses one wrong lane list and one wrong mode, one through each branch
@@ -1569,11 +1543,10 @@ async function policyFixture(t: TestContext, change: Change, options?: FixtureOp
 
 const docsChange: Change = ({ put }) => put("docs/change.md");
 
-// The pr-safe matrix rows, from the CI Impact "Build lane matrix" step.
 function laneTable() {
-  const match = /^ {10}LANE_TABLE: \|\n((?: {12}.*\n)+)/m.exec(ciWorkflow);
-  assert.ok(match, "workflow has a lane table");
-  return laneRows(json(present(match[1])));
+  const table = matrixStep.env.LANE_TABLE;
+  assert.ok(table, "impact matrix step defines env.LANE_TABLE");
+  return laneRows(json(table));
 }
 
 const mainPushEnvironment = {
@@ -1676,17 +1649,14 @@ test("main push compares every commit since before, not just the last commit", a
 
 test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
   for (const change of [
-    ({ put }) => {
-      put("specs/rfcs/0034-reusable-model-providers/agent-selection.png");
-      put("apps/controller/src/changed.ts");
-    },
+    addFiles(
+      "specs/rfcs/0034-reusable-model-providers/agent-selection.png",
+      "apps/controller/src/changed.ts",
+    ),
     ({ put }) => put("tests/integration/ci-impact.test.ts"),
     ({ put }) => put(".github/workflows/ci.yml"),
     ({ put }) => put("scripts/ci/impact.ts", policy + "\n// changed\n"),
-    ({ put, repo }) => {
-      put("docs/executable.md");
-      chmodSync(join(repo, "docs/executable.md"), 0o755);
-    },
+    addExecutable("docs/executable.md"),
     ({ repo }) => {
       mkdirSync(join(repo, "docs"));
       symlinkSync("../base.txt", join(repo, "docs/link.md"));
@@ -1699,26 +1669,25 @@ test("main push keeps tests, policy changes, symlinks and executable docs in ful
   }
 });
 
-test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
-  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
-  const [f, shallow] = await policyFixture(t, ({ put }) => {
+const untrustedDocsChange =
+  (marker: string): Change =>
+  ({ put }) => {
     put("scripts/ci/impact.ts", untrustedSelector(marker, "mode=docs\\n"));
     put("docs/change.md");
-  });
+  };
+
+test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
+  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
+  const [f, shallow] = await policyFixture(t, untrustedDocsChange(marker));
   mainPushEvent(f);
   await shallow.expectReason("ineligible_change", mainPushEnvironment);
   assert.equal(existsSync(marker), false);
   // A trusted before-tree containing only the old filename cannot authorize
   // execution of either that policy or the policy introduced by the push.
   const transitionMarker = join(f.dir, "transition-marker");
-  const transition = await fixture(
-    t,
-    ({ put }) => {
-      put("scripts/ci/impact.ts", untrustedSelector(transitionMarker, "mode=docs\\n"));
-      put("docs/change.md");
-    },
-    { "scripts/ci/impact.mjs": untrustedSelector(transitionMarker, "mode=docs\\n") },
-  );
+  const transition = await fixture(t, untrustedDocsChange(transitionMarker), {
+    "scripts/ci/impact.mjs": untrustedSelector(transitionMarker, "mode=docs\\n"),
+  });
   const transitionCheckout = await shallowBootstrap(transition);
   await transitionCheckout.expectReason("bootstrap_policy_unavailable");
   assert.notEqual((await transitionCheckout.run("verify", "tests")).status, 0);
@@ -1758,10 +1727,7 @@ test("workflow executes only the base policy on a shallow merge checkout", async
   const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const [[, docs], [, mixed], [, code]] = await settle([
     policyFixture(t, docsChange),
-    policyFixture(t, ({ put }) => {
-      put("scripts/ci/impact.ts", untrustedSelector(marker, "mode=docs\\n"));
-      put("docs/change.md");
-    }),
+    policyFixture(t, untrustedDocsChange(marker)),
     policyFixture(t, ({ put }) => put("src/app.ts")),
   ]);
   await settle([docs.expect("docs"), mixed.expect("full"), code.expect("full")]);
@@ -1793,17 +1759,11 @@ test("a non-documentation change still selects full after main moves", async (t)
   const moveMain: Change = ({ put }) => put("docs/main.md");
   // The pull request's own selector still never runs, even on a moved base.
   const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
-  const untrusted: Change = ({ put }) => {
-    put("scripts/ci/impact.ts", untrustedSelector(marker, "mode=docs\\n"));
-    put("docs/change.md");
-  };
+  const untrusted = untrustedDocsChange(marker);
   await each(
     [
       ({ put }) => put("src/app.ts"),
-      ({ put }) => {
-        put("docs/change.md");
-        put("src/app.ts");
-      },
+      addFiles("docs/change.md", "src/app.ts"),
       ({ put }) => put(".github/workflows/ci.yml", "name: changed\n"),
       untrusted,
     ],
@@ -1836,11 +1796,10 @@ test("the tested merge's first parent supplies the trusted policy", async (t) =>
     ),
   ]);
   const [addedCheckout, removedCheckout] = await each([added, removed], shallowBootstrap);
-  await settle([present(addedCheckout).expect("docs"), present(removedCheckout).expect("full")]);
-  assert.equal(
-    await present(removedCheckout).select(),
-    "mode=full\nreason=bootstrap_policy_unavailable\n",
-  );
+  await settle([
+    present(addedCheckout).expect("docs"),
+    present(removedCheckout).expectReason("bootstrap_policy_unavailable"),
+  ]);
 });
 
 test("an event base that is present but not behind the tested base selects full", async (t) => {
@@ -1921,33 +1880,20 @@ test("unusable base policy cannot select documentation", async (t) => {
 
 test("documentation workflow selects documentation checks and omits product tests", () => {
   const docs = job("static-checks");
-  assert.doesNotMatch(docs, /^ {4}(?:needs|if):/m);
-  for (const command of [
-    "check:workspace",
-    "lint",
-    "format:check",
-    "openapi:check",
-    "docs:check-length",
-    "docs:build",
-  ]) {
-    assert.match(docs, new RegExp(`\\bpnpm ${command}\\b`));
-  }
-  assert.match(docs, /node scripts\/check-specs\.mjs/);
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
     /run-ci-lane|run-tests\.ts\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
   );
   for (const name of ["pr-safe", "runtime-image-fixture"]) {
-    assert.match(job(name), /needs\.impact\.outputs\.mode == 'full'/, name);
+    assert.match(present(present(ciJobs[name]).if), /needs\.impact\.outputs\.mode == 'full'/, name);
   }
-  const aggregate = job("ci-required").split("      - name: Aggregate CI results\n")[1];
-  assert.ok(aggregate, "required job contains aggregation");
-  assert.match(aggregate, /if:.*needs\.impact\.outputs\.mode == 'full'/);
+  const aggregate = workflowRunStep("ci-required", "name", "Aggregate CI results");
+  assert.match(present(aggregate.if), /needs\.impact\.outputs\.mode == 'full'/);
 });
 
 test("CI Required always reports and fails at once when a dependency was cancelled", () => {
-  const required = present(loadYaml(".github/workflows/ci.yml").jobs["ci-required"]);
+  const required = present(ciJobs["ci-required"]);
   // A skipped required job counts as passing, so failed dependencies must not skip it.
   assert.equal(required.if, "always()");
   // cancelled() is false in a job that starts after a cancellation, so the
@@ -2050,12 +1996,9 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
 });
 
 test("Suite Audit and Static Checks runs the audit and every check the lanes skip", () => {
-  const workflow = loadYaml(".github/workflows/ci.yml");
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const lane = present(
-    present(workflow.jobs["pr-safe"]).steps.find(
-      (step) => step.uses === "./.github/actions/run-ci-lane",
-    ),
+    present(ciJobs["pr-safe"]).steps.find((step) => step.uses === "./.github/actions/run-ci-lane"),
   );
   assert.equal(lane.with["static-checks"], "false");
   assert.equal(present(action.inputs["static-checks"]).default, "true");
@@ -2073,7 +2016,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
-  const staticChecks = present(workflow.jobs["static-checks"]);
+  const staticChecks = present(ciJobs["static-checks"]);
   assert.equal(staticChecks.needs, undefined, "start alongside CI Impact");
   assert.equal(staticChecks.if, undefined, "every selection needs these checks");
   assert.equal(staticChecks["continue-on-error"], undefined);
@@ -2097,7 +2040,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     assert.equal(step.if, undefined, step.name ?? "workflow step");
     assert.equal(step["continue-on-error"], undefined, step.name ?? "workflow step");
   }
-  assert.ok(present(present(workflow.jobs["ci-required"]).needs).includes("static-checks"));
+  assert.ok(present(present(ciJobs["ci-required"]).needs).includes("static-checks"));
 });
 
 test("every formatting check provisions pinned Bun and scans without a formatter cache", () => {
@@ -2107,7 +2050,7 @@ test("every formatting check provisions pinned Bun and scans without a formatter
     present(scripts["format:fix"]).replace("bun fmt --no-script", "bun fmt --no-script --check"),
   );
   assert.match(read(".bun-version").trim(), /^\d+\.\d+\.\d+$/);
-  const staticSteps = present(loadYaml(".github/workflows/ci.yml").jobs["static-checks"]).steps;
+  const staticSteps = present(ciJobs["static-checks"]).steps;
   const laneSteps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
   for (const steps of [staticSteps, laneSteps]) {
     const setup = present(steps.find((step) => step.name === "Set up formatter"));
@@ -2279,10 +2222,12 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
         },
       });
       assert.equal(selection.status, 0, selection.stderr);
-      const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
-      assert.ok(firstAgent);
-      const sourceBuild = /^source-build=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
-      assert.ok(sourceBuild);
+      const { "first-agent": firstAgent, "source-build": sourceBuild } = readStepOutputs(output, [
+        "first-agent",
+        "source-build",
+      ]);
+      assert.ok(firstAgent === "true" || firstAgent === "false");
+      assert.ok(sourceBuild === "true" || sourceBuild === "false");
       const evaluate = (expression: string) =>
         evaluateInContext(
           expression
@@ -2383,8 +2328,8 @@ test("every lane job stops its test files before its own timeout", (t) => {
 
   const callers = [];
   for (const name of readdirSync(join(repositoryRoot, ".github/workflows"))) {
-    const workflow = loadYaml(`.github/workflows/${name}`);
-    for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+    const jobs = name === "ci.yml" ? ciJobs : loadYaml(`.github/workflows/${name}`).jobs;
+    for (const [id, job] of Object.entries(jobs)) {
       for (const step of job.steps ?? []) {
         if (step.uses !== "./.github/actions/run-ci-lane") {
           continue;
@@ -2440,6 +2385,7 @@ function runGate(root: string, needs: object, mode: string, lanes?: string) {
   const raw = join(root, "raw-needs.json");
   writeFileSync(raw, JSON.stringify(needs));
   const output = join(root, "needs.json");
+  rmSync(output, { force: true });
   const selection = lanes === undefined ? [] : ["--lanes", lanes];
   return run(process.execPath, [
     gate,
@@ -2452,6 +2398,8 @@ function runGate(root: string, needs: object, mode: string, lanes?: string) {
     ...selection,
   ]);
 }
+
+type ExpectedAggregateIssue = { code: string; lane?: string; need?: string };
 
 // Synthetic lanes, each with one passing test, run and aggregated by the real
 // runner against `root`'s needs.json.
@@ -2474,39 +2422,56 @@ function syntheticLanes(root: string, sha: string, group: string[], prefix: stri
   writeFileSync(join(root, "manifest.json"), JSON.stringify(manifest));
   const invoke = (args: string[], at = sha) =>
     run(process.execPath, [runner, ...args], { env: { ...process.env, GITHUB_SHA: at } });
-  const common = ["--manifest", "manifest.json", "--root", root];
+  const runLane = (lane: string) =>
+    invoke(laneArgs(root, lane, join(root, `${lane}.state`), join(root, `results/${lane}.json`)));
   return {
-    runLane: (lane: string) =>
-      invoke([
-        "run",
-        lane,
-        ...common,
-        "--state",
-        join(root, `${lane}.state`),
-        "--results",
-        join(root, `results/${lane}.json`),
-      ]),
-    aggregate: ({ lanes, sha: at }: { lanes?: string; sha?: string } = {}) =>
-      invoke(
+    runLane,
+    async runPassingLanes(lanes: readonly string[]) {
+      for (const [i, result] of (await each(lanes, runLane)).entries()) {
+        assert.equal(result.status, 0, `${lanes[i]}: ${result.stderr} ${result.stdout}`);
+      }
+    },
+    async aggregate({
+      lanes,
+      sha: at,
+      issue,
+    }: { lanes?: string | undefined; sha?: string; issue?: ExpectedAggregateIssue } = {}) {
+      const { status, signal, stdout, stderr } = await invoke(
         [
-          "aggregate",
-          "ci",
-          ...common,
-          "--results-dir",
-          "results",
+          ...aggregateArgs(root, "ci"),
           "--needs",
           "needs.json",
           ...(lanes === undefined ? [] : ["--lanes", lanes]),
         ],
         at,
-      ),
+      );
+      const selection = lanes ?? "<omitted>";
+      const diagnostic = `Expected ${JSON.stringify(issue ?? "passed")} for ${selection}\n${stderr}\n${stdout}`;
+      assert.deepEqual({ status, signal }, { status: issue ? 1 : 0, signal: null }, diagnostic);
+      const summary = aggregateData(stdout);
+      assert.equal(summary.status, issue ? "failed" : "passed", diagnostic);
+      if (issue) {
+        assert.partialDeepStrictEqual(summary.issues, [issue], diagnostic);
+      }
+      return summary;
+    },
   };
 }
 
-const hasIssue = (result: ChildResult<string>, code: string, lane?: string) =>
-  aggregateData(result.stdout).issues.some(
-    (issue) => issue.code === code && (lane === undefined || issue.lane === lane),
+function assertAggregateLanes(
+  summary: ReturnType<typeof aggregateData>,
+  expectedLanes: readonly string[],
+  failedLane?: string,
+) {
+  assert.deepEqual(
+    summary.lanes.map(({ lane, status }) => [lane, status]),
+    expectedLanes.map((lane) => [lane, lane === failedLane ? "failed" : "passed"]),
   );
+  assert.deepEqual(
+    summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
+    failedLane === undefined ? [] : [failedLane],
+  );
+}
 
 test("workflow selection flows through the gate and full-mode source-bound aggregate", async (t) => {
   // A declared lane must actually have a runner in both full-coverage paths.
@@ -2577,18 +2542,30 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       assert.equal(state.result, "success", name);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
-    const { runLane, aggregate } = syntheticLanes(root, f.tested, fixtureLanes, "");
-    for (const [i, result] of (await each(fixtureLanes, runLane)).entries()) {
-      assert.equal(result.status, 0, `${fixtureLanes[i]}: ${result.stderr} ${result.stdout}`);
-    }
-    const passed = await aggregate();
-    assert.equal(passed.status, 0, `${passed.stderr} ${passed.stdout}`);
-    assert.equal(aggregateData(passed.stdout).status, "passed");
+    const { runLane, runPassingLanes, aggregate } = syntheticLanes(
+      root,
+      f.tested,
+      fixtureLanes,
+      "",
+    );
+    await runPassingLanes(fixtureLanes);
+    assertAggregateLanes(await aggregate(), fixtureLanes);
     await command(root, "git", ["checkout", "-q", "--detach", f.head]);
-    const wrongRevision = await aggregate({ sha: f.head });
-    assert.notEqual(wrongRevision.status, 0);
-    assert.ok(hasIssue(wrongRevision, "source-sha-mismatch", "checks-baseline-1"));
+    const stalePassing = await aggregate({
+      sha: f.head,
+      issue: { code: "source-sha-mismatch", lane: "checks-baseline-1" },
+    });
+    assertAggregateLanes(stalePassing, []);
     await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
+
+    // The gate writes the new job state even when it then rejects a failed job.
+    const setPrSafe = async (result: "success" | "failure") => {
+      needs["pr-safe"].result = result;
+      const gated = await runGate(root, needs, mode);
+      assert.equal(gated.status === 0, result === "success", gated.stderr);
+      const written = needsData(readFileSync(join(root, "needs.json"), "utf8"));
+      assert.equal(written["pr-safe"]?.result, result);
+    };
 
     for (const lane of ["checks-baseline-2", "postgres"]) {
       const artifact = join(root, `results/${lane}.json`);
@@ -2597,81 +2574,52 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         const wrongSource = jsonRecord(original.toString("utf8"));
         wrongSource.sourceSha = f.head;
         writeFileSync(artifact, JSON.stringify(wrongSource));
-        const result = await aggregate();
-        assert.notEqual(result.status, 0);
-        assert.ok(hasIssue(result, "source-sha-mismatch", lane));
+        await aggregate({ issue: { code: "source-sha-mismatch", lane } });
       }
       rmSync(artifact);
-      const missing = await aggregate();
-      assert.notEqual(missing.status, 0);
-      assert.ok(hasIssue(missing, "missing-lane-output", lane));
+      await aggregate({ issue: { code: "missing-lane-output", lane } });
       writeFileSync(
         join(root, `tests/integration/${lane}.test.mjs`),
         `import test from "node:test"; test("case ${lane}", () => { throw new Error("failure"); });\n`,
       );
       assert.notEqual((await runLane(lane)).status, 0);
       // A failed matrix job does not make its passing sibling lanes fail.
-      needs["pr-safe"].result = "failure";
-      assert.notEqual((await runGate(root, needs, mode)).status, 0);
-      const failed = await aggregate();
-      assert.notEqual(failed.status, 0);
-      assert.ok(hasIssue(failed, "lane-failed", lane));
-      const summary = aggregateData(failed.stdout);
+      await setPrSafe("failure");
+      const summary = await aggregate({ issue: { code: "lane-failed", lane } });
       assert.deepEqual(
         summary.issues
           .filter((entry) => entry.code === "need-not-success")
           .map((entry) => entry.need),
         ["pr-safe"],
       );
-      assert.deepEqual(
-        summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
-        [lane],
-      );
-      assert.ok(
-        summary.lanes
-          .filter((entry) => entry.lane !== lane)
-          .every((entry) => entry.status === "passed"),
-      );
+      assertAggregateLanes(summary, fixtureLanes, lane);
       if (lane === "postgres") {
         // Keep the runner-produced failure intact: an old revision's receipt
         // cannot attribute an outcome to the revision being aggregated.
         await command(root, "git", ["checkout", "-q", "--detach", f.head]);
-        const stale = await aggregate({ sha: f.head });
-        assert.notEqual(stale.status, 0);
-        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
-        assert.equal(hasIssue(stale, "lane-failed"), false);
-        assert.deepEqual(aggregateData(stale.stdout).lanes, []);
+        const stale = await aggregate({
+          sha: f.head,
+          issue: { code: "source-sha-mismatch", lane },
+        });
+        assertAggregateLanes(stale, []);
         await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
 
         // A misplaced real receipt likewise cannot fail its passing sibling.
         const sibling = join(root, "results/checks-baseline-1.json");
         const siblingOriginal = readFileSync(sibling);
         cpSync(artifact, sibling);
-        const misfiled = await aggregate();
-        assert.notEqual(misfiled.status, 0);
-        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
-        const misplaced = aggregateData(misfiled.stdout);
-        assert.deepEqual(
-          misplaced.issues
-            .filter((entry) => entry.code === "lane-failed")
-            .map((entry) => entry.lane),
-          [lane],
-        );
-        assert.deepEqual(
-          misplaced.lanes.map((entry) => entry.lane),
-          ["checks-baseline-2", lane],
-        );
+        const misplaced = await aggregate({
+          issue: { code: "lane-output-mismatch", lane: "checks-baseline-1" },
+        });
+        assertAggregateLanes(misplaced, ["checks-baseline-2", lane], lane);
         writeFileSync(sibling, siblingOriginal);
       }
-      needs["pr-safe"].result = "success";
-      assert.equal((await runGate(root, needs, mode)).status, 0);
+      await setPrSafe("success");
       writeFileSync(artifact, original);
     }
-    needs["pr-safe"].result = "failure";
-    assert.notEqual((await runGate(root, needs, mode)).status, 0);
-    const failedJob = await aggregate();
-    assert.notEqual(failedJob.status, 0);
-    assert.ok(hasIssue(failedJob, "need-not-success"));
+    await setPrSafe("failure");
+    const failedJob = await aggregate({ issue: { code: "need-not-success", need: "pr-safe" } });
+    assertAggregateLanes(failedJob, fixtureLanes);
   });
 });
 
@@ -2684,20 +2632,16 @@ async function summarizeImpact(
 ) {
   const summary = join(temporaryDirectorySync(t, "ci-impact-summary-"), "summary");
   writeFileSync(summary, "");
-  const result = await run(
-    "bash",
-    ["-e", "-o", "pipefail", "-c", workflowBootstrap("      - name: Summarize impact selection\n")],
-    {
-      env: {
-        ...process.env,
-        GITHUB_STEP_SUMMARY: summary,
-        SELECT_OUTCOME: outcome,
-        SELECT_MODE: mode,
-        SELECT_REASON: reason,
-        ...extra,
-      },
+  const result = await run("bash", ["-e", "-o", "pipefail", "-c", summarizeRun], {
+    env: {
+      ...process.env,
+      GITHUB_STEP_SUMMARY: summary,
+      SELECT_OUTCOME: outcome,
+      SELECT_MODE: mode,
+      SELECT_REASON: reason,
+      ...extra,
     },
-  );
+  });
   assert.equal(result.status, 0, result.stderr);
   return readFileSync(summary, "utf8");
 }
@@ -2844,25 +2788,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
 
 test("summary accepts only mode and reason pairings", async (t) => {
   await settle([
-    ...[
-      "non_pr_event",
-      "invalid_event",
-      "invalid_identity",
-      "event_unavailable",
-      "checkout_mismatch",
-      "git_inspection_failed",
-      "malformed_diff",
-      "empty_diff",
-      "unsupported_change",
-      "filename_not_utf8",
-      "ineligible_change",
-      "bootstrap_non_pr_event",
-      "bootstrap_event_unavailable",
-      "bootstrap_invalid_identity",
-      "bootstrap_checkout_mismatch",
-      "bootstrap_git_inspection_failed",
-      "bootstrap_policy_unavailable",
-    ].flatMap((reason) => [
+    ...fullSummaryReasons.flatMap((reason) => [
       assertFullSummary(t, reason, /SECRET|change\.md|injected/),
       assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
     ]),
@@ -2972,13 +2898,19 @@ test("event inspection failures in actual bootstrap and selector are unavailable
   ]);
 });
 
+const postgresA = "tests/integration/postgres-a.test.mjs";
+const postgresB = "tests/integration/postgres-b.test.mjs";
+const postgresC = "tests/integration/postgres-c.test.ts";
+const k3dA = "tests/integration/k3d-a.test.mjs";
+const postgresManifestPath = "scripts/ci/test-suites/postgres.json";
+
 // A small suite index with the shape of scripts/ci/test-suites.json: four CI
 // lanes, the separate fixture job and one manual (non-CI) lane.
 const suiteLanes = {
   "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs", "tests/integration/typed.test.ts"],
   "checks-baseline-2": [],
-  postgres: ["tests/integration/postgres-a.test.mjs", "tests/integration/postgres-b.test.mjs"],
-  "k3d-fixture-state": ["tests/integration/k3d-a.test.mjs"],
+  postgres: [postgresA, postgresB],
+  "k3d-fixture-state": [k3dA],
   "runtime-image-fixture": ["tests/integration/fixture-image.test.mjs"],
   openshell: ["tests/integration/openshell-real.test.mjs"],
 };
@@ -2988,6 +2920,19 @@ function laneManifest(
   env: NodeJS.ProcessEnv = { NODE_OPTIONS: "--max-old-space-size=4096" },
 ) {
   return `${JSON.stringify({ env, files: paths.map((path) => ({ path })) }, null, 2)}\n`;
+}
+
+// Copy the exact index bytes parsed here and only the manifests they reference.
+function checkedInSuites() {
+  const indexPath = "scripts/ci/test-suites.json";
+  const contents = read(indexPath);
+  const index = indexData(contents);
+  const files: Record<string, string> = { [indexPath]: contents };
+  for (const target of Object.values(index.lanes)) {
+    const path = join("scripts/ci", target);
+    files[path] = read(path);
+  }
+  return { index, files };
 }
 
 function suiteFiles(
@@ -3042,7 +2987,18 @@ const withEdit =
     context.put(path, "// edited\n");
     return change(context);
   };
-const postgresEdit = (change: Change) => withEdit("tests/integration/postgres-a.test.mjs", change);
+const postgresEdit = (change: Change) => withEdit(postgresA, change);
+
+const postgresManifest =
+  (paths: string[], env?: NodeJS.ProcessEnv): Change =>
+  ({ put }) =>
+    put(postgresManifestPath, laneManifest(paths, env));
+
+const addListedPostgresTest = (body: string) =>
+  writeFiles({
+    [postgresC]: body,
+    [postgresManifestPath]: laneManifest([...suiteLanes.postgres, postgresC]),
+  });
 
 async function suiteFixture(
   t: TestContext,
@@ -3062,7 +3018,7 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
   const helper = "tests/helpers/runtime.mjs";
   const bridge = "tests/helpers/bridge.mjs";
   const fullRoot = "tests/integration/openshell-real.test.mjs";
-  const ordinaryRoot = "tests/integration/postgres-a.test.mjs";
+  const ordinaryRoot = postgresA;
   const fullTypedRoot = "tests/integration/typed-full.test.ts";
   const unrelatedRoot = "tests/integration/unrelated.test.ts";
   const security = "tests/helpers/auth.mjs";
@@ -3178,7 +3134,6 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
 });
 
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
-  const path = "tests/integration/postgres-a.test.mjs";
   const broad: string[] = [];
   const narrow = ["postgres", "postgres-application"];
   const extraLane = present(suiteFiles()["scripts/ci/test-suites.json"]).replaceAll(
@@ -3187,12 +3142,7 @@ test("main test advisory reports only a verified single modification and leaves 
   );
   // Keep these edits bound to the maintained index and lane manifests. The
   // worker shutdown case also needs the TypeScript checks lane.
-  const indexPath = "scripts/ci/test-suites.json";
-  const registered: Files = { [indexPath]: read(indexPath) };
-  for (const target of Object.values(indexData(read(indexPath)).lanes)) {
-    const manifest = join("scripts/ci", target);
-    registered[manifest] = read(manifest);
-  }
+  const { files: registered } = checkedInSuites();
   const registeredEdit = (stem: string, extension: string): [Change, Files] => {
     const file = `tests/integration/${stem}.test.${extension}`;
     return [editTest(file), { ...registered, [file]: "// original\n" }];
@@ -3202,7 +3152,7 @@ test("main test advisory reports only a verified single modification and leaves 
       ...registeredEdit("postgres-worker-process-shutdown", "ts"),
       ["checks-baseline-2", "postgres-application", "postgres-platform"],
     ],
-    [editTest(path), {}, narrow],
+    [editTest(postgresA), {}, narrow],
     [
       ...registeredEdit("postgres-external-session-provider", "mjs"),
       ["postgres-application", "postgres-auth"],
@@ -3210,31 +3160,27 @@ test("main test advisory reports only a verified single modification and leaves 
     [...registeredEdit("postgres-worker-agent-revision-health", "mjs"), ["postgres-application"]],
     [...registeredEdit("production-kubernetes-packaging", "mjs"), ["images-packaging"]],
     [postgresEdit(({ put }) => put("docs/change.md")), {}, broad],
-    [postgresEdit(editTest("tests/integration/postgres-b.test.mjs")), {}, broad],
-    [({ repo }) => chmodSync(join(repo, path), 0o755), {}, broad],
+    [postgresEdit(editTest(postgresB)), {}, broad],
+    [({ repo }) => chmodSync(join(repo, postgresA), 0o755), {}, broad],
     [
-      editTest(path),
+      editTest(postgresA),
       {
         "scripts/reader.mjs": 'import "../tests/integration/postgres-a.test.mjs";',
       },
       broad,
     ],
-    [editTest(path), { "scripts/ci/test-suites/postgres.json": laneManifest([]) }, broad],
+    [editTest(postgresA), { [postgresManifestPath]: laneManifest([]) }, broad],
     [
-      editTest(path),
+      editTest(postgresA),
       {
         "scripts/ci/test-suites.json": extraLane,
-        "scripts/ci/test-suites/unknown-lane.json": laneManifest([path]),
+        "scripts/ci/test-suites/unknown-lane.json": laneManifest([postgresA]),
       },
       broad,
       false,
     ],
-    [
-      postgresEdit(({ put }) => put("scripts/ci/test-suites/postgres.json", laneManifest([path]))),
-      {},
-      broad,
-    ],
-    [({ git }) => git("rm", path), {}, broad],
+    [postgresEdit(postgresManifest([postgresA])), {}, broad],
+    [({ git }) => git("rm", postgresA), {}, broad],
   ];
   const matrix = await buildMatrix(t, "full", "");
   assert.equal(matrix.status, 0, matrix.stderr);
@@ -3307,17 +3253,15 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         async ({ git }) => git("rm", "-q", "tests/integration/typed.test.ts"),
         ["checks-baseline-1", "checks-baseline-2"],
       ],
-      [editTest("tests/integration/postgres-a.test.mjs"), ["postgres"]],
+      [editTest(postgresA), ["postgres"]],
       [
-        withEdit("tests/integration/postgres-b.test.mjs", ({ put }) =>
+        withEdit(postgresB, ({ put }) =>
           put("docs/testing.md", "Notes on tests/integration/postgres-b.test.mjs.\n"),
         ),
         ["postgres"],
       ],
       [
-        withEdit("tests/integration/k3d-a.test.mjs", ({ put }) =>
-          put("tests/integration/fixture-image.test.mjs", "// edited\n"),
-        ),
+        withEdit(k3dA, ({ put }) => put("tests/integration/fixture-image.test.mjs", "// edited\n")),
         ["k3d-fixture-state", "runtime-image-fixture"],
         // Verifies the lanes, and refuses every other form, in selector processes.
         { cliVerify: true },
@@ -3334,36 +3278,21 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         ["checks-baseline-1", "postgres"],
       ],
       // The owning lane runs a new TypeScript test; baseline 2 type-checks it.
-      [
-        ({ put }) => {
-          put("tests/integration/postgres-c.test.ts", "// new\n");
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.ts"]),
-          );
-        },
-        ["checks-baseline-2", "postgres"],
-      ],
+      [addListedPostgresTest("// new\n"), ["checks-baseline-2", "postgres"]],
       // A deleted file and its manifest entry.
       [
         async ({ git, put }) => {
-          await git("rm", "-q", "tests/integration/postgres-b.test.mjs");
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest(["tests/integration/postgres-a.test.mjs"]),
-          );
+          await git("rm", "-q", postgresB);
+          put(postgresManifestPath, laneManifest([postgresA]));
         },
         ["postgres"],
       ],
       // A file that moves between lanes runs in both.
       [
         ({ put }) => {
-          put("tests/integration/k3d-a.test.mjs", "// moved\n");
+          put(k3dA, "// moved\n");
           put("scripts/ci/test-suites/k3d-fixture-state.json", laneManifest([]));
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/k3d-a.test.mjs"]),
-          );
+          put(postgresManifestPath, laneManifest([...suiteLanes.postgres, k3dA]));
         },
         ["k3d-fixture-state", "postgres"],
       ],
@@ -3386,7 +3315,7 @@ test("a test-only change selects the lanes that list its files", async (t) => {
 test("a test-only change keeps its lanes after main moves", async (t) => {
   const [f, shallow] = await suiteFixture(
     t,
-    editTest("tests/integration/k3d-a.test.mjs"),
+    editTest(k3dA),
     {},
     {
       moveMain: ({ put }) => {
@@ -3460,34 +3389,24 @@ test("mixed test and code, tooling, workflow or package changes select full", as
 });
 
 test("manifest changes beyond the changed test files select full", async (t) => {
-  const postgresManifest =
-    (paths: string[], env?: NodeJS.ProcessEnv): Change =>
-    ({ put }) =>
-      put("scripts/ci/test-suites/postgres.json", laneManifest(paths, env));
   await expectFullReasons(
     t,
     "manifest_change",
     [
       // Another file's entry removed, added or moved.
-      postgresEdit(postgresManifest(["tests/integration/postgres-a.test.mjs"])),
+      postgresEdit(postgresManifest([postgresA])),
       postgresEdit(({ put }) =>
         put(
           "scripts/ci/test-suites/k3d-fixture-state.json",
-          laneManifest([
-            ...suiteLanes["k3d-fixture-state"],
-            "tests/integration/postgres-b.test.mjs",
-          ]),
+          laneManifest([...suiteLanes["k3d-fixture-state"], postgresB]),
         ),
       ),
       // Other files reordered (the changed file's own position may change).
-      withEdit(
-        "tests/integration/k3d-a.test.mjs",
-        postgresManifest([...suiteLanes.postgres].reverse()),
-      ),
+      withEdit(k3dA, postgresManifest([...suiteLanes.postgres].reverse())),
       // Lane environment.
       postgresEdit(postgresManifest(suiteLanes.postgres, {})),
       // A manifest change without any test change.
-      postgresManifest(["tests/integration/postgres-a.test.mjs"]),
+      postgresManifest([postgresA]),
       // A new lane manifest.
       postgresEdit(({ put }) => put("scripts/ci/test-suites/extra.json", laneManifest([]))),
     ].map((change) => [change]),
@@ -3495,7 +3414,7 @@ test("manifest changes beyond the changed test files select full", async (t) => 
 });
 
 test("a computed import of a changed test requires full pull request coverage", async (t) => {
-  const producer = "tests/integration/postgres-a.test.mjs";
+  const producer = postgresA;
   const reader = "tests/browser/consumer.test.mjs";
   // The browser test assembles the filename at runtime, so a literal reference search misses it.
   const [f, shallow] = await suiteFixture(
@@ -3531,38 +3450,28 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
   withoutTypecheck.groups.ci = withoutTypecheck.groups.ci.filter(
     (lane) => lane !== "checks-baseline-2",
   );
-  const editA = editTest("tests/integration/postgres-a.test.mjs");
+  const editA = editTest(postgresA);
   const cases: Record<string, FullReasonCase[]> = {
     // Not registered in any lane, or only in a manual lane.
     unmapped_test: [
       [({ put }) => put("tests/integration/unlisted.test.mjs", "// new\n")],
-      [({ put }) => put("tests/integration/postgres-c.test.ts", "// new\n")],
+      [({ put }) => put(postgresC, "// new\n")],
       [editTest("tests/integration/openshell-real.test.mjs")],
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.
     referenced_test: [
       // Removing the last export still affects consumers of the old interface.
-      [editA, { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" }],
+      [editA, { [postgresA]: "export const value = 1;\n" }],
+      [({ git }) => git("rm", "-q", postgresA), { [postgresA]: "export const value = 1;\n" }],
+      [addListedPostgresTest("export type Case = string;\n")],
       [
-        ({ git }) => git("rm", "-q", "tests/integration/postgres-a.test.mjs"),
-        { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" },
-      ],
-      [
-        ({ put }) => {
-          const path = "tests/integration/postgres-c.test.ts";
-          put(path, "export type Case = string;\n");
-          put("scripts/ci/test-suites/postgres.json", laneManifest([...suiteLanes.postgres, path]));
-        },
-      ],
-      [
-        editTest("tests/integration/postgres-b.test.mjs"),
+        editTest(postgresB),
         { "scripts/ci/prepare.ts": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
       ],
       [
-        editTest("tests/integration/k3d-a.test.mjs"),
+        editTest(k3dA),
         {
-          "tests/integration/postgres-a.test.mjs":
-            'new URL("./k3d-a.test.mjs", import.meta.url);\n',
+          [postgresA]: 'new URL("./k3d-a.test.mjs", import.meta.url);\n',
         },
       ],
       // Git grep cannot see a symbolic link's target, so a link on main selects full.
@@ -3577,7 +3486,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     ],
     // Executable or symlinked test files.
     ineligible_change: [
-      [({ repo }) => chmodSync(join(repo, "tests/integration/postgres-a.test.mjs"), 0o755)],
+      [({ repo }) => chmodSync(join(repo, postgresA), 0o755)],
       [
         ({ repo }) =>
           symlinkSync("postgres-a.test.mjs", join(repo, "tests/integration/postgres-c.test.mjs")),
@@ -3596,7 +3505,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
   };
   await settle([
     ...Object.entries(cases).map(([reason, changes]) => expectFullReasons(t, reason, changes)),
-    fixture(t, editTest("tests/integration/k3d-a.test.mjs"), {
+    fixture(t, editTest(k3dA), {
       ...suiteFiles(),
       "docs/testing.md": "See tests/integration/k3d-a.test.mjs.\n",
     }).then((mentioned) => mentioned.expectTests(["k3d-fixture-state"])),
@@ -3650,32 +3559,29 @@ test("test-only selection is limited to pull request events", async (t) => {
 async function buildMatrix(t: TestContext, mode: string, lanes: string) {
   const output = join(temporaryDirectorySync(t, "ci-impact-matrix-"), "output");
   writeFileSync(output, "");
-  const result = await run(
-    "bash",
-    ["-e", "-o", "pipefail", "-c", workflowBootstrap("      - id: matrix\n")],
-    {
-      env: {
-        ...process.env,
-        GITHUB_OUTPUT: output,
-        SELECT_MODE: mode,
-        SELECT_LANES: lanes,
-        LANE_TABLE: JSON.stringify(laneTable()),
-      },
+  const result = await run("bash", ["-e", "-o", "pipefail", "-c", matrixStep.run], {
+    env: {
+      ...process.env,
+      GITHUB_OUTPUT: output,
+      SELECT_MODE: mode,
+      SELECT_LANES: lanes,
+      LANE_TABLE: matrixStep.env.LANE_TABLE,
     },
-  );
-  const values = Object.fromEntries(
-    readFileSync(output, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
-  );
+  });
+  const values =
+    result.status === 0
+      ? readStepOutputs(output, ["matrix", "image-matrix", "fixture", "has-matrix", "has-images"])
+      : undefined;
+  if (!values) {
+    assert.equal(readFileSync(output, "utf8"), "");
+  }
   return {
     ...result,
-    matrix: values.matrix ? laneRows(json(values.matrix)) : undefined,
-    images: values["image-matrix"] ? laneRows(json(values["image-matrix"])) : undefined,
-    hasMatrix: values["has-matrix"],
-    hasImages: values["has-images"],
-    fixture: values.fixture,
+    matrix: values && laneRows(json(present(values.matrix))),
+    images: values && laneRows(json(present(values["image-matrix"]))),
+    hasMatrix: values?.["has-matrix"],
+    hasImages: values?.["has-images"],
+    fixture: values?.fixture,
   };
 }
 
@@ -3808,36 +3714,48 @@ test("impact summary lists validated test-only lanes and nothing else", async (t
 });
 
 test("workflow runs selected lanes in tests mode and gates them by the verified lane set", () => {
-  const prSafe = job("pr-safe");
-  assert.match(
-    prSafe,
-    /if: \$\{\{ \(needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests'\) && needs\.impact\.outputs\.has-matrix == 'true' \}\}/,
+  const prSafe = present(ciJobs["pr-safe"]);
+  assert.equal(
+    prSafe.if,
+    "${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-matrix == 'true' }}",
   );
-  assert.match(prSafe, /include: \$\{\{ fromJSON\(needs\.impact\.outputs\.matrix\) \}\}/);
+  assert.equal(prSafe.strategy.matrix.include, "${{ fromJSON(needs.impact.outputs.matrix) }}");
+  assert.equal(
+    present(ciJobs["image-lanes"]).strategy.matrix.include,
+    "${{ fromJSON(needs.impact.outputs.image-matrix) }}",
+  );
   assert.match(
-    job("runtime-image-fixture"),
+    present(present(ciJobs["runtime-image-fixture"]).if),
     /needs\.impact\.outputs\.mode == 'tests' && needs\.impact\.outputs\.fixture == 'true'/,
   );
-  // Static checks (lint, format, OpenAPI, docs) run in every mode; the smoke
-  // and the advisory job stay off in tests mode.
-  assert.doesNotMatch(job("static-checks"), /^ {4}(?:needs|if):/m);
   for (const name of ["first-agent-smoke", "affected-packages"]) {
     assert.doesNotMatch(job(name), /'tests'/, name);
   }
-  const required = job("ci-required");
-  assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
-  assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
-  assert.match(required, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
-  const impact = job("impact");
+
+  const validate = workflowRunStep("ci-required", "name", "Validate selected job state");
+  const aggregate = workflowRunStep("ci-required", "name", "Aggregate CI results");
+  for (const step of [verifyModeStep, validate, aggregate]) {
+    assert.equal(step.env.EXPECTED_LANES, "${{ needs.impact.outputs.lanes }}", present(step.name));
+  }
+  assert.match(validate.run, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(aggregate.run, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
+
+  assert.equal(matrixStep.env.SELECT_MODE, "${{ steps.select.outputs.mode }}");
+  assert.equal(matrixStep.env.SELECT_LANES, "${{ steps.select.outputs.lanes }}");
+  const outputs = record(present(ciJobs.impact).outputs);
   for (const [output, step] of [
     ["mode", "select"],
     ["lanes", "select"],
     ["matrix", "matrix"],
+    ["image-matrix", "matrix"],
+    ["has-matrix", "matrix"],
+    ["has-images", "matrix"],
     ["fixture", "matrix"],
-  ]) {
-    assert.match(
-      impact,
-      new RegExp(`${output}: \\$\\{\\{ steps\\.${step}\\.outputs\\.${output} \\}\\}`),
+  ] as const) {
+    assert.equal(
+      outputs[output],
+      `\${{ steps.${step}.outputs.${output} }}`,
+      `impact.outputs.${output}`,
     );
   }
 });
@@ -3883,61 +3801,39 @@ test("tests mode flows through the gate to a source-bound aggregate of only its 
   // stand-in prepare module is not a runner preparation hook.
   rmSync(join(root, "scripts/ci/prepare.ts"));
   const group = ["checks-baseline-1", "postgres", "k3d-fixture-state"];
-  const { runLane, aggregate } = syntheticLanes(root, f.tested, group, "synthetic-");
+  const { runPassingLanes, aggregate } = syntheticLanes(root, f.tested, group, "synthetic-");
   const ran = ["checks-baseline-1", "postgres"];
-  for (const [i, result] of (await each(ran, runLane)).entries()) {
-    assert.equal(result.status, 0, `${ran[i]}: ${result.stderr} ${result.stdout}`);
-  }
-  const passed = await aggregate({ lanes });
-  assert.equal(passed.status, 0, `${passed.stderr} ${passed.stdout}`);
-  assert.deepEqual(
-    aggregateData(passed.stdout).lanes.map((lane) => lane.lane),
-    ["checks-baseline-1", "postgres"],
-  );
+  await runPassingLanes(ran);
+  assertAggregateLanes(await aggregate({ lanes }), ran);
   // Without the selection, or with a lane that did not run, results are missing.
   const missing = [undefined, '["checks-baseline-1","postgres","k3d-fixture-state"]'];
   const invalid = ["[]", "not json", '["postgres","postgres"]', '["openshell"]', "{}"];
+  const rejectSelection = (selection: string | undefined, code: string) =>
+    aggregate({ lanes: selection, issue: { code } });
   await settle([
-    ...missing.map(async (selection) => {
-      const result = await aggregate(selection === undefined ? {} : { lanes: selection });
-      assert.notEqual(result.status, 0);
-      assert.ok(hasIssue(result, "missing-need"));
-    }),
-    ...invalid.map(async (selection) => {
-      const result = await aggregate(selection === undefined ? {} : { lanes: selection });
-      assert.notEqual(result.status, 0, selection);
-      assert.ok(hasIssue(result, "invalid-lane-selection"), selection);
-    }),
+    ...missing.map((selection) => rejectSelection(selection, "missing-need")),
+    ...invalid.map((selection) => rejectSelection(selection, "invalid-lane-selection")),
   ]);
   // A selected lane's failure or missing evidence still fails.
   const artifact = join(root, "results/postgres.json");
   const original = readFileSync(artifact);
   rmSync(artifact);
-  assert.notEqual((await aggregate({ lanes })).status, 0);
-  for (const change of [{ status: "failed" }, { sourceSha: f.head }]) {
-    writeFileSync(
-      artifact,
-      JSON.stringify({ ...jsonRecord(original.toString("utf8")), ...change }),
-    );
-    assert.notEqual((await aggregate({ lanes })).status, 0);
+  await aggregate({ lanes, issue: { code: "missing-lane-output", lane: "postgres" } });
+  const receipt = jsonRecord(original.toString("utf8"));
+  for (const [change, code] of [
+    [{ status: "failed" }, "lane-failed"],
+    [{ sourceSha: f.head }, "source-sha-mismatch"],
+  ] as const) {
+    writeFileSync(artifact, JSON.stringify({ ...receipt, ...change }));
+    await aggregate({ lanes, issue: { code, lane: "postgres" } });
   }
   writeFileSync(artifact, original);
-  assert.equal((await aggregate({ lanes })).status, 0);
+  assertAggregateLanes(await aggregate({ lanes }), ran);
 });
 
 test("the checked-in suite index and manifests support test-only selection", async (t) => {
-  // Copy the real index and lane manifests, so an index shape the policy does
-  // not accept fails here instead of silently selecting full for every PR.
-  const indexPath = "scripts/ci/test-suites.json";
-  const index = indexData(read(indexPath));
-  const initial: Record<string, string> = {
-    "scripts/ci/impact.ts": policy,
-    [indexPath]: read(indexPath),
-  };
-  for (const target of Object.values(index.lanes)) {
-    const path = join("scripts/ci", target);
-    initial[path] = read(path);
-  }
+  const { index, files } = checkedInSuites();
+  const initial: Record<string, string> = { "scripts/ci/impact.ts": policy, ...files };
   const lane = present(index.groups.ci.find((name) => name !== "checks-baseline-1"));
   const manifest = laneManifestData(
     present(initial[join("scripts/ci", present(index.lanes[lane]))]),
@@ -3961,10 +3857,9 @@ test("the checked-in suite index and manifests support test-only selection", asy
 });
 
 test("shared runtime DAG selects only image consumers while other checks stay independent", async (t) => {
-  const workflow = loadYaml(".github/workflows/ci.yml");
   const selected = (name: string, mode: string, matrix: Awaited<ReturnType<typeof buildMatrix>>) =>
     evaluateInContext(
-      present(present(workflow.jobs[name]).if)
+      present(present(ciJobs[name]).if)
         .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
         .replaceAll("outputs.has-matrix", 'outputs["has-matrix"]')
         .replaceAll("outputs.has-images", 'outputs["has-images"]'),
@@ -3980,13 +3875,10 @@ test("shared runtime DAG selects only image consumers while other checks stay in
         },
       },
     );
-  assert.equal(present(workflow.jobs["pr-safe"]).needs, "impact");
-  assert.deepEqual(present(workflow.jobs["image-lanes"]).needs, ["impact", "runtime-artifact"]);
-  assert.deepEqual(present(workflow.jobs["first-agent-smoke"]).needs, [
-    "impact",
-    "runtime-artifact",
-  ]);
-  assert.ok(!present(present(workflow.jobs["ci-required"]).needs).includes("first-agent-smoke"));
+  assert.equal(present(ciJobs["pr-safe"]).needs, "impact");
+  assert.deepEqual(present(ciJobs["image-lanes"]).needs, ["impact", "runtime-artifact"]);
+  assert.deepEqual(present(ciJobs["first-agent-smoke"]).needs, ["impact", "runtime-artifact"]);
+  assert.ok(!present(present(ciJobs["ci-required"]).needs).includes("first-agent-smoke"));
   for (const [mode, lanes, expected] of [
     ["docs", "", [false, false, false, false]],
     ["full", "", [true, true, true, true]],
@@ -4050,6 +3942,12 @@ test("full integration selects images and gates runtime artifact consumers", (t)
   type SelectorOutputs = Partial<
     Record<"gateway-image" | "agent-image" | "use-runtime-artifact", string>
   >;
+  const github = {
+    repository: "openclaw/openclaw-enterprise",
+    ref: "refs/heads/main",
+    ref_type: "branch",
+    run_attempt: "1",
+  };
   const context = (
     lane: string,
     producer = "success",
@@ -4060,19 +3958,13 @@ test("full integration selects images and gates runtime artifact consumers", (t)
     },
   ) => ({
     cancelled: () => false,
-    github: {
-      repository: "openclaw/openclaw-enterprise",
-      ref: "refs/heads/main",
-      ref_type: "branch",
-      event_name: "workflow_dispatch",
-      run_attempt: "1",
-    },
+    github: { ...github, event_name: "workflow_dispatch" },
     needs: {
       preflight: {
         result: "success",
         outputs: { run_all: lane === "all" ? "true" : "false", selected_lane: lane },
       },
-      "gateway-image-selection": { result: "success", outputs: snapshot },
+      "gateway-image-selection": { result: "success", outputs: { ...snapshot } },
       "runtime-artifact": {
         result: producer,
         outputs: {
@@ -4161,14 +4053,19 @@ test("full integration selects images and gates runtime artifact consumers", (t)
   // The same snapshot decides whether to build and what the consumer imports.
   const selector = present(workflow.jobs["gateway-image-selection"]);
   assert.equal(selector.environment, "integration-main");
+  const gatewayJob = present(workflow.jobs["gateway-routing"]);
+  const gatewayInputs = present(
+    gatewayJob.steps.find((step) => step.uses === "./.github/actions/run-ci-lane"),
+  ).with;
   const selectionDirectory = temporaryDirectorySync(t, "gateway-image-selection-");
   for (const [index, [gateway, agent]] of (
     [
       ["", ""],
       ["gateway@sha256:abc", "agent@sha256:def"],
-      ["partial", ""],
+      ["partial=value", ""],
       ["", "partial"],
       ["line\nbreak", ""],
+      ["", "line\rbreak"],
     ] satisfies [string, string][]
   ).entries()) {
     const step = present(selector.steps[0]);
@@ -4195,21 +4092,19 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       },
       encoding: "utf8",
     });
-    if (present(gateway).includes("\n")) {
-      assert.notEqual(result.status, 0);
+    if ([gateway, agent].some((value) => /[\r\n]/.test(value))) {
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      assert.ok(result.status !== null && result.status > 0);
       assert.equal(existsSync(output), false);
       continue;
     }
     assert.equal(result.status, 0, result.stderr);
-    const snapshot = Object.fromEntries(
-      readFileSync(output, "utf8")
-        .trimEnd()
-        .split("\n")
-        .map((line) => {
-          const split = line.indexOf("=");
-          return [line.slice(0, split), line.slice(split + 1)];
-        }),
-    );
+    const snapshot = readStepOutputs(output, [
+      "gateway-image",
+      "agent-image",
+      "use-runtime-artifact",
+    ]);
     assert.equal(snapshot["use-runtime-artifact"], String(!gateway && !agent));
     for (const selection of ["all", "gateway-routing"]) {
       const values = context(selection, "failure", snapshot);
@@ -4217,65 +4112,39 @@ test("full integration selects images and gates runtime artifact consumers", (t)
         evaluate(present(workflow.jobs["runtime-artifact"]).if, values),
         selection === "all" || (!gateway && !agent),
       );
-      assert.equal(
-        evaluate(present(workflow.jobs["gateway-routing"]).if, values),
-        Boolean(gateway || agent),
-      );
-      const job = present(workflow.jobs["gateway-routing"]);
-      assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE, values), gateway);
-      assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_AGENT_IMAGE, values), agent);
+      assert.equal(evaluate(gatewayJob.if, values), Boolean(gateway || agent));
+      assert.equal(evaluate(gatewayJob.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE, values), gateway);
+      assert.equal(evaluate(gatewayJob.env.OCC_TEST_KUBERNETES_AGENT_IMAGE, values), agent);
       if (gateway && agent) {
-        assert.equal(runGuard(job, values).status, 0);
+        assert.equal(runGuard(gatewayJob, values).status, 0);
       }
-      const inputs = present(
-        job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane"),
-      ).with;
-      assert.equal(evaluate(inputs["runtime-artifact-id"], values), gateway || agent ? "" : "123");
+      assert.equal(
+        evaluate(gatewayInputs["runtime-artifact-id"], values),
+        gateway || agent ? "" : "123",
+      );
     }
   }
   // Actions can suppress individual job outputs while reporting selector
   // success. Exercise received snapshots through the shipped mappings and guard;
   // neither missing mode nor missing refs may silently select a source build.
+  const artifactMode = { "use-runtime-artifact": "true" };
+  const explicitMode = { "use-runtime-artifact": "false" };
+  const explicitImages = { ...explicitMode, "gateway-image": "gateway", "agent-image": "agent" };
   for (const [label, snapshot, producer, id, expected] of [
-    ["artifact", { "use-runtime-artifact": "true" }, "success", "123", 0],
-    [
-      "explicit",
-      { "use-runtime-artifact": "false", "gateway-image": "gateway", "agent-image": "agent" },
-      "skipped",
-      "",
-      0,
-    ],
+    ["artifact", artifactMode, "success", "123", 0],
+    ["explicit", explicitImages, "skipped", "", 0],
     ["missing mode", {}, "success", "123", 1],
     ["unknown mode", { "use-runtime-artifact": "unknown" }, "success", "123", 1],
-    ["both refs omitted", { "use-runtime-artifact": "false" }, "skipped", "", 1],
-    [
-      "gateway omitted",
-      { "use-runtime-artifact": "false", "agent-image": "agent" },
-      "skipped",
-      "",
-      1,
-    ],
-    [
-      "agent omitted",
-      { "use-runtime-artifact": "false", "gateway-image": "gateway" },
-      "skipped",
-      "",
-      1,
-    ],
-    ["artifact omitted", { "use-runtime-artifact": "true" }, "success", "", 1],
-    [
-      "conflicting ref",
-      { "use-runtime-artifact": "true", "gateway-image": "gateway" },
-      "success",
-      "123",
-      1,
-    ],
+    ["both refs omitted", explicitMode, "skipped", "", 1],
+    ["gateway omitted", { ...explicitMode, "agent-image": "agent" }, "skipped", "", 1],
+    ["agent omitted", { ...explicitMode, "gateway-image": "gateway" }, "skipped", "", 1],
+    ["artifact omitted", artifactMode, "success", "", 1],
+    ["conflicting ref", { ...artifactMode, "gateway-image": "gateway" }, "success", "123", 1],
   ] satisfies [string, SelectorOutputs, string, string, number][]) {
     const values = context("all", producer, snapshot);
     values.needs["runtime-artifact"].outputs["artifact-id"] = id;
-    const job = present(workflow.jobs["gateway-routing"]);
-    assert.equal(evaluate(job.if, values), true, label);
-    assert.equal(runGuard(job, values).status, expected, label);
+    assert.equal(evaluate(gatewayJob.if, values), true, label);
+    assert.equal(runGuard(gatewayJob, values).status, expected, label);
   }
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
@@ -4285,13 +4154,7 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       assert.equal(
         evaluate(condition, {
           cancelled: () => false,
-          github: {
-            repository: "openclaw/openclaw-enterprise",
-            ref: "refs/heads/main",
-            ref_type: "branch",
-            event_name: "schedule",
-            run_attempt: "1",
-          },
+          github: { ...github, event_name: "schedule" },
           needs: {
             preflight: { result: "success", outputs: { run_all: runAll } },
             "runtime-artifact": { result: producer },
@@ -4311,6 +4174,7 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
     ),
   ).run;
   const directory = temporaryDirectorySync(t, "full-shared-runtime-gate-");
+  const outputPath = join(directory, "needs.json");
   const execute = (
     lane: string,
     updates: Record<string, { result: string; outputs?: Record<string, string> }>,
@@ -4322,6 +4186,7 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       ]),
     );
     Object.assign(needs, updates);
+    rmSync(outputPath, { force: true });
     const result = spawnSync("bash", ["-e", "-c", present(script)], {
       encoding: "utf8",
       env: {
@@ -4332,7 +4197,7 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       },
     });
     assert.equal(result.status, 0, result.stderr);
-    return needsData(readFileSync(join(directory, "needs.json"), "utf8"));
+    return needsData(readFileSync(outputPath, "utf8"));
   };
   // Failed or cancelled compilation skips image tests; unrelated passing tests
   // cannot replace their results when the aggregate checks coverage.

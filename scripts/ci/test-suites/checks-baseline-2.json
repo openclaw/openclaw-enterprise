@@ -359,6 +359,7 @@
         "run finishes file accounting and cleanup after a reporter pipe read error",
         "run records a sanitized file failure after all reported cases pass",
         "run records failed, skipped, todo, and passed dispositions separately",
+        "run reports only settled released-controller history statuses",
         "run keeps the enrollment operation pending when the parent is interrupted"
       ]
     },
