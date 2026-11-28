@@ -1042,7 +1042,13 @@ export async function renderAgentDetail(
   let agentUpdates = 0;
   // When the last Agent state was applied, on the document's performance clock.
   let agentUpdatedAt = Number.NEGATIVE_INFINITY;
+  // Every revision summary listed so far, from the newest page and from older pages the viewer
+  // asked for. Summaries never change, and a revision appears once however pages shift.
+  const listedRevisions = new Map<string, Revision>();
   let visibleRevisions: Revision[] = [];
+  function currentListedRevision() {
+    return currentRevisionId === undefined ? undefined : listedRevisions.get(currentRevisionId);
+  }
   // True once the readable version list loaded; until then nothing counts as hidden.
   let visibleRevisionsLoaded = false;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
@@ -1295,8 +1301,7 @@ export async function renderAgentDetail(
     !servingProjectionPending &&
     currentRuntimeState === "running" &&
     Boolean(currentRevisionId) &&
-    (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
-      currentAgent.executionMode) === "dedicated";
+    (currentListedRevision()?.harness?.mode ?? currentAgent.executionMode) === "dedicated";
   function syncHarnessRead(refresh?: ForegroundAgentRecheck | "replacement-failed") {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
     if (wanted === harnessRequested && (wanted === null || !refresh)) {
@@ -1496,12 +1501,10 @@ export async function renderAgentDetail(
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
   function unlisted(revisionId: string | undefined) {
-    return (
-      visibleRevisionsLoaded &&
-      Boolean(revisionId) &&
-      revisionId !== "draft" &&
-      !visibleRevisions.some((revision) => revision.id === revisionId)
-    );
+    if (!revisionId || revisionId === "draft") {
+      return false;
+    }
+    return visibleRevisionsLoaded && !listedRevisions.has(revisionId);
   }
   function revisionHidden(revisionId: string | undefined) {
     // Until every page is loaded, an unlisted version may simply be older than those shown.
@@ -1544,7 +1547,7 @@ export async function renderAgentDetail(
   }
   // The current version as the page names it: its number, those words, else its short ID.
   function currentVersionLabel() {
-    const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+    const current = currentListedRevision();
     return current
       ? `v${current.revision}`
       : (unreadableCurrentLabel() ?? shortId(currentRevisionId ?? ""));
@@ -2353,9 +2356,6 @@ export async function renderAgentDetail(
   let agentRereadFailed = false;
   let versionRecord: ReturnType<typeof createVersionDeploymentEvidence> | null = null;
   const revisionsPromise = readRevisionPage(request, path).then(revisionsForPage);
-  // Every revision summary listed so far, from the newest page and from older pages the viewer
-  // asked for. Summaries never change, and a revision appears once however pages shift.
-  const listedRevisions = new Map<string, Revision>();
   // Whether an older page was loaded, and the cursor for the next one (null once complete).
   let olderPageLoaded = false;
   let olderCursor: string | null = null;
@@ -2554,7 +2554,7 @@ export async function renderAgentDetail(
       ...(selected !== "draft" &&
       currentRevisionId &&
       selected !== currentRevisionId &&
-      visibleRevisions.some((revision) => revision.id === currentRevisionId)
+      listedRevisions.has(currentRevisionId)
         ? [
             button(
               "View current version",
@@ -2571,7 +2571,7 @@ export async function renderAgentDetail(
       return;
     }
     for (const option of chooser.options) {
-      const revision = visibleRevisions.find((revision) => revision.id === option.value);
+      const revision = listedRevisions.get(option.value);
       if (!revision) {
         continue;
       }
@@ -2627,7 +2627,8 @@ export async function renderAgentDetail(
         element("option", { value: revision.id }, `v${revision.revision}`),
       ),
     );
-    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
+    const viewed = listedRevisions.get(selected);
+    if (selected !== "draft" && !viewed) {
       chooser.append(
         element(
           "option",
@@ -2664,7 +2665,6 @@ export async function renderAgentDetail(
     if (older) {
       trackRevisionControl(older);
     }
-    const viewed = revisions.find((revision) => revision.id === selected);
     let viewing = "Saved draft for a future deployment";
     if (selected !== "draft") {
       viewing = viewed ? displayDate(viewed.createdAt) : "";
@@ -2906,7 +2906,7 @@ export async function renderAgentDetail(
     await servingReread;
     const serving =
       currentRuntimeState === "running" && currentRevisionId !== selected
-        ? visibleRevisions.find(({ id }) => id === currentRevisionId)
+        ? currentListedRevision()
         : undefined;
     if (!context.isCurrent() || deleting || !serving) {
       return null;
@@ -3098,7 +3098,7 @@ export async function renderAgentDetail(
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
     const neutral = latestDeploymentStatus === "superseded" || latestDeploymentStatus === "stopped";
-    const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+    const current = currentListedRevision();
     const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
     // The caller cannot read the current version, so it may be newer than every version shown.
     const currentHidden = currentRevisionId !== latest.id && revisionHidden(currentRevisionId);
@@ -4753,8 +4753,7 @@ export async function renderAgentDetail(
       setStep(checklistSteps[2], false, requestedDestination());
     }
     refreshDeployControls = updateDeployControls;
-    const previousRevision =
-      visibleRevisions.find((revision) => revision.id === currentRevisionId) ?? visibleRevisions[0];
+    const previousRevision = currentListedRevision() ?? visibleRevisions[0];
     const retainedHarnessRevision =
       previousRevision?.harness?.overrides === undefined ? undefined : previousRevision;
     const harnessChoice = element(
