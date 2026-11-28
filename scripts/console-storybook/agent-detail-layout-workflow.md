@@ -118,10 +118,10 @@ Cleanup triggers no further checks.
 
 Reopen and focus **View deployment**. After cleanup, Enter opens v7.
 
-In signed-in tests, scroll down v1’s **Configuration**. Point near the top
-of **Deployment**. After the simulated worker finishes, check **Selected for
-service** shows v2. Click without moving. **Deployment** opens for v1. Repeat
-over **Draft credentials** to open the draft’s **Credentials** tab.
+In signed-in tests, point near the top of **Deployment** in v1’s scrolled
+**Configuration**. After simulated activation, **Selected for service** shows v2.
+Click without moving. v1’s **Deployment** opens. Repeat over **Draft credentials**.
+On slow returns, “Still checking…” stays visible until **Credentials** opens.
 
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).

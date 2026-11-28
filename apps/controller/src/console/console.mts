@@ -1110,17 +1110,30 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
 
 // Names a pending recheck so a held page is not mistaken for a stuck one (finding 1442).
 // Floating Agent checks stay in view without moving the page.
-function showStillChecking(floatingIn: Element | null = null) {
+function showStillChecking(floatingIn: Element | null = null, keepInView = false) {
   const container = floatingIn ?? app.querySelector(".content .page-actions");
   if (!container?.isConnected) {
     return () => {};
   }
+  // Avoid growing a header the reader has already scrolled past.
+  const floating =
+    floatingIn !== null || (keepInView && container.getBoundingClientRect().bottom <= 0);
   const note = element("p", {
-    className: floatingIn ? "checking-status checking-status--mounted" : "checking-status",
+    className: floating ? "checking-status checking-status--mounted" : "checking-status",
     role: "status",
   });
   container.prepend(note);
   note.textContent = "Still checking…";
+  if (keepInView && !floating) {
+    // At the edge of the viewport the padding can be clipped while the words still fit.
+    const text = document.createRange();
+    text.selectNodeContents(note);
+    const { left, right, top, bottom } = text.getBoundingClientRect();
+    const { clientWidth, clientHeight } = document.documentElement;
+    if (left < 0 || right > clientWidth || top < 0 || bottom > clientHeight) {
+      note.classList.add("checking-status--mounted");
+    }
+  }
   return () => note.remove();
 }
 
@@ -1961,13 +1974,15 @@ async function loadPage({
       : undefined;
   const focused = document.activeElement;
   const { agentId } = current;
+  const navigatingWithinAgent =
+    fromNavigation &&
+    !!agentId &&
+    !!current.namespace &&
+    matchesAgentIdentity(mountedAgent, agentId, current.namespace);
   // Only a switch from this Agent’s picker. Links and history have their own focus targets.
   const switchingVersion =
-    fromNavigation &&
+    navigatingWithinAgent &&
     !restoreHistory &&
-    agentId &&
-    current.namespace &&
-    matchesAgentIdentity(mountedAgent, agentId, current.namespace) &&
     focused instanceof HTMLSelectElement &&
     focused.id === "revision-selector" &&
     mountedViewState?.view.contains(focused);
@@ -2198,7 +2213,7 @@ async function loadPage({
         ? setTimeout(() => {
             loadingTimer = null;
             if (lifetime.isCurrent(active) && held) {
-              showStillChecking(heldAgentShell);
+              showStillChecking(heldAgentShell, navigatingWithinAgent);
             }
           }, stillCheckingDelayMs)
         : setTimeout(() => {
