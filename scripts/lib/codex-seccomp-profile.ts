@@ -348,6 +348,16 @@ function validateRuntimeDefaultSeccompProfile(
     ),
     `${description} must preserve the containerd clone3 ENOSYS rule.`,
   );
+  // An appended allow does not override an explicit deny, so the profile would still block bwrap.
+  const bwrapNames = new Set(codexBwrapAdditionalSyscalls().flatMap((rule) => rule.names));
+  const denied = rules
+    .filter((rule) => rule.action !== "SCMP_ACT_ALLOW")
+    .flatMap((rule) => rule.names.filter((name) => bwrapNames.has(name)));
+  assert.equal(
+    denied.length,
+    0,
+    `${description} explicitly denies ${[...new Set(denied)].join(", ")}, which the bwrap rules must allow. Appending allow rules cannot override that deny (for example in a CRI-O baseline), so this generator does not support the baseline.`,
+  );
 }
 
 function deriveCodexBwrapProfile(
