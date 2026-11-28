@@ -236,23 +236,23 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
     namespaceId: string,
     agentId: string,
   ): Promise<Readonly<AgentRead>> {
-    namespaceIdentity(namespaceId);
-    requireAgentIdentity(agentId);
-    await authorize(principalId, "read", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
-    return read(async (state) => {
-      const namespace = await exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
-      return agent;
-    });
+    await authorizeAgentAccess(principalId, namespaceId, agentId, "read");
+    return read((state) => findAgentForBrowsing(state, namespaceId, agentId));
+  }
+
+  async function findAgentForBrowsing(
+    state: PlatformReadView,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<AgentRead>> {
+    const namespace = await exactNamespace(state, namespaceId);
+    const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
+    if (!agent) {
+      throw new ScopeViolationError(
+        "The Agent does not belong to the exact Installation and Namespace.",
+      );
+    }
+    return agent;
   }
 
   async function listRevisions(
@@ -267,12 +267,14 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
     if (page.before !== undefined && (!Number.isSafeInteger(page.before) || page.before < 1)) {
       throw new ScopeViolationError("The revision page cursor is invalid.");
     }
-    const agent = await getAgentForBrowsing(principalId, namespaceId, agentId);
     // Authorize each revision. Emit a cursor only after finding one more readable
     // revision beyond the page. Access can change before the next request.
     // A batch larger than the page lets a fully readable page finish in one query.
     const batch = Math.max(page.limit + 1, 100);
     return read(async (state) => {
+      // Native IAM must use the same policy snapshot for the parent and every revision.
+      await authorizeAgentAccess(principalId, namespaceId, agentId, "read");
+      const agent = await findAgentForBrowsing(state, namespaceId, agentId);
       const readable: Readonly<AgentRevisionSummary>[] = [];
       const listing = async (nextBefore?: number) => {
         const revisions: Readonly<AgentRevisionListing>[] = [];
