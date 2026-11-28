@@ -56,6 +56,7 @@ import {
   createEnvoyWorkspaceGatewayPlan,
 } from "../helpers/envoy-workspace-gateway.mjs";
 import { assertKubernetesOtelLogs, reportFailedModelTurn } from "./harness-topology-otel.ts";
+import { hasReadyCondition, readReadyAgentPod } from "./harness-topology-pods.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
@@ -2469,18 +2470,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   }
   const pods = await waitFor(`production ${mode} workload Pods`, async () => {
-    const running = (await topologyPods({ placement, gatewayPlacement })).filter((pod) => {
-      const conditions = asRecord(asRecord(pod)?.status)?.conditions;
-      if (!Array.isArray(conditions)) {
-        return false;
-      }
-      /** @type {readonly unknown[]} */
-      const observedConditions = conditions;
-      return observedConditions.some((condition) => {
-        const fields = asRecord(condition);
-        return fields?.type === "Ready" && fields.status === "True";
-      });
-    });
+    const running = (await topologyPods({ placement, gatewayPlacement })).filter(hasReadyCondition);
     return running.length === (mode === "dedicated" ? 2 : 1) ? running : undefined;
   });
   const workloadRole = (/** @type {unknown} */ pod) =>
@@ -3296,6 +3286,14 @@ async function deleteRevisionPods(topology, revisionId) {
   return pods;
 }
 
+/**
+ * @param {string} name
+ * @param {string} namespace
+ */
+function deletePodForRestart(name, namespace) {
+  return kubectl("delete", "pod", name, "--namespace", namespace, "--wait=true", "--timeout=120s");
+}
+
 async function assertStartupFailureDeploymentStatusDurable(context, topology, options = {}) {
   const plugins = options.pluginsEnabled
     ? {
@@ -3933,10 +3931,6 @@ async function assertRetainedArtifact(
   return artifact.id;
 }
 
-function hasReadyCondition(pod) {
-  return pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
-}
-
 async function assertInterruptedGatewayTurnResumes(context, topology) {
   assert.ok(topology.harnessPod, "restart continuation requires the dedicated Codex topology");
   const configurationPath = `/namespaces/${topology.namespaceId}/configurations/${topology.agent.configurationId}`;
@@ -4429,24 +4423,8 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       const previousHarnessUid = topology.harnessPod.metadata.uid;
       // Replace both Pods with the same Agent revision and retained volumes.
       await Promise.all([
-        kubectl(
-          "delete",
-          "pod",
-          topology.gatewayPod.metadata.name,
-          "--namespace",
-          topology.gatewayPlacement,
-          "--wait=true",
-          "--timeout=120s",
-        ),
-        kubectl(
-          "delete",
-          "pod",
-          topology.harnessPod.metadata.name,
-          "--namespace",
-          topology.placement,
-          "--wait=true",
-          "--timeout=120s",
-        ),
+        deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement),
+        deletePodForRestart(topology.harnessPod.metadata.name, topology.placement),
       ]);
       topology.harnessPod = await waitForReadyAgentPod(
         topology,
@@ -4459,15 +4437,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         previousUid,
       );
     } else {
-      await kubectl(
-        "delete",
-        "pod",
-        topology.gatewayPod.metadata.name,
-        "--namespace",
-        topology.gatewayPlacement,
-        "--wait=true",
-        "--timeout=120s",
-      );
+      await deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement);
       topology.gatewayPod = await waitForReadyGatewayPod(
         topology,
         topology.revision.id,
@@ -4693,15 +4663,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     // Stop/start replaces both Pods. The rollout lives on the Harness claim, so the Gateway's
     // bound thread resumes instead of silently starting a new one.
     const previousHarnessUid = topology.harnessPod.metadata.uid;
-    await kubectl(
-      "delete",
-      "pod",
-      topology.harnessPod.metadata.name,
-      "--namespace",
-      topology.placement,
-      "--wait=true",
-      "--timeout=120s",
-    );
+    await deletePodForRestart(topology.harnessPod.metadata.name, topology.placement);
     topology.harnessPod = await waitForReadyAgentPod(
       topology,
       topology.revision.id,
@@ -4711,15 +4673,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
 
   // Deleting the Pod destroys emptyDir state; only the owning durable claim can preserve these outcomes.
   const previousUid = topology.gatewayPod.metadata.uid;
-  await kubectl(
-    "delete",
-    "pod",
-    topology.gatewayPod.metadata.name,
-    "--namespace",
-    topology.gatewayPlacement,
-    "--wait=true",
-    "--timeout=120s",
-  );
+  await deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement);
   topology.gatewayPod = await waitForReadyGatewayPod(topology, topology.revision.id, previousUid);
   const retained = await assertGatewayPrivateResources(topology);
   assert.equal(retained.metadata.uid, privateClaim.metadata.uid);
@@ -5429,35 +5383,15 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
 }
 
-function isTopologyAgentPod(pod, topology) {
-  return (
-    pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-    pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id
-  );
-}
-
 async function waitForReadyAgentPod(topology, revisionId, previousUid) {
-  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () =>
-    (await topologyPods(topology)).find(
-      (pod) =>
-        pod.metadata.uid !== previousUid &&
-        isTopologyAgentPod(pod, topology) &&
-        pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
-        hasReadyCondition(pod),
-    ),
+  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, () =>
+    readReadyAgentPod(resources, topology, revisionId, previousUid),
   );
 }
 
 async function kubectlInReadyAgentPod(topology, ...args) {
   const result = await waitFor("the current ready dedicated Harness Pod", async () => {
-    const pod = (await topologyPods(topology)).find(
-      (candidate) =>
-        candidate.metadata.deletionTimestamp === undefined &&
-        isTopologyAgentPod(candidate, topology) &&
-        candidate.metadata.labels?.["openclaw.dev/revision"] === topology.revision.id &&
-        candidate.status.phase === "Running" &&
-        hasReadyCondition(candidate),
-    );
+    const pod = await readReadyAgentPod(resources, topology);
     if (pod === undefined) {
       return undefined;
     }
@@ -6215,15 +6149,7 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
 
   // A Pod restart reads the existing revision projection; only explicit OCE
   // deployment delivers updated canonical values to a new revision.
-  await kubectl(
-    "delete",
-    "pod",
-    topology.gatewayPod.metadata.name,
-    "--namespace",
-    topology.gatewayPlacement,
-    "--wait=true",
-    "--timeout=120s",
-  );
+  await deletePodForRestart(topology.gatewayPod.metadata.name, topology.gatewayPlacement);
   topology.gatewayPod = await waitForReadyGatewayPod(topology, topology.revision.id, beforePodUid);
   assert.deepEqual(
     await inspectEnvironmentValue(
@@ -7053,15 +6979,7 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     );
   });
 
-  await kubectl(
-    "delete",
-    "pod",
-    harnessPod,
-    "--namespace",
-    topology.placement,
-    "--wait=true",
-    "--timeout=120s",
-  );
+  await deletePodForRestart(harnessPod, topology.placement);
   const restartedHarness = await waitForReadyAgentPod(
     topology,
     topology.revision.id,

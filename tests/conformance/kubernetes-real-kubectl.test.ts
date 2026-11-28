@@ -39,6 +39,7 @@ import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
+import { hasReadyCondition, readReadyAgentPod } from "../helpers/harness-topology-pods.ts";
 import { readJsonLines } from "../helpers/json-lines-file.ts";
 import {
   assertAllowedCredentialRoute as assertAllowedCredentialRouteJs,
@@ -277,6 +278,75 @@ ${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exit
     }
   });
 }
+
+test("Pod readiness needs the Ready condition with status True", () => {
+  const ready = { type: "Ready", status: "True" };
+  const initialized = { type: "Initialized", status: "True" };
+  assert.equal(hasReadyCondition({ status: { conditions: [null, initialized, ready] } }), true);
+  assert.equal(hasReadyCondition({ status: { conditions: ready } }), false);
+  const conditions = [
+    initialized,
+    { type: "ContainersReady", status: "True" },
+    { ...ready, status: true },
+  ];
+  assert.equal(hasReadyCondition({ status: { conditions } }), false);
+});
+
+test("a dedicated Harness selects a live Ready Pod for the requested revision", async () => {
+  const topology = {
+    placement: "agent-ns",
+    gatewayPlacement: "gateway-ns",
+    agent: { id: "worker" },
+    revision: { id: "current" },
+  };
+  const labels = {
+    "openclaw.dev/workload-role": "agent",
+    "openclaw.dev/agent": "worker",
+    "openclaw.dev/revision": "next",
+  };
+  const status = { phase: "Running", conditions: [{ type: "Ready", status: "True" }] };
+  const metadata = { name: "worker-pod", uid: "replacement", labels };
+  const replacement = { metadata, status };
+  const currentLabels = { ...labels, "openclaw.dev/revision": "current" };
+  const current = { metadata: { ...metadata, uid: "old", labels: currentLabels }, status };
+  const gatewayLabels = { ...labels, "openclaw.dev/workload-role": "gateway" };
+  assert.equal(await readReadyAgentPod(async () => undefined, topology), undefined);
+  const localPods: unknown[] = [
+    null,
+    {},
+    { metadata },
+    { metadata, status: { phase: "Running" } },
+    { metadata, status: { ...status, conditions: [null] } },
+    { metadata, status: { ...status, phase: "Pending" } },
+    { metadata, status: { ...status, conditions: [{ type: "Ready", status: "False" }] } },
+    { metadata: { ...metadata, deletionTimestamp: "2026-01-01T00:00:00Z" }, status },
+    { metadata: { ...metadata, labels: null }, status },
+    { metadata: { ...metadata, labels: gatewayLabels }, status },
+    { metadata: { ...metadata, labels: { ...labels, "openclaw.dev/agent": "peer" } }, status },
+    current,
+  ];
+  for (const invalid of [undefined, "", 0]) {
+    localPods.push(
+      { metadata: { ...metadata, name: invalid }, status },
+      { metadata: { ...metadata, uid: invalid }, status },
+    );
+  }
+  const list = async (kind: string, namespace: string) => {
+    assert.equal(kind, "pods");
+    assert.equal(namespace, topology.placement, "do not consult the Gateway namespace");
+    return localPods;
+  };
+  assert.equal(await readReadyAgentPod(list, topology, "next"), undefined);
+
+  // A rollout waits for the next revision before updating topology.revision.
+  const restarted = { metadata: { ...metadata, uid: "restarted" }, status };
+  localPods.push(replacement, restarted);
+  assert.equal(await readReadyAgentPod(list, topology, "next"), replacement);
+  assert.equal(await readReadyAgentPod(list, topology), current);
+
+  // A restart within the same revision must also skip the previous UID.
+  assert.equal(await readReadyAgentPod(list, topology, "next", "replacement"), restarted);
+});
 
 test("a kubectl read retries a dropped exec stream and returns the next attempt's output", async () => {
   const { sleeps, logs, options } = recordingOptions();
