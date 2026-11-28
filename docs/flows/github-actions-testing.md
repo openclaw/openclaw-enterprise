@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-26 09:22"
-last_updated_session: "authoring-run/c0252158-2b99-4167-b929-2fb7bb342dbc"
+updated: "2026-11-27 23:38"
+last_updated_session: "authoring-run/d707de84-8d1d-420b-942f-fe6319b6277a"
 ---
 
 # GitHub Actions testing flow
@@ -263,6 +263,9 @@ Root hooks allow two seconds for reports (immediate on cleanup failure), with a
 60-second skipped-hook backstop. Failed resources remain recorded.
 
 `scripts/ci/runner-aggregate.ts:aggregateGroup` checks SHA, ownership, jobs and execution.
+For a selected Skipper release, `skipper-release.ts:qualifySkipperRelease` also
+requires complete full-scope runner evidence from the exercised owning file,
+alongside the source, image, journey proof and cleanup checks.
 Reused lanes retain separate owners; fresh lanes retain matrix parents.
 `scripts/ci/cleanup.ts:main` records final cleanup. Complete mode retains its
 journal until cleanup. Confirmed loss stops automatic cleanup for reconciliation. Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
@@ -292,6 +295,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-27 23:38: Require complete runner evidence for selected Skipper release qualification. (authoring-run/d707de84-8d1d-420b-942f-fe6319b6277a - 0b9b2054cf1f52a2e46199b45262fba263ae99aa)
 
 - 2026-11-26 09:22: Correct QA and Slack job ordering after preflight. (authoring-run/c0252158-2b99-4167-b929-2fb7bb342dbc - c388219bf7ca532d031a8c49c83029c135cc6a55)
 

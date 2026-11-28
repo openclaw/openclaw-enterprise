@@ -137,6 +137,15 @@ The installed-Skipper lane publishes a sanitized passing receipt only after its
 test and owned-resource cleanup succeed. Complete full-scope results retain
 empty issue lists and each file's exercised status, exit code, and signal for
 coverage validation. Focused or incomplete results carry no full-coverage proof.
+
+When an aggregate selects a Skipper release, qualification requires complete
+full-scope runner evidence. The owning test file must be exercised and pass
+with a Node exit code of zero and no signal or file failure. The runner and file
+must report matching passing counts and empty issue lists. The selected
+source SHA, checkout-image scope and digests, journey proof, and cleanup checks
+still apply. This evidence covers checkout images with a synthetic model trust
+layer; it does not qualify published images.
+
 Raw test output and diagnostics remain private. Failed native operations report a known operation label and, when available, a bounded exit code or allowlisted signal/error code. These log fields do not prove that the installed journey passed.
 
 If the installed proof fails and the job can continue, look for

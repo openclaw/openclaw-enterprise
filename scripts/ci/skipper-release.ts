@@ -379,24 +379,9 @@ export function qualifySkipperRelease(selection: unknown, evidence: unknown, cur
   const receipt = record(evidence);
   assert.equal(receipt.sourceSha, expected.sourceSha);
   assert.equal(receipt.imageScope, skipperImageScope);
-  assert.equal(receipt.version, 1);
-  assert.equal(receipt.command, "run");
   assert.equal(receipt.lane, "skipper-prepared-git-installed");
-  assert.equal(receipt.status, "passed");
-  assert.equal(receipt.exitCode, 0);
-  const counts = passedCounts;
-  assert.deepEqual(receipt.counts, counts);
-  assert.deepEqual(receipt.issues ?? [], []);
-  assert.ok(Array.isArray(receipt.files) && receipt.files.length === 1);
-  const file = record(receipt.files[0]);
-  assert.equal(file.path, installedTestPath);
-  assert.equal(file.status, "passed");
-  assert.deepEqual(file.counts, counts);
-  assert.deepEqual(file.cleanup, { status: "passed" });
-  assert.ok(Array.isArray(file.tests) && file.tests.length === 1);
-  const test = record(file.tests[0]);
-  assert.equal(test.name, installedTestName);
-  assert.equal(test.status, "passed");
+  const runner = projectSkipperRunnerReceipt(receipt);
+  assert.equal(runner.files[0]?.exercised, true, "Incomplete installed Skipper runner evidence");
   assert.ok(Array.isArray(receipt.proof));
   const teamReview = receipt.proof.includes(teamReviewProof[0]);
   assert.deepEqual(receipt.proof, [
