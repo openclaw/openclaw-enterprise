@@ -938,6 +938,7 @@ export function createAgentDetailScenarios({
         group: "Pages/Agent detail",
         name: "Plugin selections JSON error",
         path: `${draft}&tab=plugins`,
+        pluginCapabilities,
         actions: [{ selector: "#agent-plugins", value: "[]" }, click("Save plugin selections")],
         description:
           "Save with Plugin selections JSON that is not an object: the error shows under the JSON and focus moves to it, with no browser bubble.",
