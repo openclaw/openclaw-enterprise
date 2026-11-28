@@ -15,6 +15,7 @@ import {
 } from "../compute/workspace-setup-runtime.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import { resolverEgress } from "../kubernetes/network-policy.ts";
+import type { KubernetesGatewayRoutingOptions } from "../compute/kubernetes/index.ts";
 import type { StrandsBoxOptions } from "./strands-box.ts";
 
 const PRIVATE = [
@@ -66,6 +67,15 @@ function grantRoots(paths: readonly string[]): string[] {
   );
 }
 
+function harnessPort(context: SandboxHarnessContext): number {
+  const entry = context.requirements.environment.find(({ name }) => name === "APP_SERVER_PORT");
+  const port = entry && "value" in entry ? Number(entry.value) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || port === STRANDS_STATUS_PORT) {
+    refuse();
+  }
+  return port;
+}
+
 export function strandsBoxService(
   context: SandboxHarnessContext,
   name: string,
@@ -73,11 +83,7 @@ export function strandsBoxService(
   hash: string,
   diagnostic: boolean,
 ) {
-  const entry = context.requirements.environment.find(({ name }) => name === "APP_SERVER_PORT");
-  const port = entry && "value" in entry ? Number(entry.value) : NaN;
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || port === STRANDS_STATUS_PORT) {
-    refuse();
-  }
+  const port = harnessPort(context);
   return {
     apiVersion: "v1",
     kind: "Service",
@@ -98,6 +104,82 @@ export function strandsBoxService(
   };
 }
 
+export function strandsBoxEndpointEgress({ cidr, port }: { cidr: string; port: number }) {
+  return { to: [{ ipBlock: { cidr } }], ports: [{ protocol: "TCP", port }] };
+}
+
+/** Static routes depend on prepared inputs, including enrollment intent even after its Secret is retired. */
+export function strandsBoxStaticNetworkPolicy(
+  context: SandboxHarnessContext,
+  options: StrandsBoxOptions,
+  labels: Readonly<Record<string, string>>,
+  dns: Parameters<typeof resolverEgress>[0],
+  routing: KubernetesGatewayRoutingOptions,
+) {
+  const gateway = context.requirements.environment.some(
+    ({ name }) => name === "OPENCLAW_NODE_SETUP_CODE",
+  );
+  return {
+    podSelector: { matchLabels: labels },
+    policyTypes: ["Ingress", "Egress"],
+    ingress: [
+      {
+        from: [
+          {
+            podSelector: {
+              matchLabels: {
+                "openclaw.dev/namespace": context.namespace.id,
+                "openclaw.dev/agent": context.revision.agentId,
+                "openclaw.dev/workload-role": "gateway",
+              },
+            },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: harnessPort(context) }],
+      },
+      {
+        from: [
+          {
+            namespaceSelector: {
+              matchLabels: {
+                "kubernetes.io/metadata.name": options.kubernetes.controlPlanePeer.namespace,
+              },
+            },
+            podSelector: { matchLabels: options.kubernetes.controlPlanePeer.podLabels },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: STRANDS_STATUS_PORT }],
+      },
+    ],
+    egress: [
+      ...(gateway
+        ? [
+            {
+              to: [
+                {
+                  namespaceSelector: {
+                    matchLabels: { "kubernetes.io/metadata.name": routing.envoyNamespace },
+                  },
+                  podSelector: {
+                    matchLabels: {
+                      "app.kubernetes.io/component": "proxy",
+                      "app.kubernetes.io/managed-by": "envoy-gateway",
+                      "app.kubernetes.io/name": "envoy",
+                      "gateway.envoyproxy.io/owning-gateway-namespace": routing.gatewayNamespace,
+                      "gateway.envoyproxy.io/owning-gateway-name": routing.gatewayName,
+                    },
+                  },
+                },
+              ],
+              ports: [{ protocol: "TCP", port: routing.envoyHttpsTargetPort ?? 10443 }],
+            },
+          ]
+        : []),
+      resolverEgress(dns),
+    ],
+  };
+}
+
 /** Prepared revision inputs drive projections; Box config contains no Secret values. */
 export function strandsBoxResources(
   context: SandboxHarnessContext,
@@ -106,15 +188,9 @@ export function strandsBoxResources(
   labels: Readonly<Record<string, string>>,
   hash: string,
   transportHash: string,
-  dns: Parameters<typeof resolverEgress>[0],
-  gateway:
-    | {
-        readonly host: string;
-        readonly port: number;
-        readonly egress: Readonly<Record<string, unknown>>;
-      }
-    | undefined,
-  cidrs: readonly { readonly cidr: string; readonly port: number }[],
+  gateway: { readonly host: string; readonly port: number } | undefined,
+  networkPolicy: ReturnType<typeof strandsBoxStaticNetworkPolicy>,
+  endpointEgress: readonly ReturnType<typeof strandsBoxEndpointEgress>[],
 ): readonly KubernetesObject[] {
   const r = context.requirements;
   // Keep Compute's exact init options with the supervisor. Only the original
@@ -525,47 +601,7 @@ mv -T preparing image`,
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
     metadata,
-    spec: {
-      podSelector: { matchLabels: labels },
-      policyTypes: ["Ingress", "Egress"],
-      ingress: [
-        {
-          from: [
-            {
-              podSelector: {
-                matchLabels: {
-                  "openclaw.dev/namespace": context.namespace.id,
-                  "openclaw.dev/agent": context.revision.agentId,
-                  "openclaw.dev/workload-role": "gateway",
-                },
-              },
-            },
-          ],
-          ports: [{ protocol: "TCP", port }],
-        },
-        {
-          from: [
-            {
-              namespaceSelector: {
-                matchLabels: {
-                  "kubernetes.io/metadata.name": options.kubernetes.controlPlanePeer.namespace,
-                },
-              },
-              podSelector: { matchLabels: options.kubernetes.controlPlanePeer.podLabels },
-            },
-          ],
-          ports: [{ protocol: "TCP", port: STRANDS_STATUS_PORT }],
-        },
-      ],
-      egress: [
-        ...(gateway ? [gateway.egress] : []),
-        resolverEgress(dns),
-        ...cidrs.map(({ cidr, port: targetPort }) => ({
-          to: [{ ipBlock: { cidr } }],
-          ports: [{ protocol: "TCP", port: targetPort }],
-        })),
-      ],
-    },
+    spec: { ...networkPolicy, egress: [...networkPolicy.egress, ...endpointEgress] },
   };
   const pod = {
     apiVersion: "v1",
