@@ -19,6 +19,92 @@ import { attachKeycloakToK3d, attachPostgresToK3d } from "../helpers/k3d-postgre
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
+function isJournalRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readPreparedPostgresResources(statePath: string, owner: string): Promise<unknown[]> {
+  // Bind validation and reading to one file, then verify the preparation's identity.
+  const file = await open(
+    statePath,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    assert.ok((await file.stat()).isFile(), "Prepared PostgreSQL child must be a regular journal");
+    const state: unknown = JSON.parse(await file.readFile("utf8"));
+    assert.ok(isJournalRecord(state), "Prepared PostgreSQL child must contain a journal");
+    assert.equal(state.version, 1);
+    assert.equal(state.statePath, resolve(statePath));
+    assert.equal(state.repositoryRoot, resolve(repositoryRoot));
+    assert.equal(state.lane, "postgres-auth");
+    assert.equal(state.cleanupOwner, owner);
+    assert.ok(typeof state.prefix === "string");
+    assert.match(state.prefix, /^openclaw-ci-[a-z0-9-]+$/);
+    assert.ok(Array.isArray(state.resources));
+    const resources: unknown[] = state.resources;
+    return resources;
+  } finally {
+    await file.close();
+  }
+}
+
+test("PostgreSQL child journal reads require the prepared regular file and owner", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ci-postgres-child-journal-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, "state.json");
+  const owner = "child-state-012345abcdef";
+  const journal = {
+    version: 1,
+    statePath: resolve(statePath),
+    repositoryRoot: resolve(repositoryRoot),
+    lane: "postgres-auth",
+    prefix: "openclaw-ci-child-journal",
+    cleanupOwner: owner,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    resources: [
+      {
+        id: "compose-postgres-012345abcdef",
+        kind: "compose-postgres",
+        owner: "openclaw-ci-child-journal",
+        name: "openclaw-ci-child-journal-postgres",
+        status: "ready",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        composeFile: join(root, "compose.yaml"),
+        port: 5433,
+      },
+    ],
+  };
+  await writeFile(statePath, JSON.stringify(journal));
+  assert.deepEqual(await readPreparedPostgresResources(statePath, owner), journal.resources);
+
+  const linkedPath = join(root, "linked.json");
+  await fs.symlink(statePath, linkedPath);
+  await assert.rejects(readPreparedPostgresResources(linkedPath, owner), { code: "ELOOP" });
+  const directoryPath = join(root, "directory.json");
+  await fs.mkdir(directoryPath);
+  await assert.rejects(
+    readPreparedPostgresResources(directoryPath, owner),
+    /Prepared PostgreSQL child must be a regular journal/,
+  );
+
+  // Another valid regular file must not redirect inspection or cleanup to another preparation.
+  for (const [field, value] of Object.entries({
+    version: 2,
+    statePath: join(root, "another.json"),
+    repositoryRoot: root,
+    lane: "postgres",
+    prefix: "unrelated",
+    cleanupOwner: "another-owner",
+  })) {
+    await writeFile(statePath, JSON.stringify({ ...journal, [field]: value }));
+    await assert.rejects(
+      readPreparedPostgresResources(statePath, owner),
+      { code: "ERR_ASSERTION" },
+      field,
+    );
+  }
+});
+
 test(
   "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects",
   {
@@ -171,15 +257,23 @@ test(
           ],
           true,
         );
-        const state = JSON.parse(await readFile(statePath, "utf8"));
-        const server = state.resources.find(
-          (resource: { kind: string }) => resource.kind === "compose-postgres",
+        const resources = await readPreparedPostgresResources(statePath, owner);
+        const server = resources.find(
+          (resource) => isJournalRecord(resource) && resource.kind === "compose-postgres",
         );
+        assert.ok(isJournalRecord(server));
+        assert.ok(typeof server.name === "string");
         projects.push(server.name);
         assert.equal(server.status, "ready");
-        assert.ok(server.port > 0 && server.port <= 65535 && server.port !== 55432);
+        assert.ok(
+          typeof server.port === "number" &&
+            server.port > 0 &&
+            server.port <= 65535 &&
+            server.port !== 55432,
+        );
         ports.add(server.port);
         preparedPorts.set(statePath, Number(server.port));
+        assert.ok(typeof server.composeFile === "string");
         const container = docker([
           "compose",
           "-f",
