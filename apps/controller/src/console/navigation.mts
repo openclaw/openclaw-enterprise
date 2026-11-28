@@ -76,15 +76,24 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     url.searchParams.delete("debug");
     if (selection !== null) {
       url.searchParams.set("namespace", selection);
-      // Sign-in and version links must name the same retained page. Leave extra options alone.
-      if (
-        url.pathname.startsWith("/console/agents/agt_") &&
-        url.searchParams.size === 3 &&
-        url.searchParams.has("revision") &&
-        url.searchParams.has("tab")
-      ) {
-        url.searchParams.sort();
-      }
+    }
+    return pageAddress(url);
+  }
+
+  // Version links, sign-in and older history entries can order the same three
+  // fields differently. Use one address when looking up or returning to that page.
+  function pageAddress(url: URL) {
+    const { searchParams } = url;
+    const prefix = "/console/agents/";
+    if (
+      url.pathname.startsWith(prefix) &&
+      agentId.test(url.pathname.slice(prefix.length)) &&
+      searchParams.size === 3 &&
+      searchParams.has("namespace") &&
+      searchParams.has("revision") &&
+      searchParams.has("tab")
+    ) {
+      searchParams.sort();
     }
     return `${url.pathname}${url.search}`;
   }
@@ -242,7 +251,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     const returned = position === restoring?.position ? restoring : null;
     restoring = null;
     // Never skip the admission recheck of an inert or no longer mounted page.
-    if (returned && fromNavigation && mountedUrl === location.pathname + location.search) {
+    if (returned && fromNavigation && mountedUrl === pageAddress(new URL(location.href))) {
       returned.onReturn?.();
       return;
     }

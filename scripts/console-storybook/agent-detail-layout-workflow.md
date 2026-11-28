@@ -102,32 +102,26 @@ controller-backed browser regression in `tests/browser/console-agent-logs.test.t
 checks the source switch through the Console API.
 
 Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
-in its own tab. Select **Deploy new version**. The unavailable button’s
-accessible description should name the Secret. Switch tabs and return. The
-simulated grant clears the refusal and enables Deploy on the same draft without
-sending a Deploy request. Use **Deployment needs Secret operate** to check
-access that stays denied.
+in its own tab. Select **Deploy new version**. Its accessible description names
+the Secret. Switch tabs and return. The simulated grant clears the refusal and
+enables Deploy on the same draft without a Deploy request.
+In **Deployment needs Secret operate**, access stays denied.
 
-Return to the same version in **Current version's Sandbox lost**. Check the warning.
+In **Current version's Sandbox lost**, revisit that version. Check the warning.
 
-In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
-Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
-Check v7’s failed record, pending cleanup and unchanged v6 selection. One check
-changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
-Cleanup triggers no further checks.
+In **Bootstrap failure with cleanup pending**, point at **Deployment** (scroll
+sideways on phones). When v7 fails, click without moving. Check v7’s failed
+record, pending cleanup and v6 selection. **Sandbox running** becomes **Sandbox
+lost**, offering **Deploy a new version**. Refocus **View deployment**. After
+cleanup, polling stops and Enter opens v7.
 
-Reopen and focus **View deployment**. After cleanup, Enter opens v7.
+In v1’s scrolled **Configuration**, hover near the top of **Deployment**. When
+simulated activation selects v2 for service, click without moving. v1’s
+**Deployment** opens. Repeat over **Draft credentials**.
 
-In signed-in tests, point near the top of **Deployment** in v1’s scrolled
-**Configuration**. After simulated activation, **Selected for service** shows v2.
-Click without moving. v1’s **Deployment** opens. Repeat over **Draft credentials**.
-On slow returns, “Still checking…” stays visible until **Credentials** opens.
-
-Test sign-in separately from Storybook. With a disposable Controller, copy the
-**Draft credentials** link from a numbered version. Open the link while signed
-out, sign in, then choose the numbered version again. Follow **Draft credentials**
-with Enter. During a slow read, the snapshot stays visible until **Credentials**
-opens. Repeat with the copied link in an already signed-in browser.
+Open a copied **Draft credentials** link while signed out. Sign in, reselect v1
+and press Enter on the link. During slow reads, v1 and “Still checking…” remain
+visible until **Credentials** opens. Repeat signed in.
 
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).

@@ -878,12 +878,24 @@ test("Back refused by unsaved repository changes preserves the previous Agent ta
   const choice = repositoryCheckbox(page, repository);
   await choice.check();
   await page.locator("#repository-default-git-read").check();
-  const repositoriesUrl = page.url();
+  // Older entries put the Namespace last. Keep the real history position and change only the URL.
+  const repositoriesUrl = await page.evaluate((namespaceId) => {
+    const url = new URL(location.href);
+    url.searchParams.delete("namespace");
+    url.searchParams.append("namespace", namespaceId);
+    history.replaceState(history.state, "", url);
+    return url.href;
+  }, namespace.id);
 
-  await page.goBack();
-  await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
-  await page.waitForURL(repositoriesUrl);
+  // Wait for the return after the editor refuses Back, then check the settled page.
+  await Promise.all([
+    page.waitForEvent("framenavigated", (frame) => frame.url() === repositoriesUrl),
+    page.goBack(),
+  ]);
+  await settled(page);
   assert.equal(await choice.isChecked(), true, "Back kept the unsaved selection");
+  assert.equal(page.url(), repositoriesUrl, "Back kept the legacy Repositories address");
+  await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
 
   // Cancel rereads the saved access in place. Wait for its unselected repository before Back.
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
