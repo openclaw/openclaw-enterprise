@@ -1978,6 +1978,14 @@ read_restart_inventory() {
         (.deploymentInProgress | type == "boolean"))))
   ' "$destination" >/dev/null ||
     die "the deployment inventory is incomplete, invalid or belongs to another Installation; no additional OCC writer was stopped."
+  # A Stop queues Agent work separately from revision deployments.
+  local unsettled_stop
+  unsettled_stop=$(jq -r 'first(.namespaces[] as $ns | $ns.agents[] |
+    select(.status == "active" and .desiredRuntimeState == "stopped" and .activeRevisionId != null) |
+    "Agent \(.id | tojson) in Namespace \($ns.id | tojson) still has active revision \(.activeRevisionId | tojson)") // empty' "$destination") ||
+    die "cannot check Agent Stops in the deployment inventory."
+  [[ -z "$unsettled_stop" ]] ||
+    die "$unsettled_stop despite a requested Stop. Inspect its outcome. Wait for cleanup or resolve a failed Stop before upgrading."
   if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$destination" >/dev/null; then
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
