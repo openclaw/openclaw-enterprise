@@ -13,7 +13,9 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     return false;
   }
 
-  let nonce = first;
+  // Per thread, retain the sole known first identity. Null means an unknown identity or
+  // more than one distinct identity, so a later completion can always pair with one of them.
+  const firstMatches = new Map<string | undefined, string | null>();
   // The rollout writer may still be flushing its final record.
   for (const line of content.split("\n").slice(0, -1).filter(Boolean)) {
     let record: unknown;
@@ -45,7 +47,7 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     if (item.type !== "CommandExecution") {
       continue;
     }
-    const { command, exit_code: exitCode, aggregated_output: output } = item;
+    const { command, exit_code: exitCode, aggregated_output: output, id, status } = item;
     if (
       !isArray(command) ||
       !command.every((arg) => typeof arg === "string") ||
@@ -54,11 +56,32 @@ export function hasOrderedDurableCommands(content: string, nonces: readonly stri
     ) {
       return false;
     }
-    if (exitCode === 0 && output?.trim() === nonce && command.join(" ").includes(nonce)) {
-      if (nonce === second) {
-        return true;
-      }
-      nonce = second;
+    const nonce = output?.trim();
+    if (
+      exitCode !== 0 ||
+      (status !== undefined && status !== "completed") ||
+      (nonce !== first && nonce !== second) ||
+      !command.join(" ").includes(nonce)
+    ) {
+      continue;
+    }
+
+    const { thread_id: threadId, turn_id: turnId } = payload;
+    const thread = typeof threadId === "string" ? threadId : undefined;
+    const identity =
+      typeof turnId === "string" && typeof id === "string" ? JSON.stringify([turnId, id]) : null;
+    const firstIdentity = firstMatches.get(thread);
+    if (nonce === first) {
+      firstMatches.set(
+        thread,
+        firstIdentity === undefined || firstIdentity === identity ? identity : null,
+      );
+    } else if (
+      (thread === undefined && firstMatches.size > 0) ||
+      firstMatches.has(undefined) ||
+      (firstIdentity !== undefined && (identity === null || firstIdentity !== identity))
+    ) {
+      return true;
     }
   }
   return false;
