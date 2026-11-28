@@ -78,6 +78,217 @@ async function fixture(t: TestContext) {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+test("workspace verification compares every submitted copy on the selected retained claim", async (t) => {
+  const f = await fixture(t);
+  const bin = join(f.directory, "bin");
+  const local = join(f.directory, "private-copies");
+  const workspace = join(f.directory, "workspace");
+  const marker = join(f.directory, "remote-args.json");
+  const expectedFiles = [join(local, "AGENTS.md"), join(local, "SOUL.md")];
+  const remoteFiles = [join(workspace, "AGENTS.md"), join(workspace, "SOUL.md")];
+  const contents = ["fixture-private-agents\n", "active 😀\n"];
+  const expectedHash = createHash("sha256").update(contents[0]!).digest("hex");
+  const kubeconfig = join(f.directory, f.input.kubeconfig);
+  const target = [
+    "--kubeconfig",
+    kubeconfig,
+    "--context",
+    f.input.context,
+    "--namespace",
+    "tenant",
+  ];
+  const selection = ["--agent", "agent-1", "--revision", "revision-1", "--pod", "harness-pod"];
+  for (const directory of [bin, local, workspace]) {
+    await mkdir(directory);
+  }
+  for (const [index, content] of contents.entries()) {
+    await writeFile(expectedFiles[index]!, content);
+    await writeFile(remoteFiles[index]!, content);
+  }
+  // Model the remote response on every operator platform. On Linux, also run
+  // the actual container command against the fixture filesystem.
+  await writeFile(
+    join(bin, "kubectl"),
+    String.raw`#!/usr/bin/env python3
+import hashlib, json, os, pathlib, shlex, subprocess, sys
+
+root = pathlib.Path(os.environ["WORKSPACE_TEST_DIR"])
+mode = os.environ["WORKSPACE_TEST_MODE"]
+marker = root / "remote-args.json"
+target = ["--kubeconfig", str(root / "kubeconfig"), "--context", "reviewed-context", "--namespace", "tenant"]
+assert sys.argv[1:7] == target and os.environ["KUBERC"] == "off" and os.environ["KUBECTL_KUBERC"] == "false"
+request = sys.argv[7:]
+after_read = marker.exists()
+if request == ["get", "pod", "harness-pod", "-o", "json"]:
+    mounts = [{"name": "openclaw-workspace", "mountPath": "/home/node/workspace", "subPath": "workspace"}]
+    volumes = [{"name": "openclaw-workspace", "persistentVolumeClaim": {"claimName": "workspace-claim"}}]
+    if mode == "shadowed":
+        mounts.append({"name": "other", "mountPath": "/home/node/workspace/SOUL.md", "subPath": "SOUL.md"})
+        volumes.append({"name": "other", "configMap": {"name": "other"}})
+    print(json.dumps({
+        "kind": "Pod",
+        "metadata": {"name": "harness-pod", "namespace": "tenant", "uid": "pod-1", "labels": {
+            "openclaw.dev/agent": "other" if mode == "wrong-agent" else "agent-1",
+            "openclaw.dev/revision": "revision-1", "openclaw.dev/workload-role": "agent",
+        }},
+        "spec": {"containers": [{"name": "agent", "volumeMounts": mounts}], "volumes": volumes},
+        "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}], "containerStatuses": [{
+            "name": "agent", "ready": True,
+            "containerID": "containerd://second" if mode == "restarted" and after_read else "containerd://first",
+            "restartCount": 1 if mode == "restarted" and after_read else 0,
+        }]},
+    }))
+elif request == ["get", "pvc", "workspace-claim", "-o", "json"]:
+    print(json.dumps({
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": "workspace-claim", "namespace": "tenant",
+                     "uid": "claim-2" if mode == "rebound" and after_read else "claim-1"},
+        "spec": {"volumeName": "disk-2" if mode == "rebound" and after_read else "disk-1"},
+        "status": {"phase": "Bound"},
+    }))
+else:
+    assert request[:8] == ["exec", "harness-pod", "--container", "agent", "--", "bash", "-p", "-c"]
+    marker.write_text(json.dumps(request[5:]))
+    assert request[9] == "verify-upgrade-workspace"
+    if mode != "remote-shell":
+        names = request[10:]
+        assert names and all(name in ("AGENTS.md", "SOUL.md") for name in names)
+        for name in (names[:1] if mode == "truncated" else names):
+            print(hashlib.sha256((root / "workspace" / name).read_bytes()).hexdigest())
+        print("fixture-private-cluster-diagnostic", file=sys.stderr)
+        sys.exit(1 if mode == "late-failure" else 0)
+    # Keep the real Linux descriptor IDs. Substitute only our synthetic mount table.
+    fd = os.open(root / "workspace", os.O_DIRECTORY)
+    try:
+        mount_id = next(line.split()[1] for line in pathlib.Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines() if line.startswith("mnt_id:"))
+    finally:
+        os.close(fd)
+    table = (root / "mountinfo").read_text()
+    (root / "mapped-mountinfo").write_text(table.replace("40 39 ", mount_id + " 39 "))
+    command = request[5:]
+    command[3] = command[3].replace("/home/node/workspace", shlex.quote(str(root / "workspace"))).replace(
+        "/proc/self/mountinfo", shlex.quote(str(root / "mapped-mountinfo"))
+    )
+    sys.exit(subprocess.call(command))
+`,
+    { mode: 0o700 },
+  );
+
+  const verify = async (
+    status: number,
+    mode = "normal",
+    claimUid = "claim-1",
+    paths = expectedFiles,
+  ) => {
+    await rm(marker, { force: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(repository, "scripts/verify-upgrade-workspace.ts"),
+        ...target,
+        ...selection,
+        "--claim-uid",
+        claimUid,
+        "--",
+        ...paths,
+      ],
+      {
+        cwd: repository,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          PATH: [bin, process.env.PATH].join(":"),
+          WORKSPACE_TEST_DIR: f.directory,
+          WORKSPACE_TEST_MODE: mode,
+        },
+      },
+    );
+    const output = result.stdout + result.stderr;
+    assert.equal(result.status, status, output);
+    assert.match(
+      output,
+      [
+        /^The selected workspace files match the supplied copies\.\n$/,
+        /^Workspace files differ\. Keep the original Gateway running and leave workspace writes paused\.\n$/,
+        /^Unable to compare workspace files\. [^.\n]+\. Keep the original Gateway running and leave workspace writes paused\.\n$/,
+      ][status]!,
+    );
+    const remoteArgs = await readFile(marker, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      return "";
+    });
+    for (const privateValue of [
+      f.directory,
+      expectedHash,
+      contents[0]!,
+      "fixture-private-cluster-diagnostic",
+      "unsubmitted-private.md",
+    ]) {
+      assert.ok(!output.includes(privateValue));
+      assert.ok(!remoteArgs.includes(privateValue));
+    }
+    return remoteArgs;
+  };
+
+  assert.deepEqual(JSON.parse(await verify(0)).slice(-2), ["AGENTS.md", "SOUL.md"]);
+  // A representative first file and matching size must not hide a stale second file.
+  await writeFile(remoteFiles[1]!, "former 😀\n");
+  await verify(1);
+  await rm(remoteFiles[1]!);
+  await verify(2);
+  await writeFile(remoteFiles[1]!, contents[1]!);
+  await t.test(
+    "the Harness command hashes files on the visible Linux workspace mount",
+    { skip: process.platform !== "linux" },
+    async () => {
+      const mountinfo = join(f.directory, "mountinfo");
+      const workspaceMount = `40 39 8:1 /workspace ${workspace} rw - ext4 /volume rw\n`;
+      await writeFile(mountinfo, workspaceMount);
+      await verify(0, "remote-shell");
+      await writeFile(remoteFiles[1]!, "former 😀\n");
+      await verify(1, "remote-shell");
+      await rm(remoteFiles[1]!);
+      await verify(2, "remote-shell");
+      await symlink(expectedFiles[1]!, remoteFiles[1]!);
+      await verify(2, "remote-shell");
+      await rm(remoteFiles[1]!);
+      await writeFile(remoteFiles[1]!, contents[1]!);
+      // Reject a mount over a file, a hidden workspace mount and a temporary filesystem.
+      await writeFile(
+        mountinfo,
+        workspaceMount + `41 40 8:2 /file ${remoteFiles[1]} ro - ext4 /other ro\n`,
+      );
+      await verify(2, "remote-shell");
+      await writeFile(mountinfo, workspaceMount.replace("40 39", "0 39"));
+      await verify(2, "remote-shell");
+      await writeFile(mountinfo, workspaceMount.replace("ext4", "tmpfs"));
+      await verify(2, "remote-shell");
+    },
+  );
+  await verify(2, "truncated");
+  await verify(2, "late-failure");
+  await verify(2, "restarted");
+  await verify(2, "rebound");
+  assert.equal(await verify(2, "wrong-agent"), "");
+  assert.equal(await verify(2, "shadowed"), "");
+  assert.equal(await verify(2, "normal", "wrong-claim"), "");
+  assert.equal(await verify(2, "normal", "claim-1", [expectedFiles[0]!, expectedFiles[0]!]), "");
+  const unrelated = join(local, "unsubmitted-private.md");
+  await writeFile(unrelated, contents[0]!);
+  assert.equal(await verify(2, "normal", "claim-1", [unrelated]), "");
+  const fullSize = "😀".repeat(4096);
+  await writeFile(expectedFiles[1]!, fullSize);
+  await writeFile(remoteFiles[1]!, fullSize);
+  await verify(0);
+  await writeFile(expectedFiles[1]!, fullSize + "x");
+  assert.equal(await verify(2), "");
+  await rm(expectedFiles[1]!);
+  await symlink(remoteFiles[1]!, expectedFiles[1]!);
+  assert.equal(await verify(2), "");
+});
+
 async function selectCheckout(f: Fixture, runtime?: string) {
   const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" });
   assert.equal(git.status, 0);

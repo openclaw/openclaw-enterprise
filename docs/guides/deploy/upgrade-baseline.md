@@ -306,22 +306,22 @@ point. A matching Agent ID and migration history cannot verify the saved draft.
 
 ## Record Agent data
 
-Pause writes to each workspace you need to preserve. Choose a trusted
-regular file the Agent or user wrote in its root. Enter its basename.
-The command accepts spaces but rejects paths and symlinks.
+Pause workspace writes. Set `TENANT_NAMESPACE` and `AGENT_ID` per the
+[production Agent guide](production-agents.md).
 
-For a dedicated Codex Harness, compare each edited file on the volume with an
-independent copy of its latest submission **before restarting or replacing the
-Gateway Pod**. Unless all match, keep the Pod running. It may hold the only
-copy. Leave writes and the upgrade paused until an authorized operator preserves
-and reconciles the files.
+**Before restarting or replacing a dedicated Codex Gateway**, compare every
+edited file on the volume with an independent copy of its latest submission.
+For the four Console files, follow `node scripts/verify-upgrade-workspace.ts --help`.
+The upgrade does not check them automatically. Verify other edits separately.
+If anything is missing, uncertain or different, stop the upgrade. Keep the
+original Pod running if present. It may hold the only copy. Keep writes paused
+until an authorized operator preserves and reconciles the edits.
 
-Set `TENANT_NAMESPACE` and `AGENT_ID` per the [production Agent guide](production-agents.md).
-Specify the exact Harness Pod. It must belong to the Agent,
-be running and ready, and have no deletion timestamp.
-Only one writer may update the private baseline. The host needs Bash,
-`kubectl`, `jq`, `mktemp`, `mv` and `rm`. The container needs Bash, `sha256sum`,
-`wc` and `find` with `-printf`.
+Also record a representative regular file in the workspace root. Use its basename
+(spaces allowed, paths and symlinks rejected). Select the Agent's running, ready
+Harness Pod without a deletion timestamp. Use one baseline writer. The host needs
+Bash, `kubectl`, `jq`, `mktemp`, `mv` and `rm`. The container needs Bash,
+`sha256sum`, `wc` and `find` with `-printf`.
 
 ```bash
 (
@@ -356,9 +356,9 @@ Only one writer may update the private baseline. The host needs Bash,
 )
 ```
 
-Require exit 0. Failed or incomplete reads leave the evidence file unchanged.
-It records the SHA-256 hash and regular-file count on separate lines. `find`
-emits one byte per file. Recheck the same workspace and file after upgrading.
+Require exit 0. Incomplete or failed reads leave evidence unchanged. The two
+lines record SHA-256 and regular-file count (`find` emits one byte per file).
+Recheck the same workspace and file after upgrading.
 
 For embedded Agents, specify the exact Gateway Pod, use `gateway` for the
 workload role and container, and set `WORKSPACE=/home/node/.openclaw/workspace`.
