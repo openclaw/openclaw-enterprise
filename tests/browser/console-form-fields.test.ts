@@ -330,7 +330,9 @@ test("Create Agent form fields", async (t) => {
 });
 
 test("Share Agent checks its fields without the browser bubble", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["field-recipient"] });
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["first-field-recipient", "second-field-recipient"],
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Share fields");
   const agent = await fixture.createAgent(namespace.id, "Share fields", nativeValues("fields"));
@@ -358,16 +360,68 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   const consent = await accessible(page, acknowledge);
   assert.equal(consent.invalid, "true");
   assert.equal(consent.description, "Check this box to continue.");
-  // Both errors clear as the fields are fixed, and the share goes ahead.
-  const [recipient] = fixture.provisionedAccounts;
-  assert.ok(recipient, "Share recipient was provisioned");
-  await principal.fill(recipient.principal.id);
+  const [firstRecipient, secondRecipient] = fixture.provisionedAccounts;
+  assert.ok(firstRecipient && secondRecipient, "Both share recipients were provisioned");
+  await principal.fill(firstRecipient.principal.id);
   await acknowledge.check();
   assert.equal((await accessible(page, principal)).invalid, "false");
   assert.equal((await accessible(page, acknowledge)).invalid, "false");
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  async function assertShareNeedsAcknowledgment() {
+    assert.equal(await acknowledge.isChecked(), false);
+    const error = await accessible(page, acknowledge);
+    assert.equal(error.invalid, "true");
+    assert.equal(error.description, "Check this box to continue.");
+    assert.equal(
+      await acknowledge.evaluate((control) => control === control.ownerDocument.activeElement),
+      true,
+    );
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    assert.deepEqual(await invalidEvents(), []);
+  }
+
+  await principal.fill(secondRecipient.principal.id);
+  assert.equal(await acknowledge.isChecked(), false, "Changing the recipient clears consent");
+  await share.click();
+  await assertShareNeedsAcknowledgment();
+
+  await principal.fill(firstRecipient.principal.id);
+  assert.equal(
+    await acknowledge.isChecked(),
+    false,
+    "Returning to a recipient does not restore consent",
+  );
+  await acknowledge.check();
+  // A value change without an edit event still requires fresh acknowledgment on submit.
+  await principal.evaluate((input: HTMLInputElement, id) => {
+    input.value = id;
+  }, secondRecipient.principal.id);
+  assert.equal(
+    await acknowledge.isChecked(),
+    true,
+    "The silent change leaves consent checked until submit",
+  );
+  await share.click();
+  await assertShareNeedsAcknowledgment();
+
+  await acknowledge.check();
+  await principal.fill(`  ${secondRecipient.principal.id}  `);
+  assert.equal(await acknowledge.isChecked(), true, "Whitespace does not change the recipient");
   await share.click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  assert.equal(await acknowledge.isChecked(), false, "Successful sharing clears consent");
+  const bindings = nonAuthWriteRequests(requests)
+    .filter((request) => request.method === "POST" && request.path.endsWith("/iam/access-bindings"))
+    .map((request) => request.body);
+  assert.equal(bindings.length, 2);
+  assert.partialDeepStrictEqual(bindings, [
+    {
+      subjectId: secondRecipient.principal.id,
+      resourceKind: "namespace",
+      resourceId: namespace.id,
+    },
+    { subjectId: secondRecipient.principal.id, resourceKind: "agent", resourceId: agent.id },
+  ]);
   assert.deepEqual(await invalidEvents(), []);
 });
 

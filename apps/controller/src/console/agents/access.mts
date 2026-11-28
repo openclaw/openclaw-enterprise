@@ -105,6 +105,20 @@ export function renderAgentAccess(
     ),
     element("div", { className: "form-actions" }, share),
   );
+  let acknowledgedPrincipalId: string | null = null;
+  acknowledge.addEventListener("change", () => {
+    acknowledgedPrincipalId = acknowledge.checked ? principal.value.trim() : null;
+  });
+  function clearStaleAcknowledgment() {
+    if (acknowledgedPrincipalId !== principal.value.trim()) {
+      acknowledgedPrincipalId = null;
+      acknowledge.checked = false;
+    }
+  }
+  principal.addEventListener("input", clearStaleAcknowledgment);
+  principal.addEventListener("change", clearStaleAcknowledgment);
+  // Check for edits without an input event before validation reports the unchecked field.
+  form.addEventListener("submit", clearStaleAcknowledgment, { capture: true });
   // The console checks the Principal ID and the acknowledgement, not the browser (UX plan C3).
   validateOnSubmit(form);
   const state = {
@@ -480,6 +494,7 @@ export function renderAgentAccess(
       state.progress.push(
         "Agent access is shared. Effective access remains subject to current IAM policy.",
       );
+      acknowledgedPrincipalId = null;
       acknowledge.checked = false;
     }, true);
   });
