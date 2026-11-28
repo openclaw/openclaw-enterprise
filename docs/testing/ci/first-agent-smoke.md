@@ -114,6 +114,15 @@ intervals it cannot measure. A failed deployment can have no sample. The
 intervals exclude work before Pod creation and can extend past the deployment
 wait if readiness changed again.
 
+Search for `revisionToPodCreationMs` under the
+same deployment label. It estimates the time from creation of the Agent revision
+in PostgreSQL to creation of the sampled Gateway Pod. This excludes request
+processing before the revision was recorded. The Pod can be a replacement, and
+its timestamp has whole-second precision. The two clocks can also differ.
+You cannot use this interval alone to measure queue time or downtime.
+The test omits the line if either timestamp is missing or invalid, or if the
+difference is negative or longer than 60 minutes.
+
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.
 

@@ -26,6 +26,7 @@ import { readyGateway, waitForDeployment } from "../../scripts/ci/first-agent-sm
 import {
   channelProxyDeploymentStep,
   waitForChannelProxyReadiness,
+  type ChannelProxyDeployment,
 } from "../../scripts/ci/first-agent-smoke/process.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
@@ -579,22 +580,60 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
   const scheduledMs = "createdToScheduledMs=7000";
   const startMs = "scheduledToGatewayStartMs=12000";
   const readyMs = "gatewayStartToLatestPodReadyMs=22000";
-  const observations = [
+  const submitted = { id: revision, createdAt: "2026-03-02T06:59:58.125Z" };
+  const observations: {
+    label: string;
+    items: unknown[];
+    context: ChannelProxyDeployment | undefined;
+    fields: string[];
+    submitted?: { id: string; createdAt: unknown };
+    creationMs?: number;
+    podName?: string;
+  }[] = [
     {
-      label: "exact revision",
+      label: "initial revision",
+      items: [pod, oldPod],
+      context: "channel-proxy-initial-deploy-a",
+      fields: [
+        "createdToScheduledMs=1000",
+        "scheduledToGatewayStartMs=2000",
+        "gatewayStartToLatestPodReadyMs=3000",
+      ],
+      submitted: {
+        id: "rev_00000000-0000-4000-8000-000000000002",
+        createdAt: "2026-03-02T06:58:55.210Z",
+      },
+      creationMs: 4790,
+      podName: "unlogged-old-pod",
+    },
+    {
+      label: "moved revision alongside the Ready predecessor",
       items: [oldPod, pod],
       context,
       fields: [scheduledMs, startMs, readyMs],
+      submitted,
+      creationMs: 1875,
     },
-    { label: "unrelated call", items: [pod], context: undefined, fields: [] },
-    { label: "mismatched Agent label", items: [otherAgent], context, fields: [] },
+    { label: "unrelated call", items: [pod], context: undefined, fields: [], submitted },
+    {
+      label: "mismatched Agent label",
+      items: [otherAgent],
+      context,
+      fields: [],
+      submitted,
+    },
     {
       label: "missing timing fields",
       items: [
-        { ...pod, status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] } },
+        {
+          ...pod,
+          metadata: { ...pod.metadata, creationTimestamp: undefined },
+          status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] },
+        },
       ],
       context,
       fields: [],
+      submitted,
     },
     {
       label: "restarted gateway",
@@ -635,13 +674,27 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
       ],
       context,
       fields: [startMs],
+      submitted,
     },
     {
       label: "creation interval above its bound",
       items: [{ ...pod, metadata: { ...pod.metadata, creationTimestamp: "2026-03-02T05:00:00Z" } }],
       context,
       fields: [startMs, readyMs],
+      submitted,
     },
+    ...[
+      { label: "missing revision time", createdAt: undefined },
+      { label: "invalid revision calendar date", createdAt: "2026-02-30T06:59:58.125Z" },
+      { label: "revision newer than whole-second Pod time", createdAt: "2026-03-02T07:00:00.001Z" },
+      { label: "revision to creation exceeds bound", createdAt: "2026-03-02T05:59:59.999Z" },
+    ].map(({ label, createdAt }) => ({
+      label,
+      items: [pod],
+      context,
+      fields: [scheduledMs, startMs, readyMs],
+      submitted: { id: revision, createdAt },
+    })),
   ];
 
   await withEnvironment(
@@ -656,22 +709,32 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
       try {
         for (const observation of observations) {
           await writeFile(podList, JSON.stringify({ items: observation.items }));
-          const result = await readyGateway(stack, agentId, revision, observation.context);
-          assert.deepEqual(result, { namespace: "unlogged-namespace", pod: "unlogged-pod" });
-          assert.deepEqual(
-            lines.splice(0),
-            observation.fields.length === 0
-              ? []
-              : [
-                  `[first-agent-smoke] ${context}: sampled gateway Pod intervals ${observation.fields.join(" ")}\n`,
-                ],
-            observation.label,
+          const result = await readyGateway(
+            stack,
+            agentId,
+            observation.submitted ?? revision,
+            observation.context,
           );
+          assert.deepEqual(result, {
+            namespace: "unlogged-namespace",
+            pod: observation.podName ?? "unlogged-pod",
+          });
+          const prefix = `[first-agent-smoke] ${observation.context}:`;
+          const expected: string[] = [];
+          if (observation.fields.length > 0) {
+            expected.push(
+              `${prefix} sampled gateway Pod intervals ${observation.fields.join(" ")}\n`,
+            );
+          }
+          if (observation.creationMs !== undefined) {
+            expected.push(`${prefix} revisionToPodCreationMs=${observation.creationMs}\n`);
+          }
+          assert.deepEqual(lines.splice(0), expected, observation.label);
         }
         // Timing must neither convert a selection failure to success nor log either candidate.
         await writeFile(podList, JSON.stringify({ items: [pod, pod] }));
         await assert.rejects(
-          readyGateway(stack, agentId, revision, context),
+          readyGateway(stack, agentId, submitted, context),
           /found 2 of 2 Agent Pods/u,
         );
         assert.deepEqual(lines, []);

@@ -183,6 +183,20 @@ export interface GatewayPod {
   pod: string;
 }
 
+interface SubmittedAgentRevision {
+  readonly id: string;
+  readonly createdAt: unknown;
+}
+
+function revisionTimestamp(value: unknown): number | undefined {
+  // Local Setup serializes PostgreSQL revision times as UTC ISO strings with milliseconds.
+  if (typeof value !== "string" || value.length !== 24) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : undefined;
+}
+
 function podTimestamp(value: unknown): number | undefined {
   // Kubernetes core/v1 Pod times use UTC with whole-second resolution.
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) {
@@ -245,9 +259,10 @@ function logGatewayPodIntervals(pod: Pod, context: ChannelProxyDeployment) {
 export async function readyGateway(
   stack: LocalSetup,
   agentId: string,
-  revisionId: string,
+  revision: string | SubmittedAgentRevision,
   context?: ChannelProxyDeployment,
 ): Promise<GatewayPod> {
+  const revisionId = typeof revision === "string" ? revision : revision.id;
   const pods = await agentPods(stack, agentId);
   // Same revision match as scripts/first-agent-model.ts: the gateway Pod
   // mounts its revision's configuration ConfigMap.
@@ -273,6 +288,21 @@ export async function readyGateway(
       logGatewayPodIntervals(gateway, context);
     } catch {
       // Optional timing data must never change gateway selection or its outcome.
+    }
+    if (typeof revision !== "string") {
+      try {
+        // PostgreSQL and the Kubernetes API server can disagree about wall time.
+        // Pod creation is recorded to whole seconds and may be for a replacement.
+        const elapsed = podInterval(
+          revisionTimestamp(revision.createdAt),
+          podTimestamp(gateway.metadata.creationTimestamp),
+        );
+        if (elapsed !== undefined) {
+          log(`${context}: revisionToPodCreationMs=${elapsed}`);
+        }
+      } catch {
+        // An unavailable sample must not change the readiness result.
+      }
     }
   }
   return { namespace, pod: name };
@@ -488,15 +518,25 @@ export async function deployAgent(
   agent: SmokeAgent,
   timing?: ChannelProxyDeploymentTiming,
 ): Promise<string> {
+  return (await deployAgentRevision(stack, agent, timing)).id;
+}
+
+export async function deployAgentRevision(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  timing?: ChannelProxyDeploymentTiming,
+): Promise<SubmittedAgentRevision> {
   const measure = channelProxyDeploymentStep(timing);
-  const revisionId = await measure("submit", async () => {
+  const revision = await measure("submit", async () => {
     const revision = await cliJson(stack, ["agent", "deploy", agent.id]);
     const id = wireField(revision, "id") as string | null | undefined;
     assert.match(id ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
-    return id!;
+    return { id: id!, createdAt: wireField(revision, "createdAt") };
   });
   const options = timing && { context: timing.context };
-  await measure("wait", () => waitForDeployment(stack, agent.id, revisionId, agent.label, options));
+  await measure("wait", () =>
+    waitForDeployment(stack, agent.id, revision.id, agent.label, options),
+  );
   await measure("verify", async () => {
     const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
     assert.equal(
@@ -505,7 +545,7 @@ export async function deployAgent(
       `${agent.label}: not running after deploy`,
     );
   });
-  return revisionId;
+  return revision;
 }
 
 export async function runFirstAgent(stack: SmokeStack, modelCredential: string) {

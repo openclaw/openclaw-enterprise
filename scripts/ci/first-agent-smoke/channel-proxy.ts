@@ -10,7 +10,7 @@ import { selfSigned, signedLeaf } from "../../../tests/helpers/certificates.ts";
 import {
   agentPods,
   chatTurn,
-  deployAgent,
+  deployAgentRevision,
   idHash,
   readyGateway,
   stopAgent,
@@ -845,11 +845,11 @@ export async function proveControlledChannelProxy(
       context: ChannelProxyDeployment,
     ): Promise<ProxyDeployment> {
       const agentId = admission.agent.id;
-      const revisionId = await deployAgent(stack, admission.agent, { smokeStep, context });
+      const revision = await deployAgentRevision(stack, admission.agent, { smokeStep, context });
       return {
         admission,
-        revisionId,
-        readGateway: () => readyGateway(stack, agentId, revisionId, context),
+        revisionId: revision.id,
+        readGateway: () => readyGateway(stack, agentId, revision, context),
       };
     }
     const [initialA, initialB] = await smokeStep("channel-proxy-initial-deploy", () =>
