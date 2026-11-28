@@ -537,6 +537,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.validateSavedAgentTopology(
         resolveHarness,
         {
+          namespace,
           executionMode,
           harnessAuth: () =>
             dependencies.harnessAuth.savedHarnessAuthSnapshot(state, namespace.id, harnessAuth),
@@ -709,6 +710,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.validateSavedAgentTopology(
         resolveHarness,
         {
+          namespace,
           executionMode,
           harnessAuth: async () =>
             dependencies.harnessAuth.plannedHarnessAuthSnapshot(namespace.id, harnessAuth),
@@ -982,6 +984,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.validateSavedAgentTopology(
         resolveHarness,
         {
+          namespace,
           executionMode: input.executionMode ?? agent.executionMode,
           harnessAuth: () =>
             dependencies.harnessAuth.savedHarnessAuthSnapshot(
