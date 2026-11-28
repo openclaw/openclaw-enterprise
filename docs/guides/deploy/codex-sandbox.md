@@ -222,14 +222,27 @@ gateway, embedded runtime, controller, and init containers retain
 workflow and inspect its effective OCI policy. Do not claim success from the
 rendered manifest or a Ready Pod alone.
 
-Then verify the ordinary Agent workflow with `sandbox: workspace-write` and
-`approvalPolicy: never`. Request a native command that writes and reads a unique
-workspace marker and attempts the same outside-workspace write. Inspect the
-native tool events and resulting files: a model's prose or an approved
-`require_escalated` command does not prove this path. The Agent's sandboxed command can
-report the outside write as successful, because paths outside its writable roots may be
-a private view that is discarded; the proof is that the container's own copy of the
-outside file is unchanged.
+Verify the ordinary Agent workflow with `sandbox: workspace-write` and
+`approvalPolicy: never`. Use a disposable Agent.
+
+1. Outside the sandbox, in that Agent's Codex container, use authorized
+   access as the runtime user. Create a unique test file outside all
+   sandbox-writable roots. Overwrite it and read back the result. If you
+   cannot do this, the test is inconclusive.
+2. Request a native command that writes and reads a unique workspace file,
+   reads the expected contents of the outside file and tries to replace them
+   with different text. Match the command to its native tool result. Require
+   that result to confirm the original outside contents and report the
+   overwrite outcome. A missing, incomplete or interrupted result is
+   inconclusive. Model prose or approved `require_escalated` execution
+   cannot establish this result.
+3. Outside the sandbox in the same container, check that the workspace
+   write persisted and the outside file is unchanged. A permission or
+   read-only filesystem error on the attempted overwrite shows denial.
+   Apparent success can reflect a discarded private view. In that case,
+   an unchanged file shows only that the write did not persist.
+
+Remove only the two test files.
 
 Verify repository access separately through genuine native Git reads using the
 Agent's existing repository credentials. For dedicated Codex, start that proof
