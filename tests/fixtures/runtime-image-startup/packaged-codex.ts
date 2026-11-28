@@ -3,12 +3,12 @@ import type { codexRpc, list, parseJson, record, text } from "./wire.ts";
 export async function probePackagedCodex(
   {
     historicalCodex,
-    expectBundledRepositoryRestSkill,
+    verifyPackagedRepositoryRestSkill,
     stagingCodexVersion,
     deadlineMs,
   }: {
     historicalCodex: boolean;
-    expectBundledRepositoryRestSkill: boolean;
+    verifyPackagedRepositoryRestSkill: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
   },
@@ -91,15 +91,13 @@ export async function probePackagedCodex(
         }
       : {
           "stock-codex-0.164.0-dependency-pin.patch":
-            "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
-          "openclaw-terminated-gateway-namespace.patch":
-            "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
+            "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
           "openclaw-planned-completion.patch":
-            "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+            "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
           "openclaw-http-chat-input.patch":
-            "bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8",
+            "5a90575bfe5c44b76dab5c68d2ab21f219c2e66dc2b3d3d7660da2f70b1b2087",
           "openclaw-node-setup-renewal.patch":
-            "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
+            "f74c60e4fb562e5528fad7fed32a77d26639dbfed4ab97f5d115bc0a822764b1",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);
@@ -291,16 +289,17 @@ export async function probePackagedCodex(
       capabilities: { experimentalApi: true },
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
-    if (expectBundledRepositoryRestSkill) {
+    if (verifyPackagedRepositoryRestSkill) {
       const name = "github-repository-rest";
-      const path = resolve("/etc/codex/skills", name, "SKILL.md");
+      const path = resolve("/usr/local/lib/oce/skills", name, "SKILL.md");
       assert.ok(typeof process.getuid === "function" && process.getuid() !== 0);
-      const matches = (await listSkills()).filter((skill) => skill.name === name);
-      assert.equal(matches.length, 1, "Codex should discover the bundled skill in a fresh home.");
-      const [skill] = matches;
-      assert.ok(skill?.enabled === true);
-      assert.equal(skill.scope, "admin");
-      assert.equal(realpathSync(asText(skill.path)), realpathSync(path));
+      assert.match(readFileSync(path, "utf8"), /^name: github-repository-rest$/m);
+      // The Gateway supplies this skill. A fresh native catalog must not discover it independently.
+      assert.equal(
+        (await listSkills()).some((skill) => skill.name === name),
+        false,
+        "The packaged Repository REST skill must stay out of Codex native discovery.",
+      );
     }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.

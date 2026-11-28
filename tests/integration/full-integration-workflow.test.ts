@@ -31,7 +31,7 @@ test("full integration workflow carries QA and installation outcomes into select
     "utf8",
   );
   const source = jobStateProgram(workflow);
-  for (const target of ["qa-matrix", "dev-up-k3d", "skipper-prepared-git-installed"]) {
+  for (const target of ["qa-matrix", "slack", "dev-up-k3d", "skipper-prepared-git-installed"]) {
     for (const lane of [target, "all"]) {
       for (const result of ["success", "failure", "cancelled", "skipped", "missing"]) {
         const needs: Record<string, { result: string }> = { preflight: { result: "success" } };
@@ -136,8 +136,11 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.equal(present(dispatcher.jobs["manual-approval"]).concurrency, undefined);
   assert.equal(execute.needs, "preflight");
   assert.equal(execute.uses, "./.github/workflows/full-integration-execution.yml");
-  assert.deepEqual(execution.on, {
-    workflow_call: { inputs: { lane: { type: "string", default: "" } } },
+  const trigger = record(execution.on);
+  assert.deepEqual(Object.keys(trigger), ["workflow_call"]);
+  assert.deepEqual(record(record(trigger.workflow_call).inputs).lane, {
+    type: "string",
+    default: "",
   });
   assert.equal(record(execute.with).lane, "${{ inputs.lane || '' }}");
   assert.equal(execute.secrets, "inherit");
@@ -618,7 +621,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const jobsWithQueue = Object.entries(workflow.jobs)
     .filter(([, job]) => optionalField(job.concurrency, "queue") !== undefined)
     .map(([lane]) => lane);
-  assert.deepEqual(jobsWithQueue.sort(), ["preflight", ...queuedLanes].sort());
+  assert.deepEqual(jobsWithQueue.sort(), ["preflight", "qa-matrix", ...queuedLanes].sort());
   const resourceQueues = new Set<string>();
   for (const lane of queuedLanes) {
     const job = present(workflow.jobs[lane]);
@@ -653,7 +656,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       { cell: "compose/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
       { cell: "compose/Codex", scenarios: ["http-chat", "console-secrets", "agent-audit"] },
       { cell: "kubernetes/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
-      { cell: "kubernetes/Codex", scenarios: ["http-chat", "console-secrets"] },
+      {
+        cell: "kubernetes/Codex",
+        scenarios: ["http-chat", "console-secrets", "gateway-startup-credentials"],
+      },
     ],
   );
   assert.equal(qaSelection.exclusions.length, 2);
@@ -670,6 +676,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       ),
     ).sort(),
     ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"],
+  );
+  assert.doesNotMatch(
+    JSON.stringify([workflow.env, qaJob.env, ...present(qaJob.steps).map(({ env }) => env)]),
+    /slack/i,
   );
   const job = present(workflow.jobs["dev-up-k3d"]);
   assert.equal(job.environment, undefined);
@@ -790,39 +800,48 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     }
   }
   assert.ok(present(workflow.jobs["full-aggregate"]).needs?.includes(privateGit));
-  const qa = present(workflow.jobs["qa-matrix"]);
-  assert.ok(present(qa.needs).includes("slack"), "shared Slack consumers must run sequentially");
-  // A failed focused Slack proof must not suppress the broader QA proof. Only
-  // failed preflight, an unselected lane, or run cancellation should prevent it.
+  assert.equal(qaJob.needs, "preflight");
+  const qaQueue = record(qaJob.concurrency);
+  const slackGroup = record(present(workflow.jobs.slack).concurrency).group;
+  assert.equal(qaQueue.queue, "max");
+  assert.equal(qaQueue["cancel-in-progress"], false);
+  const qaGroup = (sourceSha: string, runId: string) =>
+    text(
+      workflowCondition(qaQueue.group, {
+        github: { run_id: runId },
+        inputs: { source_sha: sourceSha },
+        format: (template: string, value: string) => template.replace("{0}", value),
+      }),
+    );
+  // Ordinary QA can overlap Slack and other QA runs. A selected ancestor can use Slack.
+  assert.notEqual(qaGroup("", "104"), slackGroup);
+  assert.notEqual(qaGroup("", "105"), qaGroup("", "104"));
+  assert.equal(qaGroup("a".repeat(40), "106"), slackGroup);
+  assert.equal(qaGroup("b".repeat(40), "107"), slackGroup);
+
+  const aggregateNeeds = array(present(workflow.jobs["full-aggregate"]).needs);
+  for (const lane of ["qa-matrix", "slack"]) {
+    assert.ok(aggregateNeeds.includes(lane), `Full Integration Aggregate must wait for ${lane}`);
+  }
+  // QA can start with no Slack result. Preflight, selection, and cancellation still gate it.
   for (const lane of ["all", "qa-matrix", "docker-model"]) {
     for (const preflight of ["success", "failure"]) {
-      for (const slack of ["success", "failure", "skipped"]) {
-        for (const cancelled of [false, true]) {
-          const selected: unknown = runInNewContext(
-            text(qa.if).replace(/^\$\{\{\s*|\s*\}\}$/g, ""),
-            {
-              inputs: { lane },
-              github: {
-                repository: mainRun.GITHUB_REPOSITORY,
-                ref: mainRun.GITHUB_REF,
-                ref_type: "branch",
-                run_attempt: "1",
-                event_name: "workflow_dispatch",
-              },
-              needs: {
-                preflight: { result: preflight, outputs: { selected_lane: lane } },
-                slack: { result: slack },
-              },
-              always: () => true,
-              cancelled: () => cancelled,
+      for (const cancelled of [false, true]) {
+        assert.equal(
+          workflowCondition(qaJob.if, {
+            github: {
+              repository: mainRun.GITHUB_REPOSITORY,
+              ref: mainRun.GITHUB_REF,
+              ref_type: "branch",
+              run_attempt: "1",
+              event_name: "workflow_dispatch",
             },
-          );
-          assert.equal(
-            selected,
-            !cancelled && preflight === "success" && ["all", "qa-matrix"].includes(lane),
-            `${lane}: preflight ${preflight}, slack ${slack}, cancelled ${cancelled}`,
-          );
-        }
+            needs: { preflight: { result: preflight, outputs: { selected_lane: lane } } },
+            cancelled: () => cancelled,
+          }),
+          !cancelled && preflight === "success" && ["all", "qa-matrix"].includes(lane),
+          `${lane}: preflight ${preflight}, cancelled ${cancelled}`,
+        );
       }
     }
   }

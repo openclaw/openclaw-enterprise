@@ -36,11 +36,15 @@ Preset save run this one set (`validateConfigurationContent` in
 [OCC](../../../packages/occ/src/configuration-operations.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
 Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
-Create, update and provisioning first ask the Driver's optional
-[`validateSize`](../../reference/drivers/configuration.md#optional-validation)
-to refuse a document too large to store, so no content rule walks it. Its
-`ConfigurationSizeError` returns `400 INVALID_REQUEST` naming the limit, not the
-generic invalid-configuration text.
+
+Bundled Kubernetes [channel validation](../../../packages/occ/src/channel-secret-bindings.ts)
+refuses Slack policy references on Configuration writes and before deployment
+can resolve a Slack credential. Enter the policy IDs directly.
+
+Create, update and provisioning first call the Driver's optional
+[`validateSize`](../../reference/drivers/configuration.md#optional-validation).
+An oversized document returns `400 INVALID_REQUEST` with the size limit before
+content validation.
 A stored row that predates a rule still reads and an edit can replace it: a
 bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
@@ -131,10 +135,7 @@ With a Compute Driver and a Harness resolver selected, every Agent save reads
 its Configuration once from the Configuration Driver, inside the save's
 transaction; a Driver outage then fails the save with `503`. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
-caller's selected Secret bindings and the Agent service principal's consumption,
-checks topology/model-source compatibility, and asks the selected Secret Driver
-to verify each backend reference. This resolves backend identity, not credential
-bytes or inline SecretRefs.
+caller's selected Secret or static Source bindings and the Agent service principal's consumption. It verifies each Namespace Secret's backend identity through its selected Secret Driver. For Source bindings, it verifies the ready static Source against the selected TokenService, requires qualified dedicated Gateway delivery, and freezes the owner instance in the revision. This checks identity without reading credential values or inline SecretRefs.
 
 Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.

@@ -13,6 +13,7 @@ import { runDocker } from "../helpers/runtime-image-docker.ts";
 import {
   containerLogTail,
   gatewayReadinessReport,
+  jsonLogEntries,
 } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   createAdmittedRuntimeImageConfiguration,
@@ -315,6 +316,8 @@ export async function runWritableGatewayRestart(t: TestContext) {
       volumes: [`${volume}:/home/node`, `${sourcePath}:/etc/openclaw-managed/openclaw.json:ro`],
       extraEnvironment: [
         "OPENCLAW_DEBUG=1",
+        // Match the Dedicated Kubernetes launcher: a retained Docker hostname is not proof.
+        "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF=1",
         // No Gateway cron, as in runtime-image-gateway-peer.test.ts (finding 1875): cron work
         // in flight at a peer change holds the old process's stop drain.
         "OPENCLAW_SKIP_CRON=1",
@@ -638,11 +641,16 @@ export async function runWritableGatewayRestart(t: TestContext) {
   assert.notEqual(leaseHeld.ready, 200);
   const leaseLogs = await runDocker(["logs", leaseOnly.containerName]);
   const leaseText = leaseLogs.stderr + leaseLogs.stdout;
-  // OpenClaw's own start met the lease, after the tool policy step's validation passed; it
-  // exited after its wait, and the wrapper names the lock and OpenClaw's holder description.
-  assert.match(
-    leaseText,
-    /Waiting up to \d+ seconds for the previous Gateway to release state.*cannot verify Gateway ownership/,
+  // Configuration validation passed. The native Gateway started, then the
+  // wrapper reported the foreign owner after OpenClaw refused the SQLite lease.
+  assert.ok(
+    jsonLogEntries(leaseText).some(
+      (entry) =>
+        entry.event === "runtime.startup_phase" &&
+        entry.phase === "native-spawn" &&
+        entry.outcome === "ok",
+    ),
+    "the native Gateway must start before it encounters the copied lease",
   );
   assert.match(
     leaseText,

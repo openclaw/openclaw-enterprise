@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
   CredentialProviderDefinition,
-  CredentialSource,
+  LegacyCredentialSource,
   EgressRef,
 } from "@openclaw-enterprise/contracts";
 import { supportsStaticCredentials } from "./credential-proxy.ts";
@@ -20,7 +20,7 @@ export function registeredCredentialProvider(
 }
 
 export function matchesAdmittedSourceType(
-  source: CredentialSource,
+  source: LegacyCredentialSource,
   provider: CredentialProviderDefinition,
 ) {
   return (

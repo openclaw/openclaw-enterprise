@@ -13,6 +13,8 @@ import { managedMcpRule } from "./openshell-managed-mcp-policy.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
 import { openShellNetworkRouteMayOverlap } from "./openshell-policy.ts";
 
+export { OPEN_SHELL_PROXY_CREDENTIAL_RULE_PREFIX } from "./openshell-policy.ts";
+
 interface OpenShellCredentialRouteBase {
   readonly binding: DeploymentCredentialBinding;
   readonly provider: string;
@@ -23,7 +25,13 @@ interface OpenShellCredentialRouteBase {
   readonly endpointPath?: string;
 }
 
-type RestRule = { allow: { method: string; path: string } };
+type RestRule = {
+  allow: {
+    method: string;
+    path: string;
+    query?: Readonly<Record<string, { readonly glob: string }>>;
+  };
+};
 type McpRule = ReturnType<typeof managedMcpRule>;
 type RestCredentialRoute = OpenShellCredentialRouteBase & {
   readonly protocol: "rest";
@@ -42,6 +50,19 @@ type MutableCredentialRoute =
 
 export function openShellProjectedCredentialProviderName(sourceId: string, environment: string) {
   return `${openShellProviderName(sourceId)}-${sha256Hex(environment, 24)}`;
+}
+
+export function openShellBindingProviderName(
+  binding: DeploymentCredentialBinding,
+  nativeSourceOwner: boolean,
+): string {
+  if (nativeSourceOwner) {
+    if (binding.projection.presentation !== "bearer") {
+      credentialPolicyFailure();
+    }
+    return openShellProviderName(binding.sourceRef.id);
+  }
+  return openShellCredentialProviderName(binding);
 }
 
 export function openShellCredentialProviderName(binding: DeploymentCredentialBinding): string {
@@ -236,6 +257,7 @@ function networkCoversRequest(
 export function compileOpenShellCredentialPolicy(
   policy: DeploymentPolicy,
   defaultNetworks?: Readonly<Record<string, unknown>>,
+  nativeSourceOwner = false,
 ): {
   readonly credentialRoutes: readonly OpenShellCredentialRoute[];
   readonly publicRoutes: readonly OpenShellPublicRoute[];
@@ -253,6 +275,16 @@ export function compileOpenShellCredentialPolicy(
   ) {
     credentialPolicyFailure();
   }
+  // One native Provider has one placeholder. Reusing it would let either binding present the
+  // other's placeholder on an endpoint admitted for the same Provider.
+  if (
+    nativeSourceOwner &&
+    new Set(policy.bindings.map(({ sourceRef }) => sourceRef.id)).size !== policy.bindings.length
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The same native credential Source cannot be bound twice in one Sandbox.",
+    );
+  }
   const environments = new Set<string>();
   const routes = new Map<string, MutableCredentialRoute>();
   for (const network of policy.networkAccessPolicy.allowed) {
@@ -266,11 +298,15 @@ export function compileOpenShellCredentialPolicy(
     if (
       !binding.bindingRef ||
       !requests?.length ||
-      (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
+      (binding.consumer.kind !== "model" &&
+        binding.consumer.kind !== "plugin" &&
+        binding.consumer.kind !== "repository") ||
       binding.sourceRef.kind !== "credential_source" ||
       !binding.sourceRef.id ||
       !binding.sourceRef.namespaceId ||
-      binding.projection.presentation !== "bearer" ||
+      (binding.consumer.kind === "repository"
+        ? binding.projection.presentation !== "github_repository"
+        : binding.projection.presentation !== "bearer") ||
       !/^[A-Z][A-Z0-9_]*$/.test(environment) ||
       environments.has(environment)
     ) {
@@ -278,7 +314,7 @@ export function compileOpenShellCredentialPolicy(
     }
     injections.delete(binding.bindingRef);
     environments.add(environment);
-    const provider = openShellCredentialProviderName(binding);
+    const provider = openShellBindingProviderName(binding, nativeSourceOwner);
     for (const request of requests) {
       const checked = checkedRequest(request);
       const { method, path, port, protocol } = checked;
@@ -312,6 +348,12 @@ export function compileOpenShellCredentialPolicy(
           (route.binding.bindingRef !== binding.bindingRef ||
             route.binary !== request.binary ||
             route.protocol !== protocol) &&
+          !(
+            binding.consumer.kind === "repository" &&
+            route.binding.bindingRef === binding.bindingRef &&
+            route.path === path &&
+            route.protocol === protocol
+          ) &&
           openShellCredentialPathsOverlap(route.path, path)
         ) {
           // OpenShell's Source resolver distinguishes endpoint paths, but not HTTP methods or executables.
@@ -405,7 +447,7 @@ export function compileOpenShellCredentialPolicy(
       ) {
         continue;
       }
-      // The established model route replaces its saved L4 grant with one approved inference request.
+      // Model routes replace their saved L4 grant with approved requests from that same binding.
       // New credential-free grants must not be silently narrowed by that replacement mechanism.
       const model = credentialRoutes.find(
         (candidate) =>
@@ -416,7 +458,8 @@ export function compileOpenShellCredentialPolicy(
       );
       if (
         !model ||
-        (route !== model && route.binary === grant.binary) ||
+        (route.binary === grant.binary &&
+          (!("binding" in route) || route.binding.bindingRef !== model.binding.bindingRef)) ||
         policy.networkAccessPolicy.allowed.filter(
           (candidate) =>
             candidate.requestPolicy === undefined &&

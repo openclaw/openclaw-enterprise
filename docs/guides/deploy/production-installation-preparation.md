@@ -136,8 +136,7 @@ else
 fi
 ```
 
-For distinct qualified images, pass each role's same-source manifest digest and
-configure Gateway and Agent with the matching immutable references.
+Match configured images to their role digests. For Dedicated OpenClaw, use `--build-arg OCC_INSPECTED_OPENCLAW_GATEWAY_DIGEST="$RUNTIME_DIGEST"` and [qualify the worker](../../testing/manual-tests.md).
 
 ### Build through a package registry mirror
 
@@ -268,8 +267,8 @@ restore exports.
 Without profiles, this branch refuses overwrites and selects curated discovery;
 Codex profiles use hosted discovery.
 
-Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
-the startup Secret alone grants none.
+Hosted discovery needs API connectivity; OAuth renewal needs refresh-Worker
+connectivity. See [hosted discovery connectivity](installation-profiles.md#hosted-discovery-connectivity).
 
 ```bash
 (

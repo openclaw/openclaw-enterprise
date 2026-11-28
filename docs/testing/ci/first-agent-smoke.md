@@ -32,7 +32,7 @@ See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) fo
 artifact verification and rerun behavior.
 
 The job is outside `CI Required`, so its failure does not fail that merge gate.
-A failed main-push CI workflow can still block container and CLI publication,
+A failed main-push CI workflow can still block standalone container and CLI publication,
 which require successful CI for their source.
 
 ## Scenarios
@@ -91,6 +91,28 @@ Inspect the **Build checkout images** and **Install, deploy, chat, stop and star
 steps. The script prints named stages, timing, assertions, and failure diagnostics.
 An image build alone is not a passing lifecycle check. Verify that the run
 completes, including cleanup, before reporting success.
+
+Search for `wait observed` and the deployment label. Each line
+records the first poll that sees `deployment-succeeded`, `active-revision`, or
+a selected previous-attempt code. The selected codes are
+`PREDECESSOR_STOP_YIELDED`, `REVISION_INCOMPLETE`, `WORKSPACE_NODE_PENDING`, and
+`WORKSPACE_NODE_BINDING_PENDING`. `elapsedMs` is the time since the wait started.
+Each poll reads the deployment and Agent separately, so the responses are not an
+atomic snapshot. The wait completes when the same poll reports deployment status
+`succeeded` and the intended revision in the Agent's `activeRevisionId`. A
+previous-attempt code describes an earlier report, not the current cause of
+delay. These observations have polling granularity. They do not measure phase
+durations or prove that the Agent can serve requests.
+
+If a channel proxy deployment is slow, find its `wait` time in the log. Look
+for `sampled gateway Pod intervals` with the same deployment label. The three
+intervals cover creation to scheduling, scheduling to Gateway container start,
+and container start to the latest time the Pod became Ready. Values are in
+milliseconds. The Pod timestamps have whole-second precision and can come from
+different clocks. The test reads the selected Pod after deployment and omits
+intervals it cannot measure. A failed deployment can have no sample. The
+intervals exclude work before Pod creation and can extend past the deployment
+wait if readiness changed again.
 
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.

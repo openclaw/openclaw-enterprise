@@ -3,46 +3,40 @@
 The OpenClaw Control Plane (OCC) saves repository grants with the Agent
 revision. Each binding grants HTTPS access to a named repository under an
 approved profile. See the [operator guide](../guides/repository-credentials.md)
-for setup. For OpenShell, see the [Git setup and request diagrams](../design/credential-proxy-architecture.md#how-does-openshell-authorize-a-git-request).
+for setup and [Credential Proxy architecture](../design/credential-proxy-architecture.md) for delivery boundaries.
 
-## Native Git from the Agent to GitHub
+## Native OpenShell Git with TokenService
+
+Dedicated Codex uses TokenService and the paired OpenShell Sandbox and native
+Credential Proxy. Agents can share one finite Namespace token. Proxy injects it
+only for each Agent’s admitted operations. See [setup](../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+and [access levels](repository-credentials/access-levels.md).
+
+<a id="native-git-from-the-agent-to-github"></a>
+
+## Prepared Git through the repository sender
+
+This separate no-Sandbox broker is outside Credential Design 1.0. It does not
+depend on `LegacyEgressProxyDriver`. Its exact-ref and draft-PR features are
+not part of Source-backed 1.0 Git.
 
 Prepared native Git requires a dedicated Codex Harness (API key or ChatGPT
 service account) and Kubernetes Compute without a Sandbox Driver. Git presents
 the Agent's repository session bearer to the broker. The broker presents a
 repository-scoped installation token to GitHub.
 
-```mermaid
-sequenceDiagram
-    participant A as Agent / Git
-    participant B as OCE broker
-    participant W as OCC worker
-    participant G as GitHub
-    Note over W,G: Background preparation
-    W->>G: Signed App JWT and repository scope
-    G->>W: Installation token
-    W->>W: Verify and store encrypted token
-    Note over A,G: A push to the approved branch
-    A->>B: Git request with session bearer
-    B->>B: Check session, repository and refs
-    B->>W: Request one use over private socket
-    W->>B: Token and deadline for this send
-    B->>B: Verify TLS, then check send deadline and cancellation
-    B->>G: Push with installation token
-```
+Only the Worker holds the App signing key and verifies the installation token.
+The broker gets the token and deadline over a private socket, verifies TLS, and
+checks cancellation, the deadline, and each pushed ref. Reads cover the repository. See the
+[prepared session flow](../flows/agent-repository-credentials.md#prepared-repository-sessions)
+and [withdrawal and draft creation](repository-credentials/prepared-native-git.md).
 
-Only the worker holds the App signing key. Git requests require an eligible
-prepared token. Reads cover the repository. The broker checks every pushed
-ref against the approved branch. Protect important branches at GitHub.
-See [withdrawal and draft PR creation](repository-credentials/prepared-native-git.md).
-
-[Metadata reads](../flows/credential-source-egress.md) and
-[OpenShell Git](repository-credentials/protected-openshell-git.md) require their
-own sender and Sandbox selections. OCC rejects unsupported combinations.
+The special [protected metadata](credential-sources/protected-repository-metadata.md)
+and [protected OpenShell Git](repository-credentials/protected-openshell-git.md) exchanges
+are retired from 1.0. Their deprecated legacy egress code remains pending removal.
 Helm uses `Recreate` to prevent overlapping worker or credential service owners.
 
-Model credentials stay with their consumer and dedicated Slack tokens with the
-gateway. The repository-bound Codex proxy allows the exact broker hostname.
+The repository-bound Codex proxy allows the exact broker hostname.
 `allow_local_binding = true` disables the private-address guard. `mode = "full"`
 allows all HTTP methods at allowed destinations. Explicit denies, Kubernetes
 NetworkPolicy, TLS and broker authorization still apply. See
@@ -59,9 +53,10 @@ supplies the resolver that checks the admitted grant and selects its destination
 - `listOptions` lists approved repositories and profiles for the Namespace.
 - `resolve` checks the selection against Namespace policy and returns the bindings and duration.
 
-For protected delivery, select `repository` and the installed Sandbox and
-Credential Proxy Driver. For native delivery, select `repository.nativeSender`
-with `repository.preparedGitHub`. Controller startup rejects the legacy
+For native OpenShell Git, select `repository` with the TokenService and paired
+Sandbox and native Credential Proxy. For the prepared sender, select
+`repository.nativeSender` with `repository.preparedGitHub`. Protected Git uses
+the deprecated legacy credential-egress Driver and its own repository settings. Controller startup rejects the legacy
 Installation-level `drivers.repo` in every mode. Before switching, stop new
 admissions and drain accepted work on its original owner.
 
@@ -133,15 +128,14 @@ repository and one writable ref on one App installation.
 }
 ```
 
-Use platform Namespace IDs. Supply App, installation and repository IDs as
-positive decimal safe integer strings. Repository references, IDs and lowercased
-names must each be unique. Registry limits are 1,000 repositories, 128 Namespace
-policies per repository and 4,096 policies total.
+Use platform Namespace IDs and positive decimal App and installation IDs.
+TokenService mode accepts short names for `github-repository` with
+`nativeGit: "v1"`. Other modes require `owner/repo` and numeric repository IDs.
+References, names, and supplied IDs must be unique. Limits are 1,000 repositories,
+128 Namespace policies per repository, and 4,096 policies total.
 
-Before admission, the service independently checks the grant fingerprint.
-It covers provider, App, installation, repository, maximum duration, Namespace,
-allowed and selected profiles, push-ref policy and permissions. Reusing a
-reference after its policy changes cannot retain the old grant.
+The service checks a grant fingerprint over provider, App, installation, repository,
+duration, Namespace, profiles, push-ref rules, and permissions.
 The [push-ref guardrail](repository-credentials/push-ref-guardrail.md)
 covers the client hook and the prepared broker's separate ref check.
 
@@ -168,7 +162,7 @@ for creation and deployment rules.
 
 ### Profiles
 
-Native Git requires `git-write` and one writable branch. `git-only` permits
+Prepared native Git requires `git-write` and one writable branch. `git-only` permits
 fetch and push. `git-and-draft-pr` also permits draft creation against an
 approved base. Both exclude general REST, GraphQL, issues and arbitrary PR
 operations. The [OpenShell installation profile](repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
@@ -184,7 +178,7 @@ writes. A root-owned sticky directory such as `/tmp` may sit above the
 immediate parent. The loader rejects symlinks and file replacement.
 See [configuration and TLS ownership](../flows/repository-credential-configuration.md).
 
-For production native Git, set `backend.kind` to `github-prepared-git-registry`
+For the prepared Git sender, set `backend.kind` to `github-prepared-git-registry`
 with `backendId` and `registryFile`. The Driver supplies `controlSocket`,
 `sessionDurationSeconds` and `publicCaPath`. Kubernetes mounts only configuration,
 registry and TLS in the sender. Only the worker mounts the App signing and custody
@@ -201,7 +195,14 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The Token Service signs an App JWT, validates the issued token’s scope and expiry, and stores it encrypted in PostgreSQL. An authorized Credential Proxy metadata GET resolves a `github_app_installation` reference. Its provider generation and registered grant determine which installation token can serve the request. Git sessions use background preparation until the session expires. See [issuance, renewal and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
+For native Git with a managed Source, the selected TokenService signs an App
+JWT with the registered Client key, verifies the installation token's exact
+scope and expiry, and updates the Source's private token custody. The API
+schedules renewal and the selected Credential Proxy delivers replacement
+versions. See [issuance and renewal](../flows/credential-source-lifecycle.md#issue-and-renew-a-github-installation-token).
+
+Prepared and protected Git use finite repository sessions and keep their own
+Worker custody and recovery state.
 
 `PREPARED_GITHUB_RECOVERY_REQUIRED` stops minting. [Recover the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key)
 with its original attempt and custody. Wait until 72 minutes after intent or
@@ -276,12 +277,12 @@ until callbacks and disposal finish.
 
 ## GitHub response data
 
-A [protected metadata read](../flows/repository-credentials.md#5-deliver-an-outcome-and-release-ownership)
+The deprecated [protected metadata exchange](credential-sources/protected-repository-metadata.md)
 releases only `{ id, full_name }` after checking repository identity and reaching
 stream end without actual trailers. Joined OpenShell enforcement still needs
 deployment proof.
 
-For profiles that allow broader API access, bounded REST JSON responses omit
+For legacy profiles with broader API access, bounded REST JSON responses omit
 `temp_clone_token` from the repository, its `parent` and `source`, and a pull
 request's `head.repo` and `base.repo`. GraphQL requests selecting `tempCloneToken`
 receive HTTP 400. The broker rewrites pagination and followed links only after

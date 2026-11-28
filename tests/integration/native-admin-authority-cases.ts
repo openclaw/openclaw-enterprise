@@ -4,7 +4,7 @@ import type nodeTest from "node:test";
 import type { TestContext } from "node:test";
 
 import { NoActiveAgentRevisionError, ResourceConflictError } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import type { ActionsByKind, grantRole } from "../helpers/iam-grants.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";

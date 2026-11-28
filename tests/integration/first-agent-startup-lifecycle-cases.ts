@@ -42,10 +42,18 @@ export function registerFirstAgentFailureAdviceCases({
   runFirstAgentAsync,
 }: LifecycleDependencies): void {
   test("first-Agent deployment failure advice follows the reported cause", async (t) => {
-    for (const code of [
-      "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
-      "RUNTIME_AUTHENTICATION_FAILED",
-      "RUNTIME_STARTUP_FAILED",
+    for (const { code, waitCode, pendingReads } of [
+      {
+        code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+        waitCode: "REVISION_IMAGE_PULL_FAILED",
+        pendingReads: 1,
+      },
+      {
+        code: "RUNTIME_AUTHENTICATION_FAILED",
+        waitCode: "WORKSPACE_NODE_PENDING",
+        pendingReads: 2,
+      },
+      { code: "RUNTIME_STARTUP_FAILED", waitCode: "NAMESPACE_POD_QUOTA_EXCEEDED", pendingReads: 1 },
     ]) {
       await t.test(code, async (t) => {
         const suffix = "00000000-0000-4000-8000-000000000001";
@@ -57,19 +65,34 @@ export function registerFirstAgentFailureAdviceCases({
         const base = `/namespaces/${namespaceId}`;
         const agentPath = `${base}/agents/${agentId}`;
         const name = "state-contract-test";
-        const secret = {
-          id: `sec_${suffix}`,
-          name: "saved-model-key",
-          ref: { kind: "secret", namespaceId: namespaceId, id: `sec_${suffix}` },
-        };
+        const sourceId = `cs_${suffix}`;
+        const sourceName = "saved-model-source";
+        const resume = code === "RUNTIME_STARTUP_FAILED";
         let configuration: Record<string, unknown> | undefined;
         let agent: Record<string, unknown> | undefined;
         let revision: Record<string, unknown> | undefined;
-        let source: Record<string, unknown> | undefined;
+        let source: Record<string, unknown> | undefined = resume
+          ? {
+              id: sourceId,
+              name: sourceName,
+              type: "static",
+              config: { provider_preset: "codex-pat" },
+              state: "ready",
+            }
+          : undefined;
         let role: Record<string, unknown> | undefined;
         let binding: Record<string, unknown> | undefined;
         let transportConfigured = false;
         let interruptBeforeTransport = code === "RUNTIME_STARTUP_FAILED";
+        const networkPath = `${agentPath}/sandbox-policy/networking`;
+        const modelGrants = ["auth.openai.com", "chatgpt.com"].map((host) => ({
+          id: `fixture-${host.replaceAll(".", "-")}`,
+          binary: "/app/fixture-linux-x64/codex/bin/codex",
+          host,
+          ports: [{ from: 443, to: 443 }],
+        }));
+        let savedGrants: unknown[] | undefined;
+        let editingEnabled = false;
         let deploymentReads = 0;
         const unexpected: string[] = [];
         // Run the real helper and HTTP client against supported API envelopes. The
@@ -113,12 +136,21 @@ export function registerFirstAgentFailureAdviceCases({
               case `GET ${base}/iam/access-bindings`:
                 data = binding ? [binding] : [];
                 break;
-              case `GET ${base}/secrets/${secret.id}`:
-                data = secret;
-                break;
               case `POST ${base}/credential-sources`:
+                assert.deepEqual(body, {
+                  name: sourceName,
+                  type: "static",
+                  config: { provider_preset: "codex-pat" },
+                  secret: "at-synthetic-source-enrollment",
+                });
                 status = 201;
-                source = { ...body, id: `cs_${suffix}`, state: "ready" };
+                source = {
+                  id: sourceId,
+                  name: sourceName,
+                  type: "static",
+                  config: { provider_preset: "codex-pat" },
+                  state: "ready",
+                };
                 data = source;
                 break;
               case `POST ${base}/configurations`:
@@ -176,7 +208,26 @@ export function registerFirstAgentFailureAdviceCases({
                 data = revision ? [{ id: revision.id }] : [];
                 meta.nextCursor = null;
                 break;
+              case `GET ${networkPath}`:
+                data = {
+                  editingEnabled,
+                  policy: { version: 1, additions: [] },
+                  ceiling: modelGrants,
+                };
+                break;
+              case `PATCH ${networkPath}/editing`:
+                assert.deepEqual(body, { enabled: true });
+                editingEnabled = true;
+                data = agent;
+                break;
+              case `PUT ${networkPath}`:
+                assert.equal(editingEnabled, true);
+                assert.deepEqual(body, { expectedVersion: 1, additions: modelGrants });
+                savedGrants = modelGrants;
+                data = { version: 2, additions: savedGrants };
+                break;
               case `POST ${agentPath}/deploy`: {
+                assert.deepEqual(savedGrants, modelGrants);
                 status = 202;
                 assert.ok(agent);
                 assert.ok(configuration);
@@ -216,21 +267,32 @@ export function registerFirstAgentFailureAdviceCases({
               case `GET ${agentPath}/revisions/${revisionId}`:
                 data = revision;
                 break;
-              case `GET ${agentPath}/deployments/${revisionId}`:
+              case `GET ${agentPath}/deployments/${revisionId}`: {
                 deploymentReads++;
                 assert.ok(agent);
                 assert.ok(revision);
+                const pending = deploymentReads <= pendingReads;
                 data = {
                   namespaceId: namespaceId,
                   agentId: agent.id,
                   deploymentId: revision.id,
-                  status: "failed",
+                  status: pending ? "running" : "failed",
                   cleanup: null,
-                  progress: null,
+                  progress: pending
+                    ? {
+                        lastAttempt: {
+                          at: new Date().toISOString(),
+                          code: waitCode,
+                          message: "private-progress-message",
+                        },
+                        nextAttemptAt: null,
+                      }
+                    : null,
                   warnings: [],
-                  error: { code, message: "private-provider-message" },
+                  error: pending ? null : { code, message: "private-provider-message" },
                 };
                 break;
+              }
               default:
                 unexpected.push(`${request.method} ${request.url}`);
             }
@@ -248,8 +310,7 @@ export function registerFirstAgentFailureAdviceCases({
         const state = record(JSON.parse(await readFile(statePath, "utf8")));
         state.installationId = installationId;
         await writeFile(statePath, JSON.stringify(state));
-        // Resume an interrupted run after it saved its Secret. No model credential
-        // is needed or read, and the real helper creates the remaining resources.
+        // One run has interrupted after Source enrollment. The other verifies the new Source request.
         const recordPath = join(
           directory,
           `first-agent-${createHash("sha256").update(name).digest("hex").slice(0, 32)}.json`,
@@ -265,9 +326,9 @@ export function registerFirstAgentFailureAdviceCases({
             sandboxDriver: "openshell",
             controlUi: false,
             authMethod: "codex_pat",
-            secretId: secret.id,
-            secretName: secret.name,
-            credentialSourceName: "saved-model-source",
+            secretName: "saved-model-key",
+            credentialSourceName: sourceName,
+            ...(resume ? { credentialSourceId: sourceId } : {}),
           }),
           { mode: 0o600 },
         );
@@ -280,9 +341,14 @@ export function registerFirstAgentFailureAdviceCases({
         ]) {
           delete env[key];
         }
-        // The saved Secret is reused; parent model credentials must never reach kubectl.
-        env.CODEX_ACCESS_TOKEN = "synthetic-parent-model-token";
-        env.CODEX_ACCESS_TOKEN_FILE = join(directory, "unused-model-token");
+        // The operator credential can reach enrollment, while child processes such as kubectl
+        // must not inherit it. Resuming does not need the credential file to exist.
+        env.CODEX_ACCESS_TOKEN_FILE = join(directory, "local-model-token");
+        if (!resume) {
+          await writeFile(env.CODEX_ACCESS_TOKEN_FILE, "at-synthetic-source-enrollment", {
+            mode: 0o600,
+          });
+        }
         if (interruptBeforeTransport) {
           // Stop after the draft Agent was saved. A later controller outage must
           // refuse its retry before creating the missing transport credentials.
@@ -306,22 +372,42 @@ export function registerFirstAgentFailureAdviceCases({
         }
         const output = await runFirstAgentAsync(env, "--harness", "codex");
         assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
-        assert.doesNotMatch(output, /private-provider-message/);
+        assert.doesNotMatch(
+          output,
+          /private-provider-message|private-progress-message|WORKSPACE_NODE_PENDING|REVISION_IMAGE_PULL_FAILED|NAMESPACE_POD_QUOTA_EXCEEDED/,
+        );
         if (code === "RUNTIME_AUTHENTICATION_FAILED") {
           assert.match(output, /Check the model key.*--replace-key/);
+          assert.equal(
+            output.match(/last deployment attempt was waiting for the workspace node/g)?.length,
+            1,
+            "repeated attempts with the same reason produce one progress update",
+          );
         } else {
           assert.doesNotMatch(output, /Check the model key|--replace-key/);
           if (code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+            assert.match(
+              output,
+              /could not pull a container image for this Agent\. Ask an Installation administrator to check the image reference and the cluster's registry access\./,
+            );
             assert.match(output, /managed permission policy.*incompatible/);
             assert.match(output, /sandbox.*permission profile.*approval reviewer/);
           } else {
+            assert.match(
+              output,
+              /Namespace's Pod quota was full\. Stop an unused Agent you own in this Namespace or ask an Installation administrator to raise the quota\./,
+            );
             assert.match(
               output,
               /Inspect the deployment in the Console and the controller worker logs/,
             );
           }
         }
-        assert.equal(deploymentReads, 1, "terminal failure stops polling immediately");
+        assert.equal(
+          deploymentReads,
+          pendingReads + 1,
+          "terminal failure stops polling immediately",
+        );
         // A later controller outage must not hide the saved revision's own failure.
         // This is the repeat path; it reads the existing deployment without provisioning.
         const repeated = await runFirstAgentAsync(
@@ -331,7 +417,7 @@ export function registerFirstAgentFailureAdviceCases({
         );
         assert.ok(repeated.includes(`The Agent deployment failed (${code})`), repeated);
         assert.doesNotMatch(repeated, /Checking the managed Agent Sandbox controller/);
-        assert.equal(deploymentReads, 2);
+        assert.equal(deploymentReads, pendingReads + 2);
         assert.deepEqual(unexpected, [], "no runtime or model request follows failed deployment");
         await assert.rejects(readFile(engineLog), { code: "ENOENT" });
       });

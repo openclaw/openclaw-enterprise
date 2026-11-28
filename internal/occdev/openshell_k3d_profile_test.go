@@ -186,11 +186,9 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 
 	var installation struct {
 		Drivers struct {
-			CredentialGateway struct {
-				Configuration struct {
-					Binaries []string `yaml:"binaries"`
-				} `yaml:"configuration"`
-			} `yaml:"credential_gateway"`
+			TokenService struct {
+				ID string `yaml:"id"`
+			} `yaml:"token_service"`
 			Sandbox struct {
 				Configuration struct {
 					StartupDelayMs *int `yaml:"startupDelayMs"`
@@ -224,12 +222,8 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	if sandbox.StartupDelayMs != nil {
 		t.Fatalf("development must use observed readiness without a fixed delay: %d", *sandbox.StartupDelayMs)
 	}
-	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
-		"/usr/local/bin/node",
-	}) {
-		t.Fatalf("unexpected OpenShell credential binary allowlist: %#v", installation.Drivers.CredentialGateway.Configuration.Binaries)
+	if installation.Drivers.TokenService.ID != "occ" || strings.Contains(text, "credential_gateway:") {
+		t.Fatal("the local OpenShell profile must use OCC TokenService for Source enrollment")
 	}
 	// Only OpenShell supervisors may use the tenant callback egress rule.
 	if len(sandbox.Gateway.NetworkPolicyResources) == 0 || !reflect.DeepEqual(

@@ -2,6 +2,11 @@ name: CI Runtime Artifact
 
 on:
   workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ""
+        description: Approved Release OCE checkout.
     outputs:
       artifact-id:
         value: ${{ jobs.build.outputs.artifact-id }}
@@ -36,6 +41,11 @@ jobs:
           persist-credentials: false
       - name: Verify checkout source
         run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+      - name: Select the approved release checkout
+        if: inputs.source_sha != '' || github.workflow_ref == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main'
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ inputs.source_sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
@@ -78,4 +88,4 @@ jobs:
           name: ci-runtime-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-artifact/receipt.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7

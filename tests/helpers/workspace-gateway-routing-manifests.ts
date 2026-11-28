@@ -1,5 +1,7 @@
+import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
 
 type GatewayRoutingValues = {
   releaseName: string;
@@ -53,8 +55,6 @@ export async function renderGatewayRoutingManifests({
     // The disposable fixture has one node; production role isolation is verified separately.
     "--set-json",
     'controlPlane.nodeSelector={"kubernetes.io/os":"linux"}',
-    "--show-only",
-    "templates/gateway-routing.yaml",
     "--set",
     "gatewayRouting.enabled=true",
     "--set",
@@ -75,6 +75,25 @@ export async function renderGatewayRoutingManifests({
       ? []
       : ["--set-json", `gatewayRouting.sandbox=${JSON.stringify(sandbox)}`]),
   ];
+  const [routing, networkPolicies] = await Promise.all([
+    renderTemplate([...args, "--show-only", "templates/gateway-routing.yaml"]),
+    renderTemplate([...args, "--show-only", "templates/networkpolicies.yaml"]),
+  ]);
+  // Helm supplies the release Namespace during installation. The fixture applies
+  // rendered manifests directly, so the shared API and worker policy needs it here.
+  const egress = yamlDocuments(networkPolicies)
+    .map((document) => yamlMapping(loadYaml(document)))
+    .find(
+      (object) =>
+        object.kind === "NetworkPolicy" &&
+        yamlMapping(object, "metadata").name === "openclaw-enterprise-control-plane-egress",
+    );
+  assert.ok(egress, "the chart must supply the control-plane egress policy");
+  yamlMapping(egress, "metadata").namespace = releaseNamespace;
+  return `${routing}\n---\n${dumpYaml(egress)}`;
+}
+
+async function renderTemplate(args: string[]): Promise<string> {
   try {
     const { stdout } = await executeFile(helmBin, args, {
       env: helmEnvironment,

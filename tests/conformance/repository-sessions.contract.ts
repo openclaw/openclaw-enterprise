@@ -74,10 +74,13 @@ export async function seedSessionRevision(
     executionMode,
     gatewayManagedMode: true,
     servicePrincipalId: `service-agent-${randomUUID()}`,
-    repositoryBindings: credentials.bindings.map(({ repositoryRef, profile }) => ({
-      repositoryRef,
-      profile,
-    })),
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: credentials.bindings.map(({ repositoryRef, profile }) => ({
+        repositoryRef,
+        profile,
+      })),
+    },
     createdAt,
   } satisfies Omit<Agent, "desiredRuntimeState" | "status">;
   const revision = {

@@ -1,3 +1,4 @@
+import type { SelectedPluginBinding } from "../plugin-credential-bindings.ts";
 import type {
   AgentReadRepository,
   AgentRevisionReadRepository,
@@ -16,7 +17,6 @@ import type {
   PluginDesiredState,
   PluginDriverIdentity,
   RepositoryAccess,
-  RepositoryBindingSelection,
   SandboxPolicy,
   WorkspaceSetup,
 } from "@openclaw-enterprise/contracts";
@@ -75,7 +75,6 @@ export interface AgentRepository extends AgentReadRepository {
     harnessAuth?: HarnessAuthBinding | null,
     backendId?: string | null,
     plugins?: PluginDesiredState,
-    repositoryBindings?: readonly RepositoryBindingSelection[],
     pluginApprovers?: PluginApprovers | null,
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
@@ -125,5 +124,6 @@ export interface AgentRevisionRepository extends AgentRevisionReadRepository {
   createRevision(
     revision: AgentRevision,
     firstDeploymentDigest?: string,
+    selectedPluginBindings?: readonly SelectedPluginBinding[],
   ): Promise<Readonly<AgentRevision>>;
 }

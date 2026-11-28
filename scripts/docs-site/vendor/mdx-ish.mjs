@@ -109,8 +109,14 @@ function headingCheckIcon() {
 function renderFence(tokens, idx) {
   const token = tokens[idx];
   const { lang, label, lines, highlight, focus, wrap, expandable } = parseCodeInfo(token.info);
-  if (lang === "mermaid") return mermaidHtml(token.content);
-  const highlighted = renderCodeLines(token.content, lang, { highlight, focus });
+  if (lang === "mermaid") {
+    return mermaidHtml(token.content);
+  }
+  const rawLines = String(token.content).replace(/\n$/, "").split("\n");
+  const highlighted = renderCodeLines(rawLines, lang, {
+    highlight: parseLineSet(highlight, rawLines.length),
+    focus: parseLineSet(focus, rawLines.length),
+  });
   const className = lang ? ` class="language-${escapeAttr(lang)}"` : "";
   const dataLabel = label || lang || "Code";
   const classes = [
@@ -133,8 +139,8 @@ function parseCodeInfo(rawInfo = "") {
     lang: "",
     label: "",
     lines: false,
-    highlight: new Set(),
-    focus: new Set(),
+    highlight: "",
+    focus: "",
     wrap: false,
     expandable: false,
   };
@@ -151,11 +157,11 @@ function parseCodeInfo(rawInfo = "") {
     } else if (part === "expand" || part === "expandable") {
       base.expandable = true;
     } else if (/^\{[^}]+\}$/.test(part)) {
-      base.highlight = parseLineSet(part.slice(1, -1));
+      base.highlight = part.slice(1, -1);
     } else if (part.startsWith("highlight=")) {
-      base.highlight = parseLineSet(part.slice("highlight=".length));
+      base.highlight = part.slice("highlight=".length);
     } else if (part.startsWith("focus=")) {
-      base.focus = parseLineSet(part.slice("focus=".length));
+      base.focus = part.slice("focus=".length);
     } else if (
       part.startsWith("title=") ||
       part.startsWith("filename=") ||
@@ -170,28 +176,39 @@ function parseCodeInfo(rawInfo = "") {
   return base;
 }
 
-function parseLineSet(raw) {
+function parseLineSet(raw, lineCount) {
   const set = new Set();
+  if (!raw) {
+    return set;
+  }
+  const ranges = [];
   for (const piece of String(raw)
     .replace(/[[\]"]/g, "")
     .split(",")) {
-    const trimmed = piece.trim();
-    if (!trimmed) continue;
-    const range = trimmed.match(/^(\d+)-(\d+)$/);
-    if (range) {
-      const start = Number(range[1]);
-      const end = Number(range[2]);
-      for (let i = Math.min(start, end); i <= Math.max(start, end); i++) set.add(i);
-    } else {
-      const line = Number(trimmed);
-      if (Number.isFinite(line) && line > 0) set.add(line);
+    const range = piece.trim().match(/^(\d+)-(\d+)$/);
+    const start = Number(range ? range[1] : piece);
+    const end = range ? Number(range[2]) : start;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) {
+      continue;
     }
+    const first = Math.max(1, Math.min(start, end));
+    const last = Math.min(lineCount, Math.max(start, end));
+    if (first <= last) {
+      ranges.push([first, last]);
+    }
+  }
+  let lastSelected = 0;
+  // Expand each selected line once, even when the authored ranges overlap.
+  for (const [first, last] of ranges.sort(([a], [b]) => a - b)) {
+    for (let line = Math.max(first, lastSelected + 1); line <= last; line++) {
+      set.add(line);
+    }
+    lastSelected = Math.max(lastSelected, last);
   }
   return set;
 }
 
-function renderCodeLines(code, lang, options) {
-  const rawLines = String(code).replace(/\n$/, "").split("\n");
+function renderCodeLines(rawLines, lang, options) {
   const focusActive = options.focus.size > 0;
   return rawLines
     .map((line, index) => {

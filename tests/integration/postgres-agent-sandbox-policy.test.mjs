@@ -16,6 +16,7 @@ import {
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import {
   editStoredRepositoryGrants,
   rejectStaleRepositoryPolicySave,
@@ -27,12 +28,16 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
+
+// These app instances share one durable TokenService owner, so they must share its custody store.
+const channelSourceSecretDriver = createTestSecretDriver({ id: "sandbox-policy-pg-secret" });
 
 async function createPolicyApp(
   t,
   recordOperations = false,
-  { laxDriver = false, poolOptions } = {},
+  { laxDriver = false, poolOptions, channelSources = false } = {},
 ) {
   const grant = {
     id: "python-demo",
@@ -111,9 +116,17 @@ async function createPolicyApp(
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
     sandboxDriver,
     poolOptions,
+    ...(channelSources ? { secretDriver: channelSourceSecretDriver } : {}),
     controllerOptions: {
       sandboxNetworkPolicyCeiling: [grant, providerRefusalGrant],
       recordOperations,
+      // Controlled admission qualification; the cases below prove PostgreSQL/IAM ordering.
+      ...(channelSources
+        ? {
+            gatewayStartupSourceDelivery: (compute, owner) =>
+              compute.id === "sandbox-policy-pg-compute" && owner instanceof OCCTokenServiceDriver,
+          }
+        : {}),
       driverConfigurations: [
         {
           capability: "sandbox",
@@ -1288,10 +1301,10 @@ test(
 );
 
 test(
-  "Channel credential handoff respects a concurrent Secret permission revocation",
+  "Channel credential handoff respects a concurrent Source permission revocation",
   requiresPostgres,
   async (t) => {
-    await verifyChannelPolicyHandoff(await createPolicyApp(t));
+    await verifyChannelPolicyHandoff(await createPolicyApp(t, false, { channelSources: true }));
   },
 );
 
@@ -1302,6 +1315,7 @@ for (const boundary of /** @type {const} */ (["channel", "admission"])) {
     async (t) => {
       const fixture = await createPolicyApp(t, true, {
         poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
+        channelSources: true,
       });
       Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
       await verifyDeploymentAuthorityAfterWait(fixture, boundary);

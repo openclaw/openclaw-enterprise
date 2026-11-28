@@ -147,35 +147,36 @@ test("same-SHA reuse admits only successful canonical CI jobs and immutable curr
   }
 });
 
-test("same-SHA reuse waits at most twelve minutes and falls back without delaying credentialed lanes", async () => {
+test("same-SHA reuse admits a late producer and falls back at fourteen minutes", async () => {
   const { get, run, sha, rows } = await reuseFixture();
   let elapsed = 0;
   const sleeps: number[] = [];
-  run.status = "in_progress";
   const sleep = async (ms: number) => {
     sleeps.push(ms);
     elapsed += ms;
   };
-  assert.equal(await discoverProducer({ get, sha, rows, now: () => elapsed, sleep }), null);
-  assert.equal(elapsed, 720_000);
-  assert.equal(waitMilliseconds, 720_000);
+  const discover = (completeAt: number) =>
+    discoverProducer({
+      get: async (path) => {
+        if (path.includes("/runs?") && elapsed < completeAt) {
+          return { workflow_runs: [{ ...run, status: "in_progress", conclusion: null }] };
+        }
+        return get(path);
+      },
+      sha,
+      rows,
+      now: () => elapsed,
+      sleep,
+    });
+  // A producer that completes at 12m34s is visible on the 13-minute poll.
+  assert.equal((await discover(754_000))?.runId, 123);
+  assert.equal(elapsed, 780_000);
+  elapsed = 0;
+  assert.equal(await discover(Infinity), null);
+  assert.equal(elapsed, 840_000);
+  assert.equal(waitMilliseconds, 840_000);
   assert.equal(pollMilliseconds, 30_000);
   assert.ok(sleeps.every((ms) => ms === 30_000));
-  elapsed = 0;
-  const admitted = await discoverProducer({
-    get,
-    sha,
-    rows,
-    now: () => elapsed,
-    sleep: async (ms) => {
-      elapsed += ms;
-      if (elapsed === 60_000) {
-        run.status = "completed";
-      }
-    },
-  });
-  assert.equal(present(admitted).runId, 123);
-  assert.equal(elapsed, 60_000);
   const fallback = await selectFreshLanes(
     rows.map((row) => row.lane),
     "failure",
@@ -191,6 +192,7 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
     ["k3d-observability-demo", "repository-credentials-container"],
   );
   const workflow = await readWorkflow("full-integration-execution");
+  assert.equal(present(workflow.jobs["ci-reuse"])["timeout-minutes"], 18);
   // The model job reads the artifact output directly; its producer must be a dependency.
   assert.ok(present(present(workflow.jobs["docker-model"]).needs).includes("runtime-artifact"));
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {

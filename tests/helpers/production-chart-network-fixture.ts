@@ -25,14 +25,12 @@ export const repositoryCredentialValues = {
   "repositoryCredentials.appKeySecretName": "repository-app-key",
   "repositoryCredentials.tlsSecretName": "repository-tls",
   "repositoryCredentials.publicCaSecretName": "repository-public-ca",
-  "repositoryCredentials.upstreamCidrs[0]": "198.51.100.0/24",
 };
 
 export const protectedRepositoryValues = {
   "repositoryCredentials.enabled": "false",
   "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
   "repositoryCredentials.appKeySecretName": "repository-app-key",
-  "repositoryCredentials.upstreamCidrs[0]": "198.51.100.23/32",
   "repositoryCredentials.preparedProviderCaConfigMapName": "git-provider-ca",
   "repositoryCredentials.authority": "prepared-git",
   "repositoryCredentials.preparedCustodySecretName": "git-custody",

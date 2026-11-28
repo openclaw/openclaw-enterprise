@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: "2026-11-20"
-last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
+updated: "2026-11-26"
+last_updated_session: "authoring-run/97afbc63-ab09-45c6-bf75-044b4068cfef"
 ---
 
 # Agent Plugin Approvals Flow
@@ -139,7 +139,9 @@ credentialed MCP request policy.
 - Selecting a directory result displays its name and handle immediately. The Console
   saves the workspace-qualified user ID and resolves its current name when reopened.
   If lookup is unavailable, the selection stays in place and exact IDs can still be pasted.
-- The channel directory flow describes Secret permissions and lookup failures.
+- Approver name lookup uses the shared channel directory caller with `sourceId`
+  and requires `operate` on that exact Credential Source. Saved approver IDs and
+  runtime approval enforcement are unchanged.
   Approval enforcement needs a compatible runtime and an authorized test bot.
 - For a gateway that remains unready, check its runtime startup evidence and
   logs for `plugin-approvers`. A capability failure leaves the native
@@ -156,6 +158,8 @@ credentialed MCP request policy.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 09:34: Clarify the accompanying local directory Source cutover required for approver name lookup. (authoring-run/97afbc63-ab09-45c6-bf75-044b4068cfef - efc73b7aad6a82bdcdd5a54975a0852488a6edde)
 
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 

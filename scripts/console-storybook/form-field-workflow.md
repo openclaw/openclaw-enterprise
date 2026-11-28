@@ -28,8 +28,13 @@ each story at 1440 and at 390.
    opens, takes focus, and explains that the number is too large or too small
    to save. No Agent GET preflight or PATCH starts. Open **Configure plugins**:
    the existing invalid-JSON guidance appears, focus stays in the dialog, and
-   the raw text stays unchanged. These are simulated UI checks; the owning
-   browser test checks refusal and correction through the real Controller.
+   the raw text stays unchanged.
+   Close **Configure plugins**. Paste `{"sample":{“enabled":false}}` into
+   **Plugin selections JSON**. Tab to **Save plugin selections** and press
+   Enter. The cursor should land just before the curly quote. Press Delete
+   and type a straight double quote. The error clears and the rest of the
+   draft stays intact. These are simulated UI checks. The browser test also
+   checks a long draft against the real Controller.
 6. Open **Authentication source required fields**. The API key Secret field
    shows "API key Secret is required." and has focus; its list stays closed,
    so nothing covers the error. Click the field or press ArrowDown to open

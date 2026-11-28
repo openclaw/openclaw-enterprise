@@ -8,7 +8,6 @@ import {
   arrangeProductionTopology,
   assertActualModelTurn,
   assertDeniedConnection,
-  storedSecret,
   hash,
   kubectl,
   requiresLiveSlack,
@@ -108,7 +107,7 @@ test(
         `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
         {
           agentId: topology.agent.id,
-          secretId: topology.secretApi.slackBot.id,
+          sourceId: topology.slackSources.bot.id,
           kind,
           ids: [id],
         },
@@ -127,21 +126,18 @@ test(
     );
     const gatewayEnvironment = gateway.spec.template.spec.containers[0].env;
     const agentEnvironment = agent.spec.template.spec.containers[0].env;
+    const stagedName = `gateway-secrets-${suffix}-${hash(topology.revision.id)}`;
+    const staged = await resource("secret", stagedName, topology.gatewayPlacement);
     for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
-      const source = await storedSecret(
-        topology.observerPool,
-        topology.agent.namespaceId,
-        topology.secretApi[key === "SLACK_APP_TOKEN" ? "slackApp" : "slackBot"].id,
-      );
       const { optional, ...ref } = gatewayEnvironment.find(({ name }) => name === key).valueFrom
         .secretKeyRef;
-      assert.equal(source.backendRef.namespaceName, topology.gatewayPlacement);
       assert.equal(optional ?? false, false);
       assert.deepEqual(
         ref,
-        { name: source.backendRef.name, key: source.backendRef.key },
-        "only the owning Gateway may reference the admitted canonical channel source",
+        { name: stagedName, key },
+        "the Gateway must reference Compute's revision-specific delivery Secret",
       );
+      assert.ok(staged.data[key], "Compute must stage the selected Source for this revision");
       assert.equal(
         agentEnvironment.some(({ name }) => name === key),
         false,
@@ -369,7 +365,7 @@ test(
           `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
           {
             agentId: topology.agent.id,
-            secretId: topology.secretApi.slackBot.id,
+            sourceId: topology.slackSources.bot.id,
             kind: "users",
             ids: [senderIdentity.user_id],
           },

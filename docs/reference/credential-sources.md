@@ -1,53 +1,60 @@
 # Credential sources
 
-A Credential Source identifies access to an external system. It can reference a credential or authorize an operation that needs no credential. It records who owns that access and the conditions under which OCE may use it. Selecting a Source does not grant access by itself or expose credential material.
+A CredentialSource is a Namespace resource. The selected TokenService maintains
+Sources for static credentials, OAuth grants, and finite GitHub installation
+tokens. A Source can reference a Connection Template. The Source API exposes
+metadata and controls access to the Source. Ordinary credential-free metadata
+reads use separate Sandbox network access and return the upstream response; they
+do not need a Source. The older [protected metadata Source](credential-sources/protected-repository-metadata.md)
+is deprecated and retired from Credential Design 1.0, pending code removal.
+[Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+covers Channel and Gateway Secret delivery. An authorized caller can also select a ready static OCC-owned Source for a dedicated Kubernetes Gateway through [Configuration secret bindings](configuration/secrets.md#secret-bindings), independently of any Proxy binding.
 
-The [credential design](https://github.com/openclaw/openclaw-enterprise/blob/main/specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) proposes one lifecycle for model and plugin credentials. The design is still in progress. The following section describes its intended behavior; [implementation status](#implementation-status) records which parts are available.
+<a id="intended-credential-flow"></a>
 
-## Intended credential flow
+## How Agent credentials work
 
-1. **Select a consumer.** An operator chooses a model provider or a plugin connection and selects its credential once at that consumer. A model uses `harnessAuth`; a Plugin uses its named connection. The consumer identifies the endpoint and operations it needs.
-2. **Connect a Source.** TokenService owns the Source and credential. A provider preset or Connection Template limits where the credential may be sent. The proposed Plugin Source association pins the immutable `(templateId, version)` pair. The Agent receives permission to use the Source, not permission to read the credential.
-3. **Admit the policy.** OCC checks the consumer's requested destinations against the Installation's network ceiling and the Source's credential authority. It prepares two separate policies:
-   - **Network access policy:** which executable may contact which host and ports, with request restrictions where required. A consumer can request network access without a credential.
-   - **Credential injection policy:** which of those requests may use each Source. For a plugin, this is the intersection of the plugin's requested endpoints and the destinations authorized by its Source and Connection Template. A template cannot grant network access by itself.
-4. **Save the deployment.** OCC derives the unique Source references from the model and Plugin selections, then records them with the admitted bindings and policies in the Agent revision. The revision contains no credential value.
-5. **Prepare delivery.** Compute creates an idle Sandbox. Worker verifies the deploying actor's and Agent's Source permissions and gives Credential Proxy a resolver limited to that Source. For OCC-owned material, Proxy resolves the authorized credential and initializes a delivery copy when needed. For a compatible native TokenService, the intended path attaches the existing Provider without transferring material. Sandbox enforces network access; Credential Proxy enforces credential injection. Their paired implementations may combine configuration privately.
-6. **Start the Agent.** Compute waits for the admitted network policy and credential delivery to be ready. Worker checks Source authorization again before activation. Sandbox starts the Harness, and Compute exposes user traffic after runtime readiness. The Harness can use the admitted credential route without receiving the real credential.
-7. **Maintain access.** TokenService owns issuance, renewal, forced refresh, status, and removal of credential material. After it commits or renews a credential, it notifies Credential Proxy with the Source reference and credential version, when known, without sending material. If a delivery resource exists, Proxy resolves only the authorized Source, updates the resource, and acknowledges delivery after every serving copy can use the resolved version. Withdrawal and retirement remove delivery access under the Source authority.
+1. Select a model Source, a Source in a Plugin connection, or GitHub repositories for the Agent. The selection grants no access by itself.
+2. OCC checks exact Source and repository permissions. It applies the Installation's network ceiling and matches the requested operations against a provider preset or the Source's Connection Template.
+3. OCC saves the bindings and their policy in the Agent revision. The Sandbox enforces the network policy, and Credential Proxy injects credentials only for permitted requests. The Harness uses placeholders.
+4. TokenService commits credential replacements. With OCC custody, Proxy updates existing delivery copies. With OpenShell custody, it checks the updated authoritative Provider. A failed delivery can be retried.
 
-The target removes the `CredentialGatewayDriver` and `CredentialRefreshDriver` contracts and their `drivers.credential_gateway` and `drivers.credential_refresh` selections after their consumers move to TokenService and Credential Proxy.
-
-The intended guided Create Agent flow uses this same admission: it registers or selects the credential Source, grants the Agent access, derives the required network and injection policies from the selected model, and deploys. It does not require the operator to create an Agent draft through a separate API path. Current guided-creation support is recorded below.
-
-See the [Source ownership](https://github.com/openclaw/openclaw-enterprise/blob/main/specs/rfcs/0023-egress-proxy-credential-lifecycle/credential-source-ownership.md), [deployment policy](https://github.com/openclaw/openclaw-enterprise/blob/main/specs/rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md#prepare-an-agent-revision), and [worker delivery](https://github.com/openclaw/openclaw-enterprise/blob/main/specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md) proposals for design details.
+See [Credential Design 1.0](../../specs/rfcs/20261124-credential-design-1-0/index.md)
+for the design and [Source lifecycle](../flows/credential-source-lifecycle.md)
+for implementation details.
 
 ## Implementation status
 
-This table separates implemented behavior from work remaining in the proposed design. Existing delivery paths are documented under [other delivery modes](credential-sources/other-delivery-modes.md).
+| Path                   | Support and limits                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Managed model Source   | Dedicated OpenClaw and Codex support static OpenAI Responses credentials. OCC derives exact first-deployment requests when the Installation allows the stock runtime executable. Dedicated Codex also accepts a built-in device-login Source or a static Codex PAT. [Native model requests](credential-sources/managed-static.md#native-model-requests)                                                                                                                                             |
+| Console and Agent API  | Credentials creates static or Template OAuth Sources and starts Codex login. Agent drafts reuse or switch compatible ready model Sources. See [Console Agent creation](console/create-and-deploy.md#create-an-agent). The Agent API requires the model Source in both `harnessAuth` and `credentialSources`; deploy the saved draft. Guided creation with a managed Source returns `409`.                                                                                                           |
+| Native Git             | Native OpenShell Git supports Dedicated Codex. TokenService maintains a finite installation token for a Namespace Source. The Source uses an Installation or same-Namespace GitHub App Client. Each Agent gets its own admitted Repository policy. [Repository credentials](repository-credentials.md)                                                                                                                                                                                              |
+| Plugin Sources         | OCC admits Template-backed OAuth and static MCP selections and freezes their Template policy. PluginDriver filters discovered tools to deployable selections. A live Slack OAuth Agent tool and an unselected-tool denial were verified in [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673). Live Google OAuth and static Slack execution remain unverified.                                                                                                                      |
+| Custody and delivery   | OCC TokenService stores private material; Proxy owns delivery copies. The [OpenShell custody preview](credential-sources/managed-static.md#preview-openshell-custody) attaches authoritative Providers for static Bearer Sources, including generic keys and PATs, with one binding per Source per Sandbox. It does not support OAuth or GitHub App Sources. Stop and withdrawal detach Providers; Source deletion removes them. Use Stop before replacing an active managed-credential deployment. |
+| Refresh and withdrawal | OCC custody updates delivery copies and checks serving receipts. For OpenShell custody, manual push verifies Provider metadata; verify the running Sandbox separately. Before renewal is due, Git maintenance retries recorded pending delivery with the committed version. See [retry](#retry-credential-delivery) and [withdrawal](credential-sources/withdrawal.md).                                                                                                                             |
 
-| Capability                      | Current implementation                                                                                                                                                                                                                    | Remaining work                                                                                                                                                                     |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source registration and custody | TokenService creates, updates, and deletes managed static Sources. OCC reads and lists the authorized Source catalog.                                                                                                                     | Extend selected TokenService lifecycle support to other credential types.                                                                                                          |
-| Credential selection            | The direct Agent API requires the model Source in both `harnessAuth` and `credentialSources`; Plugin selection is checked against that list.                                                                                              | Declare each credential once at its consumer and derive the revision Source set during admission.                                                                                  |
-| Model provider coverage         | First deployment of an explicit OpenAI Responses model is implemented for dedicated OpenClaw and Codex with OCC TokenService and the paired OpenShell Sandbox and Proxy.                                                                  | Anthropic, other model providers, completions, custom endpoints, and runtime qualification for each supported path.                                                                |
-| Delivery ownership              | OCC TokenService initializes an OpenShell Provider with a delivery copy. The [OpenShell custody preview](credential-sources/managed-static.md#preview-openshell-custody) attaches the authoritative Provider directly.                    | Qualify the preview through its dedicated Agent workflow and require exact Provider mutations.                                                                                     |
-| Driver composition              | OCC admission requires credential delivery and the selected Sandbox in one registration.                                                                                                                                                  | Compose compatible Credential Proxy and Sandbox implementations without requiring shared registration; retire legacy delivery selection.                                           |
-| Authentication methods          | PAT, ServiceAccount, OAuth refresh, and embedded-runtime authentication retain their existing delivery paths.                                                                                                                             | Move each applicable model authentication path to TokenService and Credential Proxy, with end-to-end verification.                                                                 |
-| Codex OAuth                     | OCC owns temporary device-login sessions; provider exchange and grant handling still use Credential Refresh Driver and Credential Gateway.                                                                                                | Move grant custody and renewal to the selected TokenService Driver and model delivery to Proxy. Qualify account presentation, renewal, and recovery.                               |
-| Network and injection policy    | OCC derives separate network and per-binding injection policies for the supported model route.                                                                                                                                            | Apply the same admission to each selected Plugin connection binding.                                                                                                               |
-| Native credential delivery      | OpenShell prepares frozen HTTP and managed MCP bindings. Bindings can share a Source with separate credential environments.                                                                                                               | Integrate pinned Template authority and Plugin admission. Verify allowed and denied requests from a deployed Agent.                                                                |
-| Connection Templates            | Static Bearer and OAuth templates can be managed in Console or through the API. Static templates store allowed HTTP destinations but have no Source association or credential delivery.                                                   | Associate an immutable `(templateId, version)` with a Source and integrate each consumer with admission and delivery.                                                              |
-| Plugin connections              | OCC's existing TokenService registrar and issuer manage saved OAuth grants; the selected TokenService Driver does not yet own them. The connections list uses the latest manual template; Agent attachment is not implemented.            | Pin Plugin Source authority to an immutable `(templateId, version)` and integrate connection delivery with the common policy and Proxy flow.                                       |
-| Guided creation and Console     | The ordinary Agent API can bind a managed Source and save a network grant before deployment. Guided creation with a managed Source returns `409`.                                                                                         | Admit network policy and grant Source access during guided creation; qualify the complete Console flow.                                                                            |
-| Replacement and retry           | Stop removes the current Sandbox and its Proxy attachment. The OpenShell Proxy retires its owned Provider and profile after the last binding is removed.                                                                                  | Replace an active managed-credential deployment and recover without requiring Stop.                                                                                                |
-| Credential updates              | Active staged Sources allow replacement. TokenService commits, then notifies Proxy. OpenShell updates existing Providers and checks readiness. A failed PATCH returns `503`; the Agent API can retry delivery.                            | Qualify rotation in the same running Harness.                                                                                                                                      |
-| Withdrawal and retirement       | Staged withdrawal denies Agent use and confirms a `REVOKED` detach receipt or Sandbox absence. The Source and other Agents remain usable. Proxy retires the last Provider and profile; Source DELETE retires them before custody removal. | Qualify live withdrawal and recover previously retained copies if an Installation restarts without the Proxy selected.                                                             |
-| Enforcement qualification       | Compute checks applied network policy and Proxy readiness during preparation.                                                                                                                                                             | Recheck both immediately before starting the Harness. Qualify executable, credential presentation, destination, method, path, and target identity for each Sandbox and Proxy pair. |
+OpenShell may inject a credential into a matching plaintext HTTP request on port 443. Executable rules include descendant processes. Substitution is not restricted
+to exact Bearer presentation. Sandbox attach, detach, and activation address the
+Sandbox by name. See [Credential Proxy](drivers/credential-proxy.md) for admission
+and enforcement limits.
 
-Each binding needs a distinct credential environment. Bindings at the same host and port need disjoint endpoint paths. OpenShell refuses overlapping Plugin grants and routes that would narrow the installed Sandbox defaults outside the model destination. The model's saved broad grant must be unique at its host and port. Additional Plugin or credential-free routes cannot share that grant's executable, host, and port. Compute refuses staged launch with Secret-based model authentication.
+Live verification at `a009380c` covered Dedicated Codex OAuth and Git rotation in one
+Agent, plus Git read, push, withdrawal and direct TCP denial. A fresh combined
+deployment on the merged code and a genuine Codex PAT turn remain unverified. [Cutover verification](https://github.com/openclaw/openclaw-enterprise/pull/7224)
 
-OpenShell cannot restrict placeholder injection to HTTPS, so a matching plaintext HTTP request can receive the credential. Executable rules include descendant processes, substitution is not restricted to exact Bearer presentation, and attach, detach, and activation address a Sandbox by name. These limits do not redefine the intended policy contract.
+### Codex account model requests
+
+Without a matching Agent grant, OCC adds the exact requests below when the
+Installation ceiling allows one stock Codex executable. The built-in Codex
+account Source permits only that executable and `chatgpt.com:443`:
+
+- `POST /backend-api/codex/responses`
+- `GET /backend-api/wham/accounts/check`
+- `GET /backend-api/wham/config/bundle`
+
+Alternate workspace origins are refused. The OpenShell HTTPS substitution limit
+above applies to these matches.
 
 ## Register a source
 
@@ -58,19 +65,23 @@ For example, register an OpenAI API key as a managed static Source with `POST /n
   "name": "Model access",
   "type": "static",
   "config": { "provider_preset": "openai" },
-  "secret": { "opaque": "<credential>" }
+  "secret": "<credential>"
 }
 ```
 
-The caller needs `credential_source:create` on a ready Namespace. The response contains the Source ID and sanitized metadata, never the credential. See [managed static sources](credential-sources/managed-static.md) for the complete API and first-deployment example. Registration for [other delivery modes](credential-sources/other-delivery-modes.md#register-a-source) uses the selected owner's catalog and may require Secret references.
+The caller needs `credential_source:create` on a ready Namespace. The response contains the Source ID and metadata, never the credential. See [managed static sources](credential-sources/managed-static.md) for the complete API and first-deployment example. To create a Template-backed OAuth Source, start the separate [browser consent workflow](connection-templates.md#connect-an-account). TokenService creates that Source only after the provider returns a grant. The built-in Codex OAuth choice uses Agent device login and requires both Namespace Agent `create` and Credential Source `create`.
 
 ## Read and list sources
 
-Exact GET requires `credential_source:read`. List requires Namespace `read` and includes only Sources the caller may read. A Source's saved `ready` state does not establish whether a particular deployment can use it. [Other delivery modes](credential-sources/other-delivery-modes.md#read-and-list-sources) may include live Gateway or refresh status.
+Exact GET requires `credential_source:read` and returns all nonsecret metadata for that Source, even when TokenService cannot report refresh status. List requires Namespace `read` and includes only Sources the caller may read. A Source's saved `ready` state does not establish whether a particular deployment can use it.
+
+OCC uses the recorded TokenService instance for Source status, replacement, refresh, and deletion.
+
+An associated Source reports `connectionTemplateId`. For Template-based OAuth, `OAuthCredentialSource.consent` records the original Template version, OAuth client, principal and scopes. A successful Codex device login creates a `builtin_codex` Source with trusted account metadata and the fixed issuer/client preset. It needs no Template. Both kinds expose only nonsecret metadata.
 
 ## Bind a source to an Agent
 
-The current direct Agent API requires `credentialSources` to list the selected Source IDs. For model authentication, it also requires the same Source in `harnessAuth`. See [implementation status](#implementation-status) for removing this duplicate input:
+For model authentication, specify the same Source in `credentialSources` and `harnessAuth`.
 
 ```json
 {
@@ -79,13 +90,29 @@ The current direct Agent API requires `credentialSources` to list the selected S
 }
 ```
 
-The caller needs the corresponding Agent permission and `credential_source:operate` on each affected Source. Deployment requires both the caller and the Agent service principal to have `credential_source:operate` on each Source. With OCC-managed transactional Native IAM, deployment can create a missing exact Agent grant when the caller may operate the Source. Otherwise, grant the Agent access with a [Namespace Role and AccessBinding](authorization.md#manage-namespace-policy). A Source ID grants no authority by itself.
+For a Plugin, select the Source once in its credential slot. OCC includes it in admission without a separate `credentialSources` entry. A Plugin Source must reference a Connection Template. A Source used only by the Harness can omit the Template.
 
-OCC saves each Source's ID, type, and owner identity in the Agent revision. A managed Source identifies its TokenService instance; a Gateway or Proxy Source identifies its Driver. See [other delivery modes](credential-sources/other-delivery-modes.md#bind-a-source-to-an-agent) for their binding and provisioning rules.
+OCC looks up only the Source-associated Template ID and resolves its approved version when it checks a selection and again at deployment. OAuth consent retains its separate original version and client. For an HTTP Plugin, a credential-bearing request must match a reviewed Plugin operation and a destination in that Template version. A manual OAuth Template can authorize a new destination for an existing Source. The grant still uses its original issuer and client and the scopes granted by the provider. An issuer change requires new consent. Each Agent revision records the admitted Template ID and version and keeps its executable, permitted requests and credential projection when the Template changes.
+
+The caller needs the corresponding Agent permission and `credential_source:operate` on each affected Source. Deployment requires both the caller and the Agent service principal to have `credential_source:operate` on each Source. With OCC-managed transactional Native IAM, deployment can create a missing exact Agent grant when the caller may operate the Source. Otherwise, grant the Agent access with a [Namespace Role and AccessBinding](authorization.md#manage-namespace-policy). Saving an eligible Plugin selection under Native IAM grants the Agent service principal exact Source `operate` access in the same transaction.
+
+OCC qualifies the complete policy against the selected OpenShell Sandbox and Credential Proxy before it saves a revision or queues work. See [implementation status](#implementation-status) for supported and verified Plugin paths. The static HTTP policy limits credential injection by endpoint, method, and path. The provider enforces the credential’s permissions. See the [Proxy Driver reference](drivers/credential-proxy.md) for the accepted MCP limits.
+
+## Use a Codex PAT Source
+
+Bind a static `codex-pat` Source for model access. First deployment can use the
+[seven fixed PAT requests](credential-sources/managed-static.md#codex-pat) allowed
+by the Installation. That reference also describes the temporary transport exception.
+For hosted Apps, [enroll the PAT](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
+and grant the caller Source operate access. The Codex Plugin Driver verifies the account with the issuer. This covers Codex hosted Apps, which use their own catalog.
 
 ## Update a source
 
-Send PATCH with `credential_source:update`. [Managed static updates](credential-sources/managed-static.md#update-a-source) replace the write-only credential or change its provider association. [Other source types](credential-sources/other-delivery-modes.md#update-a-source) have their own update and recovery rules. Current delivery-update limitations are in [implementation status](#implementation-status).
+Send PATCH with `credential_source:update`. [Managed static updates](credential-sources/managed-static.md#update-a-source) replace the write-only credential or change its provider association. TokenService renews OAuth grants with the original consent settings. Current delivery-update limitations are in [implementation status](#implementation-status).
+
+## Request renewal
+
+Send `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate` with `credential_source:update` on the exact Source. The selected TokenService renews a ready OAuth or GitHub App installation credential, commits the replacement, and pushes it through Credential Proxy. Use `PATCH` to replace a static credential.
 
 ## Retry credential delivery
 
@@ -93,11 +120,7 @@ Send `POST /namespaces/:namespaceId/agents/:agentId/credentials/push` with `{"so
 
 If the Agent service principal has lost Source access, ask an Installation administrator to restore its `credential_source:operate` grant, then retry credential delivery.
 
-The response has one result per selected Source: `succeeded`, `resolution_failed`, or `delivery_failed`. Backend failures appear in these results with HTTP `200`; they do not hide successful results or roll back the credential held by TokenService. Retry does not replace the Source credential. A retry for a shared Source can affect other Agents bound to it. See the [lifecycle flow](../flows/credential-source-lifecycle.md#retry-delivery) for execution.
-
-## Rotate a refresh source
-
-See [refresh source rotation](credential-sources/other-delivery-modes.md#rotate-a-refresh-source) for the existing Gateway refresh path.
+The response has one result per selected Source: `succeeded`, `resolution_failed`, or `delivery_failed`. Backend failures appear in these results with HTTP `200`; they do not hide successful results or roll back the credential held by TokenService. Retry does not replace the Source credential. In the native OpenShell preview, `succeeded` confirms Provider metadata; it does not prove that a running Harness used the replacement. A retry for a shared Source can affect other Agents bound to it. See the [OCC custody lifecycle flow](../flows/credential-source-lifecycle.md#retry-delivery) for execution.
 
 ## Withdraw a source from an Agent
 
@@ -105,15 +128,13 @@ Withdrawal removes an Agent's access without deleting the Source. See [withdrawa
 
 ## Delete a source
 
-DELETE requires `credential_source:delete` and returns `409` while blocking references remain. See [managed static deletion](credential-sources/managed-static.md#delete-a-source) or [other deletion behavior](credential-sources/other-delivery-modes.md#delete-a-source). Managed static deletion retires the selected OpenShell Proxy’s delivery copy first; a failure returns `503` and retains the Source for retry. See [implementation status](#implementation-status) for remaining limits. To disconnect a saved OAuth account, use `DELETE /namespaces/:namespaceId/connections/:credentialSourceId`; Source DELETE is not account disconnect. See [Connection Templates](connection-templates.md).
+Use `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId` to retire a Source. With OCC custody, Proxy retires delivery copies before TokenService removes the credential. A Proxy failure returns `503` and retains the Source and credential for retry. With OpenShell custody, TokenService deletes the authoritative Provider and profile.
 
-## After a Credential Gateway change
-
-See [Gateway ownership after selection changes](credential-sources/other-delivery-modes.md#after-a-credential-gateway-change).
+Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a Configuration Gateway binding or saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The Worker can retry pending OAuth retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source) and [OAuth consent](connection-templates.md#connect-an-account).
 
 ## Errors
 
-See [source errors](credential-sources/other-delivery-modes.md#errors) and the operation-specific [managed static reference](credential-sources/managed-static.md).
+See the operation-specific [managed static reference](credential-sources/managed-static.md) and [OAuth consent reference](connection-templates.md#connect-an-account).
 
 ## Related
 

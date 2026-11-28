@@ -12,6 +12,7 @@ import { readPublicFile } from "./public-file.ts";
 export async function loadGitHubRepositoryRegistry(
   path: string,
   expectedBackendId: string,
+  options: { readonly allowNameOnlyNativeRepositories?: boolean } = {},
 ): Promise<GitHubRepositoryRegistry> {
   if (!isAbsolute(path) || resolve(path) !== path) {
     throw new Error("invalid-repository-registry");
@@ -24,7 +25,11 @@ export async function loadGitHubRepositoryRegistry(
       GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
       "invalid-repository-registry",
     );
-    return validateGitHubRepositoryRegistry(JSON.parse(bytes.toString("utf8")), expectedBackendId);
+    return validateGitHubRepositoryRegistry(
+      JSON.parse(bytes.toString("utf8")),
+      expectedBackendId,
+      options,
+    );
   } catch {
     throw new Error("invalid-repository-registry");
   } finally {

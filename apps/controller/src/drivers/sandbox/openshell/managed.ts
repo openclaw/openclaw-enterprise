@@ -153,7 +153,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     return `oce-runtime-${sha256Hex(agentId, 24)}`;
   }
 
-  protected override gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
+  override gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
     return this.runtimeProviderName(revision.agentId);
   }
 
@@ -795,13 +795,28 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     client: OpenShellGatewayClient,
     request: OpenShellPolicyRequest,
     sandbox: OpenShellSandboxResponse,
+    revision: Readonly<AgentRevision>,
     signal: AbortSignal,
   ): Promise<Readonly<Record<string, unknown>>> {
     if (client.getPolicyStatus === undefined) {
       throw new Error("Managed Sandbox requires current policy observation.");
     }
     const { policy } = await client.getPolicyStatus(request, signal);
-    if (sandbox.annotations[POLICY_BASELINE] !== openShellPolicyBaselineDigest(policy)) {
+    const stagedRepository =
+      revision.executionAdmission.mode === "standalone" &&
+      revision.executionAdmission.version === 8 &&
+      revision.sandboxDriverId === this.id &&
+      revision.credentialDeployment?.proxyDriverId === this.id &&
+      revision.credentialDeployment.bindings.some(
+        (binding) =>
+          binding.consumer.kind === "repository" &&
+          binding.projection.presentation === "github_repository" &&
+          binding.sourceRef.namespaceId === revision.namespaceId,
+      );
+    if (
+      sandbox.annotations[POLICY_BASELINE] !==
+      openShellPolicyBaselineDigest(policy, stagedRepository)
+    ) {
       throw new SandboxNetworkPolicyConflictError(
         "Live Sandbox policy differs from its admitted baseline.",
       );
@@ -887,7 +902,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     if (revision.namespaceId !== context.namespace.id || revision.sandboxDriverId !== this.id) {
       throw new Error("Refusing managed cleanup outside its Namespace and Sandbox Driver.");
     }
-    if (revision.repositoryCredentials) {
+    if (
+      revision.repositoryCredentials &&
+      revision.repositoryCredentials.authorization !== "credential_source"
+    ) {
       await this.openShellGit!.withdrawConfirmed(revision.id);
     }
     const selector = { workspace, name: this.agentSandboxName(revision.agentId) };
@@ -934,7 +952,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     sandbox: OpenShellSandboxResponse | undefined,
   ): Promise<void> {
     const revision = context.revision!;
-    if (!revision.repositoryCredentials) {
+    if (
+      !revision.repositoryCredentials ||
+      revision.repositoryCredentials.authorization === "credential_source"
+    ) {
       return;
     }
     const workspace = workspaceName(context.namespace);
