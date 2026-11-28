@@ -25,6 +25,7 @@ import {
   nonAuthWriteRequests,
   selectSecret,
   shippedPreset,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.ts";
 
@@ -409,6 +410,134 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     }
     return { page, invalidEvents, requests };
   };
+
+  await t.test("Create puts the caret at the Plugin selections JSON error", async (t) => {
+    const { page, invalidEvents, requests } = await createForm(
+      t,
+      "Plugin JSON repair",
+      "Plugin key",
+    );
+    await page.getByLabel("Agent name", { exact: true }).fill("Plugin JSON repair");
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await waitForEnabled(create);
+    const plugins = await openPluginJson(page);
+    const corrected = "\n".repeat(53) + '{"sample":{"enabled":true}}';
+    const pasted = corrected.replace('{"', "{“");
+    const offset = pasted.indexOf("“");
+    const message =
+      'Invalid JSON at line 54, column 2: replace the curly quote “ there with a straight quote (").';
+    const selection = () =>
+      plugins.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]);
+    const lastLineInEditor = () =>
+      plugins.evaluate((node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 1);
+    await plugins.fill(pasted);
+    for (const viewport of consoleViewports) {
+      await page.setViewportSize(viewport);
+      await plugins.press("Control+Home");
+      assert.equal(
+        await lastLineInEditor(),
+        false,
+        "the typo starts below the editor's visible text",
+      );
+      // Repeat without editing at the phone width. Closing the disclosure leaves focus recovery
+      // to the explicit Create action both times.
+      await page.locator(".plugin-json > summary").click();
+      await create.press("Enter");
+      assert.equal(await shownError(plugins).then((error) => error?.text), message);
+      await assertShownError(plugins, message);
+      assert.deepEqual(await selection(), [offset, offset]);
+      assert.equal(await plugins.inputValue(), pasted);
+      assert.equal(await lastLineInEditor(), true, "the editor reveals the typo before typing");
+      const editor = await plugins.boundingBox();
+      const error = await page.locator("#agent-plugins-error").boundingBox();
+      const actions = await page.locator("#create-agent-form ~ .form-actions").boundingBox();
+      assert.ok(editor && editor.y >= 0, "the editor starts in view");
+      assert.ok(
+        error && actions && error.y + error.height <= Math.min(viewport.height, actions.y) + 1,
+        "the full error is visible above the sticky actions",
+      );
+    }
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.keyboard.type('"');
+    assert.equal(await plugins.inputValue(), corrected);
+    assert.equal(await shownError(plugins), null);
+    assert.equal(await plugins.getAttribute("aria-invalid"), null);
+
+    // A range or shape error has no offending character. Keep the operator's selection.
+    for (const [value, error] of [
+      [
+        '{"sample":{"limit":1e400}}',
+        "A number is too large or too small to save. Use a number closer to zero.",
+      ],
+      ["[]", "Enter a valid JSON object, not an array or a single value."],
+    ] as const) {
+      await plugins.fill(value);
+      await plugins.press("Control+Home");
+      await plugins.press("Shift+ArrowRight");
+      await create.press("Enter");
+      await assertShownError(plugins, error);
+      assert.deepEqual(await selection(), [0, 1]);
+      assert.equal(await plugins.inputValue(), value);
+    }
+    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "validation and editing save nothing");
+  });
+
+  await t.test(
+    "Plugin selections JSON errors respect field order and a Harness reset",
+    async (t) => {
+      const { page, invalidEvents, requests } = await createForm(
+        t,
+        "Plugin JSON order",
+        "Order key",
+      );
+      const name = page.getByLabel("Agent name", { exact: true });
+      await name.fill("Plugin JSON order");
+      const create = page.getByRole("button", { name: "Create Agent", exact: true });
+      const plugins = await openPluginJson(page);
+      await openAdvancedSettings(page);
+      const configuration = page.getByLabel("Configuration JSON", { exact: true });
+      const validConfiguration = await configuration.inputValue();
+      const malformedConfiguration = "{,}";
+      const configurationMessage = "Invalid JSON at line 1, column 2. Enter a valid JSON object.";
+      const malformedPlugins = '{“sample":{}}';
+      await plugins.fill(malformedPlugins);
+      await waitForEnabled(create);
+      await create.press("Enter");
+      assert.equal((await shownError(plugins))?.focused, true);
+
+      await name.fill("");
+      await create.press("Enter");
+      await assertShownError(name, "Agent name is required.");
+      await name.fill("Plugin JSON order");
+      await configuration.fill(malformedConfiguration);
+      await create.press("Enter");
+      await assertShownError(configuration, configurationMessage);
+      assert.equal(await configuration.inputValue(), malformedConfiguration);
+      assert.equal(await plugins.inputValue(), malformedPlugins);
+
+      await configuration.fill(validConfiguration);
+      await create.press("Enter");
+      assert.equal((await shownError(plugins))?.focused, true);
+      const harness = page.getByLabel("Harness", { exact: true });
+      assert.equal(await harness.inputValue(), "codex");
+      await harness.selectOption("openclaw");
+      assert.equal(await plugins.inputValue(), "{}");
+      assert.equal(await shownError(plugins), null);
+      assert.equal(await plugins.getAttribute("aria-invalid"), null);
+      assert.equal(
+        await plugins.evaluate((node: HTMLTextAreaElement) => node.validity.customError),
+        false,
+      );
+      // Keep the replacement untouched and make only Configuration invalid before Create.
+      await configuration.fill(malformedConfiguration);
+      await waitForEnabled(create);
+      await create.press("Enter");
+      await assertShownError(configuration, configurationMessage);
+      assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+      assert.deepEqual(nonAuthWriteRequests(requests), [], "nothing is saved");
+    },
+  );
 
   // Finding 2340: a control character in the Agent name was sent, and in the existing-Secret
   // flow the Configuration was saved before the API refused the name.
