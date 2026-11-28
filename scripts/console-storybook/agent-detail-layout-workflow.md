@@ -3,22 +3,28 @@
 Start on desktop, then test at 390 px. These stories simulate API responses and
 cannot verify persistence or live runtime behavior.
 
-Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
-then press End and Left to focus the tab before last. Narrow the window to
-920 px, then 390 px. Confirm the label and focus ring stay clear of both faded
-edges and the selected panel stays open.
+In **Pages / Agent detail / First version**, focus the selected tab.
+Press End, then Left. Narrow to 920 px, then 390 px. At both widths, the
+second-to-last tab’s label and focus ring clear both fades. The selected panel
+stays open.
 
-Open **Pages / Agent detail / Plugin selections, viewer cannot update the Agent**
-and **Plugins in admitted version**. Select **Plugins** in each story. At
-390 px and 920 px, check that the entire long plugin ID and the indented JSON fit
-inside the card without horizontal scrolling. Focus **Plugins** and press Tab to
-reach the JSON. At desktop width, check that the long ID fits on one line.
+1. In **Pages / Agent detail / Layout**, select **Configuration**, then **Plugins**.
+2. In **Pages / Credentials / Connection Templates**, select **Credential clients**,
+   then **Connection templates**.
 
-At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
-edit. Scroll until **Save Configuration** is near the middle of the window and
-**Danger zone** is out of view below it. Save and check that **Edit Configuration**
-has focus in view and **Danger zone** stays below the window. The signed-in test
-in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
+Only the selected item has a 2 px bottom border. Its label and border use normal
+text color. Check the focus ring with Tab and Shift+Tab.
+
+Select **Plugins** in **Pages / Agent detail / Plugin selections, viewer cannot
+update the Agent** and **Plugins in admitted version**. At 390 and 920 px,
+the full plugin ID and indented JSON fit the card without horizontal scrolling.
+Tab from **Plugins** to JSON. On desktop, the ID fits one line.
+
+At 1280 × 1000 in **Pages / Agent detail / Edit Configuration**, make a valid edit.
+Scroll **Save Configuration** near mid-screen, with **Danger zone** below the
+viewport. Save. **Edit Configuration** receives focus onscreen. **Danger zone**
+stays below the viewport. See the delayed signed-in save in
+`tests/browser/console-agent-saves.test.ts`.
 
 Reopen **Edit Configuration**. In **Configuration JSON**, select a few characters
 with Shift+Left. Switch browser tabs and return. After the access check, press

@@ -3156,8 +3156,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .credential-tabs [aria-current="page"],
 .agent-tabs [aria-selected="true"] {
-  border-bottom: 2px solid var(--accent);
-  color: var(--accent);
+  border-bottom: 2px solid currentColor;
+  color: var(--color-text);
   font-weight: var(--weight-semibold);
 }
 .agent-tabs button {
