@@ -323,6 +323,8 @@ owns package-write access and coordination.
 
 - 2026-11-18 03:26: Point preparation callers to the TypeScript command. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
 
+- 2026-11-18 03:05: Refresh restart-resume source provenance. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - f98453d0adf83a53c549c5198c3c388a5ca7fc95)
+
 - 2026-11-17 23:51: Bridge tests cover revision-scoped restart resume. (finding 3347)
 
 - 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
@@ -354,7 +356,5 @@ owns package-write access and coordination.
 - 2026-10-30 10:12: Document the private-store bridge and its offline owning tests. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
-
-- 2026-10-23 15:28: Require patched Node 24.22.1 bases before controller and runtime preparation (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 
 [Container publication documentation history](container-publication/history.md) preserves the older dated entries.

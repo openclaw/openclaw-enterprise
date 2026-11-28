@@ -20,16 +20,26 @@ func PrepareBootstrapMounts(ctx context.Context, opts Options, directory string)
 }
 
 func (r *runner) prepareBootstrapMounts(ctx context.Context, directory string, prefix []string) error {
-	// Inspect the actual container, including Compose user overrides, before any reader starts.
-	if err := r.run(ctx, r.engine, append(append([]string{}, prefix...), "up", "--no-start", "--build", "--no-deps", "bootstrap")...); err != nil {
+	// Build outside the readiness budget, then drain each Compose provider before
+	// its caller can roll back resources or remove the credential inputs.
+	if _, err := r.invokeComposeCommand(ctx, prefix, false, "build", "bootstrap"); err != nil {
 		return err
 	}
-	args := append(append([]string{}, prefix...), "ps")
+	// Inspect the actual container, including Compose user overrides, before any reader starts.
+	if _, err := r.invokeComposeCommand(ctx, prefix, false, "up", "--no-start", "--no-build", "--no-deps", "bootstrap"); err != nil {
+		return err
+	}
+	args := []string{"ps"}
 	if r.engine == "docker" {
 		args = append(args, "--all")
 	}
-	args = append(args, "--quiet", "bootstrap")
-	id, err := r.output(ctx, r.engine, args...)
+	args = append(args, "--quiet")
+	if r.engine == "docker" {
+		args = append(args, "bootstrap")
+	}
+	// podman-compose 1.5 rejects service arguments to ps. Only bootstrap has
+	// been created in this project; retain the single-container refusal below.
+	id, err := r.invokeComposeCommand(ctx, prefix, true, args...)
 	if err != nil {
 		return err
 	}

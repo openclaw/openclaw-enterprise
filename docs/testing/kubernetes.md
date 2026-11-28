@@ -15,7 +15,7 @@ Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real g
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
 Use a disposable container engine with image-build capacity. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
-the standalone Keycloak lane. Run these commands from the trusted checkout root:
+the standalone Keycloak lane. Run from the trusted checkout root:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -24,9 +24,11 @@ pnpm cli:build
 OCC_TEST_DEV_UP_K3D_REAL=1 node --test --test-concurrency=1 tests/integration/dev-up-k3d-real.test.mjs tests/integration/dev-up-k3d-refusals-real.test.ts tests/integration/dev-up-k3d-keycloak-real.test.ts
 ```
 
-The tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
+Tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
 sandboxing, and Keycloak. Model responses are fixtures. Failed cleanup retains
 state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-installation-lane).
+
+See [Podman verification](ci.md#native-podman-advisory).
 
 ## Kubernetes HTTP fixture
 

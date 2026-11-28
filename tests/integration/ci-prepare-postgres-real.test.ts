@@ -10,11 +10,12 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { setEnvironment } from "../helpers/environment.ts";
 import { attachKeycloakToK3d, attachPostgresToK3d } from "../helpers/k3d-postgres-network.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 test(
-  "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects",
+  "PostgreSQL preparation uses distinct engine-assigned loopback ports and cleans its projects",
   { skip: process.env.OCC_TEST_CI_POSTGRES_REAL !== "1", timeout: 180_000 },
   async (t) => {
     const managed = process.env.OCC_TEST_CI_POSTGRES_STATES;
@@ -83,8 +84,12 @@ test(
         encoding: "utf8",
         timeout: 90_000,
       });
-    const docker = (args: string[]) =>
-      execFileSync("docker", args, { encoding: "utf8", timeout: 30_000 }).trim();
+    const docker = (args: string[], environment: NodeJS.ProcessEnv = {}) =>
+      execFileSync("docker", args, {
+        env: { ...process.env, ...environment },
+        encoding: "utf8",
+        timeout: 30_000,
+      }).trim();
     t.after(async () => {
       const errors: unknown[] = [];
       for (const state of started) {
@@ -116,8 +121,13 @@ test(
       }
       await rm(root, { recursive: true });
     });
+    const components: unknown = JSON.parse(
+      docker(["version", "--format", "{{json .Server.Components}}"]),
+    );
+    assert.ok(Array.isArray(components), "Container server must identify its components");
+    const podman = components.some((component) => asRecord(component)?.Name === "Podman Engine");
     const ports = new Set<number>();
-    // Keep both real servers alive: Docker, rather than a released caller-side
+    // Keep both real servers alive: the engine, rather than a released caller-side
     // probe, must assign distinct usable ports to the independent preparations.
     for (const { path: statePath, owner } of states) {
       await assert.rejects(
@@ -153,10 +163,30 @@ test(
         "-q",
         "postgres",
       ]);
-      const bindings = JSON.parse(
-        docker(["inspect", "--format", "{{json .HostConfig.PortBindings}}", container]),
+      // Check the Compose declaration for both engines. Docker also retains the submitted
+      // port request, so check what preparation actually sent. Podman replaces it with the
+      // assigned port in HostConfig; its published mapping is checked below instead.
+      const configuration: unknown = JSON.parse(
+        docker(
+          ["compose", "-f", server.composeFile, "-p", server.name, "config", "--format", "json"],
+          {
+            OCC_POSTGRES_PORT: "0",
+            OPENCLAW_CI_POSTGRES_INIT_SQL: join(server.directory, "init-local.sql"),
+          },
+        ),
       );
-      assert.deepEqual(bindings["5432/tcp"], [{ HostIp: "127.0.0.1", HostPort: "0" }]);
+      const requestedPorts = asRecord(asRecord(asRecord(configuration)?.services)?.postgres)?.ports;
+      assert.ok(Array.isArray(requestedPorts) && requestedPorts.length === 1);
+      const requested = asRecord(requestedPorts[0]);
+      assert.equal(requested?.host_ip, "127.0.0.1");
+      assert.equal(String(requested?.published), "0");
+      assert.equal(requested?.target, 5432);
+      if (!podman) {
+        const bindings = JSON.parse(
+          docker(["inspect", "--format", "{{json .HostConfig.PortBindings}}", container]),
+        );
+        assert.deepEqual(bindings["5432/tcp"], [{ HostIp: "127.0.0.1", HostPort: "0" }]);
+      }
       const published = JSON.parse(
         docker(["inspect", "--format", "{{json .NetworkSettings.Ports}}", container]),
       );
