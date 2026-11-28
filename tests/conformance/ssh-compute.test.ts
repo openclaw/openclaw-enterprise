@@ -7,3 +7,4 @@ import "./ssh-compute-retirement-cases.ts";
 import "./ssh-compute-lock-and-cutover-cases.ts";
 import "./ssh-compute-workspace-setup-cases.ts";
 import "./ssh-compute-executor-cases.ts";
+import "./ssh-compute-browser-delegation-cases.ts";

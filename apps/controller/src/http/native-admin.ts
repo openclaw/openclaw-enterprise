@@ -92,6 +92,7 @@ interface NativeAdminProxyResolution {
   readonly revisionId: string;
   readonly target: NativeAdminTarget;
   readonly gatewayBase: string;
+  readonly revisionCertificate?: string;
   readonly trustedHeaders: Readonly<Record<string, string>>;
   readonly nativeSubject: string;
 }
@@ -829,6 +830,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         gatewayBase: resolution.gatewayBase,
         agentOrigin: resolution.target.origin,
         apiKey,
+        ...(resolution.revisionCertificate !== undefined && {
+          revisionCertificate: resolution.revisionCertificate,
+        }),
         trustedHeaders: resolution.trustedHeaders,
       };
     } catch {
@@ -855,6 +859,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     | ({
         readonly status: "available";
         readonly gatewayBase: string;
+        readonly revisionCertificate?: string;
         readonly trustedHeaders: Readonly<Record<string, string>>;
         readonly nativeSubject: string;
       } & NativeAdminTargetStatus);
@@ -970,6 +975,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       target,
       gatewayBase,
       mode,
+      ...(transport.revisionCertificate !== undefined && {
+        revisionCertificate: transport.revisionCertificate,
+      }),
       trustedHeaders: transport.headers,
       nativeSubject: transport.subject,
     };
@@ -1641,6 +1649,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         revisionId: resolved.revision.id,
         target: resolved.target,
         gatewayBase: resolved.gatewayBase,
+        ...(resolved.revisionCertificate !== undefined && {
+          revisionCertificate: resolved.revisionCertificate,
+        }),
         trustedHeaders: resolved.trustedHeaders,
         nativeSubject: resolved.nativeSubject,
       };

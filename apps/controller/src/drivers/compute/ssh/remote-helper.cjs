@@ -1011,6 +1011,24 @@ async function run(input) {
       return {};
     }
     snapshot(input, agentDir, revision.id, revisionMetadata(input));
+    if (input.operation === "observe-browser-target") {
+      // This is a readiness observation, not a transport credential. A later
+      // connection must still authenticate the revision it actually reaches.
+      if (
+        current?.revisionId !== revision.id ||
+        servedRevision(agentDir) !== revision.id ||
+        !(await active(unitName(agent.agentId))) ||
+        !(await ready(agent.port))
+      ) {
+        return {};
+      }
+      return {
+        namespaceId: current.namespaceId,
+        agentId: current.agentId,
+        revisionId: current.revisionId,
+        port: agent.port,
+      };
+    }
     if (input.operation === "verify-revision") {
       return {};
     }

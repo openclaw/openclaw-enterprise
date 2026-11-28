@@ -41,7 +41,9 @@ import {
 import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness-auth-method.ts";
 import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { currentComputeAbortSignal } from "../operation-context.ts";
+import { manifestBrowserTransport } from "./browser-manifest.ts";
+import { sshBrowserRequest, type SshBrowserTransport } from "./browser-route.ts";
+import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   requireWorkspaceSetupMainEntry,
   WORKSPACE_SETUP_RUNTIME,
@@ -61,6 +63,7 @@ export interface SshComputeHost {
 }
 
 export interface SshComputeDriverOptions {
+  readonly managedBrowserListener?: boolean;
   readonly ssh: {
     readonly identityFile: string;
     readonly knownHostsFile: string;
@@ -82,6 +85,7 @@ interface SshComputeSelection {
   readonly implementation?: string;
   readonly lifecycleDrivers?: readonly Driver[];
   readonly executor?: SshCommandExecutor;
+  readonly browserTransport?: SshBrowserTransport;
 }
 
 class OwnershipFailure extends Error {}
@@ -362,6 +366,7 @@ export class SshComputeDriver implements ComputeDriver {
     additionalProperties: false,
     required: ["ssh", "hosts", "runtime", "network"],
     properties: {
+      managedBrowserListener: { type: "boolean" },
       ssh: {
         type: "object",
         additionalProperties: false,
@@ -520,6 +525,7 @@ export class SshComputeDriver implements ComputeDriver {
   readonly capability = "compute" as const;
   readonly implementation: string;
   private readonly options: SshComputeDriverOptions;
+  private readonly browserTransport: SshBrowserTransport | undefined;
   private readonly executor: SshCommandExecutor;
   private readonly namespaces = new Map<string, Readonly<Namespace>>();
   private readonly agents = new Map<string, Readonly<ComputeAgentBinding>>();
@@ -534,6 +540,9 @@ export class SshComputeDriver implements ComputeDriver {
       selection.implementation ?? "occ/ssh",
       "SSH Compute implementation",
     );
+    this.browserTransport =
+      selection.browserTransport ??
+      (options.managedBrowserListener === true ? manifestBrowserTransport() : undefined);
     this.executor = selection.executor ?? new SystemSshCommandExecutor();
     this.lifecycle = new ComputeLifecycleDispatcher(selection.lifecycleDrivers ?? []);
   }
@@ -853,6 +862,48 @@ export class SshComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
     return namespace;
+  }
+
+  async getGatewayBrowserRequest(
+    revision: AgentRevision,
+    input: { installationId: string; principalId: string; mode: "admin" | "chat" },
+    signal: AbortSignal,
+  ) {
+    const transport = this.browserTransport;
+    if (!transport) return undefined;
+    return withComputeAbortSignal(signal, async () => {
+      signal.throwIfAborted();
+      const observed = await this.observeBrowserTarget(revision);
+      if (!observed) return undefined;
+      signal.throwIfAborted();
+      const target = { ...observed, installationId: input.installationId };
+      const listener = await transport(Object.freeze(target), signal);
+      signal.throwIfAborted();
+      return sshBrowserRequest(target, listener, input.principalId, input.mode);
+    });
+  }
+
+  /** Private host observation; it does not authorize or establish a browser connection. */
+  async observeBrowserTarget(revision: AgentRevision) {
+    const observed = await this.revisionOperation("observe-browser-target", revision);
+    const { port } = observed;
+    if (
+      observed.namespaceId !== revision.namespaceId ||
+      observed.agentId !== revision.agentId ||
+      observed.revisionId !== revision.id ||
+      typeof port !== "number" ||
+      !Number.isSafeInteger(port) ||
+      port < 1024 ||
+      port > 65535
+    ) {
+      return undefined;
+    }
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      port,
+    };
   }
 
   private async revisionOperation(

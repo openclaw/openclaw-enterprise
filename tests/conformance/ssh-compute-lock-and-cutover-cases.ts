@@ -47,7 +47,13 @@ test("SSH activation repairs an interrupted cutover instead of accepting an unse
   // Simulate a helper that died between replacing `current` and `systemctl restart`.
   await rm(join(dir, "current"));
   await symlink(`revisions/${digest(second.id).slice(0, 12)}`, join(dir, "current"));
+  assert.equal(await f.driver.observeBrowserTarget(first), undefined);
+  assert.equal(await f.driver.observeBrowserTarget(second), undefined);
   await f.driver.activateRevision(second);
+  const observation = await f.driver.observeBrowserTarget(second);
+  assert.ok(observation);
+  assert.equal(observation.revisionId, second.id);
+  assert.equal(observation.agentId, second.agentId);
   assert.equal(await restarts(), before + 1);
   assert.deepEqual(await json(join(dir, "served.json")), { revisionId: second.id });
   await f.driver.retireRevision(second);
