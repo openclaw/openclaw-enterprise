@@ -118,6 +118,12 @@ Cleanup triggers no further checks.
 
 Reopen the story. Focus **View deployment**. After cleanup, Enter opens v7.
 
+For the successful replacement check, use the signed-in Console test with a
+simulated worker result. Open v1’s **Configuration** while v2 deploys. Scroll
+until the tabs are in view and point near the top of **Deployment**. When
+**View current version** appears, click without moving the pointer. Check that
+**Deployment** opens for v1.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent

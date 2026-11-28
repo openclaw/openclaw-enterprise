@@ -4142,6 +4142,86 @@ test("A failed deployment keeps a parked click on its Deployment tab", async (t)
   assert.equal(await failure.isVisible(), true);
 });
 
+test("A parked click opens Deployment after a replacement succeeds", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, "Replacement", "Parked tab");
+  const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  await page.route(recordUrl, (route) => route.fulfill(record));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, current.id, "configuration"),
+  );
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+
+  // The reader scrolls, then rests the pointer just inside Deployment's top edge.
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await page.mouse.move(720, 675);
+  await page.mouse.wheel(0, 120);
+  await page.waitForFunction(() => globalThis.scrollY === 120);
+  const box = required(await deployment.boundingBox());
+  const point = { x: Math.floor(box.x + box.width / 2), y: Math.ceil(box.y) + 6 };
+  await page.mouse.move(point.x, point.y);
+  await nextFrames(page);
+  const hitsDeployment = () =>
+    deployment.evaluate(
+      (node, { x, y }) => node.contains(globalThis.document.elementFromPoint(x, y)),
+      point,
+    );
+  assert.equal(await hitsDeployment(), true);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+  // Let the worker outcome paint before the slower Agent read reports that v2 replaced v1.
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const reread = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+  await fixture.activateRevision(namespace.id, agent.id, pending.id, current.id);
+  record = deploymentStatusResponse(pending, { status: "succeeded" });
+  const poll = responseTo(page, "GET", recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await poll).status(), 200);
+  assert.equal(required(await reread.requested).status(), 200);
+  await expectDeploymentOutcome(page, "Completed", { reveal: false });
+  assert.equal(
+    await hitsDeployment(),
+    true,
+    "the pointer still hits Deployment before the refresh",
+  );
+  reread.release();
+  await page.clock.resume();
+  await page.getByText(/^Historical version · read-only admitted snapshot\./).waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  assert.equal(await versionOption(page, 2).textContent(), "v2 · Selected for service");
+
+  // A locator click would follow the tab if it moved out from under the pointer.
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await deployment.getAttribute("aria-selected"),
+    "true",
+    "the parked click opens Deployment",
+  );
+  await page.getByRole("tabpanel", { name: "Deployment", exact: true }).waitFor();
+  assert.equal(await versionChooser(page).inputValue(), current.id);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), current.id);
+  await waitForIdleFetches(page);
+  assert.deepEqual(writeRequests(writes), []);
+});
+
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
 // sat under the open Deployment details, below the fold at 1440, and the failure's error showed
