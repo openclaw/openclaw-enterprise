@@ -104,13 +104,14 @@ and one registration wrapper. The baseline projection excludes
 `agentNativeAdmin.sharedCookieDomain` when absent from the candidate.
 Immutable switches require string keys.
 
-`read_restart_inventory` requires a complete, authorized inventory with no
-nonterminal deployments. Retained running revisions need saved Harness objects and
-an accepted [restart assessment](../reference/repository-credentials/worker-replacement.md).
-Standalone preflight rehearses with an explicit original-worker requirement.
-Unknown assessments block rehearsal. Runtime upgrades record replacements and
-check draft images and sizes, baseline versions and Namespace readiness.
-Stopped or deleting Agents are excluded. Pending repository cleanup is allowed.
+`read_restart_inventory` requires complete authorized inventory and settled
+deployments. Retained running revisions require Harness snapshots and an
+accepted [restart assessment](../reference/repository-credentials/worker-replacement.md).
+Standalone preflight rehearses explicit original-worker requirements.
+Unknown assessments block rehearsal. Runtime upgrades record replacements,
+checking draft images, sizes, baseline versions and Namespace readiness.
+Automatic replacements require confirmed restricted egress. Stopped and
+deleting Agents are excluded. Pending repository cleanup is allowed.
 
 `OpenClawController.deploymentInventorySnapshot` batches deployment-work reads
 in one State snapshot and refuses missing or mismatched work. Credential

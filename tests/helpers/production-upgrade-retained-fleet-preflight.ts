@@ -55,6 +55,14 @@ const retainedAgent = {
   deploymentInProgress: false,
 } satisfies InstallationDeploymentInventoryAgent;
 
+const readableRevision = {
+  id: "rev_old",
+  namespaceId: "ns_test",
+  agentId: "agt_test",
+  configuration: { privateSetting: "tenant-native-value" },
+  harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
+};
+
 export function restartInventory(
   repositoryWorkerRestart:
     | InstallationDeploymentInventoryAgent["repositoryWorkerRestart"]
@@ -83,16 +91,61 @@ export function registerRetainedFleetPreflightTests(
   fixture: (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>,
   injectedFault: { code: number },
 ): void {
+  test("runtime upgrades redeploy an explicitly restricted revision once", async (t) => {
+    const f = await fixture(t, {
+      agent: true,
+      activeRevisionResponse: { ...readableRevision, networkEgressMode: "restricted" },
+    });
+    await f.run();
+    assert.equal((await f.events())[0], "revision-read rev_old");
+    assert.equal((await f.state()).dispatches, 1);
+    assert.ok(existsSync(join(f.evidence, "completed")));
+  });
+
+  // Automatic replacement must preserve the running revision's egress. The
+  // real shell must refuse before the fixture sees an Agent or cluster write.
+  test("runtime upgrades refuse public or unconfirmed egress before writes", async (t) => {
+    const { id, namespaceId, agentId } = readableRevision;
+    for (const [name, response, expected, readFailure = false] of [
+      [
+        "public",
+        { ...readableRevision, networkEgressMode: "public" },
+        /uses public network egress/u,
+      ],
+      ["unknown mode", { ...readableRevision, networkEgressMode: null }],
+      ["wrong revision", { ...readableRevision, id: "rev_other" }],
+      ["partial output", { id, namespaceId, agentId }],
+      [
+        "unreadable settings",
+        {
+          id,
+          namespaceId,
+          agentId,
+          configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+        },
+      ],
+      ["failed read after valid output", readableRevision, undefined, true],
+    ] as const) {
+      await t.test(name, async (t) => {
+        const f = await fixture(t, { agent: true, activeRevisionResponse: response });
+        if (readFailure) {
+          await f.failNext("revision-read-failure");
+        }
+        await assert.rejects(f.run(), expected ?? /has an unconfirmed network egress mode/u);
+        assert.deepEqual(await f.events(), ["revision-read rev_old"]);
+        const state = await f.state();
+        assertWritersUntouched(state);
+        assert.equal(state.helmSubmissions ?? 0, 0);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
+        assert.equal(existsSync(join(f.evidence, "prepared")), false);
+      });
+    }
+  });
+
   // Run the actual upgrade shell with independent command responses and real JSON tools.
   // This protects refusal before quiescence; it does not prove a live cluster upgrade.
   test("controller-only upgrades refuse incompatible active Harness snapshots before writes", async (t) => {
-    const snapshot = {
-      id: "rev_old",
-      namespaceId: "ns_test",
-      agentId: "agt_test",
-      configuration: { privateSetting: "tenant-native-value" },
-      harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
-    };
+    const snapshot = readableRevision;
     for (const [name, response, readFailure = false] of [
       [
         "missing settings",
@@ -255,11 +308,11 @@ export function registerRetainedFleetPreflightTests(
         false,
       );
     });
-    await t.test("valid snapshot preserves controller-only behavior", async (t) => {
+    await t.test("a public revision preserves controller-only behavior", async (t) => {
       const f = await fixture(t, {
         agent: true,
         controllerOnly: true,
-        activeRevisionResponse: snapshot,
+        activeRevisionResponse: { ...snapshot, networkEgressMode: "public" },
       });
       await f.run();
       assert.equal((await f.state()).dispatches, 0);
