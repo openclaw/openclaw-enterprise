@@ -28,12 +28,14 @@ export async function verifyDeletedResourceAccessBindingContract(
   revision: Readonly<AgentRevision>,
 ) {
   const createdAt = new Date().toISOString();
-  const namespace: Namespace = {
+  const namespaceFor = (): Namespace => ({
     id: identifier("ns"),
     name: "Binding cleanup " + randomUUID(),
     status: "ready",
     createdAt,
-  };
+  });
+  const namespace = namespaceFor();
+  const secondNamespace = namespaceFor();
   const secretFor = (name: string): Secret => ({
     id: identifier("sec"),
     namespaceId: namespace.id,
@@ -131,9 +133,18 @@ export async function verifyDeletedResourceAccessBindingContract(
     resourceId,
   });
   const surviving = bindingOn("configuration", agentConfiguration.id);
+  const bindings = [
+    bindingOn("configuration", configuration.id),
+    bindingOn("preset", preset.id),
+    bindingOn("secret", secret.id),
+    bindingOn("credential_source", source.id),
+    bindingOn("service_account", account.id),
+    surviving,
+  ];
 
   await store.transact(async (transaction) => {
     await transaction.namespaces.createNamespace(namespace);
+    await transaction.namespaces.createNamespace(secondNamespace);
     await transaction.configurations.createConfiguration(agentConfiguration);
     await transaction.secrets.createSecret(agentSecret);
     await transaction.secrets.createSecret(secret);
@@ -153,14 +164,7 @@ export async function verifyDeletedResourceAccessBindingContract(
     await transaction.credentialSources.createCredentialSource(source);
     await transaction.serviceAccounts.createServiceAccount(account);
     await transaction.iamPolicy.createRole(role);
-    for (const binding of [
-      bindingOn("configuration", configuration.id),
-      bindingOn("preset", preset.id),
-      bindingOn("secret", secret.id),
-      bindingOn("credential_source", source.id),
-      bindingOn("service_account", account.id),
-      surviving,
-    ]) {
+    for (const binding of bindings) {
       await transaction.iamPolicy.createAccessBinding(binding);
     }
   });
@@ -190,22 +194,37 @@ export async function verifyDeletedResourceAccessBindingContract(
     });
   });
 
-  // The Configurations reference the Secret, so delete them first.
-  await store.transact(async (transaction) => {
-    assert.equal(
-      await transaction.credentialSources.deleteCredentialSource(namespace.id, source.id),
-      true,
-    );
-    for (const id of configurationIds) {
-      assert.equal(await transaction.configurations.deleteConfiguration(namespace.id, id), true);
-    }
-    assert.equal(await transaction.secrets.deleteSecret(namespace.id, secret.id), true);
-    assert.equal(await transaction.presets.deletePreset(namespace.id, preset.id), true);
-    assert.equal(
-      await transaction.serviceAccounts.deleteServiceAccount(namespace.id, account.id),
-      true,
+  const verifyDeletes = (namespaceId: Namespace["id"], expected: boolean) =>
+    store.transact(async (transaction) => {
+      assert.equal(
+        await transaction.credentialSources.deleteCredentialSource(namespaceId, source.id),
+        expected,
+      );
+      // The Configurations reference the Secret, so delete them first.
+      for (const id of configurationIds) {
+        assert.equal(
+          await transaction.configurations.deleteConfiguration(namespaceId, id),
+          expected,
+        );
+      }
+      assert.equal(await transaction.secrets.deleteSecret(namespaceId, secret.id), expected);
+      assert.equal(await transaction.presets.deletePreset(namespaceId, preset.id), expected);
+      assert.equal(
+        await transaction.serviceAccounts.deleteServiceAccount(namespaceId, account.id),
+        expected,
+      );
+    });
+
+  // A failed delete from another live Namespace must leave the owning Namespace's grants intact.
+  await verifyDeletes(secondNamespace.id, false);
+  await store.read(async (state) => {
+    assert.deepEqual(
+      new Set(await state.iamPolicy.listAccessBindings(namespace.id)),
+      new Set(bindings),
     );
   });
+
+  await verifyDeletes(namespace.id, true);
 
   await store.read(async (state) => {
     assert.deepEqual(await state.iamPolicy.listAccessBindings(namespace.id), [surviving]);

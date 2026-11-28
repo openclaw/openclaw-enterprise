@@ -121,6 +121,10 @@ import {
   RepositorySessionWithdrawnError,
   WorkClaimLostError,
 } from "../errors.ts";
+import {
+  assertConfigurationMetadata,
+  configurationGenerationRangeError,
+} from "./configuration-generation.ts";
 
 import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/configurations.ts";
 
@@ -492,6 +496,12 @@ function presetFromRow(row: PostgresRow): Readonly<Preset> {
   });
 }
 
+const AGENT_COLUMNS = `a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
+  a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access,
+  a.service_principal_id, a.harness_auth, a.credential_sources, a.active_revision_id,
+  a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing,
+  a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id`;
+
 function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
   const activeRevisionId = optionalText(row, "active_revision_id");
 
@@ -826,6 +836,16 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     ),
   });
 }
+
+const REVISION_SCOPE = `FROM occ.agent_revisions AS r
+  JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+  JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+  WHERE r.namespace_id = $1 AND r.agent_id = $2`;
+
+const FULL_REVISION = `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+  r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id,
+  r.network_proxy_admission, r.admitted_at, a.service_principal_id
+  ${REVISION_SCOPE}`;
 
 function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetadata> {
   const rawNumber = row.revision_number;
@@ -1234,6 +1254,9 @@ function databaseError(error: unknown): Error {
   if (code === "23514" && constraint === "repository_session_admission_not_withdrawn") {
     return new RepositorySessionWithdrawnError();
   }
+  if (code === "23514" && constraint === "configurations_generation_valid") {
+    return configurationGenerationRangeError();
+  }
   if (code === "23505") {
     const nameConflict =
       constraint !== undefined && Object.hasOwn(NAME_CONFLICTS, constraint)
@@ -1540,30 +1563,44 @@ function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
   });
 }
 
-function permissions(value: unknown): readonly Permission[] {
+function permissionArray(value: unknown): readonly unknown[] {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (!Array.isArray(parsed)) {
     throw new PersistedStateInvalidError("Persisted IAM permissions must be an array.");
   }
-  return Object.freeze(
-    parsed.map((permission): Permission => {
-      if (
-        permission === null ||
-        typeof permission !== "object" ||
-        typeof permission.action !== "string" ||
-        !PERMISSION_ACTIONS.has(permission.action) ||
-        typeof permission.resourceKind !== "string" ||
-        !RESOURCE_KINDS.has(permission.resourceKind)
-      ) {
-        throw new PersistedStateInvalidError("Persisted IAM permissions are invalid.");
-      }
-      // A new object of two strings: freezing it is all a copy would add.
-      return Object.freeze({
-        action: permission.action as Permission["action"],
-        resourceKind: permission.resourceKind as Permission["resourceKind"],
-      });
-    }),
-  );
+  return parsed;
+}
+
+function assertPermission(permission: unknown): asserts permission is Permission {
+  const fields = permission as Readonly<Record<string, unknown>>;
+  if (
+    permission === null ||
+    typeof permission !== "object" ||
+    typeof fields.action !== "string" ||
+    !PERMISSION_ACTIONS.has(fields.action) ||
+    typeof fields.resourceKind !== "string" ||
+    !RESOURCE_KINDS.has(fields.resourceKind)
+  ) {
+    throw new PersistedStateInvalidError("Persisted IAM permissions are invalid.");
+  }
+}
+
+const ROLE_COLUMNS = "id, namespace_id, name, permissions";
+
+function roleFromRow(row: PostgresRow): Readonly<Role> {
+  const namespaceId = optionalText(row, "namespace_id");
+  const name = optionalText(row, "name");
+  return Object.freeze({
+    id: text(row, "id"),
+    ...(namespaceId === undefined ? {} : { namespaceId }),
+    ...(name === undefined ? {} : { name }),
+    permissions: Object.freeze(
+      permissionArray(row.permissions).map((permission) => {
+        assertPermission(permission);
+        return Object.freeze({ action: permission.action, resourceKind: permission.resourceKind });
+      }),
+    ),
+  });
 }
 
 /** The advisory lock that serializes writes of durable authority with the `iam` configuration. */
@@ -1641,6 +1678,14 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  private requireTransactionContext(unit: PlatformUnitOfWork): TransactionContext {
+    const context = this.contexts.get(unit);
+    if (context === undefined) {
+      throw new DependencyUnavailableError("The platform transaction is unavailable.");
+    }
+    return context;
+  }
+
   /**
    * Read all six policy collections on the original unit in one statement.
    * This snapshot is not an authority fence; the caller must order all
@@ -1650,10 +1695,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     unit: PlatformUnitOfWork,
     installationId?: string,
   ): Promise<PersistedNativeIAMState> {
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     return context.lifetime.run(() => this.readNativeIAMState(context, installationId));
   }
 
@@ -1687,7 +1729,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (SELECT id, namespace_id, agent_id, kind, issuer, subject FROM occ.iam_identities) v),
           '[]'::jsonb) AS identities,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
-          (SELECT id, namespace_id, name, permissions FROM occ.iam_roles) v),
+          (SELECT ${ROLE_COLUMNS} FROM occ.iam_roles) v),
           '[]'::jsonb) AS roles,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, name FROM occ.iam_groups) v),
@@ -1746,16 +1788,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       throw new PersistedStateInvalidError("Persisted IAM identity has an invalid owner.");
     });
 
-    const roles = roleRows.map((row): Role => {
-      const namespaceId = optionalText(row, "namespace_id");
-      const name = optionalText(row, "name");
-      return {
-        id: text(row, "id"),
-        ...(namespaceId === undefined ? {} : { namespaceId }),
-        ...(name === undefined ? {} : { name }),
-        permissions: permissions(row.permissions),
-      };
-    });
+    const roles = roleRows.map(roleFromRow);
 
     const groups = groupRows.map((row): Group => {
       const namespaceId = optionalText(row, "namespace_id");
@@ -1806,7 +1839,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const restrictions = restrictionRows.map(restrictionFromRow);
 
     const state = { identities, groups, memberships, roles, bindings, restrictions };
-    this.validateIAMState(state, true);
+    this.validateIAMState(state);
     // Everything above was built from this query's rows and is shared with nobody, so freezing
     // it in place makes the whole policy immutable without a copy (permissions and restrictions
     // come back already frozen all the way down). An immutable snapshot also lets the IAM
@@ -1818,10 +1851,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   async seedNativeIAM(state: PersistedNativeIAMState): Promise<void> {
     return this.transact(async (unit) => {
-      const context = this.contexts.get(unit);
-      if (context === undefined) {
-        throw new DependencyUnavailableError("The platform transaction is unavailable.");
-      }
+      const context = this.requireTransactionContext(unit);
       const installation = await this.currentInstallation(context);
       if (installation === undefined) {
         throw new ScopeViolationError("IAM state requires an initialized Installation.");
@@ -1849,10 +1879,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     unit: PlatformUnitOfWork,
     seed: PersistedNativeIAMPrincipalSeed,
   ): Promise<string> {
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     const installation = await this.currentInstallation(context);
     if (installation === undefined) {
       throw new ScopeViolationError("IAM state requires an initialized Installation.");
@@ -2042,10 +2069,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     statement: string,
     parameters?: readonly unknown[],
   ): Promise<{ rows: unknown[]; rowCount: number | null }> {
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
@@ -2125,10 +2149,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) {
       throw new ScopeViolationError("The native IAM policy barrier request is invalid.");
     }
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     await context.lifetime.run(async () => {
       await context.client.query("SELECT occ.native_iam_policy_barrier($1, $2)", [
         installationId,
@@ -2168,10 +2189,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const queueOptions = { ...this.queueOptions, ...options };
     return this.transactWithNativeIAMAuthority(installationId, "write", async (state) => {
       await this.guardNativeIAMPolicyInTransaction(state, installationId, "write");
-      const context = this.contexts.get(state);
-      if (context === undefined) {
-        throw new DependencyUnavailableError("The platform transaction is unavailable.");
-      }
+      const context = this.requireTransactionContext(state);
       return work(state, this.bindQueue(context, queueOptions));
     });
   }
@@ -2694,14 +2712,19 @@ export class PostgresPlatformState implements PlatformStateStore {
     // Deleting a Namespace resource also removes the AccessBindings that grant
     // on it (as Agent deletion does), so none outlive their target or keep
     // blocking deletion of the Role they reference. Resource ids are unique.
-    const deleteResourceAccessBindings = async (
+    const finishResourceDeletion = async (
+      rowCount: number | null,
       resourceKind: "configuration" | "preset" | "secret" | "credential_source" | "service_account",
       resourceId: string,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
+      if (rowCount !== 1) {
+        return false;
+      }
       await client.query(
         "DELETE FROM occ.iam_access_bindings WHERE resource_kind = $1 AND resource_id = $2",
         [resourceKind, resourceId],
       );
+      return true;
     };
 
     const findPreset = async (
@@ -2799,11 +2822,7 @@ export class PostgresPlatformState implements PlatformStateStore {
            WHERE p.namespace_id = $1 AND p.id = $2 AND n.id = p.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, presetId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("preset", presetId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "preset", presetId);
       },
     };
 
@@ -2903,15 +2922,8 @@ export class PostgresPlatformState implements PlatformStateStore {
       findConfiguration,
       createConfiguration: async (configuration) => {
         await this.requireInitialized(context);
-        // The memory adapter's rule, checked before the INSERT: a fractional generation would
-        // otherwise fail PostgreSQL's bigint cast with a raw 22P02 instead of this refusal.
-        if (
-          configuration.kind !== "agent" ||
-          !Number.isSafeInteger(configuration.generation) ||
-          configuration.generation <= 0
-        ) {
-          throw new ScopeViolationError("The Configuration kind or generation is invalid.");
-        }
+        // Refuse fractional generations before PostgreSQL's bigint cast can raise 22P02.
+        assertConfigurationMetadata(configuration);
         const namespace = await namespaces.lockNamespace(configuration.namespaceId);
         if (
           namespace === undefined ||
@@ -2990,11 +3002,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = c.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, configurationId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("configuration", configurationId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "configuration", configurationId);
       },
     };
 
@@ -3150,11 +3158,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = s.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, secretId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("secret", secretId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "secret", secretId);
       },
     };
 
@@ -3731,11 +3735,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, credentialSourceId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("credential_source", credentialSourceId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "credential_source", credentialSourceId);
       },
     };
 
@@ -3879,11 +3879,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = s.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, serviceAccountId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("service_account", serviceAccountId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "service_account", serviceAccountId);
       },
       findIssuedCredentialBinding: async (namespaceId, serviceAccountId) => {
         const found = decodeQueryRows(
@@ -3914,9 +3910,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ): Promise<PostgresRow | undefined> => {
       const found = decodeQueryRows(
         await client.query(
-          `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                    a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                    a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id
+          `SELECT ${AGENT_COLUMNS}
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
              WHERE a.namespace_id = $1 AND a.id = $2${lock ? " FOR UPDATE OF a" : ""}`,
@@ -3984,9 +3978,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const listAgentRows = async (namespaceId: string): Promise<PostgresRow[]> => {
       const found = decodeQueryRows(
         await client.query(
-          `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                      a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                      a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id
+          `SELECT ${AGENT_COLUMNS}
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
                WHERE a.namespace_id = $1 ORDER BY a.created_at, a.id`,
@@ -4070,12 +4062,17 @@ export class PostgresPlatformState implements PlatformStateStore {
         return predecessorReplacementFromJson(row?.predecessor_replacement);
       },
       setSandboxPolicyEditing: async (namespaceId, agentId, enabled) => {
-        await client.query(
-          "UPDATE occ.agents SET sandbox_policy_editing = $3 WHERE namespace_id = $1 AND id = $2",
-          [namespaceId, agentId, enabled],
-        );
-        const row = await findAgentRow(namespaceId, agentId);
-        return row === undefined ? undefined : agentFromRow(row);
+        const updated = decodeQueryRows(
+          await client.query(
+            `UPDATE occ.agents AS a SET sandbox_policy_editing = $3
+               FROM occ.namespaces AS n
+               WHERE a.namespace_id = $1 AND a.id = $2
+                 AND n.id = a.namespace_id AND n.deleted_at IS NULL
+               RETURNING ${AGENT_COLUMNS}`,
+            [namespaceId, agentId, enabled],
+          ),
+        )[0];
+        return updated === undefined ? undefined : agentFromRow(updated);
       },
       findAgent: async (namespaceId, agentId) => {
         const row = await findAgentRow(namespaceId, agentId);
@@ -4246,9 +4243,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
-                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id`,
+                 RETURNING ${AGENT_COLUMNS}`,
             [
               namespaceId,
               agentId,
@@ -4294,9 +4289,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2
                 AND a.active_revision_id IS NOT DISTINCT FROM $3::text
                   AND n.id = a.namespace_id AND n.deleted_at IS NULL
-                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id`,
+                  RETURNING ${AGENT_COLUMNS}`,
             [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
           ),
         )[0];
@@ -4309,9 +4302,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
-                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id`,
+                RETURNING ${AGENT_COLUMNS}`,
             [namespaceId, agentId, expectedRevisionId],
           ),
         )[0];
@@ -4326,9 +4317,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND a.desired_runtime_state = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
-                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id`,
+                RETURNING ${AGENT_COLUMNS}`,
             [namespaceId, agentId, expectedStates, next],
           ),
         )[0];
@@ -4346,9 +4335,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND a.status = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
-               RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.network_proxy_url, a.network_proxy_secret_id`,
+               RETURNING ${AGENT_COLUMNS}`,
             [namespaceId, agentId, expectedStatuses, next],
           ),
         )[0];
@@ -4360,40 +4347,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaceId: string,
       agentId: string,
       revisionId: string,
-    ): Promise<PostgresRow | undefined> => {
-      const found = decodeQueryRows(
-        await client.query(
-          `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id, r.network_proxy_admission,
-                      r.admitted_at, a.service_principal_id
-               FROM occ.agent_revisions AS r
-               JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-               JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-               WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.id = $3`,
-          [namespaceId, agentId, revisionId],
-        ),
+    ): Promise<PostgresRow | undefined> =>
+      decodeQueryRows(
+        await client.query(`${FULL_REVISION} AND r.id = $3`, [namespaceId, agentId, revisionId]),
       )[0];
-      return found;
-    };
 
-    const listRevisionRows = async (
-      namespaceId: string,
-      agentId: string,
-    ): Promise<PostgresRow[]> => {
-      const found = decodeQueryRows(
-        await client.query(
-          `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id, r.network_proxy_admission,
-                      r.admitted_at, a.service_principal_id
-               FROM occ.agent_revisions AS r
-               JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-               JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-               WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
-          [namespaceId, agentId],
-        ),
+    const listRevisionRows = async (namespaceId: string, agentId: string): Promise<PostgresRow[]> =>
+      decodeQueryRows(
+        await client.query(`${FULL_REVISION} ORDER BY r.revision_number`, [namespaceId, agentId]),
       );
-      return found;
-    };
 
     const revisions: AgentRevisionRepository = {
       findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
@@ -4442,10 +4404,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             await client.query(
               `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                         r.admitted_at
-                 FROM occ.agent_revisions AS r
-                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-                 WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
+                 ${REVISION_SCOPE} ORDER BY r.revision_number`,
               [namespaceId, agentId],
             ),
           ).map(revisionMetadataFromRow),
@@ -4461,10 +4420,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                FROM (
                  SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                         r.admitted_at, r.admitted_spec, r.network_proxy_url, r.network_proxy_secret_id
-                 FROM occ.agent_revisions AS r
-                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-                 WHERE r.namespace_id = $1 AND r.agent_id = $2
+                 ${REVISION_SCOPE}
                    AND ($3::bigint IS NULL OR r.revision_number < $3::bigint)
                  ORDER BY r.revision_number DESC
                  LIMIT $4
@@ -4658,17 +4614,6 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
-    const roleFromRow = (row: PostgresRow): Readonly<Role> => {
-      const namespaceId = optionalText(row, "namespace_id");
-      const name = optionalText(row, "name");
-      return immutableCopy({
-        id: text(row, "id"),
-        ...(namespaceId === undefined ? {} : { namespaceId }),
-        ...(name === undefined ? {} : { name }),
-        permissions: permissions(row.permissions),
-      });
-    };
-
     const servicePrincipalFromRow = (row: PostgresRow): Readonly<ServicePrincipal> =>
       Object.freeze({
         kind: "service_principal",
@@ -4734,7 +4679,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze(
           decodeQueryRows(
             await client.query(
-              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 ORDER BY id",
+              `SELECT ${ROLE_COLUMNS} FROM occ.iam_roles WHERE namespace_id = $1 ORDER BY id`,
               [namespaceId],
             ),
           ).map(roleFromRow),
@@ -4742,7 +4687,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       getRole: async (namespaceId, roleId) => {
         const found = decodeQueryRows(
           await client.query(
-            "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
+            `SELECT ${ROLE_COLUMNS} FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2`,
             [namespaceId, roleId],
           ),
         )[0];
@@ -4918,7 +4863,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       listConfiguredPolicy: async () => {
         const roles = decodeQueryRows(
           await client.query(
-            `SELECT id, namespace_id, name, permissions FROM occ.iam_roles
+            `SELECT ${ROLE_COLUMNS} FROM occ.iam_roles
                WHERE id LIKE $1 ORDER BY id`,
             [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.role)],
           ),
@@ -4948,10 +4893,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           throw new ScopeViolationError("A configured IAM Role is an Installation Role.");
         }
         const existing = decodeQueryRows(
-          await client.query(
-            "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE id = $1 FOR UPDATE",
-            [role.id],
-          ),
+          await client.query(`SELECT ${ROLE_COLUMNS} FROM occ.iam_roles WHERE id = $1 FOR UPDATE`, [
+            role.id,
+          ]),
         ).map(roleFromRow)[0];
         const permissionsJson = JSON.stringify(role.permissions);
         if (existing === undefined) {
@@ -6110,7 +6054,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
   }
 
-  private validateIAMState(state: PersistedNativeIAMState, requireComplete: boolean): void {
+  private validateIAMState(state: PersistedNativeIAMState): void {
     const identities = new Map<string, Identity>();
     const groups = new Map<string, Group>();
     const roles = new Map<string, Role>();
@@ -6147,7 +6091,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (roles.has(role.id)) {
         throw new PersistedStateInvalidError("Persisted IAM roles are invalid or ambiguous.");
       }
-      permissions(role.permissions);
+      Array.prototype.forEach.call(permissionArray(role.permissions), assertPermission);
       roles.set(role.id, role);
     }
     for (const binding of state.bindings) {
@@ -6194,10 +6138,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       restrictionIds.add(restriction.id);
     }
     if (
-      requireComplete &&
-      (!state.identities.some((identity) => identity.kind === "principal") ||
-        state.roles.length === 0 ||
-        state.bindings.length === 0)
+      !state.identities.some((identity) => identity.kind === "principal") ||
+      state.roles.length === 0 ||
+      state.bindings.length === 0
     ) {
       throw new PersistedStateInvalidError("Persisted native IAM state is incomplete.");
     }
@@ -6207,7 +6150,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     context: TransactionContext,
     state: PersistedNativeIAMState,
   ): Promise<void> {
-    this.validateIAMState(state, true);
+    this.validateIAMState(state);
     for (const identity of state.identities) {
       await context.client.query(
         `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind, issuer, subject)

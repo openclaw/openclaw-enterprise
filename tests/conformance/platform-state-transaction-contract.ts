@@ -42,6 +42,15 @@ async function verifyRevisionOrder(
       }
     });
   await assertHistory();
+  await store.read(async ({ revisions }) => {
+    const page = await revisions.pageRevisionSummaries(namespaceId, agentId, { limit: 2 });
+    assert.deepEqual(page.revisions.map(identity), [identity(third), identity(second)]);
+    assert.equal(page.nextBefore, 2);
+    const options = { limit: 2, before: page.nextBefore };
+    const tail = await revisions.pageRevisionSummaries(namespaceId, agentId, options);
+    assert.deepEqual(tail.revisions.map(identity), [identity(first)]);
+    assert.equal(tail.nextBefore, undefined);
+  });
   await assert.rejects(
     store.transact(({ revisions }) =>
       revisions.createRevision({ ...second, id: identifier("rev") }),
@@ -53,6 +62,20 @@ async function verifyRevisionOrder(
     ),
   );
   await assertHistory();
+}
+
+function expectedRevisionSummary(item: PlatformStateSeed["revision"]) {
+  return {
+    id: item.id,
+    namespaceId: item.namespaceId,
+    agentId: item.agentId,
+    revision: item.revision,
+    backendId: item.backendId,
+    configurationId: item.configurationId,
+    configurationGeneration: item.configurationGeneration,
+    harness: item.harness,
+    createdAt: item.createdAt,
+  };
 }
 
 export async function verifyPlatformStateTransactions(
@@ -105,6 +128,37 @@ export async function verifyPlatformStateTransactions(
       "malformed runtime inputs must be rejected",
     );
   }
+
+  await store.transact(async ({ iamPolicy }) => {
+    const role = {
+      id: identifier("role"),
+      namespaceId: namespace.id,
+      name: `Namespace reader ${randomUUID()}`,
+      permissions: [{ action: "read", resourceKind: "namespace" }],
+    } as const;
+    await iamPolicy.createRole(role);
+    const listed = await iamPolicy.listRoles(namespace.id);
+    assert.ok(Object.isFrozen(listed));
+    for (const actual of [
+      await iamPolicy.getRole(namespace.id, role.id),
+      listed.find(({ id }) => id === role.id),
+    ]) {
+      assert.ok(actual);
+      assert.deepEqual(actual, role);
+      assert.ok(Object.isFrozen(actual));
+      assert.ok(Object.isFrozen(actual.permissions));
+      assert.ok(Object.isFrozen(actual.permissions[0]));
+    }
+
+    const otherNamespace = identifier("ns");
+    assert.equal(await iamPolicy.getRole(otherNamespace, role.id), undefined);
+    const otherRoles = await iamPolicy.listRoles(otherNamespace);
+    assert.equal(
+      otherRoles.some(({ id }) => id === role.id),
+      false,
+    );
+    assert.equal(await iamPolicy.deleteRole(namespace.id, role.id), true);
+  });
 
   // The draft binding and the pending deployment both reference the key: one Agent entry.
   await store.read(async (state) => {
@@ -213,6 +267,29 @@ export async function verifyPlatformStateTransactions(
   await store.read(async (state) => {
     assert.deepEqual(await state.revisions.listRevisions(namespace.id, providerAgent.id), []);
   });
+
+  const readProviderAgent = () =>
+    store.read(({ agents }) => agents.findAgent(namespace.id, providerAgent.id));
+  const setEditing = (enabled: boolean) =>
+    store.transact(({ agents }) =>
+      agents.setSandboxPolicyEditing(namespace.id, providerAgent.id, enabled),
+    );
+  const editingAgent = { ...providerAgent, sandboxPolicyEditing: true };
+  assert.deepEqual(await readProviderAgent(), providerAgent);
+  assert.deepEqual(await setEditing(true), editingAgent);
+
+  assert.equal(
+    await store.transact(({ agents }) =>
+      agents.setSandboxPolicyEditing(namespace.id, identifier("agt"), false),
+    ),
+    undefined,
+  );
+  assert.deepEqual(await readProviderAgent(), editingAgent);
+  // Setting the same value still returns the matching Agent.
+  assert.deepEqual(await setEditing(true), editingAgent);
+  assert.deepEqual(await setEditing(false), providerAgent);
+  assert.deepEqual(await readProviderAgent(), providerAgent);
+
   await store.transact(async (transaction) => {
     assert.deepEqual(
       await transaction.agents.updateConfiguration(
@@ -345,6 +422,16 @@ export async function verifyPlatformStateTransactions(
     assert.ok(Object.isFrozen(storedRevision.harnessAuth.source));
     assert.equal(
       await state.revisions.findRevision(identifier("ns"), agent.id, revision.id),
+      undefined,
+    );
+    const browsed = await state.revisions.findRevisionForBrowsing(
+      namespace.id,
+      agent.id,
+      revision.id,
+    );
+    assert.equal(browsed?.id, revision.id);
+    assert.equal(
+      await state.revisions.findRevisionForBrowsing(namespace.id, providerAgent.id, revision.id),
       undefined,
     );
   });
@@ -534,19 +621,7 @@ export async function verifyPlatformStateTransactions(
     // saved settings; `before` excludes the revision it names and everything newer.
     assert.deepEqual(
       await state.revisions.pageRevisionSummaries(namespace.id, agent.id, { limit: 1 }),
-      {
-        revisions: listed.map((item) => ({
-          id: item.id,
-          namespaceId: item.namespaceId,
-          agentId: item.agentId,
-          revision: item.revision,
-          backendId: item.backendId,
-          configurationId: item.configurationId,
-          configurationGeneration: item.configurationGeneration,
-          harness: item.harness,
-          createdAt: item.createdAt,
-        })),
-      },
+      { revisions: [expectedRevisionSummary(revision)] },
     );
     assert.deepEqual(
       await state.revisions.pageRevisionSummaries(namespace.id, agent.id, {
@@ -619,6 +694,36 @@ export async function verifyPlatformStateTransactions(
     );
   });
 
+  const max = Number.MAX_SAFE_INTEGER;
+  const atLimit = { ...configuration, id: identifier("cfg"), generation: max };
+  await store.transact(async ({ configurations }) => {
+    await configurations.createConfiguration({ ...atLimit, generation: max - 1 });
+    assert.deepEqual(
+      await configurations.advanceConfigurationGeneration(namespace.id, atLimit.id, max - 1),
+      atLimit,
+    );
+    assert.equal(
+      await configurations.advanceConfigurationGeneration(namespace.id, atLimit.id, max - 1),
+      undefined,
+    );
+    assert.equal(
+      await configurations.advanceConfigurationGeneration(namespace.id, identifier("cfg"), max),
+      undefined,
+    );
+  });
+  await assert.rejects(
+    store.transact(({ configurations }) =>
+      configurations.advanceConfigurationGeneration(namespace.id, atLimit.id, max),
+    ),
+    {
+      name: "ScopeViolationError",
+      message: "The Configuration generation exceeds its supported range.",
+    },
+  );
+  await store.read(async ({ configurations }) => {
+    assert.deepEqual(await configurations.findConfiguration(namespace.id, atLimit.id), atLimit);
+  });
+
   // A failed transaction cannot publish a generation that was only advanced speculatively.
   await assert.rejects(
     store.transact(async (transaction) => {
@@ -676,6 +781,16 @@ export async function verifyPlatformStateTransactions(
     store.transact(async (transaction) => {
       escapedTransaction = transaction;
       await transaction.namespaces.createNamespace(rejectedNamespace);
+      // Both Namespaces exist. Check the real owner before rollback could mask a stray write.
+      const { agents } = transaction;
+      assert.equal(
+        await agents.setSandboxPolicyEditing(rejectedNamespace.id, providerAgent.id, true),
+        undefined,
+      );
+      assert.equal(
+        (await agents.findAgent(namespace.id, providerAgent.id))?.sandboxPolicyEditing,
+        false,
+      );
       await transaction.audit.append(rejectedAudit);
       await transaction.operations.append(rejectedOperation);
       throw transactionFailure;
@@ -732,14 +847,27 @@ export async function verifyPlatformStateTransactions(
     networkProxy,
     compute: { ...revision.compute, networkProxyAdmission: "private-admission" },
   };
-  await store.transact(async (transaction) => {
+  const admitted = await store.transact(async (transaction) => {
     await transaction.configurations.createConfiguration(proxyConfiguration);
     await transaction.agents.createAgent(proxyAgent);
-    await transaction.revisions.createRevision(proxyRevision);
+    return transaction.revisions.createRevision(proxyRevision);
   });
   await store.read(async ({ revisions }) => {
     const saved = await revisions.findRevision(namespace.id, proxyAgent.id, proxyRevision.id);
     assert.deepEqual(saved?.networkProxy, networkProxy);
     assert.equal(saved?.compute.networkProxyAdmission, "private-admission");
+    // The summary carries the selected proxy, but never the private Compute admission.
+    assert.deepEqual(
+      await revisions.pageRevisionSummaries(namespace.id, proxyAgent.id, { limit: 1 }),
+      {
+        revisions: [
+          {
+            ...expectedRevisionSummary(proxyRevision),
+            createdAt: admitted.createdAt,
+            networkProxy,
+          },
+        ],
+      },
+    );
   });
 }
