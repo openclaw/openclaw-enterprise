@@ -54,6 +54,7 @@ import {
   recordLayoutShifts,
   revealNativeConfiguration,
   revokeMemberGrant,
+  routeOneVersionPerPage,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
@@ -119,6 +120,22 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+
+function loginToDraft(
+  page: Page,
+  fixture: ConsoleFixture,
+  draft: {
+    namespace: { id: string };
+    agent: { id: string };
+    member: Pick<Awaited<ReturnType<ConsoleFixture["createNamespaceMember"]>>, "credentials">;
+    tab: string;
+  },
+) {
+  const { namespace, agent, member, tab } = draft;
+  assert.ok(member.credentials, "Draft login requires the selected member");
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab);
+  return login(page, fixture, url, member.credentials);
+}
 
 function wireBody<T extends TSchema>(fixture: ConsoleFixture, schema: T, value: unknown) {
   const schemas = Object.fromEntries(
@@ -661,12 +678,7 @@ test("the Credentials tab's inline Create Secret follows the Secret create answe
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "credentials" });
   const picker = page.getByLabel("API key Secret", { exact: true });
   await waitForInputValue(picker, bound.name);
   await waitForEnabled(picker);
@@ -2891,12 +2903,7 @@ test("a reader without update views the version draft read-only", async (t) => {
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    reader.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member: reader, tab: "configuration" });
   assert.deepEqual(
     wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data,
     {
@@ -3121,12 +3128,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "configuration" });
   assert.deepEqual(
     wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data,
     {
@@ -3193,12 +3195,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "configuration" });
   assert.deepEqual(
     wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data,
     {
@@ -3265,12 +3262,7 @@ test("a deployer without update keeps the draft checklist", async (t) => {
   const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
   const { page } = await newPage(t, fixture);
   const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    deployer.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member: deployer, tab: "configuration" });
   const answer = wireBody(
     fixture,
     AgentCallerPermissionsResponse,
@@ -3315,12 +3307,7 @@ test("a late permission answer turns a reader's Channels and channel credentials
     once: true,
   });
   await page.clock.install();
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
-    reader.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member: reader, tab: "channels" });
   await firstPermissions.requested;
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
@@ -3460,12 +3447,7 @@ test("Agent save hints name a denied Harness Secret without making Configuration
     assert.equal(refused.status, 403, JSON.stringify(refused.body));
   }
   const { page } = await newPage(t, fixture);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "plugins" });
   const reason = `${AGENT_SOURCES_DENIED} Missing Secret operate on ${harnessName}.`;
   await page.getByText(reason, { exact: true }).waitFor();
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
@@ -3494,12 +3476,7 @@ for (const heldMetadata of [false, true]) {
           { method: "GET", once: true, afterServer: true },
         )
       : null;
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
-      member.credentials,
-    );
+    await loginToDraft(page, fixture, { namespace, agent, member, tab: "plugins" });
     if (held) {
       await held.requested;
     } else {
@@ -3576,12 +3553,7 @@ for (const tab of ["plugins", "credentials"]) {
         afterServer: true,
       },
     );
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", tab),
-      member.credentials,
-    );
+    await loginToDraft(page, fixture, { namespace, agent, member, tab });
     await held.requested;
     await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
     // Metadata enrichment cannot replace the saved view or disturb an in-progress channel choice.
@@ -3628,12 +3600,7 @@ test("late Configuration Secret names preserve an open focused native disclosure
       afterServer: true,
     },
   );
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "configuration" });
   await held.requested;
   const summary = page.getByText("View native Configuration", { exact: true });
   await summary.click();
@@ -3684,12 +3651,7 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
       afterServer: true,
     },
   );
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "credentials" });
   await held.requested;
   // Another authorized editor changes the binding while the old draft's metadata read waits.
   const changed = await fixture.request("PATCH", configurationPath, {
@@ -3766,12 +3728,7 @@ for (const agentUpdate of [false, true]) {
     const botRead = page.waitForResponse((response) =>
       response.url().endsWith(`/secrets/${botId}`),
     );
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-      member.credentials,
-    );
+    await loginToDraft(page, fixture, { namespace, agent, member, tab: "configuration" });
     await held.requested;
     await botRead;
     await nextFrames(page);
@@ -3838,12 +3795,7 @@ test("a Secret created inline that the member cannot operate is not staged", asy
       answers.push(response.status());
     }
   });
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "credentials" });
   const picker = page.getByLabel("API key Secret", { exact: true });
   await waitForInputValue(picker, bound.name);
   await waitForEnabled(picker);
@@ -3892,12 +3844,7 @@ test("the picker's Create new Secret is disabled when operate covers only some S
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
-    member.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member, tab: "credentials" });
   const picker = page.getByLabel("API key Secret", { exact: true });
   await waitForInputValue(picker, bound.name);
   await waitForEnabled(picker);
@@ -3934,12 +3881,7 @@ test("a Channels tab parked before a reader's permission answer returns read-onl
     once: true,
   });
   await page.clock.install();
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
-    reader.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member: reader, tab: "channels" });
   await firstPermissions.requested;
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
@@ -3972,12 +3914,7 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
   const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
   const { page } = await newPage(t, fixture);
   const permissions = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    editor.credentials,
-  );
+  await loginToDraft(page, fixture, { namespace, agent, member: editor, tab: "configuration" });
   assert.equal(
     wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data
       .configurationUpdate,
@@ -4146,19 +4083,10 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
   }
 });
 
-test("a null revision-history rejection preserves the readable draft Configuration", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Rejected history", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Rejected History Agent",
-    nativeValues("rejected-history"),
-  );
-  const { page }: { page: Page } = await newPage(t, fixture);
-  await page.addInitScript((path: string) => {
+function rejectNextHistoryGet(page: Page, path: string) {
+  return page.addInitScript((targetPath: string) => {
     const originalFetch = globalThis.fetch.bind(globalThis);
-    const target = new URL(path, globalThis.location.origin);
+    const target = new URL(targetPath, globalThis.location.origin);
     let rejected = false;
     globalThis.fetch = (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input, globalThis.location.href);
@@ -4170,7 +4098,20 @@ test("a null revision-history rejection preserves the readable draft Configurati
       }
       return originalFetch(input, init);
     };
-  }, `/namespaces/${namespace.id}/agents/${agent.id}/revisions`);
+  }, path);
+}
+
+test("a null revision-history rejection preserves the readable draft Configuration", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Rejected history", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Rejected History Agent",
+    nativeValues("rejected-history"),
+  );
+  const { page }: { page: Page } = await newPage(t, fixture);
+  await rejectNextHistoryGet(page, `/namespaces/${namespace.id}/agents/${agent.id}/revisions`);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByText(/Version history unavailable\./).waitFor({ state: "visible" });
   await page
@@ -4178,6 +4119,43 @@ test("a null revision-history rejection preserves the readable draft Configurati
     .getByText("View native Configuration")
     .waitFor({ state: "visible" });
   assert.equal(await page.getByText(/No readable versions\./).count(), 0);
+});
+
+test("a null older-history rejection keeps the current version and allows retry", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Older history retry", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Older history", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const latest = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page } = await newPage(t, fixture);
+  let olderReads = 0;
+  await routeOneVersionPerPage(page, fixture, namespace, agent, () => {
+    olderReads += 1;
+  });
+  const revisions = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  await rejectNextHistoryGet(page, `${revisions}?cursor=older-page`);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, latest.revision.id));
+
+  const selector = page.getByRole("region", { name: "Version being viewed", exact: true });
+  const chooser = versionChooser(selector);
+  const older = selector.getByRole("button", { name: "Load older versions", exact: true });
+  const firstOption = chooser.locator(`option[value="${first.revision.id}"]`);
+  await older.click();
+  const warning = selector.getByText(/^Older versions unavailable\./);
+  await warning.waitFor();
+  assert.equal(await chooser.inputValue(), latest.revision.id);
+  assert.equal(await firstOption.count(), 0);
+  assert.equal(olderReads, 0);
+  assert.ok(await hasFocus(older));
+
+  await older.click();
+  await firstOption.waitFor({ state: "attached" });
+  await warning.waitFor({ state: "detached" });
+  assert.equal(await older.count(), 0);
+  assert.equal(await chooser.inputValue(), latest.revision.id);
+  assert.ok(await hasFocus(chooser));
+  assert.equal(olderReads, 1);
 });
 
 test("Agent detail clears the version-history fallback after an empty reread", async (t) => {

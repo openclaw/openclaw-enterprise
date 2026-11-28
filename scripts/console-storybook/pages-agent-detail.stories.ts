@@ -267,6 +267,7 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const RevisionRejected = story("revisionRejected");
+export const OlderVersionPageRejected = story("olderVersionPageRejected");
 export const RevisionHistoryRecovery = {
   ...story("revisionHistoryRecovery", { openInNewTab: true }),
   name: "Revision history recovers on return",

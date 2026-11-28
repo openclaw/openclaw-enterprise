@@ -1049,8 +1049,7 @@ export async function renderAgentDetail(
   function currentListedRevision() {
     return currentRevisionId === undefined ? undefined : listedRevisions.get(currentRevisionId);
   }
-  // True once the readable version list loaded; until then nothing counts as hidden.
-  let visibleRevisionsLoaded = false;
+  let latestRevisionResult: RevisionResult | null = null;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
   let configureRepositories =
@@ -1386,7 +1385,7 @@ export async function renderAgentDetail(
       !currentRevisionId &&
       !(
         currentRuntimeState === "stopped" &&
-        (!visibleRevisionsLoaded || visibleRevisions.length > 0)
+        (latestRevisionResult?.status !== "fulfilled" || visibleRevisions.length > 0)
       );
     const badge = liveServingBadge;
     setText(
@@ -1504,7 +1503,7 @@ export async function renderAgentDetail(
     if (!revisionId || revisionId === "draft") {
       return false;
     }
-    return visibleRevisionsLoaded && !listedRevisions.has(revisionId);
+    return latestRevisionResult?.status === "fulfilled" && !listedRevisions.has(revisionId);
   }
   function revisionHidden(revisionId: string | undefined) {
     // Until every page is loaded, an unlisted version may simply be older than those shown.
@@ -2340,7 +2339,6 @@ export async function renderAgentDetail(
   let acceptActivity: ((record: AgentDeploymentStatusWire) => void) | undefined;
   let activityRevisionId: string | null | undefined;
   let detailLoadFinished = false;
-  let latestRevisionResult: RevisionResult | null = null;
   let latestDeploymentStatus: DeploymentOutcome | null = null;
   let latestDeploymentUnavailable = false;
   let latestDeploymentReadError: unknown = null;
@@ -2360,7 +2358,7 @@ export async function renderAgentDetail(
   let olderPageLoaded = false;
   let olderCursor: string | null = null;
   let olderLoading = false;
-  let olderError: unknown = null;
+  let olderErrorMessage: string | null = null;
   // The newest revision with its saved settings, read only when a check needs them.
   let latestRevisionDetail: AgentRevisionRead | null = null;
   let latestRevisionDetailReading: string | null = null;
@@ -2683,8 +2681,8 @@ export async function renderAgentDetail(
         element("span", { className: "agent-version-date" }, viewing),
       ),
       element("p", { className: "agent-version-context" }, versionContext()),
-      ...(olderError
-        ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
+      ...(olderErrorMessage !== null
+        ? [statusBlock("danger", null, `Older versions unavailable. ${olderErrorMessage}`)]
         : []),
       ...(revisionResult.status === "rejected"
         ? [
@@ -3319,7 +3317,7 @@ export async function renderAgentDetail(
       return;
     }
     olderLoading = true;
-    olderError = null;
+    olderErrorMessage = null;
     if (latestRevisionResult) {
       renderOverview(latestRevisionResult, viewedSnapshot);
     }
@@ -3341,7 +3339,7 @@ export async function renderAgentDetail(
         context.onExpired();
         return;
       }
-      olderError = error;
+      olderErrorMessage = message(error);
     } finally {
       olderLoading = false;
     }
@@ -3353,24 +3351,23 @@ export async function renderAgentDetail(
 
   function renderOverview(revisionResult: RevisionResult, snapshot: Snapshot | null) {
     latestRevisionResult = revisionResult;
-    const newest = revisionResult.status === "fulfilled" ? revisionResult.value.revisions : [];
+    const page = revisionResult.status === "fulfilled" ? revisionResult.value : null;
     // Until an older page is loaded, the newest page's cursor says whether older ones exist.
     // After that the older pages' own cursor continues, so a refresh never loses the place.
-    if (!olderPageLoaded && revisionResult.status === "fulfilled") {
-      olderCursor = revisionResult.value.nextCursor;
+    if (!olderPageLoaded && page) {
+      olderCursor = page.nextCursor;
     }
-    for (const revision of newest) {
+    for (const revision of page?.revisions ?? []) {
       listedRevisions.set(revision.id, revision);
     }
     const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
-    visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     const mostRecent = revisions[0];
     const activityChanged = activityRevisionId !== (mostRecent?.id ?? null);
     if (activityChanged) {
       selectionConfirmedAfterSuccess = false;
     }
-    stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
+    stopPanel.setNoReadableVersions(page ? revisions.length === 0 : null);
     const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
     // A current version the caller cannot read keeps the page's words, not its ID (finding D791).
     stopPanel.setVersionLabel(
@@ -3537,7 +3534,6 @@ export async function renderAgentDetail(
     }
     renderLatestDeployment();
     refreshDeployControls();
-    return revisions;
   }
 
   async function loadOverview() {
@@ -4513,9 +4509,10 @@ export async function renderAgentDetail(
           // A check that settles within 250 ms never shows this text, as for credential access.
           setDelayedText(deployStatus, "", CHECKING_COMPUTE_CONFIGURATION);
         } else if (revisionResult.status !== "fulfilled") {
-          deployMessage = visibleRevisionsLoaded
-            ? "Version history loaded. Reload this draft before deploying."
-            : "Version history is required before deploying this new version.";
+          deployMessage =
+            latestRevisionResult?.status === "fulfilled"
+              ? "Version history loaded. Reload this draft before deploying."
+              : "Version history is required before deploying this new version.";
         } else if (!agent.harnessAuth) {
           deployMessage =
             "Select a harness authentication source in Credentials before deployment.";

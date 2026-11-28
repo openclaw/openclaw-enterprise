@@ -35,8 +35,9 @@ saving and deployment until you can [reload the saved settings](../../guides/con
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected for service** shows `activeRevisionId`, a selected pointer, not serving health.
 **Viewing version** chooses the draft or a saved version without deploying it.
-**Load older versions** adds the next page and keeps the viewed version.
-If a history reread succeeds, the warning clears and edits remain. If the
+**Load older versions** keeps your selection. If the Console cannot read the next page,
+it shows a warning. Choose **Load older versions** again to retry.
+If the initial read fails, a successful reread clears that warning and keeps your edits. If the
 Console asks you to reload this draft, save your edits and reopen it before
 deploying. History alone does not enable deployment.
 **Deployment** contains the newest readable deployment activity, the viewed

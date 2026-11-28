@@ -3847,6 +3847,31 @@ export function createAgentDetailScenarios({
         ],
         gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
       },
+      olderVersionPageRejected: {
+        group: "Pages/Agent detail",
+        name: "Older version page rejects with null",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        revisionPageSize: 1,
+        rules: [
+          {
+            method: "GET",
+            suffix: "/revisions",
+            queryParam: "cursor",
+            once: true,
+            rejectWithNull: true,
+          },
+        ],
+        description:
+          "The first older-page GET rejects with JavaScript null and no HTTP status. The initial history page loads normally, and the next cursor GET uses the normal fixture response.",
+        steps: [
+          "At desktop and 390-pixel widths, confirm v2 is selected and v1 has not loaded.",
+          "Choose Load older versions. Confirm Older versions unavailable appears, v2 remains selected, and Load older versions remains available.",
+          "Choose Load older versions again. Confirm the warning clears, v1 appears in Viewing version, and v2 remains selected.",
+        ],
+        gap: "Simulated JavaScript rejection through the production Console. This does not prove a normal browser network failure, backend persistence, or deployment.",
+      },
       revisionHistoryRecovery: {
         group: "Pages/Agent detail",
         name: "Revision history recovers on return",

@@ -59,10 +59,9 @@ graph TD
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 After the Agent read, `loadDetails` settles history/snapshot independently.
-History errors warn beside readable drafts, blocking Deploy. If a history reread
-succeeds, the warning clears and edits remain. If the Console asks you to
-reload this draft, save your edits and reopen it before deploying. History alone
-does not enable Deploy.
+An initial history error warns beside the draft and blocks Deploy. A successful
+reread clears the warning and preserves edits. If asked to reload, save edits
+and reopen the draft before deploying. History alone does not enable Deploy.
 `snapshotErrorPanel` explains Configuration refusal and hides drafts. `401` returns to sign-in.
 
 Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
@@ -72,7 +71,7 @@ and `configurationReadError` on decode failure. Operational reads/queries stay s
 **Selected for service** uses `activeRevisionId`.
 **Viewing version** switches `revision=draft`/`revision=<id>` without activation.
 With Configuration `read`, **Draft credentials** and **Draft repositories** open drafts without copying snapshots.
-**Load older versions** appends, retaining selection and focusing the picker after pagination.
+**Load older versions** preserves selection and allows retry. On the last page, focus moves from the button to the picker.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
 **Deployment** shows activity, selected records and diagnostics

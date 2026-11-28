@@ -74,18 +74,18 @@ without an Agent name. Use Tab to reach **Retry** and press Enter. The next read
 uses the normal fixture response: confirm the H1 becomes **Research assistant**
 and receives keyboard focus. This story simulates one failed GET with status 503.
 
-At desktop and 390-pixel widths, open **Pages / Agent detail / Revision history
-rejects with null** (`revisionRejected`, Storybook ID
-`pages-agent-detail--revision-rejected`). The fixture rejects only the Agent's
-revision-history GET with raw JavaScript `null`, with no HTTP status. The draft
-Configuration GET uses its normal fixture response. Confirm **Version history
-unavailable.** is visible, with no **No readable versions** message or **Load
-older versions** control. Read the draft, open **Edit Configuration**, then
-**Cancel**. Confirm **Deploy new version** stays unavailable and says version
-history is required before deploying. The separate **Revision history
-unavailable** (`revisionError`) preview still simulates HTTP 403. This null
-rejection is simulated UI proof, not a normal browser network failure or proof of
-backend persistence or deployment.
+At desktop and 390 px, open **Pages / Agent detail / Revision history rejects
+with null** (`revisionRejected`, `pages-agent-detail--revision-rejected`).
+Only the history GET rejects with JavaScript `null`, without an HTTP status.
+Confirm **Version history unavailable.** appears without **No readable versions**
+or **Load older versions**. Read the draft Configuration, choose **Edit
+Configuration**, then **Cancel**. **Deploy new version** stays disabled and
+requires history. **Revision history unavailable** (`revisionError`) simulates HTTP 403.
+
+Open **Older version page rejects with null** (`olderVersionPageRejected`,
+`pages-agent-detail--older-version-page-rejected`). Choose **Load older versions**.
+Confirm a warning appears. Retry to load v1 while v2 stays selected.
+These simulations leave network failures, persistence and deployment unverified.
 
 At desktop and 390 px, open **Pages / Agent detail / Revision history
 recovers on return** (`revisionHistoryRecovery`) in its own tab. With the draft
