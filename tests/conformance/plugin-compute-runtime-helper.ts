@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { PluginRuntimeSpec } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
-import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.ts";
 import { items, property, record, text } from "./plugin-compute-fixtures.ts";
 
 type RuntimeResponse = {

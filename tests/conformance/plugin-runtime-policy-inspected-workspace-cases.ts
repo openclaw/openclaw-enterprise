@@ -13,7 +13,7 @@ import {
   admitsInspectedOpenClawWorkspace,
   inspectedWorkspaceBuild,
 } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
-import { WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding } from "../helpers/plugin-runtime.mjs";
+import { WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding } from "../helpers/plugin-runtime.ts";
 import {
   codexGatewayConfig,
   field,

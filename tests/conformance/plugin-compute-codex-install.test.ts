@@ -31,7 +31,7 @@ import {
   type CodexPluginPolicy,
 } from "../helpers/codex-runtime-helper-fixture.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.ts";
 
 const CODEX_ASANA_NATIVE_ID = "asana@openai-curated-remote";
 const CODEX_ASANA_REMOTE_ID = "plugin_asdk_app_asana";

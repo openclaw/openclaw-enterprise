@@ -10,7 +10,7 @@ import {
   codexPublicGithubRead,
   PUBLIC_GITHUB_READ_SKILL,
 } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
-import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.ts";
 import { runDocker, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import {
   image,

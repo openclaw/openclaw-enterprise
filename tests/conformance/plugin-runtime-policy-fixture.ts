@@ -6,7 +6,7 @@ import type {
   PluginDesiredSelection,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.ts";
 
 export const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
