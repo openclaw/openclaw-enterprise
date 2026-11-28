@@ -54,6 +54,9 @@ type StartupPreflightCases = {
   repository: string;
 };
 
+const privateStatusAdvisory =
+  /^Upgrade: .*network\.pluginStatusProxySourceCidrs.*docs\/guides\/operate\/network-isolation\.md#check-the-status-port\./m;
+
 function commandStderr(error: unknown): string {
   const stderr = asRecord(error)?.stderr;
   assert.ok(typeof stderr === "string");
@@ -2536,20 +2539,50 @@ exec "$0.fixture" "$@"
     assert.ok(deleted.includes(`networkpolicy.networking.k8s.io/${policyName}`));
   });
 
+  test("runtime preflight omits the private status notice when proxy sources are configured", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    const source = "192.0.2.99/32";
+    const f = await fixture(t, {
+      agent: true,
+      chart: {
+        installation: (installation) => {
+          installation.drivers.compute.configuration.network.pluginStatusProxySourceCidrs = [
+            source,
+          ];
+          return installation;
+        },
+      },
+    });
+    const { stdout, stderr } = await f.run("--preflight-only");
+    assert.match(stdout, /^Preflight passed; no OCC writer was stopped\./m);
+    assert.ok(!(stdout + stderr).includes(source));
+    assert.ok(!(stdout + stderr).includes("pluginStatusProxySourceCidrs"));
+  });
+
   test("preflight-only checks the candidate without preparing or deploying it", async (t) => {
     if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
       agent: true,
-      chart: { installation: (installation) => installation },
+      chart: {
+        installation: (installation) => {
+          delete installation.drivers.compute.configuration.network.pluginStatusProxySourceCidrs;
+          return installation;
+        },
+      },
     });
     const state = await f.state();
     state.denyWorkerPatch = true;
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
     assert.equal(existsSync(f.evidence), false);
-    assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+    const { stdout, stderr } = await f.run("--preflight-only");
+    assert.match(stdout, /^Preflight passed; no OCC writer was stopped\./m);
+    assert.doesNotMatch(stdout, /pluginStatusProxySourceCidrs/);
+    assert.match(stderr, privateStatusAdvisory);
     assert.match(await f.readEvidence("preflight-worker.log"), /^installation-startup-ready$/m);
     // The API Pod checked the recorded Agent's draft with the selected image's deploy rules.
     assert.match(await f.readEvidence("preflight-api.log"), /^agent-drafts-accepted$/m);
@@ -3392,11 +3425,23 @@ exec "$0.fixture" "$@"
     }
     const f = await fixture(t, {
       agent: true,
-      chart: { installation: (installation) => installation },
+      chart: {
+        installation: (installation) => {
+          installation.drivers.compute.configuration.network.pluginStatusProxySourceCidrs = [];
+          return installation;
+        },
+      },
       olderDraftRules: true,
       configurationValues: { cfg_agt_test: { security: { preset: "corporate" } } },
     });
     const result = await f.run();
+    assert.match(result.stdout, /^Upgraded runtime image;/m);
+    assert.match(result.stderr, privateStatusAdvisory);
+    assert.equal(result.stderr.match(/pluginStatusProxySourceCidrs/g)?.length, 1);
+    assert.ok(
+      result.stderr.search(privateStatusAdvisory) <
+        result.stderr.indexOf("Upgrade: Checking and stopping OCC writers."),
+    );
     assert.match(
       result.stderr,
       /upgrade-production-images: the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it\./,

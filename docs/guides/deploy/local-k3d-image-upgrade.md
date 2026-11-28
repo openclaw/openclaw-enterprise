@@ -171,17 +171,18 @@ installation: it still names the bring-up images and lacks the upgraded values,
 such as the selected images and checksum, so Helm would roll the controller back. Gateway and Harness resources apply when
 an Agent is next deployed.
 
-It also never adds fields that `scripts/dev-up` writes only at bring-up. An installation created by `dev-up`
-before `network.pluginStatusProxySourceCidrs` existed still lacks it after an
-upgrade: plugin status and diagnostics stay unavailable, and each dedicated Codex
-first deploy starts its Gateway twice. Check the live Installation:
+An image upgrade does not add the API server proxy addresses that `dev-up`
+sets on new installations. If runtime preflight reports that no proxy sources
+are configured, the controller may be unable to read private status and a
+dedicated Codex Gateway may start twice on first deploy. Check the addresses
+in your copy of the live Installation.
 
 ```bash
-yq -er '.drivers.compute.configuration.network.pluginStatusProxySourceCidrs' "$INSTALLATION"
+yq -er '.drivers.compute.configuration.network.pluginStatusProxySourceCidrs // []' "$INSTALLATION"
 ```
 
-If it is missing, find the address the API server proxies from: the k3d server
-node's `cni0` bridge. Use the node's Pod CIDR plus 2 (`10.42.0.2` for
+If the list is empty, find the address the API server uses on the k3d server
+node’s `cni0` bridge. Use the node's Pod CIDR plus 2 (`10.42.0.2` for
 `10.42.0.0/24`), and `podman exec` for a Podman-backed cluster:
 
 ```bash
