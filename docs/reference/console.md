@@ -82,11 +82,12 @@ status replaces empty-list messages. Submitted requests report acceptance, refus
 or unknown outcomes without Agent names, IDs or replay. Session expiry requires
 sign-in. Clearing search cannot restore rows.
 
-Opening an Agent shows details immediately. **Back to Agents** returns to your
-place while loading. On return, **Still checking…** appears after one second.
-Refresh rebuilds. Refocusing an unchanged page preserves
-edits, Slack searches, focus and the Namespace selector. At phone width, focus in
-the open drawer moves to **Open navigation**. Views belong to one account, session,
+**Back to Agents** can restore your place. Retained views stay visible but
+inactive during rechecks. **Still checking…** appears after one second. A slow first visit
+to the list shows **Loading…**.
+**Refresh** reloads the page. Refocusing an unchanged page preserves edits,
+Slack searches, focus and the Namespace selection. On phones, focus in the
+open drawer moves to **Open navigation**. Views belong to one account, session,
 route and Namespace. Sign-out, session changes, exit or Backend denial clear them.
 
 A previously shown Configuration denial can leave Agent metadata visible after
@@ -103,20 +104,22 @@ trigger one automatic retry. If the read still fails, the Console shows a warnin
 **Retry** checks access after any server retry delay. A successful check can restore
 the view and your place.
 
-**Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
-**Settings** (the signed-in account, with **Sign out**) and **Sign out**.
+The Namespaces page omits the **Namespace** selector. **Sign out** is in the
+account menu and under **Settings**.
 
-The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
-ID shows **Namespace unavailable**: the Namespace is missing or your access does not
-include it. On Namespaces, **Choose a valid Namespace** updates the URL in place.
+Navigation, reload and Back keep `?namespace=<id>`. **Namespace unavailable**
+means the Namespace is missing or inaccessible. On Namespaces,
+**Choose a valid Namespace** updates the URL in place.
 
-During session and Namespace checks, the selector is disabled and hides its choices.
-Once the list is known, it names the destination's Namespace. On returns to the same page,
-later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
-get access; global pages remain available.
+Opening a page or refocusing the Agents list disables the selector and hides
+its choices until access checks finish. Refocusing Agent details leaves it
+available. Switching cannot grant access. Agents and Namespaces explain
+how to get access.
 
-Switching Namespace from Agent detail or creation returns to Agents in the new
-scope; global pages stay open. The selector cannot broaden API authorization.
+Switching Namespaces from an Agent hides its details and focuses the **Agents**
+heading. Focus can return to the row you last opened in the new Namespace,
+unless you moved focus or the row disappeared. Switching from Create also
+opens **Agents**. Global pages stay open, even without Namespace access.
 
 ## Inspect build and runtime images
 
