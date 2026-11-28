@@ -37,6 +37,7 @@ import {
   type ApiRequestAuditObservation,
   type AuditEvent,
   type AuditEventKind,
+  type AuthorizationDecision,
   type AuthorizationEvidence,
   type BackendSummary,
   type ChannelDriver,
@@ -403,7 +404,18 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
     candidate.bindingIds,
     candidate.roleIds,
     candidate.restrictionIds,
-  ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
+  ].every((entries) => {
+    if (!Array.isArray(entries)) {
+      return false;
+    }
+    const length = entries.length;
+    for (let index = 0; index < length; index += 1) {
+      if (!Object.hasOwn(entries, index) || !isNonEmptyString(entries[index])) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
@@ -1018,6 +1030,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return { selected, target, decision };
   }
 
+  function validateAuthorizationDecision(
+    decision: AuthorizationDecision | null | undefined,
+    selected: IAMDriver,
+  ): asserts decision is AuthorizationDecision {
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+  }
+
   async function installationAdminDecision(
     selected: IAMDriver,
     actorId: string,
@@ -1033,15 +1060,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } catch {
       throw dependencyUnavailable();
     }
-    if (
-      !decision ||
-      typeof decision.allowed !== "boolean" ||
-      typeof decision.reason !== "string" ||
-      decision.driverId !== selected.id ||
-      !validAuthorizationEvidence(decision.evidence)
-    ) {
-      throw dependencyUnavailable();
-    }
+    validateAuthorizationDecision(decision, selected);
     return decision;
   }
 
@@ -1054,15 +1073,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } catch {
       throw dependencyUnavailable();
     }
-    if (
-      !decision ||
-      typeof decision.allowed !== "boolean" ||
-      typeof decision.reason !== "string" ||
-      decision.driverId !== selected.id ||
-      !validAuthorizationEvidence(decision.evidence)
-    ) {
-      throw dependencyUnavailable();
-    }
+    validateAuthorizationDecision(decision, selected);
     return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
   }
 
@@ -2745,14 +2756,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           } catch {
             throw dependencyUnavailable();
           }
-          if (
-            typeof current.allowed !== "boolean" ||
-            typeof current.reason !== "string" ||
-            current.driverId !== selected.id ||
-            !validAuthorizationEvidence(current.evidence)
-          ) {
-            throw dependencyUnavailable();
-          }
+          validateAuthorizationDecision(current, selected);
           if (!current.allowed) {
             throw new AuthorizationDeniedError(
               current.reason,
@@ -2769,15 +2773,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             );
           }
           if (scope.successorPrincipalId !== undefined) {
-            if (
-              successor === undefined ||
-              typeof successor.allowed !== "boolean" ||
-              typeof successor.reason !== "string" ||
-              successor.driverId !== selected.id ||
-              !validAuthorizationEvidence(successor.evidence)
-            ) {
-              throw dependencyUnavailable();
-            }
+            validateAuthorizationDecision(successor, selected);
             if (!successor.allowed) {
               throw new ResourceStateConflictError(
                 "The recovery account must administer the Installation.",

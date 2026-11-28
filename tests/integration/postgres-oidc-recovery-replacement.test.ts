@@ -5,9 +5,11 @@ import {
   type PasswordHasher,
   type PasswordSlowLaneFloors,
 } from "../../apps/controller/src/auth/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import type { HumanAuthenticationRecovery } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie } from "../../packages/utils/src/http.ts";
 import { assertApiError } from "../helpers/api-error.ts";
+import { composeProduction } from "../helpers/password-hasher.ts";
 import {
   assertProviderAttached,
   assertReservedLane,
@@ -15,6 +17,7 @@ import {
   consoleOrigin as origin,
   oidcUpgradeSettings,
   memoryLogger,
+  productionSignInConfiguration,
 } from "../helpers/production-sign-in.mjs";
 import {
   authOperation,
@@ -107,6 +110,11 @@ test(
   async (t) => {
     let app: SignInApp | undefined;
     let peerApp: SignInApp | undefined;
+    const secrets = {
+      "occ-auth/secret": "replacement-auth-test-secret-at-least-32-bytes",
+      "occ-oidc-login/client-id": "replacement-client-id",
+      "occ-oidc-login/client-secret": "replacement-client-secret",
+    };
     const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app, peerApp],
@@ -114,11 +122,7 @@ test(
         oidc: true,
         email: "replacement-recovery@example.test",
         password: "replacement-member-password",
-        secrets: {
-          "occ-auth/secret": "replacement-auth-test-secret-at-least-32-bytes",
-          "occ-oidc-login/client-id": "replacement-client-id",
-          "occ-oidc-login/client-secret": "replacement-client-secret",
-        },
+        secrets,
       },
     );
     assert.ok(oidc);
@@ -146,7 +150,17 @@ test(
       ...settings,
       OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
     };
-    app = await composeApp(settings, { passwordSlowLaneFloors: slowLane });
+    const config = await productionSignInConfiguration(t, {
+      databaseUrl,
+      settings,
+      secrets,
+      passwordSlowLaneFloors: slowLane,
+    });
+    const createIAM = t.mock.method(config.drivers, "createIAMDriver");
+    app = await composeProduction(config);
+    const driver = createIAM.mock.calls[0]?.result;
+    createIAM.mock.restore();
+    assert.ok(driver instanceof NativeIAMDriver);
     const adminHeaders = await authOperation("sign in the initial holder", () =>
       signedInHeaders(activeApp(), origin, admin, address()),
     );
@@ -205,9 +219,10 @@ test(
     };
     await t.test(
       "guarded replacement refuses stale, unauthorized and non-admin moves",
-      async () => {
+      async (t) => {
         assert.equal((await readRecovery(secondHeaders)).userId, admin.id);
-        const version = (await readAccount(activeApp(), adminHeaders, third.id)).version;
+        const successor = await readAccount(activeApp(), adminHeaders, third.id);
+        const version = successor.version;
         const body = {
           userId: third.id,
           expectedCurrentUserId: admin.id,
@@ -239,6 +254,64 @@ test(
           "the holder must administer the Installation",
         );
         assert.deepEqual(await designations(), [original]);
+
+        const recoveryEffects = async () => {
+          const holder = await readAccount(activeApp(), adminHeaders, admin.id);
+          const target = await readAccount(activeApp(), adminHeaders, third.id);
+          const audits = await state.transact((unit) => unit.audit.list());
+          return {
+            designation: await designations(),
+            versions: [holder.version, target.version],
+            moves: audits.filter(({ action }) => action === "authentication.recovery.replace")
+              .length,
+            denials: audits.filter(({ outcome }) => outcome === "denied").length,
+          };
+        };
+        const before = await recoveryEffects();
+        assert.notEqual(original.principalId, successor.principalId);
+        const principals = [original.principalId, successor.principalId];
+        const authorize = driver.authorize.bind(driver);
+        // Both principals pass preflight. State then rechecks them in the same order under lock.
+        for (const fault of [null, undefined, "sparse"] as const) {
+          for (const principal of principals) {
+            const grants: string[] = [];
+            const side = principal === original.principalId ? "holder" : "successor";
+            const label = `${side} decision: ${fault}`;
+            let injections = 0;
+            const faulty = t.mock.method(
+              driver,
+              "authorize",
+              async (request: Parameters<typeof authorize>[0]) => {
+                const decision = await authorize(request);
+                if (
+                  !decision.allowed ||
+                  request.action !== "administer" ||
+                  request.resource.kind !== "installation"
+                ) {
+                  return decision;
+                }
+                grants.push(request.principalId);
+                if (grants.length <= principals.length || request.principalId !== principal) {
+                  return decision;
+                }
+                injections += 1;
+                return fault === "sparse"
+                  ? {
+                      ...decision,
+                      evidence: { ...decision.evidence, groupIds: new Array<string>(1) },
+                    }
+                  : fault;
+              },
+            );
+            const result = await Promise.resolve(replace(adminHeaders, body)).finally(() =>
+              faulty.mock.restore(),
+            );
+            assert.deepEqual(grants, [...principals, ...principals], label);
+            assert.equal(injections, 1, label);
+            assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE", label);
+            assert.deepEqual(await recoveryEffects(), before, label);
+          }
+        }
       },
     );
 
