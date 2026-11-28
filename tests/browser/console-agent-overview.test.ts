@@ -4329,6 +4329,87 @@ test("A parked click opens Draft credentials after a replacement succeeds", asyn
   assert.deepEqual(writeRequests(writes), []);
 });
 
+test("A slow return to retained Draft credentials keeps the wait in view", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Draft return", "Retained draft");
+  const { revision: historical } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, historical.id);
+  const viewport = { width: 390, height: 844 };
+  await page.setViewportSize(viewport);
+  await trackSettledFetches(page);
+
+  // Follow the same link twice so the second visit rechecks a previously opened draft.
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, historical.id, "configuration"),
+  );
+  const settled = page.locator(settledView);
+  const link = settled.getByRole("link", { name: "Draft credentials", exact: true });
+  const save = settled.getByRole("button", { name: "Save authentication source", exact: true });
+  await link.click();
+  await save.waitFor();
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await versionChooser(page).selectOption(historical.id);
+  await link.waitFor();
+  await waitForIdleFetches(page);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await link.focus();
+  await link.evaluate((node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  const scrollY = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrollY > 0, "the reader has scrolled to the snapshot link");
+
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const checking = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+  const original = required(await link.elementHandle());
+  const linkTop = required(await original.boundingBox()).y;
+  const slowRead = { method: "GET", once: true, afterServer: true };
+  const hold = await holdRequests(t, page, agentUrl, slowRead);
+  try {
+    await page.keyboard.press("Enter");
+    assert.equal(required(await hold.requested).status(), 200);
+    await checking.waitFor();
+    assert.equal(await checking.count(), 1);
+    assert.ok(
+      await original.evaluate((node) => node.isConnected && node.closest("[inert]") !== null),
+    );
+    assert.equal(await save.count(), 0);
+
+    // A status above the viewport still matches Playwright's visible check. Measure its text.
+    const bounds = await checking.evaluate((node) => {
+      const text = node.ownerDocument.createRange();
+      text.selectNodeContents(node);
+      const { left, top, right, bottom } = text.getBoundingClientRect();
+      return { left, top, right, bottom };
+    });
+    const { left, top, right, bottom } = bounds;
+    assert.ok(
+      left >= 0 &&
+        right > left &&
+        right <= viewport.width &&
+        top >= 0 &&
+        bottom > top &&
+        bottom <= viewport.height,
+      `the full waiting message must be in the viewport: ${JSON.stringify(bounds)}`,
+    );
+    assert.ok(
+      Math.abs(required(await original.boundingBox()).y - linkTop) < 1,
+      "the link stays in place",
+    );
+    assert.equal(await page.evaluate(() => globalThis.scrollY), scrollY);
+  } finally {
+    hold.release();
+  }
+
+  await save.waitFor();
+  await waitForIdleFetches(page);
+  await page.waitForFunction(versionDetailInView);
+  assert.equal(await checking.count(), 0);
+  assert.equal(await versionChooser(page).inputValue(), "draft");
+  assert.equal(await focusedTab(page), "Credentials");
+  assert.deepEqual(writeRequests(requests), []);
+});
+
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
 // sat under the open Deployment details, below the fold at 1440, and the failure's error showed

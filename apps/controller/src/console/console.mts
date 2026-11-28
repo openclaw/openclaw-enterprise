@@ -2059,7 +2059,11 @@ async function loadPage({
     retainedView &&
     retainedFocus &&
     "href" in retainedFocus;
-  const heldAgentShell = heldAgentReturn ? outgoingAgentView.closest(".shell") : null;
+  // An interrupted navigation can clear mountedAgent while the same Agent is still on screen.
+  const heldAgentShell =
+    shell && (heldAgentReturn || (fromNavigation && agentId && shownPage?.agentId === agentId))
+      ? shell.view.closest(".shell")
+      : null;
   if (heldAgentReturn) {
     keepHeldAgentScroll(outgoingAgentView, outgoingScrollY, retainedView.scrollY);
   }
