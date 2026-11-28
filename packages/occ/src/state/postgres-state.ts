@@ -157,9 +157,8 @@ import type {
 import {
   assertHarnessAuthAvailable,
   assertRevisionAuthAvailable,
+  assertRevisionOwner,
   assertSameCredentialSourceFields,
-  harnessAuthMatches,
-  credentialSourcesMatch,
   validCredentialSourceSnapshots,
   validStandaloneCredentialDeployment,
   namespaceRoleGrantsBeyondRead,
@@ -4546,17 +4545,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
-        if (
-          owner === undefined ||
-          owner.servicePrincipalId !== revision.servicePrincipalId ||
-          owner.backendId !== revision.backendId ||
-          revision.gatewayManagedMode !== owner.gatewayManagedMode ||
-          !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
-          !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-          !credentialSourcesMatch(owner, revision, selectedPluginBindings)
-        ) {
-          throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
-        }
+        assertRevisionOwner(owner, revision, selectedPluginBindings);
         const secretBindings =
           revision.secretBindings === undefined
             ? undefined
@@ -4577,6 +4566,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
         const compute = asRecord(revision.compute);
         const { networkProxyAdmission, ...storedCompute } = compute ?? {};
+        if (revision.revision > Number.MAX_SAFE_INTEGER) {
+          throw new ScopeViolationError(
+            "The Agent revision number must be a positive safe integer.",
+          );
+        }
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest,

@@ -758,6 +758,24 @@ export function validStandaloneCredentialDeployment(
   );
 }
 
+export function assertRevisionOwner(
+  owner: Agent | undefined,
+  revision: AgentRevision,
+  selectedPluginBindings: readonly SelectedPluginBinding[] | undefined,
+): asserts owner is Agent {
+  if (
+    owner === undefined ||
+    owner.servicePrincipalId !== revision.servicePrincipalId ||
+    owner.backendId !== revision.backendId ||
+    revision.gatewayManagedMode !== owner.gatewayManagedMode ||
+    !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
+    !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
+    !credentialSourcesMatch(owner, revision, selectedPluginBindings)
+  ) {
+    throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
+  }
+}
+
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
   const gatewaySourceSelected = Object.values(revision.secretBindings ?? {}).some(
@@ -4034,17 +4052,7 @@ function repositories(
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
-      if (
-        owner === undefined ||
-        owner.servicePrincipalId !== revision.servicePrincipalId ||
-        owner.backendId !== revision.backendId ||
-        revision.gatewayManagedMode !== owner.gatewayManagedMode ||
-        !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
-        !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-        !credentialSourcesMatch(owner, revision, selectedPluginBindings)
-      ) {
-        throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
-      }
+      assertRevisionOwner(owner, revision, selectedPluginBindings);
       await assertRevisionAuthAvailable(
         { secrets, serviceAccounts, credentialSources },
         revision,
