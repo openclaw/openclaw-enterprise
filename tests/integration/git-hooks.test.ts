@@ -238,10 +238,10 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
       } finally {
         await writeFile(path, formatted);
       }
-      const accepted = runHook();
-      assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
     });
   }
+  const accepted = runHook();
+  assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
   assert.equal(await readFile(generatedPath, "utf8"), generatedContent);
 
   // A real installed Bun must match the checkout's pin before it checks files.
