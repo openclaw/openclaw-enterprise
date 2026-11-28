@@ -286,18 +286,22 @@ export async function checkGatewayRetirement() {
   ];
   fixture.reset(gateway, ...survivingResources);
 
-  const gatewayDeletes: Deletion[] = [
-    [
+  function routeDeletion(name: string, uid: string, resourceVersion: string): Deletion {
+    return [
       "HTTPRoute",
       {
         spec: {
           apiVersion: "gateway.networking.k8s.io/v1",
           kind: "HTTPRoute",
-          metadata: { name: gatewayName, namespace },
+          metadata: { name, namespace },
         },
-        body: { preconditions: { uid: "route-uid", resourceVersion: "route-version-2" } },
+        body: { preconditions: { uid, resourceVersion } },
       },
-    ],
+    ];
+  }
+
+  const gatewayDeletes: Deletion[] = [
+    routeDeletion(gatewayName, "route-uid", "route-version-2"),
     [
       "Service",
       { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-service-uid" } } },
@@ -323,10 +327,9 @@ export async function checkGatewayRetirement() {
 
   fixture.setServiceDeleteFailure(true);
   await assert.rejects(driver["removeRetiredGateway"](active, target), /service delete failed/);
-  assert.deepEqual(deletions, gatewayDeletes.slice(0, 2));
-  assert.equal(
-    deletions.some(([kind]) => kind === "Deployment"),
-    false,
+  assert.deepEqual(
+    deletions,
+    gatewayDeletes.slice(0, 2),
     "Deployment must remain as the retry witness until Service deletion succeeds",
   );
 
@@ -347,10 +350,6 @@ export async function checkGatewayRetirement() {
   fixture.reset(...survivingResources);
   await driver["removeRetiredGateway"](active, target);
   assert.deepEqual(deletions, [...gatewayDeletes, ...harnessDeletes]);
-  assert.equal(
-    deletions.some(([kind]) => kind === "PersistentVolumeClaim"),
-    false,
-  );
 
   deletions.length = 0;
   fixture.observe({
@@ -383,28 +382,27 @@ export async function checkGatewayRetirement() {
   function expectChatRetirement(revision: AgentRevision) {
     const name = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
     assert.deepEqual(deletions, [
-      [
-        "HTTPRoute",
-        {
-          spec: {
-            apiVersion: "gateway.networking.k8s.io/v1",
-            kind: "HTTPRoute",
-            metadata: { name, namespace },
-          },
-          body: { preconditions: { uid: name + "-route-uid", resourceVersion: "1" } },
-        },
-      ],
+      routeDeletion(name, name + "-route-uid", "1"),
       ["Service", { name, namespace, body: { preconditions: { uid: name + "-service-uid" } } }],
     ]);
     deletions.length = 0;
+  }
+
+  function expectNodeResources({ id, revision }: AgentRevision) {
+    const nodes = fixture.nodeResources();
+    assert.deepEqual(new Set(nodes.keys()), new Set(["HTTPRoute", "SecurityPolicy"]));
+    for (const { metadata } of nodes.values()) {
+      assert.equal(metadata.annotations?.["openclaw.dev/agent-revision-id"], id);
+      assert.equal(metadata.annotations?.["openclaw.dev/agent-revision"], String(revision));
+    }
+    return nodes;
   }
 
   // Preparation can run while the previous Gateway still serves requests. A
   // failed candidate must not acquire and then delete that Gateway's node route.
   observeGateway(active);
   await driver["reconcileGatewayRoute"](active, ownership, target);
-  const activeNodeResources = fixture.nodeResources();
-  assert.equal(activeNodeResources.size, 2);
+  const activeNodeResources = expectNodeResources(active);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
 
@@ -412,6 +410,7 @@ export async function checkGatewayRetirement() {
   // Preparing its successor must create one under the serving revision, or
   // node readiness would wait for activation while activation waits for it.
   fixture.clearNodeResources();
+  assert.equal(fixture.nodeResources().size, 0);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
   await driver["removeRetiredGateway"](candidate, target);
@@ -421,25 +420,12 @@ export async function checkGatewayRetirement() {
   // revision. Retiring the predecessor must leave it usable by the new node.
   observeGateway(candidate);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
-  const candidateNodes = fixture.nodeResources();
-  for (const resource of candidateNodes.values()) {
-    assert.equal(resource.metadata.annotations?.["openclaw.dev/agent-revision-id"], candidate.id);
-  }
+  const candidateNodes = expectNodeResources(candidate);
   await driver["removeRetiredGateway"](active, target);
   expectChatRetirement(active);
   await driver["removeRetiredGateway"](candidate, target);
   assert.deepEqual(deletions.slice(0, 2), [
-    [
-      "HTTPRoute",
-      {
-        spec: {
-          apiVersion: "gateway.networking.k8s.io/v1",
-          kind: "HTTPRoute",
-          metadata: { name: nodeName, namespace },
-        },
-        body: { preconditions: { uid: "HTTPRoute-node-uid", resourceVersion: "1" } },
-      },
-    ],
+    routeDeletion(nodeName, "HTTPRoute-node-uid", "1"),
     [
       "SecurityPolicy",
       {
