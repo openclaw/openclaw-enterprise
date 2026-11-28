@@ -99,6 +99,10 @@ binds the committed attempt, operation, origin, response destination, sender, ma
 evidence or absence, deadlines and confirmed or possible dispatch. Return only the
 policy-approved response to the caller.
 
+The [selected GitHub draft authority amendment](selected-github-draft-authority.md)
+proposes a mandatory correlated create-response check and durable original-object
+binding before a later draft edit can be authorized.
+
 ### Git operations
 
 Git discovery, upload-pack and receive-pack are separate operations. For ref-constrained
