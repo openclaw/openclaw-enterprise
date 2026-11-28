@@ -70,11 +70,13 @@ export interface AgentRevisionReadRepository {
   listRevisions(namespaceId: string, agentId: string): Promise<readonly Readonly<AgentRevision>[]>;
   /**
    * The Agent's revisions in revision order, as listRevisions returns them but without their
-   * saved settings, so a caller that counts or picks revisions decodes only the one it uses.
+   * saved settings. newestAfter requests only the highest revision above that number. Older
+   * adapters may ignore this hint and return the full ordered list.
    */
   listRevisionMetadata(
     namespaceId: string,
     agentId: string,
+    options?: { readonly newestAfter: number },
   ): Promise<readonly Readonly<AgentRevisionMetadata>[]>;
   /**
    * One page of the Agent's revision summaries, newest first: at most `limit` revisions numbered

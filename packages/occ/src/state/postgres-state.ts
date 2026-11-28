@@ -4436,8 +4436,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze(
           (await listRevisionRows(namespaceId, agentId)).map(revisionForBrowsingFromRow),
         ),
-      listRevisionMetadata: async (namespaceId, agentId) =>
-        Object.freeze(
+      listRevisionMetadata: async (namespaceId, agentId, options) => {
+        const selection =
+          options === undefined
+            ? "ORDER BY r.revision_number"
+            : "AND r.revision_number > $3 ORDER BY r.revision_number DESC LIMIT 1";
+        return Object.freeze(
           decodeQueryRows(
             await client.query(
               `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
@@ -4445,11 +4449,14 @@ export class PostgresPlatformState implements PlatformStateStore {
                  FROM occ.agent_revisions AS r
                  JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
                  JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-                 WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
-              [namespaceId, agentId],
+                 WHERE r.namespace_id = $1 AND r.agent_id = $2 ${selection}`,
+              options === undefined
+                ? [namespaceId, agentId]
+                : [namespaceId, agentId, options.newestAfter],
             ),
           ).map(revisionMetadataFromRow),
-        ),
+        );
+      },
       pageRevisionSummaries: async (namespaceId, agentId, { before, limit }) => {
         // The inner query picks the page, plus one row that tells whether older revisions
         // remain; only those rows open their snapshot, once each, for the few top-level fields

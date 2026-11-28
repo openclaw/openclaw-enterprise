@@ -558,7 +558,10 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
       // Native admin status must know whether a newer deployment is replacing this revision.
       // Only the newest later revision is decoded strictly, so an unreadable older snapshot
       // cannot make a healthy Agent's native admin unavailable, and no other is decoded at all.
-      const newest = (await state.revisions.listRevisionMetadata(namespace.id, agent.id))
+      const metadata = await state.revisions.listRevisionMetadata(namespace.id, agent.id, {
+        newestAfter: revision.revision,
+      });
+      const newest = metadata
         .filter((candidate) => candidate.revision > revision.revision)
         .sort((left, right) => right.revision - left.revision)[0];
       const successor =
