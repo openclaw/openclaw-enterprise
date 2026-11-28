@@ -6,7 +6,7 @@ Open **Agents → fred** and select its editable draft. Open **Plugins → Confi
 
 Under **Available**, search for `Linear`, select the result, and click **Add Linear**.
 
-<Frame caption="Add Linear from the plugin catalog for fred’s service account.">
+<Frame caption="Add Linear from the curated plugin catalog.">
 
 ![The Available tab shows the Linear search result and the Add Linear button](../../assets/openshell-quickstart/linear-catalog.jpg)
 
