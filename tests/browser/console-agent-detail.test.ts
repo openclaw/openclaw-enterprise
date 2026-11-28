@@ -3422,20 +3422,37 @@ async function pluginSecretFixture(t: TestContext, label: string, { agentUpdate 
   };
 }
 
+async function readPluginBinding(fixture: ConsoleFixture, configurationPath: string) {
+  const configuration = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
+  return { configuration, botId: bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id };
+}
+
+function holdSecretRead(
+  t: TestContext,
+  page: Page,
+  fixture: ConsoleFixture,
+  namespaceId: string,
+  secretId: string,
+) {
+  return holdRequests(t, page, `${fixture.origin}/namespaces/${namespaceId}/secrets/${secretId}`, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+}
+
 test("Agent save hints name a denied Harness Secret without making Configuration read-only", async (t) => {
   const { fixture, namespace, agent, member, configurationPath, path } = await pluginSecretFixture(
     t,
     "Harness names",
     { agentUpdate: true },
   );
-  const configuration = wireBody(
-    fixture,
-    ConfigurationResponse,
-    (await fixture.request("GET", configurationPath)).body,
-  );
-  grantSecretOperate(fixture, namespace.id, member.principal, [
-    bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id,
-  ]);
+  const { botId } = await readPluginBinding(fixture, configurationPath);
+  grantSecretOperate(fixture, namespace.id, member.principal, [botId]);
   const readAgent = await fixture.request("GET", path);
   assert.equal(readAgent.status, 200, JSON.stringify(readAgent.body));
   const auth = wireBody(fixture, AgentResponse, readAgent.body).data.harnessAuth;
@@ -3479,21 +3496,9 @@ for (const heldMetadata of [false, true]) {
   test(`permission refocus replaces denied Secret names${heldMetadata ? " after obsolete metadata completes" : ""}`, async (t) => {
     const { fixture, namespace, agent, member, app, path, configurationPath } =
       await pluginSecretFixture(t, `Rechecked names ${heldMetadata}`, { agentUpdate: true });
-    const configuration = wireBody(
-      fixture,
-      ConfigurationResponse,
-      (await fixture.request("GET", configurationPath)).body,
-    );
-    const botId = bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id;
+    const { botId } = await readPluginBinding(fixture, configurationPath);
     const { page } = await newPage(t, fixture);
-    const held = heldMetadata
-      ? await holdRequests(
-          t,
-          page,
-          `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
-          { method: "GET", once: true, afterServer: true },
-        )
-      : null;
+    const held = heldMetadata ? await holdSecretRead(t, page, fixture, namespace.id, botId) : null;
     await login(
       page,
       fixture,
@@ -3558,24 +3563,10 @@ for (const tab of ["plugins", "credentials"]) {
       `Late ${tab} names`,
       { agentUpdate: true },
     );
-    const configuration = wireBody(
-      fixture,
-      ConfigurationResponse,
-      (await fixture.request("GET", configurationPath)).body,
-    );
-    const botId = bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id;
+    const { botId } = await readPluginBinding(fixture, configurationPath);
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
-    const held = await holdRequests(
-      t,
-      page,
-      `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
-      {
-        method: "GET",
-        once: true,
-        afterServer: true,
-      },
-    );
+    const held = await holdSecretRead(t, page, fixture, namespace.id, botId);
     await login(
       page,
       fixture,
@@ -3605,29 +3596,13 @@ for (const tab of ["plugins", "credentials"]) {
 }
 
 test("late Configuration Secret names preserve an open focused native disclosure", async (t) => {
-  const { fixture, namespace, agent, member } = await pluginSecretFixture(t, "Disclosure names");
-  const { page } = await newPage(t, fixture);
-  const configuration = wireBody(
-    fixture,
-    ConfigurationResponse,
-    (
-      await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-      )
-    ).body,
-  );
-  const botId = bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id;
-  const held = await holdRequests(
+  const { fixture, namespace, agent, member, configurationPath } = await pluginSecretFixture(
     t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
-    {
-      method: "GET",
-      once: true,
-      afterServer: true,
-    },
+    "Disclosure names",
   );
+  const { page } = await newPage(t, fixture);
+  const { botId } = await readPluginBinding(fixture, configurationPath);
+  const held = await holdSecretRead(t, page, fixture, namespace.id, botId);
   await login(
     page,
     fixture,
@@ -3667,23 +3642,9 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
     "Current plugin token",
     "synthetic-current-value",
   );
-  const configuration = wireBody(
-    fixture,
-    ConfigurationResponse,
-    (await fixture.request("GET", configurationPath)).body,
-  );
-  const botId = bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id;
+  const { configuration, botId } = await readPluginBinding(fixture, configurationPath);
   const { page } = await newPage(t, fixture);
-  const held = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
-    {
-      method: "GET",
-      once: true,
-      afterServer: true,
-    },
-  );
+  const held = await holdSecretRead(t, page, fixture, namespace.id, botId);
   await login(
     page,
     fixture,
@@ -3745,24 +3706,10 @@ for (const agentUpdate of [false, true]) {
     );
     assert.notEqual(index, -1);
     fixture.policy.bindings.splice(index, 1);
-    const configuration = wireBody(
-      fixture,
-      ConfigurationResponse,
-      (await fixture.request("GET", configurationPath)).body,
-    );
-    const botId = bindingSource(configuration.data, "EXTERNAL_PLUGIN_B").id;
+    const { botId } = await readPluginBinding(fixture, configurationPath);
     const { page } = await newPage(t, fixture);
     // The app token's metadata read finishes after the bot token's.
-    const held = await holdRequests(
-      t,
-      page,
-      `${fixture.origin}/namespaces/${namespace.id}/secrets/${app.id}`,
-      {
-        method: "GET",
-        once: true,
-        afterServer: true,
-      },
-    );
+    const held = await holdSecretRead(t, page, fixture, namespace.id, app.id);
     const botRead = page.waitForResponse((response) =>
       response.url().endsWith(`/secrets/${botId}`),
     );

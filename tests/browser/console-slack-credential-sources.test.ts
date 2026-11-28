@@ -126,6 +126,7 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
     },
   );
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const sourceListPath = `/namespaces/${namespace.id}/credential-sources`;
   const directoryPath = `/namespaces/${namespace.id}/channel-directory/lookup`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -308,7 +309,6 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
       // the tab strip rather than a new page load to activate the existing Credentials panel.
       await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "channels").href);
       await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
-      const sourceListPath = `/namespaces/${namespace.id}/credential-sources`;
       let sourceListReads = 0;
       // A save in the preceding Channels view can finish its own inventory read as navigation
       // starts. Count only requests made by the Credentials view whose controls are under test.
@@ -449,7 +449,8 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
     await field.getByLabel("Slack bot token value").fill(`xoxb-${randomUUID()}`);
     const created = page.waitForResponse(
       (response) =>
-        response.request().method() === "POST" && response.url().endsWith("/credential-sources"),
+        response.url() === fixture.origin + sourceListPath &&
+        response.request().method() === "POST",
     );
     await field.getByRole("button", { name: "Create credential", exact: true }).click();
     const response = await created;
@@ -458,17 +459,17 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
     await field.getByText("Credential Source created:", { exact: false }).waitFor();
     assert.equal(await bot.inputValue(), source.id);
     assert.equal(await save.isDisabled(), false, "a new binding makes the Channel draft saveable");
+    const disabledConfigurationPath = `/namespaces/${namespace.id}/configurations/${disabledAgent.configurationId}`;
     const saved = page.waitForResponse(
       (result) =>
-        result.request().method() === "PATCH" &&
-        result.url().endsWith(`/configurations/${disabledAgent.configurationId}`),
+        result.url() === fixture.origin + disabledConfigurationPath &&
+        result.request().method() === "PATCH",
     );
     await save.click();
     assert.equal((await saved).status(), 200);
-    const persisted = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/configurations/${disabledAgent.configurationId}`,
-    );
+    const persisted = await fixture.request("GET", disabledConfigurationPath);
+    assert.equal(persisted.status, 200);
+    assert.equal(persisted.data.values.channels.slack.enabled, false);
     assert.deepEqual(persisted.data.secretBindings.SLACK_BOT_TOKEN.source, source.ref);
   });
 });

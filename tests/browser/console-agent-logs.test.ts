@@ -14,9 +14,6 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import type {
-  AgentRuntimeEvent,
-  AgentRuntimeLogChunk,
-  ComputeDriver,
   Permission,
   PermissionAction,
   SandboxLogLine,
@@ -68,34 +65,11 @@ import { refocus } from "./console-refocus-helpers.ts";
 import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type LogLine = AgentRuntimeLogChunk["lines"][number];
 type LogsView = typeof import("../../apps/controller/src/console/agents/logs-view.mts");
 type FixtureRole = { permissions: Permission[] };
 type LogTestWindow = typeof globalThis & {
   shownScroll: number[];
   inFlightFetchCount(): number;
-};
-
-// The JavaScript Compute fixture adds these test controls to its ready Driver.
-type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
-  state: {
-    lines: LogLine[];
-    previousLines: LogLine[];
-    harnessLines: LogLine[];
-    harnessPod: { ready: boolean; stale?: boolean } | { created: false } | undefined;
-    events: AgentRuntimeEvent[];
-    extraPods: { name: string; uid: string }[];
-    gatewayPod: boolean;
-    podlessRevisions: string[];
-    restartCount: number;
-    observedAt?: string;
-    readPodUid?: string;
-    describeError: Error | undefined;
-    readError: Error | undefined;
-  };
-  calls: { operation: string; revisionId?: string }[];
-  podName(revision: { id: string }): string;
-  runtimeLogging?: ComputeDriver["runtimeLogging"];
 };
 
 // The console runs against the production controller app, IAM, cursor signing and
@@ -104,7 +78,10 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
 // Namespace, Agent and revision, and starts and ends with the Driver's Pod state, calls and
 // properties as they were when it was made. The Driver's methods hold its `state` and `calls`, so
 // tests change those in place and never replace them.
-const computeDriver = createRuntimeLogComputeDriver() as LogTestDriver;
+type LogDriver = ReturnType<typeof createRuntimeLogComputeDriver>;
+// The log capability scenario sets runtimeLogging after the shared Driver is created.
+const computeDriver: LogDriver & { runtimeLogging?: LogDriver["runtimeLogging"] } =
+  createRuntimeLogComputeDriver();
 const initialDriver = { ...computeDriver, state: structuredClone(computeDriver.state) };
 // The app's own State, so a test can record what the worker records (a completed stop).
 const logsState: { state?: InMemoryPlatformState } = {};
@@ -150,6 +127,12 @@ async function logsFixture(t: TestContext) {
   const agent = await fixture.createAgent(namespace.id, "Logs Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   return { fixture, computeDriver, namespace, agent, revisionId: active.revision.id };
+}
+
+async function pollAgentRead(page: Page, agentPath: string) {
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
 }
 
 function line(second: number, raw: string) {
@@ -1866,9 +1849,7 @@ test("Logs of a version replaced while the Agent runs name the new version and k
 
   await open.focus();
   for (let poll = 0; poll < 2; poll += 1) {
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await pollAgentRead(page, agentPath);
     await waitForIdleFetches(page);
     assert.equal(
       await open.evaluate((node) => node === globalThis.document.activeElement),
@@ -1901,9 +1882,7 @@ test("Logs of a stopped version show a deletion from elsewhere", async (t) => {
   assert.equal(after.status, "deleting");
   assert.equal(after.activeRevisionId, before.activeRevisionId);
   assert.equal(after.desiredRuntimeState, before.desiredRuntimeState);
-  const agentReads = await settledFetches(page, agentPath);
-  await page.clock.runFor(10_000);
-  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await pollAgentRead(page, agentPath);
   await page.locator(".badge").filter({ hasText: "Deleting" }).waitFor();
   assert.equal(await page.getByRole("log", { name: "Runtime log output" }).count(), 0);
 });
@@ -1980,9 +1959,7 @@ async function openStoppedLogs(
     // The runtime status route admits each caller 2 reads a second per Agent after a burst of
     // 10, in real time; longer runs of polls stay under that.
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await pollAgentRead(page, agentPath);
     await waitForIdleFetches(page);
     return settledFetches(page, revisionsPath);
   };
@@ -2388,9 +2365,7 @@ for (const viewport of [
     await waitForIdleFetches(page);
     const denied = authorizationDenials(fixture.auditSink).length;
     const poll = async () => {
-      const agentReads = await settledFetches(page, agentPath);
-      await page.clock.runFor(10_000);
-      await waitForSettledFetches(page, agentPath, agentReads + 1);
+      await pollAgentRead(page, agentPath);
       await waitForIdleFetches(page);
     };
     const view = page.locator("section.agent-logs");
@@ -2495,9 +2470,7 @@ test("Logs of a version a reader without operate cannot read show a stop made el
   const denied = authorizationDenials(fixture.auditSink).length;
 
   await stopElsewhere();
-  const agentReads = await settledFetches(page, agentPath);
-  await page.clock.runFor(10_000);
-  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await pollAgentRead(page, agentPath);
   await shows(/Selected for service\s+None/);
   await namesFormerVersion();
   await waitForIdleFetches(page);
@@ -2535,9 +2508,7 @@ test("Logs whose runtime status is denied show a stop and a redeploy made elsewh
   const denied = authorizationDenials(fixture.auditSink).length;
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const poll = async () => {
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await pollAgentRead(page, agentPath);
     await waitForIdleFetches(page);
   };
 
@@ -2601,9 +2572,7 @@ test("Logs whose first status read is refused show a stop made elsewhere", async
   const stopped = await fixture.request("POST", `${agentPath}/stop`);
   assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
   computeDriver.state.podlessRevisions.push(revisionId);
-  const agentReads = await settledFetches(page, agentPath);
-  await page.clock.runFor(10_000);
-  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await pollAgentRead(page, agentPath);
   await page.getByText("Stop requested", { exact: true }).waitFor();
   await waitForIdleFetches(page);
 
@@ -3470,7 +3439,6 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
   });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;
   const sandbox = createProviderSandboxDriver();
-  const sandboxState: { lines: SandboxLogLine[]; error: Error | undefined } = sandbox.state;
   const fixture = await createConsoleAppFixture(t, {
     computeDriver,
     sandboxDriver: sandbox.driver,
@@ -3498,7 +3466,7 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
     source: "sandbox",
     fields,
   });
-  sandboxState.lines = [
+  sandbox.state.lines = [
     sandboxLine(
       1,
       `PROC:LAUNCH [INFO] git(42) [cmd:git clone https://x-access-token:${secret}@github.com/acme/repo.git]`,
@@ -3563,7 +3531,7 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
   assert.equal(sandbox.logRequests.at(-1)?.namespace, "tenant-console");
 
   const { RuntimeLogsForbiddenByClusterError } = await import("../../packages/occ/src/index.ts");
-  sandboxState.error = new RuntimeLogsForbiddenByClusterError();
+  sandbox.state.error = new RuntimeLogsForbiddenByClusterError();
   await page.getByRole("button", { name: "Refresh logs" }).click();
   await page
     .getByText(/grant the OpenClaw Enterprise gateway identity the sandbox:read scope/)
