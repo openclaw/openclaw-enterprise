@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
@@ -265,12 +266,14 @@ test(
         { name: "addons.k3s.cattle.io", version: "v1" },
       ],
     };
-    type Plan = typeof config & { serviceDependency?: unknown };
+    type Plan = typeof config & { serviceDependency?: unknown; clientCertificate?: unknown };
     const configPath = join(dir, "plan.json");
     type Check = {
       id: string;
+      resource?: string;
       status: string;
       summary?: string;
+      action?: string;
       limits?: { resource: string; status: string }[];
       stale?: string[];
       missing?: string[];
@@ -282,7 +285,7 @@ test(
         resourceVersion: string;
       }[];
     };
-    async function diagnose(plan: Plan = config, sensitiveValue?: string) {
+    async function invokeDiagnostic(plan: unknown, sensitiveValues: string[] = []) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
@@ -290,12 +293,16 @@ test(
         { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);
-      if (sensitiveValue) {
+      for (const sensitiveValue of sensitiveValues) {
         assert.ok(
           !result.stdout.includes(sensitiveValue) && !result.stderr.includes(sensitiveValue),
-          "diagnostic output exposed a credential",
+          "diagnostic output exposed certificate or credential material",
         );
       }
+      return result;
+    }
+    async function diagnose(plan: Plan = config, sensitiveValues: string[] = []) {
+      const result = await invokeDiagnostic(plan, sensitiveValues);
       assert.ok(!result.stderr, "diagnostic wrote to stderr");
       const report = JSON.parse(result.stdout);
       return {
@@ -321,6 +328,8 @@ test(
     assert.equal(initial.checks.get("crd:addons.k3s.cattle.io")?.status, "passed");
     assert.equal(initial.checks.get("crd:missing.example.test")?.status, "failed");
     assert.equal(initial.checks.has("service-egress"), false);
+    assert.equal(initial.checks.has("service-tls"), false);
+    assert.equal(initial.checks.has("client-certificate"), false);
     assert.equal(initial.status, 1);
 
     // ResourceQuota's own controller supplies usage. One slot remains, but the candidate needs two
@@ -359,8 +368,10 @@ test(
     // The Service observes a live allocated address and a named target port.
     // The two policy grants cover the Service and its translated destination independently.
     const serviceName = "middleware";
-    // A NetworkPolicy name can exceed the 63-character Service name limit.
     const policyName = "middleware-egress".padEnd(64, "s");
+    // A Secret name can exceed the 63-character limit for a DNS label.
+    const secretName = "middleware-tls".padEnd(64, "s");
+    const serverName = "middleware.example.test";
     const servicePort = 9443;
     const targetPort = "https";
     const labels = { app: serviceName };
@@ -399,42 +410,157 @@ test(
       );
     await setPolicy("192.0.2.1/32", [{ namespaceSelector, podSelector }]);
 
-    async function readVersion(kind: string, name: string) {
-      const { uid, resourceVersion } = (await resource(kind.toLowerCase(), name)).metadata;
+    // Issue temporary leaves with the same generated key. Update only the public
+    // certificate after the expired case. Neither certificate nor key belongs in the report.
+    const ca = await certificateAuthority(dir, { caName: "prerequisites-fixture" });
+    const expired = await signedLeaf(dir, ca, {
+      name: "expired",
+      commonName: serverName,
+      subjectAltName: `DNS:${serverName}`,
+      days: -1,
+    });
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "secret",
+      "tls",
+      secretName,
+      `--cert=${expired.certPath}`,
+      `--key=${expired.keyPath}`,
+    );
+    const protectedValues = [
+      expired.key,
+      Buffer.from(expired.key).toString("base64"),
+      "BEGIN PRIVATE KEY",
+      expired.cert,
+      Buffer.from(expired.cert).toString("base64"),
+      "BEGIN CERTIFICATE",
+    ];
+    const replacementLeaf = (name: string, dnsName?: string) =>
+      signedLeaf(dir, ca, {
+        name,
+        commonName: serverName,
+        subjectAltName: dnsName === undefined ? undefined : `DNS:${dnsName}`,
+        keyPem: expired.key,
+      });
+    async function patchSecretData(name: string, data: Record<string, string | null>) {
+      const patch = join(dir, "secret-patch.json");
+      await writeFile(patch, JSON.stringify({ data }), { mode: 0o600 });
+      await kubectl(
+        "-n",
+        namespace,
+        "patch",
+        "secret",
+        name,
+        "--type=merge",
+        "--patch-file",
+        patch,
+      );
+    }
+    async function setLeaf(pem: string, name = secretName) {
+      const encoded = Buffer.from(pem).toString("base64");
+      protectedValues.push(pem, encoded);
+      await patchSecretData(name, { "tls.crt": encoded });
+    }
+    const identity = async (
+      kind: "Service" | "NetworkPolicy" | "Secret" | "Deployment" | "StatefulSet",
+      name: string,
+    ) => {
+      const output = String(
+        await kubectl(
+          "-n",
+          namespace,
+          "get",
+          kind.toLowerCase(),
+          name,
+          "--no-headers",
+          "-o",
+          "custom-columns=UID:.metadata.uid,RV:.metadata.resourceVersion",
+        ),
+      );
+      const [uid, resourceVersion] = output.trim().split(/\s+/u);
       assert.ok(uid && resourceVersion);
       return { kind, namespace, name, uid, resourceVersion };
-    }
+    };
     const readVersions = () =>
-      Promise.all([readVersion("Service", serviceName), readVersion("NetworkPolicy", policyName)]);
-    const dependency = {
+      Promise.all([
+        identity("Service", serviceName),
+        identity("NetworkPolicy", policyName),
+        identity("Secret", secretName),
+      ]);
+    const egressOnly = {
       service: { namespace, name: serviceName, port: servicePort },
       policy: { namespace, name: policyName },
     };
-    const dependencyPlan = { ...config, serviceDependency: dependency };
+    const dependency = { ...egressOnly, tls: { secretName, serverName } };
+    // The initial diagnosis already covers multiple controllers and CRDs.
+    // Keep one of each for the certificate and egress scenarios.
+    const focusedPlan = {
+      ...config,
+      controllers: config.controllers.slice(0, 1),
+      crds: config.crds.slice(0, 1),
+    };
+    const dependencyPlan = { ...focusedPlan, serviceDependency: dependency };
+    // A misspelled optional selection must not silently remove the requested checks.
+    for (const [invalidPlan, message] of [
+      [{ ...config, serviceDependecy: dependency }, /only supported top-level fields/u],
+      [
+        { ...config, serviceDependency: { ...egressOnly, tsl: dependency.tls } },
+        /serviceDependency accepts only service, policy and tls/u,
+      ],
+    ] as const) {
+      const result = await invokeDiagnostic(invalidPlan, protectedValues);
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, message);
+    }
+
     async function checkDependency() {
       const versions = await readVersions();
-      const result = await diagnose(dependencyPlan);
+      const result = await diagnose(dependencyPlan, protectedValues);
       assert.deepEqual(
         await readVersions(),
         versions,
         "the diagnostic must leave all selected objects unchanged",
       );
       const egress = result.checks.get("service-egress");
-      assert.deepEqual(egress?.resources, versions);
-      return egress;
+      const tls = result.checks.get("service-tls");
+      assert.deepEqual(egress?.resources, versions.slice(0, 2));
+      assert.deepEqual(tls?.resources, versions.slice(2));
+      return { egress, tls };
     }
     const stale = await checkDependency();
-    assert.equal(stale?.status, "failed");
-    assert.deepEqual(stale?.missing, [`${cidr} TCP/${servicePort}`]);
+    assert.equal(stale.egress?.status, "failed");
+    assert.deepEqual(stale.egress?.missing, [`${cidr} TCP/${servicePort}`]);
+    assert.equal(stale.tls?.status, "failed");
+    assert.match(stale.tls?.summary ?? "", /expired/u);
 
     // Split selectors create two broad peers and do not establish the combined edge.
     await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
+    const wrongSan = await replacementLeaf("wrong-san", "other.example.test");
+    await setLeaf(wrongSan.cert);
     const split = await checkDependency();
-    assert.equal(split?.status, "failed");
-    assert.deepEqual(split?.missing, [`${namespace} Service-selected Pods TCP/${targetPort}`]);
+    assert.equal(split.egress?.status, "failed");
+    assert.deepEqual(split.egress?.missing, [
+      `${namespace} Service-selected Pods TCP/${targetPort}`,
+    ]);
+    assert.equal(split.tls?.status, "failed");
+    assert.match(split.tls?.summary ?? "", /DNS SAN/u);
 
     await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
-    assert.equal((await checkDependency())?.status, "passed");
+    // Repair the certificate to match the intended client's unchanged server name.
+    const repaired = await replacementLeaf("repaired", serverName);
+    await setLeaf(repaired.cert);
+    const corrected = await checkDependency();
+    assert.equal(corrected.egress?.status, "passed");
+    assert.equal(corrected.tls?.status, "passed");
+    const policyOnly = await diagnose(
+      { ...config, serviceDependency: egressOnly },
+      protectedValues,
+    );
+    assert.equal(policyOnly.checks.get("service-egress")?.status, "passed");
+    assert.equal(policyOnly.checks.has("service-tls"), false);
 
     // ExternalName is a DNS alias in both API shapes. A declared port cannot
     // supply the ClusterIP and Pod edges that the check requires.
@@ -442,14 +568,14 @@ test(
       const name = hasPort ? "alias-with-port" : "alias-without-port";
       await applyService(name, {
         type: "ExternalName",
-        externalName: "middleware.example.test",
+        externalName: serverName,
         ports: hasPort ? [{ port: servicePort }] : undefined,
       });
       const observed = await resource("service", name);
       assert.equal(observed.spec.ports?.[0]?.port, hasPort ? servicePort : undefined);
       const alias = await diagnose({
         ...config,
-        serviceDependency: { ...dependency, service: { ...dependency.service, name } },
+        serviceDependency: { ...egressOnly, service: { ...egressOnly.service, name } },
       });
       const egress = alias.checks.get("service-egress");
       assert.equal(egress?.status, "failed", name);
@@ -465,13 +591,312 @@ test(
       ]);
     }
 
+    const commonNameOnly = await replacementLeaf("common-name-only");
+    const commonNameLeaf = new X509Certificate(commonNameOnly.cert);
+    assert.equal(commonNameLeaf.subjectAltName, undefined);
+    assert.equal(commonNameLeaf.checkHost(serverName), serverName);
+    await setLeaf(commonNameOnly.cert);
+    const noSan = await checkDependency();
+    assert.equal(noSan.tls?.status, "failed");
+    assert.match(noSan.tls?.summary ?? "", /DNS SAN/u);
+
+    // Keep the SAN and other validity bound intact while corrupting one ASN.1 UTCTime.
+    const leaf = new X509Certificate(repaired.cert);
+    const validityFields = ["validFromDate", "validToDate"] as const;
+    for (const field of validityFields) {
+      const utc = leaf[field].toISOString().slice(2, 19).replace(/\D/g, "") + "Z";
+      const der = Buffer.from(leaf.raw);
+      const fieldBytes = Buffer.concat([Buffer.from([0x17, utc.length]), Buffer.from(utc)]);
+      const offset = der.indexOf(fieldBytes);
+      assert.ok(offset >= 0);
+      assert.equal(der.indexOf(fieldBytes, offset + 1), -1);
+      der.write("13", offset + 4, 2, "ascii");
+      const corrupt = new X509Certificate(der);
+      for (const validityField of validityFields) {
+        assert.equal(Number.isFinite(corrupt[validityField].getTime()), validityField !== field);
+      }
+      assert.equal(corrupt.checkHost(serverName, { subject: "never" }), serverName);
+      const encoded = der
+        .toString("base64")
+        .match(/.{1,64}/g)
+        ?.join("\n");
+      assert.ok(encoded);
+      await setLeaf(`-----BEGIN CERTIFICATE-----\n${encoded}\n-----END CERTIFICATE-----\n`);
+      const result = await checkDependency();
+      assert.equal(result.tls?.status, "failed");
+      assert.match(result.tls?.summary ?? "", /unreadable validity window/u);
+    }
+
+    const clientName = "gateway-client";
+    const clientSecret = "mounted-client".padEnd(64, "s");
+    const detachedSecret = "detached-client";
+    const detachedItem = "detached-only.pem";
+    const clientLeaf = await signedLeaf(dir, ca, {
+      name: "current-client",
+      commonName: clientName,
+      usage: "clientAuth",
+      keyPem: expired.key,
+    });
+    for (const name of [clientSecret, detachedSecret]) {
+      await kubectl(
+        "-n",
+        namespace,
+        "create",
+        "secret",
+        "tls",
+        name,
+        `--cert=${clientLeaf.certPath}`,
+        `--key=${clientLeaf.keyPath}`,
+      );
+    }
+    const clientLeafBase64 = Buffer.from(clientLeaf.cert).toString("base64");
+    const clientKeyBase64 = Buffer.from(clientLeaf.key).toString("base64");
+    protectedValues.push(clientLeaf.cert, clientLeafBase64, clientLeaf.key, clientKeyBase64);
+    const selectedMappingKey = "mapped-companion-fixture-key";
+    const unrelatedSecretKey = "unrelated-fixture-key";
+    const unrelatedSecretValue = Buffer.from(randomUUID()).toString("base64");
+    await patchSecretData(clientSecret, {
+      [unrelatedSecretKey]: unrelatedSecretValue,
+      [selectedMappingKey]: "",
+    });
+    protectedValues.push(unrelatedSecretKey, unrelatedSecretValue);
+    const clientLabels = { app: clientName };
+    const excludedValue = randomUUID();
+    const mountPath = "/etc/openclaw/openshell";
+    const unrelatedMountPath = "/etc/unrelated";
+    const otherContainer = "unrelated-container";
+    const otherContainerMountPath = "/etc/other-container";
+    const worker = {
+      name: "worker",
+      image: "example.invalid/client:test",
+      env: [{ name: "UNRELATED_FIXTURE_VALUE", value: excludedValue }],
+      volumeMounts: [
+        { name: "client", mountPath, readOnly: true },
+        { name: "scratch", mountPath: unrelatedMountPath },
+      ],
+    };
+    const publicItem = { key: "tls.crt", path: "admin.pem" };
+    const clientVolume = {
+      name: "client",
+      secret: {
+        secretName: clientSecret,
+        items: [publicItem, { key: selectedMappingKey, path: "mounted-companion.txt" }],
+      },
+    };
+    const clientCertificate = {
+      workload: { kind: "Deployment", namespace, name: clientName },
+      container: "worker",
+      certificatePath: `${mountPath}/admin.pem`,
+    };
+    await applyManifest(
+      JSON.stringify({
+        apiVersion: "apps/v1",
+        kind: "Deployment",
+        metadata: {
+          name: clientName,
+          namespace,
+          annotations: { "example.test/unrelated": excludedValue },
+        },
+        spec: {
+          replicas: 0,
+          selector: { matchLabels: clientLabels },
+          template: {
+            metadata: { labels: clientLabels },
+            spec: {
+              containers: [
+                worker,
+                {
+                  name: otherContainer,
+                  image: worker.image,
+                  volumeMounts: [{ name: "scratch", mountPath: otherContainerMountPath }],
+                },
+              ],
+              volumes: [
+                clientVolume,
+                { name: "scratch", emptyDir: {} },
+                {
+                  name: "detached",
+                  secret: {
+                    secretName: detachedSecret,
+                    items: [{ key: "tls.crt", path: detachedItem }],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const clientPlan = { ...focusedPlan, clientCertificate };
+    const overlapPlan = {
+      ...clientPlan,
+      controllers: [{ namespace, name: clientName }],
+    };
+
+    const clientCheck = async (plan: Plan = clientPlan) =>
+      (await diagnose(plan, protectedValues)).checks.get("client-certificate");
+    const waitForClientGeneration = () =>
+      waitFor("client Deployment generation observation", async () => {
+        const deployment = await resource("deployment", clientName);
+        return deployment.status?.observedGeneration === deployment.metadata.generation;
+      });
+    await waitForClientGeneration();
+    const workloadIdentity = await identity("Deployment", clientName);
+    const secretIdentity = await identity("Secret", clientSecret);
+    const { checks: observedChecks } = await diagnose(overlapPlan, [
+      ...protectedValues,
+      excludedValue,
+    ]);
+    const bound = observedChecks.get("client-certificate");
+    const rollout = observedChecks.get(`controller:${namespace}/${clientName}`);
+    assert.equal(
+      rollout?.status,
+      "failed",
+      "the selected certificate Deployment has zero replicas",
+    );
+    assert.equal(rollout?.resource, `${namespace}/${clientName}@${workloadIdentity.uid}`);
+    assert.equal(bound?.status, "passed");
+    assert.deepEqual(bound?.resources, [workloadIdentity, secretIdentity]);
+    assert.deepEqual(await identity("Deployment", clientName), workloadIdentity);
+    assert.deepEqual(await identity("Secret", clientSecret), secretIdentity);
+
+    await setLeaf(expired.cert, clientSecret);
+    const expiredClient = await clientCheck();
+    assert.equal(expiredClient?.status, "failed");
+    assert.match(expiredClient?.summary ?? "", /expired/u);
+    assert.equal(expiredClient?.resources?.at(-1)?.name, clientSecret);
+    await setLeaf(repaired.cert, clientSecret);
+    const wrongUsage = await clientCheck();
+    assert.equal(wrongUsage?.status, "failed");
+    assert.match(wrongUsage?.summary ?? "", /extended key usage does not permit client/u);
+    for (const [name, extension] of [
+      ["no-client-eku", ""],
+      ["unreadable-client-eku", "2.5.29.37=critical,DER:05:00"],
+    ] as const) {
+      const unconfirmed = await signedLeaf(dir, ca, {
+        name,
+        usage: "clientAuth",
+        keyPem: expired.key,
+        run: async (command, args) => {
+          if (args[0] === "x509") {
+            const extensions = args[args.indexOf("-extfile") + 1];
+            assert.ok(extensions);
+            const original = await readFile(extensions, "utf8");
+            assert.match(original, /^extendedKeyUsage=clientAuth$/mu);
+            await writeFile(
+              extensions,
+              original.replace(/^extendedKeyUsage=clientAuth$/mu, extension),
+            );
+          }
+          return execFileSync(command, args);
+        },
+      });
+      assert.equal(new X509Certificate(unconfirmed.cert).keyUsage, undefined);
+      await setLeaf(unconfirmed.cert, clientSecret);
+      const result = await clientCheck();
+      assert.equal(result?.status, "unknown");
+      assert.match(result?.summary ?? "", /current.*does not establish client authentication/u);
+      assert.deepEqual(result?.resources, [
+        workloadIdentity,
+        await identity("Secret", clientSecret),
+      ]);
+    }
+    await setLeaf(clientLeaf.cert, clientSecret);
+
+    const peerClients = ["stateful-client", "claim-client", "alias-client"] as const;
+    const [peerName, claimName, aliasName] = peerClients;
+    const peerClientPlan = (name: (typeof peerClients)[number]) => ({
+      ...clientPlan,
+      clientCertificate: {
+        ...clientCertificate,
+        workload: { kind: "StatefulSet", namespace, name },
+      },
+    });
+    const aliasItems = [publicItem, { key: "tls.key", path: "./admin.pem" }];
+    for (const name of peerClients) {
+      const peerLabels = { app: name };
+      await applyManifest(
+        JSON.stringify({
+          apiVersion: "apps/v1",
+          kind: "StatefulSet",
+          metadata: { name, namespace },
+          spec: {
+            replicas: 0,
+            serviceName,
+            selector: { matchLabels: peerLabels },
+            template: {
+              metadata: { labels: peerLabels },
+              spec: {
+                containers: [{ name: "broker", image: worker.image }],
+                initContainers: [{ ...worker, restartPolicy: "Always" }],
+                volumes: [
+                  name === aliasName
+                    ? { ...clientVolume, secret: { ...clientVolume.secret, items: aliasItems } }
+                    : clientVolume,
+                  { name: "scratch", emptyDir: {} },
+                ],
+              },
+            },
+            ...(name === claimName
+              ? {
+                  volumeClaimTemplates: [
+                    {
+                      metadata: { name: clientVolume.name },
+                      spec: {
+                        accessModes: ["ReadWriteOnce"],
+                        resources: { requests: { storage: "1Mi" } },
+                      },
+                    },
+                  ],
+                }
+              : {}),
+          },
+        }),
+      );
+      await waitFor(`StatefulSet generation for ${name}`, async () => {
+        const peer = await resource("statefulset", name);
+        return peer.status?.observedGeneration === peer.metadata.generation;
+      });
+    }
+    const peer = await clientCheck(peerClientPlan(peerName));
+    assert.equal(peer?.status, "passed");
+    assert.deepEqual(peer?.resources, [
+      await identity("StatefulSet", peerName),
+      await identity("Secret", clientSecret),
+    ]);
+    const claimed = await resource("statefulset", claimName);
+    assert.equal(claimed.spec.volumeClaimTemplates[0].metadata.name, clientVolume.name);
+    assert.equal(claimed.spec.template.spec.volumes[0].secret.secretName, clientSecret);
+    const aliased = await resource("statefulset", aliasName);
+    assert.deepEqual(aliased.spec.template.spec.volumes[0].secret.items, aliasItems);
+
+    const unmounted = await clientCheck({
+      ...clientPlan,
+      clientCertificate: { ...clientCertificate, certificatePath: "/etc/detached/tls.crt" },
+    });
+    assert.equal(unmounted?.status, "failed");
+    assert.match(unmounted?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+    assert.deepEqual(unmounted?.resources, [workloadIdentity]);
+    const override = await invokeDiagnostic(
+      {
+        ...clientPlan,
+        clientCertificate: { ...clientCertificate, secretName: detachedSecret },
+      },
+      protectedValues,
+    );
+    assert.equal(override.status, 2);
+    assert.equal(override.stdout, "");
+    assert.match(
+      override.stderr,
+      /clientCertificate accepts only workload, container and certificatePath/u,
+    );
+
     // The same real API refuses this identity. A refusal is incomplete evidence,
     // not a negative readiness observation; credentials must never enter output.
     await kubectl("-n", namespace, "create", "serviceaccount", "reader");
     const token = String(
       await kubectl("-n", namespace, "create", "token", "reader", "--duration=10m"),
     ).trim();
-    assert.ok(token, "the denied reader needs a credential to exercise authorization");
     const clusters = JSON.parse(
       String(
         await kubectl(
@@ -497,54 +922,214 @@ test(
       }),
       { mode: 0o600 },
     );
-    const denied = await diagnose(
-      { ...dependencyPlan, kubeconfig: deniedConfig, context: "reader" },
-      token,
-    );
+    const diagnoseAsReader = (plan: Plan) =>
+      diagnose({ ...plan, kubeconfig: deniedConfig, context: "reader" }, [
+        token,
+        ...protectedValues,
+      ]);
+    const denied = await diagnoseAsReader(dependencyPlan);
     for (const id of [
       "resource-quotas",
       "api-addresses",
       "gateway-class",
       `controller:${namespace}/observer`,
       "service-egress",
+      "service-tls",
     ]) {
       assert.equal(denied.checks.get(id)?.status, "unknown", id);
     }
     assert.equal(denied.status, 2);
 
-    const missingService = "missing-middleware";
-    const role = "missing-service-reader";
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "role",
-      role,
-      "--verb=get",
-      "--resource=services",
-      `--resource-name=${missingService}`,
+    async function grantNamedReads(
+      role: string,
+      resourceKinds: string,
+      ...names: [string, ...string[]]
+    ) {
+      await kubectl(
+        "-n",
+        namespace,
+        "create",
+        "role",
+        role,
+        "--verb=get",
+        `--resource=${resourceKinds}`,
+        ...names.map((name) => `--resource-name=${name}`),
+      );
+      await kubectl(
+        "-n",
+        namespace,
+        "create",
+        "rolebinding",
+        role,
+        `--role=${role}`,
+        `--serviceaccount=${namespace}:reader`,
+      );
+    }
+    await grantNamedReads(
+      "client-workload-reader",
+      "deployments.apps,statefulsets.apps",
+      clientName,
+      claimName,
+      aliasName,
     );
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "rolebinding",
-      role,
-      `--role=${role}`,
-      `--serviceaccount=${namespace}:reader`,
-    );
-    const missing = await diagnose(
-      {
-        ...config,
-        kubeconfig: deniedConfig,
-        context: "reader",
-        serviceDependency: {
-          service: { ...dependency.service, name: missingService },
-          policy: dependency.policy,
-        },
+    const deniedClient = await diagnoseAsReader(clientPlan);
+    const deniedSecret = deniedClient.checks.get("client-certificate");
+    assert.equal(deniedSecret?.status, "unknown");
+    assert.match(deniedSecret?.summary ?? "", /not authorized to read this resource/u);
+    assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
+    assert.match(deniedSecret?.action ?? "", /read access/u);
+    assert.doesNotMatch(deniedSecret?.action ?? "", /renew/u);
+
+    const workerMounts = "/spec/template/spec/containers/0/volumeMounts";
+    async function patchClientDeployment(operations: object[]) {
+      // Large item mappings can exceed the command-line argument limit.
+      const patchPath = join(dir, "client-deployment-patch.json");
+      await writeFile(patchPath, JSON.stringify(operations), { mode: 0o600 });
+      await kubectl(
+        "-n",
+        namespace,
+        "patch",
+        "deployment",
+        clientName,
+        "--type=json",
+        "--patch-file",
+        patchPath,
+      );
+      // Finish the controller's status update before checking the workload version.
+      await waitForClientGeneration();
+    }
+    const selectedMount = `${workerMounts}/0/mountPath`;
+    // An equivalent spelling of the only mount path still resolves to the leaf.
+    await patchClientDeployment([
+      { op: "replace", path: selectedMount, value: `${mountPath}//./` },
+    ]);
+    assert.equal((await clientCheck())?.status, "passed");
+
+    // A differently written parent path still shadows the selected file. The
+    // reader has no Secret access, so a premature Secret GET would be unknown.
+    const shadow = { name: "scratch", mountPath: "/etc/openclaw//./" };
+    await patchClientDeployment([{ op: "add", path: `${workerMounts}/-`, value: shadow }]);
+    const overlap = await diagnoseAsReader(clientPlan);
+    const shadowed = overlap.checks.get("client-certificate");
+    assert.equal(shadowed?.status, "failed");
+    assert.match(shadowed?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+    assert.deepEqual(shadowed?.resources, [await identity("Deployment", clientName)]);
+    await patchClientDeployment([
+      { op: "test", path: `${workerMounts}/2/mountPath`, value: shadow.mountPath },
+      { op: "remove", path: `${workerMounts}/2` },
+      { op: "replace", path: selectedMount, value: mountPath },
+    ]);
+
+    // A Secret read under this identity would be unknown, like the control above.
+    for (const name of [claimName, aliasName]) {
+      const invalid = await diagnoseAsReader(peerClientPlan(name));
+      const result = invalid.checks.get("client-certificate");
+      assert.equal(result?.status, "failed");
+      assert.match(result?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+      assert.deepEqual(result?.resources, [await identity("StatefulSet", name)]);
+    }
+
+    // Grant only the missing Secret read. The same identity can now check
+    // the client certificate without access to unrelated resources.
+    await grantNamedReads("client-secret-reader", "secrets", clientSecret);
+    const scoped = await diagnoseAsReader(clientPlan);
+    assert.equal(scoped.checks.get("client-certificate")?.status, "passed");
+    assert.equal(scoped.checks.get("resource-quotas")?.status, "unknown");
+
+    const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
+    async function updateClientVolume(
+      secret: Omit<typeof clientVolume.secret, "items"> & {
+        items?: (typeof clientVolume.secret)["items"];
+        optional?: boolean;
       },
-      token,
+    ) {
+      await patchClientDeployment([
+        { op: "replace", path: "/spec/template/spec/volumes/0/secret", value: secret },
+      ]);
+    }
+    // The large mapping fits in a Kubernetes object. The check must handle it
+    // and accept a required key with an empty value.
+    const largeItems = Array.from({ length: 500 }, (_, index) => ({
+      key: `mapping-${String(index).padStart(3, "0")}-${"x".repeat(241)}`,
+      path: `mapped-${index}.txt`,
+    }));
+    const data = Object.fromEntries(largeItems.map(({ key }) => [key, ""]));
+    await patchSecretData(clientSecret, { ...data, companion: "" });
+    await updateClientVolume({ ...clientVolume.secret, items: [...companionItems, ...largeItems] });
+    assert.equal((await clientCheck())?.status, "passed");
+
+    // Two present companion keys cannot claim the same path as both a file
+    // and a directory, even when neither claim overlaps the public leaf.
+    const conflictingItems = [
+      ...companionItems,
+      { key: unrelatedSecretKey, path: "companion.txt/extra" },
+    ];
+    await updateClientVolume({ ...clientVolume.secret, items: conflictingItems });
+    const conflicting = await clientCheck();
+    assert.equal(conflicting?.status, "failed");
+    assert.match(conflicting?.summary ?? "", /maps one path as both a file and a directory/u);
+
+    // Removing one companion key blocks a required volume. An optional volume
+    // omits that file, so the remaining projection can supply the public leaf.
+    await patchSecretData(clientSecret, { companion: null });
+    const requiredCompanion = await clientCheck();
+    assert.equal(requiredCompanion?.status, "failed");
+    assert.match(requiredCompanion?.summary ?? "", /maps a required key that the Secret lacks/u);
+    await updateClientVolume({ ...clientVolume.secret, items: conflictingItems, optional: true });
+    assert.equal((await clientCheck())?.status, "passed");
+    // The same Secret can supply its default filename or a mapped file with
+    // spaces and Unicode. Both use the configured POSIX path.
+    await updateClientVolume({ secretName: clientSecret });
+    assert.equal(
+      (
+        await clientCheck({
+          ...clientPlan,
+          clientCertificate: { ...clientCertificate, certificatePath: `${mountPath}/tls.crt` },
+        })
+      )?.status,
+      "passed",
     );
+    const unicodePath = "client cert 雪.pem";
+    await updateClientVolume({
+      secretName: clientSecret,
+      items: [{ key: "tls.crt", path: unicodePath }],
+    });
+    assert.equal(
+      (
+        await clientCheck({
+          ...clientPlan,
+          clientCertificate: {
+            ...clientCertificate,
+            certificatePath: `${mountPath}/${unicodePath}`,
+          },
+        })
+      )?.status,
+      "passed",
+    );
+
+    const noLeafSecret = "client-without-public-leaf";
+    await kubectl("-n", namespace, "create", "secret", "generic", noLeafSecret);
+    await updateClientVolume({ ...clientVolume.secret, secretName: noLeafSecret, optional: true });
+    const noLeaf = await clientCheck();
+    assert.equal(noLeaf?.status, "failed");
+    assert.match(noLeaf?.summary ?? "", /lacks a readable X.509 leaf in tls\.crt/u);
+    await updateClientVolume(clientVolume.secret);
+
+    await kubectl("-n", namespace, "delete", "secret", clientSecret);
+    const missingClient = await clientCheck();
+    assert.equal(missingClient?.status, "failed");
+    assert.match(missingClient?.summary ?? "", /TLS Secret does not exist/u);
+    assert.deepEqual(missingClient?.resources, [await identity("Deployment", clientName)]);
+
+    const missingService = "missing-middleware";
+    await grantNamedReads("missing-service-reader", "services", missingService);
+    const missing = await diagnoseAsReader({
+      ...focusedPlan,
+      serviceDependency: {
+        service: { ...dependency.service, name: missingService },
+        policy: dependency.policy,
+      },
+    });
     assert.equal(missing.checks.get("service-egress")?.status, "failed");
     assert.match(missing.checks.get("service-egress")?.summary ?? "", /Service does not exist/u);
     assert.equal(missing.status, 1);

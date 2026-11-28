@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-24"
-last_updated_session: "authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c"
+updated: "2026-11-25"
+last_updated_session: "authoring-run/260fe853-dd79-4ddc-b8cf-541f4c2fd13e"
 ---
 
 # Production Startup Flow
@@ -73,67 +73,65 @@ Migration, bootstrap, API and worker use
 [`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
 The factory parses password-mode URLs before applying caller limits and startup
-options. TLS-file reads and IP-host certificate checks remain.
-Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
-idle client and logs only its error code to stderr as `database.idle-client-error`.
-Queries reconnect.
+options, reads TLS files, and checks IP-host certificates. On failover, restart,
+`idle_session_timeout`, or proxy reset, it discards the idle client and logs
+`database.idle-client-error` to stderr with only the error code. Queries reconnect.
 
 ### 1. Prepare native production inputs
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
-[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
-It pins the kubeconfig, disables kubectl preferences and rejects redirects over
-private Unix sockets. Exec plugins require opt-in. For a Service dependency, it
-reads the Service and checks the named NetworkPolicy's egress grants.
+[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md).
+It pins kubeconfig and rejects redirects. `--require-kuberc` pins the operator's
+credential plugin policy. Otherwise preferences are disabled and exec requires
+opt-in. Each read connects to the private proxy, rechecks any required policy
+and sends one GET. A disconnect never triggers another GET. Service checks compare NetworkPolicy grants.
 [EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
-requires opt-in for all credentials. It verifies the account, ARN, endpoint
-and CA before reading API Service and EndpointSlice addresses.
+verifies account, ARN, endpoint and CA before reading Service and EndpointSlice addresses.
+
+`projectCheck` isolates controller and certificate reads under the same
+policy. It returns only the result. If the client workload UID or
+`resourceVersion` changes during the Secret read, the result is `unknown`.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
 Keep values, Installation YAML and credentials outside the checkout. Helm
-selects images, endpoint, Secret names, placement and egress.
-`openclaw.validate` limits DNS-1123 release Namespace labels to 63 characters.
-Installation YAML selects Drivers, Backends, runtime images, projected identity,
-networking and storage.
-
-File-backed Secrets supply Installation startup, database URLs/optional CA, Better Auth
-signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
-inputs, rewrites Driver configuration, nor infers runtime images.
+selects images, endpoint, Secret names, placement and egress. `openclaw.validate`
+limits DNS-1123 release Namespace labels to 63 characters. Installation YAML owns
+Drivers, Backends, runtime images, projected identity, networking and storage.
+File-backed Secrets supply startup credentials, database URLs and optional CA,
+Better Auth signing and optional ChatGPT administrator credentials. Maintain
+matching values and Installation inputs in the operator workflow.
 
 ### 2. Precreate the bootstrap credential Secret
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:1` projects the precreated
-`bootstrap.credentials.secretName` only on install. Bootstrap alone mounts it
-read-only at `/run/openclaw-bootstrap`; migration, API and worker receive neither
-input. Token automount stays disabled; bootstrap needs no Secret API access.
+`bootstrap.credentials.secretName` read-only at `/run/openclaw-bootstrap` only
+for bootstrap on install. Bootstrap needs no Secret API access or token
+automount.
 
-`scripts/lib/bootstrap-credentials.ts:bootstrapCredentials` follows Secret
-symlinks and validates both files before credential creation. See the
-[input contract](../reference/authentication.md#installation-and-account-ownership).
-Upgrades verify the existing Installation without projecting inputs. Editing
-retained sources does not rotate credentials.
+`scripts/lib/bootstrap-credentials.ts:bootstrapCredentials` follows symlinks and
+validates both [input files](../reference/authentication.md#installation-and-account-ownership)
+before creating credentials. Upgrades verify the existing Installation without
+mounting these inputs. Credential rotation requires its own workflow.
 
 ### 3. Run Helm initialization
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
-kubeconfig/chart/values, checks release states and syncs intent and its directory.
-A failed stdout notice names and preserves intent; dispatch stops. Otherwise the
-CLI syncs the unknown marker before Helm. `observeInstallationJob` records the
-first recognized, attempt-matched install Job UID. Report errors leave Helm's
-outcome unchanged and never replay install.
-
-Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
-Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
+kubeconfig, chart and values, checks release state and syncs intent and its
+directory. A failed stdout notice preserves intent and stops dispatch. The CLI
+syncs the unknown marker before Helm. `observeInstallationJob` records the
+attempt's first recognized Job UID. Report errors never replay Helm. Template
+failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+The CLI captures up to 4 MiB of Helm stderr in memory and discards raw diagnostics.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
-installs isolation before the Job; it and later policies grant configured
-DNS peers UDP/TCP `53` and `5353`
-([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
+installs isolation before the Job. It and later policies grant
+[DNS peers](../reference/settings/production.md#required-production-controller-environment)
+UDP/TCP `53` and `5353`.
 
-`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` refuses existing or unreadable
-Jobs during connected installs. Offline rendering cannot check this; lookup
-neither locks names nor verifies database/volume freshness.
+`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` refuses existing or
+unreadable Jobs during connected installs. Its lookup requires API access and
+leaves name locking, database and volume freshness to the operator.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
 checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
@@ -155,46 +153,42 @@ ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 The hook validates its name and distinct database Secret keys; both database containers can mount the CA ([production settings](../reference/settings/production.md)).
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt
-target before reading the Job. `initializationEvidence` checks its marker, UID, exact chart
-steps, controller and terminal status. Guarded checks require the current wrapper
-or typed entry; flagged historical Jobs remain unknown. Separate-upgrade verifies schema
-before bootstrap.
-Missing, replaced, refused or inconclusive evidence stays unknown.
-Doctor reports Helm separately; write errors exit `1`.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the
+receipt target. `initializationEvidence` checks Job marker, UID, chart steps,
+controller and terminal status. Guarded checks require the current wrapper or
+typed entry. Flagged historical Jobs and missing, replaced or inconclusive
+evidence remain unknown. Separate-upgrade verifies schema before bootstrap.
+Doctor reports Helm separately. Write errors exit `1`.
 
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
 After source verification, [PostgreSQL below 17](../reference/settings/operations.md#postgresql-server-compatibility)
-fails with `MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access.
+fails with `MIGRATION_SERVER_UNSUPPORTED` before locks or catalog reads.
 On SIGINT/SIGTERM a second connection terminates the uniquely named session.
-If cancellation fails, the migrator logs `migration.cancellation-failed` and
-awaits completion. Cleanup ignores repeated signals.
+Cancellation failure logs `migration.cancellation-failed` and awaits completion.
+Cleanup ignores repeated signals.
 
-Under the advisory lock, the migrator verifies [history](../reference/settings/operations.md#migration-history),
+The advisory lock covers verification of [history](../reference/settings/operations.md#migration-history),
 roles, catalogs and grants against native or reviewed restore digests before
-DDL or bootstrap. On 0085, check and apply refuse unfinished managed TokenService
-registrations with `MIGRATION_REGISTRATION_PENDING`.
-The SQL constraint guards later changes. After option checks, completed apply
-skips Drizzle only when `transaction_read_only` is off. Drizzle handles pending migrations
-and read-only refusals. Cleanup releases the lock and client.
+DDL or bootstrap. For 0085, check and apply refuse unfinished managed TokenService
+registrations with `MIGRATION_REGISTRATION_PENDING`. A SQL constraint guards
+later writes. After option checks, completed apply skips Drizzle only with
+`transaction_read_only` off. Drizzle handles pending migrations and read-only
+refusals. Cleanup releases the lock and client.
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
 Console origin before database access, including during `--verify-existing`.
 
-`scripts/bootstrap-installation.mjs` creates or verifies Installation,
-human/service administrators, IAM seed, audit evidence, and initial service key.
-Fresh bootstrap creates `default` via `OpenClawController.createNamespace`
-as the bootstrap Principal. Queued reconciliation commits with Installation/IAM
-state and audit. Existing Installations add no Namespace; this is not Kubernetes'
-`default`. The worker provisions Driver-owned infrastructure; operators provide
-tenant RoleBindings. Bootstrap registers the supplied credentials and emits only
-non-secret attempt IDs on stdout.
+`scripts/bootstrap-installation.mjs` creates or verifies the Installation,
+administrators, IAM seed, audit evidence and initial service key. On fresh install,
+`OpenClawController.createNamespace` creates OCE Namespace `default` as the
+bootstrap Principal. Queued reconciliation commits with Installation, IAM and audit
+writes. The worker provisions Driver resources and operators provide tenant
+RoleBindings. Stdout contains only non-secret attempt IDs.
 Use [`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment)
-to check a populated candidate using the incumbent ID and a read-only database
-snapshot. The Helm initialization Job continues to use ordinary bootstrap.
-Invalid fresh credential inputs or inconsistent existing accounts/IAM identity
-fail the Job. Helm failure does not imply database-hook rollback.
+to check a candidate against the incumbent ID and a read-only database snapshot.
+Helm uses ordinary bootstrap. Invalid credential inputs and inconsistent
+accounts or IAM fail the Job. Verify database state after a failed Helm run.
 
 ### 4. Start private API and worker Deployments
 
@@ -202,11 +196,11 @@ fail the Job. Helm failure does not imply database-hook rollback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-With [OIDC CA settings](../reference/settings/oidc.md), generated
+With [OIDC CA settings](../reference/settings/oidc.md),
 [`assemble-api-ca.mjs`](../layout.md#deployment-tooling-and-checks) combines
 validated IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`.
-The `check-api-database-ca.mjs` preload requires the selected CA and DNS hostname
-verification for PostgreSQL.
+`check-api-database-ca.mjs` requires the selected PostgreSQL CA and DNS hostname
+verification.
 
 `apps/controller/src/auth/configuration.ts:validateAuthSecret` rejects short
 secrets before Driver construction or PostgreSQL access. `composeProduction` and
@@ -223,11 +217,11 @@ five-second failures.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-On `SIGTERM`, the API stops accepting connections and drains requests with
-`Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
-replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
-Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
-or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
+On `SIGTERM`, the API stops accepting connections and drains with
+`Connection: close` to skip the 72-second keep-alive wait. The single `Recreate`
+replica has no peer or `preStop`. Its grace period is 30 seconds.
+Logs show `shutdown.started` (`signal`), `shutdown.completed` (`durationMs`), or
+`shutdown.failed` (exit 1). Only `shutdown.started` indicates an interrupted drain.
 
 The [production](../../apps/controller/src/composition/production.ts) and
 [development](../../apps/controller/src/composition/development-postgres.ts) APIs
@@ -242,40 +236,35 @@ Git owner, receipt listener, metrics, and database. It continues after errors an
 until grace expires. Failed startup closes the installed Driver package, even
 if refused, and preserves the original error.
 
-When set, `controlPlane.nodeSelector` places the API, worker, migration,
-bootstrap, and private proxy on reviewed control-plane nodes. The
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` template sets
-`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute owns tenant
-Gateway and Agent placement.
+Optional `controlPlane.nodeSelector` places API, worker, migration,
+bootstrap and private proxy on reviewed nodes.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` sets
+`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute places tenant
+Gateways and Agents.
 
-With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
-active client mounts. It normalizes relative paths, dot segments, and trailing
-slashes for comparison and emits accepted paths as supplied.
+With `database.caSecretName`, `_helpers.tpl` rejects paths masking active client
+mounts. It normalizes relative paths, dot segments and trailing slashes for
+comparison only.
 
-The [control-plane NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-keep release ingress restricted. The release-wide default deny selects API and
-worker Pods, but Kubernetes combines selected egress grants: a policy for
-components `api` and `worker` allows unrestricted egress. Initialization has a
-separate DNS, database, and Kubernetes API grant. Agent, Sandbox, collector, and
-proxy Pods do not receive the control-plane grant. Pre-install initialization
-retains its hook DNS and database grants.
+[NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
+restrict release ingress. Kubernetes combines grants. Despite release-wide
+default deny, only `api` and `worker` components receive the unrestricted
+control-plane egress grant. Initialization allows DNS, database and Kubernetes
+API access. Pre-install hooks retain DNS and database grants.
 
-Managed channel egress uses one installation configuration for the reserved
-OCC provider listener and per-Agent listener allocation. The listener fleet
-restricts ingress to its authorized callers. Startup records an unavailable
-listener as a warning; channel operations fail closed while OCC stays available.
-See [channel egress](channel-egress.md).
+[Channel egress](channel-egress.md) configures the reserved OCC provider
+listener and per-Agent listener allocation together. Listeners admit only
+authorized callers. If unavailable, startup warns, channel operations fail
+closed and OCC stays available.
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs
 `compute.preflight-warning` with both versions and continues. An invalid version
 response, unreachable API, or failed Namespace access fails preflight.
 
-The worker independently validates production settings, opens the same
-application-role database, loads selected Drivers, validates IAM, runs Compute
-preflight with the same advisory warning, emits `worker.started`, and polls
-durable Namespace/AgentRevision work. Readiness requires fresh queue-health
-observations; neither process receives the bootstrap credential projection.
+The worker validates settings and IAM, connects with the application database
+role and runs Compute preflight. It emits `worker.started` and polls durable
+Namespace and AgentRevision work. Readiness needs a fresh queue observation.
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
@@ -347,11 +336,10 @@ The shell initializes the missing annotation, patches with UID and
   `AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID` and administrator/IAM mismatch.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
-- `tests/integration/production-kubernetes-packaging.test.mjs` renders the
-  chart; it does not prove deployment or model execution.
-- `tests/integration/installation-handoff-k3d-real.test.ts` exercises the CLI with
-  rendered Jobs, real named-Job RBAC, and replacement UIDs; suspended Jobs avoid
-  migration/bootstrap execution. See [Kubernetes tests](../testing/kubernetes.md).
+- `tests/integration/production-kubernetes-packaging.test.mjs` checks chart rendering.
+- `tests/integration/installation-handoff-k3d-real.test.ts` checks CLI handoff with
+  suspended Jobs, named-Job RBAC, and replacement UIDs. See
+  [Kubernetes tests](../testing/kubernetes.md) for runtime proof.
 
 ## Related docs
 
@@ -371,11 +359,18 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-25 04:09: Apply the same policy to isolated reads. (authoring-run/260fe853-dd79-4ddc-b8cf-541f4c2fd13e - 96274fd324d5555f267bc068c882fbba845bcd00)
+- 2026-11-25 04:07: Wait for the private proxy before a read. (authoring-run/178ebf38-4eb3-485d-9582-a65c54236dbf - 5d3ecae51db52a4b559e0731cf6b6801617f5761)
+- 2026-11-24 23:03: Check the selected credential plugin policy before Kubernetes reads. (authoring-run/16c42be4-2ccf-4749-aa31-ff8545237a2d - a012271e4e3b5d6688fcfb49c2803e4c7faf4390)
 - 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
-
 - 2026-11-24 10:41: Trace unrestricted API and refresh Worker egress while preserving initialization isolation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
-
+- 2026-11-24 02:58: Check Secret item path byte limits. (authoring-run/d741699f-1816-4494-b673-ec5ca6b39ead - b75c6cd3a6fbddf70f550a5a9a3462ed3872a3ae)
+- 2026-11-24 02:20: Restrict certificate and controller projection to the validated parent request. (authoring-run/adf92678-9370-432d-b05f-fc9b18392642 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 - 2026-11-24 02:19: Validate API address inventory and document credential opt-in. (authoring-run/e942eb38-a6b6-461f-beaa-0a1efaa489da - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
+
+- 2026-11-23 20:03: Check path conflicts in mounted Secret volumes. (authoring-run/273e5f77-256f-4a55-9c68-0f103675bad7 - b899d185e0d9ae6a59922d813eeb0bda45172eac)
+
+- 2026-11-23 19:17: Verify mounted client certificates through the pinned prerequisite transport. (authoring-run/ec4d5f5d-a1ba-4f38-bf60-40eff379e05f - b899d185e0d9ae6a59922d813eeb0bda45172eac)
 
 - 2026-11-23 19:26: Trace pinned prerequisite reads and EKS identity checks. (authoring-run/ce6b5562-b2f2-4821-b112-f012b4c0de17 - b899d185e0d9ae6a59922d813eeb0bda45172eac)
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -12,6 +12,7 @@ import { basename, join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { TLSSocket } from "node:tls";
+import { pathToFileURL } from "node:url";
 import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 
@@ -20,6 +21,13 @@ type Observation = {
   status: string;
   summary: string;
   action?: string;
+  resources?: {
+    kind: string;
+    namespace: string;
+    name: string;
+    uid: string;
+    resourceVersion: string;
+  }[];
 };
 type Reply = { status: number; body: object | string; location?: string };
 type ApiRequest = {
@@ -81,6 +89,13 @@ function api(
                 namespaced: true,
                 verbs: ["get"],
               },
+              {
+                name: "secrets",
+                singularName: "secret",
+                kind: "Secret",
+                namespaced: true,
+                verbs: ["get"],
+              },
             ],
           },
         };
@@ -102,17 +117,17 @@ function api(
 const apiPath = "/api/v1/namespaces/default/services/kubernetes";
 const apiSlicesPath = "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices";
 const rolloutPath = "/apis/apps/v1/namespaces/default/deployments/controller";
-const rolloutCheck = "controller:default/controller";
-const servicePath = "/api/v1/namespaces/default/services/dependency";
 const policyPath =
   "/apis/networking.k8s.io/v1/namespaces/default/networkpolicies/dependency-egress";
+const servicePath = "/api/v1/namespaces/default/services/dependency";
+const secretPath = "/api/v1/namespaces/default/secrets/leaf";
 const dnsName = "gateway.test.invalid";
 
-function serviceReply(name: string, spec: object) {
+function object(kind: "Service" | "Secret", name: string, fields: object) {
   return {
     status: 200,
     body: {
-      kind: "Service",
+      kind,
       apiVersion: "v1",
       metadata: {
         name,
@@ -120,14 +135,20 @@ function serviceReply(name: string, spec: object) {
         uid: randomUUID(),
         resourceVersion: "1",
       },
-      spec,
+      ...fields,
     },
   };
 }
 
-const kubectlError = spawnSync("kubectl", ["version", "--client"], {
-  stdio: "ignore",
-}).error;
+const clientProbe = spawnSync(
+  "kubectl",
+  ["--kubeconfig", "/dev/null", "version", "--client", "-o", "json"],
+  {
+    encoding: "utf8",
+    env: { ...process.env, KUBECTL_KUBERC: "false", KUBERC: "off" },
+  },
+);
+const kubectlError = clientProbe.error;
 const withoutKubectl =
   !process.env.OCC_TEST_KUBERNETES_CONFIGURATION &&
   kubectlError !== undefined &&
@@ -167,17 +188,19 @@ test(
     const replacementToken = randomUUID();
     const caBundle = await readFile(ca.caPath);
     const tokenFile = join(source, "reader-token");
-    const keyData = Buffer.from(client.key).toString("base64");
+    const certData = Buffer.from(server.cert).toString("base64");
+    const keyData = Buffer.from(server.key).toString("base64");
     await writeFile(tokenFile, token, { mode: 0o600 });
     const plugin = {
       apiVersion: "client.authentication.k8s.io/v1",
       kind: "ExecCredential",
       status: { token },
     };
+    const pluginPath = join(source, "credential-plugin");
     const pluginMarker = join(source, "credential-plugin-started");
     await writeFile(
-      join(source, "credential-plugin"),
-      `#!/bin/sh\n: > "$TEST_PLUGIN_MARKER"\nprintf '%s\\n' '${JSON.stringify(plugin)}'\n`,
+      pluginPath,
+      `#!/bin/sh\necho started >> "$TEST_PLUGIN_MARKER"\nprintf '%s\\n' '${JSON.stringify(plugin)}'\n`,
       { mode: 0o700 },
     );
 
@@ -186,14 +209,26 @@ test(
     const httpsRequests: ApiRequest[] = [];
     const httpRequests: ApiRequest[] = [];
     let firstServiceRead: (() => void) | undefined;
+    let onServingSecretRead: (() => void) | undefined;
     let pauseServiceRead = false;
-    let dependencyReply: Reply | undefined;
     let deniedPath: string | undefined;
+    let serveValidLeaf = false;
+    let dependencyReply: Reply | undefined;
+    let secretReply: Reply | undefined;
     let apiServiceReply: Reply | undefined;
     let apiSlicesReply: Reply | undefined;
     let redirect: { path: string; location: string } | undefined;
+    let clientFixture: ((path: string) => Reply | undefined) | undefined;
     let proxyTunnel: { authority: string; port: number } | undefined;
-    const plaintext = createServer(api(httpRequests, () => undefined));
+    const plaintext = createServer(
+      api(httpRequests, ({ path }) => {
+        if (path === secretPath) {
+          return object("Secret", "leaf", {
+            data: { "tls.crt": certData, "tls.key": keyData },
+          });
+        }
+      }),
+    );
     // The proxy never resolves the CONNECT authority. It can forward the
     // selected test authority only to the independently bound loopback fixture.
     plaintext.on("connect", (request, socket, head) => {
@@ -235,6 +270,10 @@ test(
     const verifiedApi = api(httpsRequests, ({ path: requestPath }) => {
       if (redirect?.path === requestPath) {
         return { status: 307, location: redirect.location, body: {} };
+      }
+      const fixtureReply = clientFixture?.(requestPath);
+      if (fixtureReply !== undefined) {
+        return fixtureReply;
       }
       if (quotaReply && requestPath === "/api/v1/namespaces/default") {
         return {
@@ -300,7 +339,10 @@ test(
         firstServiceRead?.();
         return pauseServiceRead
           ? { status: 0, body: {} }
-          : (apiServiceReply ?? serviceReply("kubernetes", { clusterIP: "10.32.0.1" }));
+          : (apiServiceReply ??
+              object("Service", "kubernetes", {
+                spec: { clusterIP: "10.32.0.1" },
+              }));
       }
       if (requestPath === apiSlicesPath && apiSlicesReply) {
         return apiSlicesReply;
@@ -310,6 +352,18 @@ test(
       }
       if (requestPath === servicePath) {
         return dependencyReply;
+      }
+      if (requestPath === secretPath) {
+        onServingSecretRead?.();
+        return (
+          secretReply ??
+          object("Secret", "leaf", {
+            data: {
+              "tls.crt": serveValidLeaf ? certData : Buffer.from("invalid leaf").toString("base64"),
+              "tls.key": keyData,
+            },
+          })
+        );
       }
     });
     const serverIdentity = { cert: server.cert, key: server.key };
@@ -402,13 +456,63 @@ test(
       serviceDependency: {
         service: { namespace: "default", name: "dependency", port: 443 },
         policy: { namespace: "default", name: "dependency-egress" },
+        tls: { secretName: "leaf", serverName: dnsName },
       },
     };
+    await writeFile(plan, JSON.stringify(planInput));
+
+    // Exercise the private child with synthetic, pinned credentials for variants
+    // that only change the response to a named GET. The public CLI cases below
+    // cover plan validation, credential pinning, child isolation and cleanup.
+    const projectionDirectory = await mkdtemp(join(directory, "oce-prerequisites-"));
+    const snapshot = join(projectionDirectory, "kubeconfig.json");
+    const unrelated = randomUUID();
+    const companion = "companion-key";
+    const clientData = Buffer.from(client.cert).toString("base64");
+    const clientKey = Buffer.from(client.key).toString("base64");
+    await writeFile(
+      snapshot,
+      config(
+        "verified",
+        { token, "client-certificate-data": clientData, "client-key-data": clientKey },
+        {
+          server: endpoint.verified.server,
+          "certificate-authority-data": caBundle.toString("base64"),
+        },
+      ),
+      { mode: 0o600 },
+    );
+    const servingCheck = {
+      kind: "serving",
+      selection: { namespace: "default", name: "leaf" },
+      serverName: dnsName,
+    } as const;
+    const mount = "/etc/openclaw/client";
+    const clientSelection = (filename: string) => ({
+      workload: { kind: "Deployment", namespace: "default", name: "client" },
+      container: "admin",
+      certificatePath: `${mount}/${filename}`,
+    });
+    type ProjectionCheck =
+      typeof servingCheck | { kind: "client"; selection: ReturnType<typeof clientSelection> };
+    function projectionRequest(check: ProjectionCheck) {
+      return {
+        check,
+        kubeconfig: snapshot,
+        context: "selected",
+        socketPrefix: join(projectionDirectory, "1"),
+        policy: null,
+        timeout: 10_000,
+      };
+    }
+    const diagnosticArgs = ["--config", plan, "--json"];
     function collect(
       environment: NodeJS.ProcessEnv = {},
       expectCleanup = true,
-      args = ["--config", plan, "--json"],
+      invocation: string[] | ProjectionCheck = diagnosticArgs,
     ) {
+      const isCli = Array.isArray(invocation);
+      const args = isCli ? invocation : [];
       const processHandle = spawn(
         process.execPath,
         ["scripts/diagnose-kubernetes-prerequisites.ts", ...args],
@@ -416,19 +520,23 @@ test(
           env: {
             ...process.env,
             HOME: operatorHome,
-            KUBERC: undefined,
-            KUBECTL_KUBERC: undefined,
+            KUBERC: isCli ? undefined : "off",
+            KUBECTL_KUBERC: isCli ? undefined : "false",
             TEST_PLUGIN_MARKER: pluginMarker,
             TMPDIR: scratch,
             KUBECACHEDIR: join(directory, "cache"),
             ...environment,
           },
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: isCli ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "ipc"],
           signal: t.signal,
         },
       );
+      if (!isCli) {
+        processHandle.send(projectionRequest(invocation));
+      }
       let stdout = "";
       let stderr = "";
+      assert.ok(processHandle.stdout && processHandle.stderr);
       processHandle.stdout.setEncoding("utf8").on("data", (chunk: string) => {
         stdout += chunk;
       });
@@ -437,6 +545,7 @@ test(
       });
       const result = once(processHandle, "close").then(async ([code]) => {
         const output = stdout + stderr;
+        // Check for leaked values before a detailed assertion can print them.
         assert.equal(
           [
             token,
@@ -447,6 +556,11 @@ test(
             currentIdToken,
             expiredIdToken,
             keyData,
+            certData,
+            clientData,
+            clientKey,
+            unrelated,
+            companion,
             "PRIVATE KEY",
           ].some((value) => output.includes(value)),
           false,
@@ -462,15 +576,32 @@ test(
       });
       return { processHandle, result };
     }
+    async function project(check: ProjectionCheck) {
+      httpsRequests.length = 0;
+      httpRequests.length = 0;
+      const { code, stdout, stderr } = await collect({}, true, check).result;
+      assert.equal(code, 0);
+      assert.ok(!stderr);
+      assert.equal(httpRequests.length, 0);
+      assert.ok(
+        httpsRequests.length > 0 &&
+          httpsRequests.every(
+            (read) => read.hasClientCertificate && read.bearer === `Bearer ${token}`,
+          ),
+      );
+      assert.deepEqual(await readdir(projectionDirectory), ["kubeconfig.json"]);
+      return JSON.parse(stdout) as Omit<Observation, "id">;
+    }
     async function observations(
       kubeconfig: string,
       expectedCode: number | null = 1,
       environment?: NodeJS.ProcessEnv,
+      args = diagnosticArgs,
     ) {
       await writeFile(path, kubeconfig, { mode: 0o600 });
       httpsRequests.length = 0;
       httpRequests.length = 0;
-      const { code, output } = await collect(environment).result;
+      const { code, output } = await collect(environment, true, args).result;
       if (expectedCode !== null) {
         assert.equal(code, expectedCode);
       }
@@ -478,32 +609,6 @@ test(
       return new Map(checks.map((check) => [check.id, check]));
     }
 
-    await t.test("unsupported plan fields stop diagnosis before Kubernetes reads", async () => {
-      await writeFile(path, verifiedConfig, { mode: 0o600 });
-      const { serviceDependency, ...required } = planInput;
-      // A requested check must never disappear from a successful report.
-      for (const [input, message] of [
-        [{ ...required, serviceDependecy: serviceDependency }, /only supported top-level fields/u],
-        [
-          {
-            ...required,
-            serviceDependency: {
-              ...serviceDependency,
-              tls: { secretName: "leaf", serverName: dnsName },
-            },
-          },
-          /serviceDependency accepts only service and policy/u,
-        ],
-      ] as const) {
-        await writeFile(plan, JSON.stringify(input));
-        const { code, stdout, stderr } = await collect().result;
-        assert.equal(code, 2);
-        assert.equal(stdout, "");
-        assert.match(stderr, message);
-        assert.equal(httpsRequests.length + httpRequests.length, 0);
-      }
-    });
-    await writeFile(plan, JSON.stringify(planInput));
     await t.test("mutual TLS refuses missing or untrusted client certificates", async () => {
       const untrustedDirectory = join(source, "untrusted");
       await mkdir(untrustedDirectory, { mode: 0o700 });
@@ -543,7 +648,7 @@ test(
       assert.equal(httpsRequests.length, 0, "kubectl refused the untrusted server certificate");
     });
     await t.test(
-      "replacing the context and CA cannot redirect the rollout or Service GET",
+      "replacing the context and CA cannot redirect the rollout or Secret GET",
       async () => {
         firstServiceRead = () => {
           // Change the context and user, revoke the on-disk CA, and rotate the token
@@ -555,6 +660,7 @@ test(
         try {
           const checks = await observations(verifiedConfig);
           assert.equal(checks.get("kubernetes-api")?.status, "passed");
+          // Before the fix this Secret GET reached the plaintext endpoint and falsely passed.
           assert.equal(httpRequests.length, 0, "no request reached the plaintext endpoint");
           const apiRead = httpsRequests.find(({ path }) => path === apiPath);
           assert.ok(
@@ -568,17 +674,17 @@ test(
               rolloutReads[0].bearer === `Bearer ${refreshedToken}`,
             "the rollout read remains on the pinned authenticated endpoint",
           );
-          assert.equal(checks.get(rolloutCheck)?.status, "passed");
-          const serviceRead = httpsRequests.find(({ path }) => path === servicePath);
+          assert.equal(checks.get("controller:default/controller")?.status, "passed");
+          const secretRead = httpsRequests.find(({ path }) => path === secretPath);
           assert.ok(
-            serviceRead?.hasClientCertificate,
+            secretRead?.hasClientCertificate,
             "kubectl presented the relative client certificate",
           );
           assert.ok(
-            serviceRead.bearer === `Bearer ${refreshedToken}`,
+            secretRead.bearer === `Bearer ${refreshedToken}`,
             "the verified endpoint received the rotated token",
           );
-          assert.equal(checks.get("service-egress")?.status, "failed");
+          assert.equal(checks.get("service-tls")?.status, "failed");
         } finally {
           firstServiceRead = undefined;
           await Promise.all([writeFile(ca.caPath, caBundle), writeFile(tokenFile, token)]);
@@ -596,15 +702,16 @@ test(
             api(alternateRequests, () => undefined),
           ),
         );
+        serveValidLeaf = true;
         try {
           const normal = await observations(verifiedConfig);
           assert.equal(normal.get("kubernetes-api")?.status, "passed");
-          assert.equal(normal.get(rolloutCheck)?.status, "passed");
+          assert.equal(normal.get("service-tls")?.status, "passed");
 
           for (const [path, id, location] of [
             [apiPath, "kubernetes-api", `http://localhost:${plaintextPort}/sink`],
-            [rolloutPath, rolloutCheck, `https://127.0.0.1:${alternatePort}/sink`],
-            [rolloutPath, rolloutCheck, "/sink"],
+            [secretPath, "service-tls", `https://127.0.0.1:${alternatePort}/sink`],
+            [secretPath, "service-tls", "/sink"],
           ] as const) {
             redirect = { path, location };
             const checks = await observations(verifiedConfig, null);
@@ -628,21 +735,502 @@ test(
           }
         } finally {
           redirect = undefined;
+          serveValidLeaf = false;
         }
       },
     );
-    const execConfig = config("bearer", {
+    await t.test(
+      "the projection cannot read Kubernetes resources through direct CLI arguments",
+      async () => {
+        // Even a request with the expected files and names must enter through
+        // the parent process after the public command validates the plan.
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        const { code, stdout } = await collect({}, true, [
+          "--inspect-prerequisite-resource",
+          JSON.stringify(projectionRequest(servingCheck)),
+        ]).result;
+        assert.equal(code, 2);
+        assert.equal(stdout, "");
+        assert.equal(httpsRequests.length + httpRequests.length, 0);
+        assert.deepEqual(await readdir(projectionDirectory), ["kubeconfig.json"]);
+      },
+    );
+    const execUser = {
       exec: {
         apiVersion: plugin.apiVersion,
         command: "./credential-plugin",
         interactiveMode: "Never",
       },
+    };
+    const execConfig = config("bearer", execUser);
+    const kubectl = spawnSync("sh", ["-c", "command -v kubectl"], {
+      encoding: "utf8",
+    });
+    assert.equal(kubectl.status, 0);
+    const preference = { apiVersion: "kubectl.config.k8s.io/v1beta1", kind: "Preference" };
+    const allowlist = (...names: string[]) => ({
+      ...preference,
+      credentialPluginPolicy: "Allowlist",
+      credentialPluginAllowlist: names.map((name) => ({ name })),
+    });
+    const policyFile = join(source, "required-kuberc");
+    const policyArgs = [...diagnosticArgs, "--require-kuberc"];
+    // Select expectations from the actual client, independently of the CLI under test.
+    assert.equal(clientProbe.status, 0);
+    const { clientVersion } = JSON.parse(clientProbe.stdout);
+    const supportsPolicy =
+      clientVersion?.platform === "linux/amd64" &&
+      clientVersion.gitTreeState === "clean" &&
+      clientVersion.major === "1" &&
+      ((clientVersion.minor === "35" && clientVersion.gitVersion === "v1.35.0") ||
+        (clientVersion.minor === "36" &&
+          ["v1.36.2", "v1.36.4"].includes(clientVersion.gitVersion)));
+    const policyClient = { skip: supportsPolicy ? false : "requires a qualified kubectl" };
+
+    const denyAll = JSON.stringify({ ...preference, credentialPluginPolicy: "DenyAll" });
+
+    async function changePolicyAtProxyStartup(target: string) {
+      await writeFile(path, execConfig, { mode: 0o600 });
+      await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+      await rm(pluginMarker, { force: true });
+      httpsRequests.length = 0;
+      httpRequests.length = 0;
+      // Change only the source after the pre-spawn check. The real proxy starts
+      // with an unchanged private policy that still permits the plugin.
+      const bin = join(directory, "proxy-start-bin");
+      await mkdir(bin, { recursive: true });
+      const replacement = JSON.stringify(allowlist(pluginPath, "another-plugin"));
+      await writeFile(
+        join(bin, "kubectl"),
+        `#!/bin/sh
+for arg do
+  if [ "$arg" = "$TEST_TARGET" ]; then
+    printf '%s' "$TEST_REPLACEMENT" > "$TEST_KUBERC_PATH" || exit 1
+  fi
+done
+exec "$TEST_KUBECTL" "$@"
+`,
+        { mode: 0o700 },
+      );
+      const { code, stdout, stderr } = await collect(
+        {
+          PATH: `${bin}:${process.env.PATH}`,
+          KUBERC: policyFile,
+          TEST_KUBECTL: kubectl.stdout.trim(),
+          TEST_TARGET: `--accept-paths=^${target}$`,
+          TEST_KUBERC_PATH: policyFile,
+          TEST_REPLACEMENT: replacement,
+        },
+        true,
+        policyArgs,
+      ).result;
+      assert.equal(await readFile(policyFile, "utf8"), replacement);
+      assert.equal(httpRequests.length, 0);
+      assert.equal(code, 2);
+      assert.equal(stdout, "");
+      assert.match(stderr, /kuberc.*changed/iu);
+    }
+
+    await t.test("mounted certificates use pinned reads and reconcile each workload", async (t) => {
+      const workloadPath = "/apis/apps/v1/namespaces/default/deployments/client";
+      const mountedSecretPath = "/api/v1/namespaces/default/secrets/mounted-client";
+      const workloadMetadata = {
+        namespace: "default",
+        name: "client",
+        uid: randomUUID(),
+        resourceVersion: "1",
+      };
+      const workloadIdentity = { kind: "Deployment", ...workloadMetadata };
+      const secretMetadata = {
+        namespace: "default",
+        name: "mounted-client",
+        uid: randomUUID(),
+        resourceVersion: "1",
+      };
+      const servingMetadata = { ...secretMetadata, name: "leaf", uid: randomUUID() };
+      let current = workloadMetadata;
+      let observeSecret: (() => void) | undefined;
+      let optional = false;
+      const publicItem = { key: "tls.crt", path: "client.pem" };
+      const mappedItems = [publicItem, { key: companion, path: "companion.txt" }];
+      let items: typeof mappedItems | undefined = mappedItems;
+      clientFixture = (path) => {
+        if (path === workloadPath || path === rolloutPath) {
+          return {
+            status: 200,
+            body: {
+              kind: "Deployment",
+              apiVersion: "apps/v1",
+              metadata: {
+                ...current,
+                name: path === workloadPath ? "client" : "controller",
+                uid: path === workloadPath ? current.uid : rolloutUid,
+                generation: 1,
+                annotations: { "example.test/unrelated": unrelated },
+              },
+              status: {
+                observedGeneration: 1,
+                updatedReplicas: 1,
+                availableReplicas: 1,
+                replicas: 1,
+                conditions: [{ type: "Available", status: "True" }],
+              },
+              spec: {
+                replicas: 1,
+                template: {
+                  spec: {
+                    containers: [
+                      {
+                        name: "admin",
+                        image: "example.invalid/client:test",
+                        env: [{ name: "UNRELATED", value: unrelated }],
+                        volumeMounts: [{ name: "client", mountPath: mount }],
+                      },
+                    ],
+                    volumes: [
+                      {
+                        name: "client",
+                        secret: {
+                          secretName: secretMetadata.name,
+                          optional,
+                          items,
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          };
+        }
+        if (path === mountedSecretPath) {
+          observeSecret?.();
+          return {
+            status: 200,
+            body: {
+              kind: "Secret",
+              apiVersion: "v1",
+              metadata: secretMetadata,
+              data: {
+                "tls.crt": clientData,
+                "tls.key": clientKey,
+                "unrelated-key": unrelated,
+                [companion]: "",
+              },
+            },
+          };
+        }
+      };
+      const { serviceDependency, ...basePlan } = planInput;
+      const planWithClient = (filename = publicItem.path) => ({
+        ...basePlan,
+        clientCertificate: clientSelection(filename),
+      });
+      // Observe the actual child pipes with the normal spawn implementation.
+      // Store digests only, even if a regression emits a complete resource.
+      const trace = join(directory, "projection-digests");
+      const preload = join(directory, "projection-observer.mjs");
+      await writeFile(
+        preload,
+        `
+import childProcess from "node:child_process";
+import { createHash } from "node:crypto";
+import { appendFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+
+const spawn = childProcess.spawn;
+childProcess.spawn = (command, args, options) => {
+  const child = spawn(command, args, options);
+  if (options?.stdio?.includes("ipc")) {
+    let kind;
+    const send = child.send.bind(child);
+    child.send = (request, ...args) => {
+      kind = request.check.kind;
+      return send(request, ...args);
+    };
+    const stdout = createHash("sha256");
+    child.stdout.on("data", (chunk) => stdout.update(chunk));
+    child.once("close", (code) => appendFileSync(${JSON.stringify(trace)}, JSON.stringify({
+      kind, code, stdout: stdout.digest("hex"), stderrDiscarded: child.stderr === null,
+    }) + "\\n"));
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`,
+      );
+      const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+      try {
+        // Reject a misspelled top-level field before any network collection.
+        await writeFile(plan, JSON.stringify({ ...planInput, clientCertifcate: {} }));
+        await writeFile(path, verifiedConfig, { mode: 0o600 });
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        const typo = await collect().result;
+        assert.equal(typo.code, 2);
+        assert.equal(typo.stdout, "");
+        assert.match(typo.stderr, /only supported top-level fields/u);
+        assert.equal(httpsRequests.length + httpRequests.length, 0);
+
+        // Change the original kubeconfig during collection. All three client
+        // reads still use the original verified API and exact resource names.
+        await writeFile(plan, JSON.stringify({ ...planWithClient(), serviceDependency }));
+        firstServiceRead = () => writeFileSync(path, plaintextConfig);
+        secretReply = object("Secret", "leaf", {
+          metadata: servingMetadata,
+          data: { "tls.crt": certData, "tls.key": keyData },
+        });
+        const checks = await observations(verifiedConfig, null, {
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+        });
+        firstServiceRead = undefined;
+        assert.equal(httpRequests.length, 0);
+        const selectedReads = httpsRequests.filter(({ path }) =>
+          [workloadPath, mountedSecretPath].includes(path),
+        );
+        assert.deepEqual(
+          selectedReads.map(({ path }) => path),
+          [workloadPath, mountedSecretPath, workloadPath],
+        );
+        assert.ok(selectedReads.every(({ hasClientCertificate }) => hasClientCertificate));
+        const expected = [
+          {
+            kind: "controller",
+            check: {
+              status: "passed",
+              summary: "All intended controller replicas are updated and available.",
+              resource: `default/controller@${rolloutUid}`,
+            },
+          },
+          {
+            kind: "serving",
+            check: {
+              status: "passed",
+              summary:
+                "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
+              resources: [{ kind: "Secret", ...servingMetadata }],
+            },
+          },
+          {
+            kind: "client",
+            check: {
+              status: "passed",
+              summary:
+                "The client certificate in the selected Secret is within its validity window and its extended key usage permits client use.",
+              resources: [workloadIdentity, { kind: "Secret", ...secretMetadata }],
+            },
+          },
+        ];
+        async function assertProjectedChecks(checks: Map<string, Observation>) {
+          for (const [index, id] of [
+            "controller:default/controller",
+            "service-tls",
+            "client-certificate",
+          ].entries()) {
+            assert.deepEqual(checks.get(id), { id, ...expected[index]?.check });
+          }
+          assert.deepEqual(
+            (await readFile(trace, "utf8"))
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line)),
+            expected.map(({ kind, check }) => ({
+              kind,
+              code: 0,
+              stdout: digest(`${JSON.stringify(check)}\n`),
+              stderrDiscarded: true,
+            })),
+          );
+        }
+        await assertProjectedChecks(checks);
+
+        await t.test(
+          "required kuberc guards every isolated certificate read",
+          policyClient,
+          async () => {
+            // An approved plugin must authenticate the real reads while only
+            // the reduced observations leave the controller and certificate children.
+            await rm(trace);
+            await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+            const allowed = await observations(
+              execConfig,
+              null,
+              {
+                KUBERC: policyFile,
+                NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+              },
+              policyArgs,
+            );
+            await assertProjectedChecks(allowed);
+            assert.equal(httpRequests.length, 0);
+            assert.ok(httpsRequests.every(({ bearer }) => bearer === `Bearer ${token}`));
+            const selectedPaths = () =>
+              httpsRequests
+                .map(({ path }) => path)
+                .filter((path) => [secretPath, workloadPath, mountedSecretPath].includes(path));
+            assert.deepEqual(selectedPaths(), [
+              secretPath,
+              workloadPath,
+              mountedSecretPath,
+              workloadPath,
+            ]);
+
+            // After resolving the mount, a policy change before the next proxy
+            // is ready must prevent both plugin invocation and the named Secret GET.
+            await changePolicyAtProxyStartup(mountedSecretPath);
+            assert.deepEqual(selectedPaths(), [secretPath, workloadPath]);
+            assert.equal(httpsRequests.at(-1)?.path, workloadPath);
+            assert.equal(
+              await readFile(pluginMarker, "utf8"),
+              "started\n".repeat(httpsRequests.length),
+            );
+          },
+        );
+
+        // Kubernetes measures UTF-8 bytes before it cleans the item paths.
+        // A present companion can block the mount even when the leaf fits.
+        const maxComponent = "界".repeat(85);
+        const overlongComponent = `${maxComponent}a`;
+        const maxPath = `dir/${"/".repeat(4_096 - "dir/companion.txt".length)}companion.txt`;
+        const projections = [
+          { name: "NUL in present companion", sibling: "sibling\0file", status: "failed" },
+          {
+            name: "absent optional key creates no path",
+            sibling: "sibling\0file",
+            omitCompanion: true,
+            status: "passed",
+          },
+          { name: "255-byte leaf", leaf: maxComponent, status: "passed" },
+          { name: "256-byte leaf", leaf: overlongComponent, status: "failed" },
+          { name: "255-byte directory", sibling: `${maxComponent}/data`, status: "passed" },
+          { name: "256-byte directory", sibling: `${overlongComponent}/data`, status: "failed" },
+          { name: "4096-byte path", sibling: maxPath, status: "passed" },
+          { name: "4097-byte path", sibling: `${maxPath}/`, status: "failed" },
+          {
+            name: "absent optional companion",
+            sibling: `${overlongComponent}/data`,
+            omitCompanion: true,
+            status: "passed",
+          },
+        ];
+        for (const {
+          name,
+          status,
+          leaf = "client.pem",
+          sibling = "companion.txt",
+          omitCompanion,
+        } of projections) {
+          items = [
+            { key: publicItem.key, path: leaf },
+            { key: omitCompanion ? "missing-companion" : companion, path: sibling },
+          ];
+          optional = omitCompanion === true;
+          const observed = await project({
+            kind: "client",
+            selection: clientSelection(leaf),
+          });
+          assert.equal(observed.status, status, name);
+          assert.deepEqual(
+            observed.resources,
+            [workloadIdentity, { kind: "Secret", ...secretMetadata }],
+            name,
+          );
+          if (status === "failed") {
+            assert.match(
+              observed.summary,
+              /NUL byte or exceeds the filesystem path length limit/u,
+              name,
+            );
+          }
+        }
+
+        // Change only the follow-up workload observation at the HTTPS API.
+        // A healthy public leaf cannot make any of these races pass.
+        for (const mode of ["required", "optional", "default", "replacement"] as const) {
+          current = workloadMetadata;
+          optional = mode === "optional";
+          items = mode === "default" ? undefined : mappedItems;
+          await writeFile(
+            plan,
+            JSON.stringify(planWithClient(items ? publicItem.path : "tls.crt")),
+          );
+          observeSecret = () => {
+            current =
+              mode === "replacement"
+                ? { ...workloadMetadata, uid: randomUUID() }
+                : { ...workloadMetadata, resourceVersion: "2" };
+          };
+          const raced = await observations(verifiedConfig, null);
+          assert.equal(raced.get("client-certificate")?.status, "unknown", mode);
+          assert.match(raced.get("client-certificate")?.summary ?? "", /could not bind/u, mode);
+          assert.deepEqual(raced.get("client-certificate")?.resources, [workloadIdentity], mode);
+        }
+        observeSecret = undefined;
+        current = workloadMetadata;
+        items = mappedItems;
+        await writeFile(plan, JSON.stringify(planWithClient()));
+        for (const redirectedPath of [workloadPath, mountedSecretPath]) {
+          redirect = { path: redirectedPath, location: endpoint.plaintext.server + "/sink" };
+          const redirected = await observations(verifiedConfig, null);
+          assert.equal(redirected.get("client-certificate")?.status, "unknown");
+          assert.match(redirected.get("client-certificate")?.summary ?? "", /unexpected redirect/u);
+          assert.ok(httpsRequests.some(({ path }) => path === redirectedPath));
+          assert.equal(httpRequests.length, 0);
+        }
+      } finally {
+        firstServiceRead = undefined;
+        observeSecret = undefined;
+        clientFixture = undefined;
+        secretReply = undefined;
+        redirect = undefined;
+        await writeFile(plan, JSON.stringify(planInput));
+      }
+    });
+    await t.test("waits for a listening proxy without replaying a disconnected GET", async () => {
+      const bin = join(directory, "proxy-delay-bin");
+      const marker = join(directory, "proxy-delay");
+      await mkdir(bin);
+      // Widen the bind-to-listen gap for the first read, then start genuine
+      // kubectl. In the second run drop the connection after receiving the GET.
+      await writeFile(
+        join(bin, "kubectl"),
+        `#!/usr/bin/env python3
+import os, socket, sys, time
+marker = os.environ["TEST_MARKER"]
+if "--unix-socket" in sys.argv and not os.path.exists(marker):
+    address = sys.argv[sys.argv.index("--unix-socket") + 1]
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(address)
+        if os.environ["TEST_DROP"] == "yes":
+            listener.listen()
+            with listener.accept()[0] as peer, peer.makefile("rb") as received:
+                with open(marker, "wb") as log:
+                    log.write(received.readline())
+        else:
+            open(marker, "w").close()
+            time.sleep(0.25)
+        os.unlink(address)
+os.execv(os.environ["TEST_KUBECTL"], sys.argv)
+`,
+        { mode: 0o700 },
+      );
+      const env = {
+        PATH: `${bin}:${process.env.PATH}`,
+        TEST_KUBECTL: kubectl.stdout.trim(),
+        TEST_MARKER: marker,
+      };
+      const ready = await observations(verifiedConfig, null, { ...env, TEST_DROP: "no" });
+      assert.equal(ready.get("kubernetes-api")?.status, "passed");
+      assert.equal(httpsRequests.filter(({ path }) => path === apiPath).length, 1);
+      await rm(marker);
+      const dropped = await observations(verifiedConfig, null, { ...env, TEST_DROP: "yes" });
+      assert.equal((await readFile(marker, "utf8")).trim(), `GET ${apiPath} HTTP/1.1`);
+      assert.equal(dropped.get("kubernetes-api")?.status, "unknown");
+      assert.equal(httpsRequests.filter(({ path }) => path === apiPath).length, 0);
     });
     await t.test("a late kuberc policy cannot be bypassed to run an exec plugin", async () => {
-      const kubectl = spawnSync("sh", ["-c", "command -v kubectl"], {
-        encoding: "utf8",
-      });
-      assert.equal(kubectl.status, 0);
+      await rm(pluginMarker, { force: true });
       const bin = join(directory, "late-policy-bin");
       await mkdir(bin);
       const policy = join(operatorHome, ".kube", "kuberc");
@@ -682,19 +1270,144 @@ fi
       async () => {
         const checks = await observations(execConfig, 1, { KUBERC: "off" });
         assert.equal(checks.get("kubernetes-api")?.status, "passed");
-        const serviceRead = httpsRequests.find(({ path }) => path === servicePath);
+        const secretRead = httpsRequests.find(({ path }) => path === secretPath);
         assert.ok(
-          serviceRead?.bearer === `Bearer ${token}`,
+          secretRead?.bearer === `Bearer ${token}`,
           "kubectl used the relative exec plugin",
         );
-        assert.equal(checks.get("service-egress")?.status, "failed");
+        assert.equal(checks.get("service-tls")?.status, "failed");
+        assert.match(checks.get("service-tls")?.action ?? "", /verify.*tls\.crt/u);
         assert.match(checks.get("service-egress")?.action ?? "", /Service owner/u);
+      },
+    );
+    if (!supportsPolicy) {
+      await t.test(
+        "an unqualified client refuses required policy before authentication",
+        async () => {
+          await writeFile(path, execConfig, { mode: 0o600 });
+          await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+          await rm(pluginMarker, { force: true });
+          httpsRequests.length = 0;
+          httpRequests.length = 0;
+          const result = await collect({ KUBERC: policyFile }, true, policyArgs).result;
+          assert.equal(result.code, 2);
+          assert.equal(result.stdout, "");
+          assert.match(result.stderr, /stock kubectl/u);
+          await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+          assert.equal(httpsRequests.length + httpRequests.length, 0);
+        },
+      );
+    }
+    for (const [name, policy, user, code, status] of [
+      ["DenyAll", denyAll, execUser, 2, "unknown"],
+      [
+        "a nonmatching allowlist",
+        JSON.stringify(allowlist("another-plugin")),
+        execUser,
+        2,
+        "unknown",
+      ],
+      [
+        "a static token alongside exec",
+        denyAll,
+        { ...execUser, token: replacementToken },
+        1,
+        "failed",
+      ],
+    ] as const) {
+      await t.test(
+        `required kuberc prevents credential use with ${name}`,
+        policyClient,
+        async () => {
+          await writeFile(policyFile, policy);
+          await rm(pluginMarker, { force: true });
+          const checks = await observations(
+            config("bearer", user),
+            code,
+            { KUBERC: policyFile },
+            policyArgs,
+          );
+          assert.equal(checks.get("kubernetes-api")?.status, status);
+          assert.equal(checks.get("service-tls")?.status, "unknown");
+          await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+          assert.equal(httpsRequests.length + httpRequests.length, 0);
+        },
+      );
+    }
+    await t.test(
+      "required kuberc rejects missing or invalid policy and conflicting flags before authentication",
+      async () => {
+        await writeFile(path, execConfig, { mode: 0o600 });
+        await rm(pluginMarker, { force: true });
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        for (const [policy, extraArgs, error] of [
+          [undefined, [], /requires an absolute KUBERC path/u],
+          [denyAll.replace("DenyAll", "Unknown"), [], /policy-only/u],
+          [denyAll.replace("DenyAll", "Deny\\u0041ll"), [], /policy-only/u],
+          [denyAll, ["--context", "selected"], /Usage:/u],
+        ] as const) {
+          if (policy !== undefined) {
+            await writeFile(policyFile, policy);
+          }
+          const { code, stdout, stderr } = await collect(
+            { KUBERC: policy === undefined ? undefined : policyFile },
+            true,
+            [...policyArgs, ...extraArgs],
+          ).result;
+          assert.equal(code, 2);
+          assert.equal(stdout, "");
+          assert.match(stderr, error);
+        }
+        await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+        assert.equal(httpsRequests.length + httpRequests.length, 0);
+      },
+    );
+    await t.test(
+      "a change to required kuberc at proxy startup stops the first authenticated read",
+      policyClient,
+      async () => {
+        await changePolicyAtProxyStartup(apiPath);
+        assert.equal(httpsRequests.length, 0);
+        await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+      },
+    );
+    await t.test(
+      "a change to required kuberc stops later authenticated reads",
+      policyClient,
+      async () => {
+        await writeFile(path, execConfig, { mode: 0o600 });
+        await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+        await rm(pluginMarker, { force: true });
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        firstServiceRead = () => {
+          // The replacement also allows this plugin. Only a check for a change
+          // to the original policy can stop the next read.
+          writeFileSync(policyFile, JSON.stringify(allowlist(pluginPath, "another-plugin")));
+        };
+        try {
+          const { code, stdout, stderr } = await collect({ KUBERC: policyFile }, true, policyArgs)
+            .result;
+          assert.deepEqual(
+            httpsRequests.map(({ path }) => path),
+            [apiPath],
+          );
+          assert.ok(httpsRequests[0]?.bearer === `Bearer ${token}`);
+          assert.equal(httpRequests.length, 0);
+          assert.equal(await readFile(pluginMarker, "utf8"), "started\n");
+          assert.equal(code, 2);
+          assert.equal(stdout, "");
+          assert.match(stderr, /kuberc.*changed/iu);
+        } finally {
+          firstServiceRead = undefined;
+        }
       },
     );
     await t.test("plaintext contexts fail before any Kubernetes request", async () => {
       const checks = await observations(plaintextConfig);
       assert.equal(checks.get("kubernetes-api")?.status, "failed");
-      assert.equal(checks.get("service-egress")?.status, "unknown");
+      assert.equal(checks.get("service-tls")?.status, "unknown");
       assert.equal(httpRequests.length + httpsRequests.length, 0);
     });
     await t.test("a malformed https server never contacts a plaintext proxy", async () => {
@@ -711,6 +1424,7 @@ fi
       assert.equal(httpRequests.length + httpsRequests.length, 0);
       assert.equal(checks.get("kubernetes-api")?.status, "failed");
       assert.match(checks.get("service-egress")?.action ?? "", /Resolve kubernetes-api/u);
+      assert.match(checks.get("service-tls")?.action ?? "", /Resolve kubernetes-api/u);
     });
     await t.test("built-in OIDC is refused before refreshing the original credential", async () => {
       const original = config("bearer", {
@@ -860,8 +1574,8 @@ esac
           assert.equal(checks.get("eks-cluster-identity")?.status, "passed");
           assert.equal(checks.get("webhook-addresses")?.status, "passed");
           assert.equal(checks.get("kubernetes-api")?.status, "passed");
-          const serviceRead = httpsRequests.find(({ path }) => path === servicePath);
-          assert.equal(serviceRead?.tlsServerName, dnsName);
+          const secretRead = httpsRequests.find(({ path }) => path === secretPath);
+          assert.equal(secretRead?.tlsServerName, dnsName);
           assert.equal(httpRequests.length, 0);
 
           const alias = {
@@ -876,10 +1590,7 @@ esac
           );
           assert.equal(refused.get("eks-cluster-identity")?.status, "failed");
           assert.equal(refused.get("kubernetes-api")?.status, "unknown");
-          assert.match(
-            refused.get("service-egress")?.action ?? "",
-            /Resolve eks-cluster-identity/u,
-          );
+          assert.match(refused.get("service-tls")?.action ?? "", /Resolve eks-cluster-identity/u);
           assert.equal(httpsRequests.length + httpRequests.length, 0);
 
           await eksTest.test("EKS inventory keeps its opt-in and exact read scope", async () => {
@@ -950,8 +1661,12 @@ esac
             await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
 
             const optedIn = { ...environment, KUBECTL_KUBERC: "false" };
-            async function expectInventoryFailure(reason: RegExp, inventoryArgs = args) {
-              const { code, stdout, stderr } = await collect(optedIn, true, inventoryArgs).result;
+            async function expectInventoryFailure(
+              reason: RegExp,
+              inventoryArgs = args,
+              env: NodeJS.ProcessEnv = optedIn,
+            ) {
+              const { code, stdout, stderr } = await collect(env, true, inventoryArgs).result;
               assert.equal(code, 2, stderr);
               assert.equal(stdout, "");
               assert.match(stderr, reason);
@@ -1019,9 +1734,13 @@ esac
                 },
               ],
             };
-            try {
-              apiSlicesReply = { status: 200, body };
-              const accepted = await collect(optedIn, true, args).result;
+            async function expectCompleteInventory(
+              env: NodeJS.ProcessEnv,
+              inventoryArgs: string[],
+            ) {
+              httpsRequests.length = 0;
+              await rm(pluginMarker, { force: true });
+              const accepted = await collect(env, true, inventoryArgs).result;
               assert.equal(accepted.code, 0, accepted.stderr);
               const report = JSON.parse(accepted.stdout) as {
                 context: string;
@@ -1045,6 +1764,30 @@ esac
               );
 
               assertAuthenticatedReads();
+              await stat(pluginMarker);
+            }
+            try {
+              apiSlicesReply = { status: 200, body };
+              await expectCompleteInventory(optedIn, args);
+
+              // Direct AWS calls retain the caller's environment. Kubectl must
+              // enforce the allowlist when invoking AWS as a credential plugin.
+              const requiredArgs = [...args, "--require-kuberc"];
+              await writeFile(environment.KUBERC, JSON.stringify(allowlist("another-plugin")));
+              httpsRequests.length = 0;
+              await rm(pluginMarker, { force: true });
+              await expectInventoryFailure(
+                supportsPolicy ? /kubernetes-api/u : /stock kubectl/u,
+                requiredArgs,
+                environment,
+              );
+              await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+              assert.equal(httpsRequests.length + httpRequests.length, 0);
+
+              if (supportsPolicy) {
+                await writeFile(environment.KUBERC, JSON.stringify(allowlist("aws")));
+                await expectCompleteInventory(environment, requiredArgs);
+              }
 
               // Valid IPv4 replies cannot conceal a structurally invalid or unrelated item.
               for (const extra of [
@@ -1070,16 +1813,15 @@ esac
                 await expectInventoryFailure(/EndpointSlice inventory is incomplete/u);
               }
               apiSlicesReply = { status: 200, body };
-              apiServiceReply = serviceReply("kubernetes", {
-                clusterIP: "10.32.0.1",
-                clusterIPs: ["10.32.0.1", "invalid"],
+              apiServiceReply = object("Service", "kubernetes", {
+                spec: { clusterIP: "10.32.0.1", clusterIPs: ["10.32.0.1", "invalid"] },
               });
               await expectInventoryFailure(/Service address inventory is incomplete/u);
               apiServiceReply = undefined;
 
               redirect = {
                 path: apiSlicesPath,
-                location: endpoint.plaintext.server + servicePath,
+                location: endpoint.plaintext.server + secretPath,
               };
               try {
                 await expectInventoryFailure(/unexpected redirect/u);
@@ -1119,7 +1861,7 @@ esac
                 );
                 assert.equal(accepted.get("eks-cluster-identity")?.status, "passed", authority);
                 assert.equal(accepted.get("kubernetes-api")?.status, "passed", authority);
-                const read = httpsRequests.find(({ path }) => path === servicePath);
+                const read = httpsRequests.find(({ path }) => path === secretPath);
                 assert.equal(read?.tlsServerName, dnsName);
                 assert.ok(httpRequests.length > 0, "kubectl used CONNECT to reach the TLS fixture");
                 assert.ok(
@@ -1185,10 +1927,8 @@ esac
       assert.equal(httpsRequests.length + httpRequests.length, 0);
     });
     await t.test("denied dependency reads give access guidance", async () => {
-      dependencyReply = serviceReply("dependency", {
-        clusterIP: "10.32.0.2",
-        selector: { app: "dependency" },
-        ports: [{ port: 443 }],
+      dependencyReply = object("Service", "dependency", {
+        spec: { clusterIP: "10.32.0.2", selector: { app: "dependency" }, ports: [{ port: 443 }] },
       });
       try {
         for (const path of [servicePath, policyPath]) {
@@ -1196,11 +1936,15 @@ esac
           const check = (await observations(verifiedConfig)).get("service-egress");
           const reads = httpsRequests
             .map((request) => request.path)
-            .filter((path) => path === servicePath || path === policyPath);
+            .filter((p) => p === servicePath || p === policyPath);
           assert.deepEqual(reads, path === servicePath ? [servicePath] : [servicePath, policyPath]);
           assert.equal(check?.status, "unknown");
           assert.match(check?.action ?? "", /read access/u);
         }
+        deniedPath = secretPath;
+        const check = (await observations(verifiedConfig)).get("service-tls");
+        assert.equal(check?.status, "unknown");
+        assert.match(check?.action ?? "", /Secret read access/u);
       } finally {
         dependencyReply = undefined;
         deniedPath = undefined;
@@ -1235,145 +1979,193 @@ esac
       },
     );
 
+    await t.test("only the selected Service can establish an ExternalName mismatch", async () => {
+      const alias = object("Service", "dependency", {
+        spec: { type: "ExternalName", externalName: dnsName },
+      });
+      try {
+        dependencyReply = alias;
+        const selected = (await observations(verifiedConfig)).get("service-egress");
+        assert.equal(selected?.status, "failed");
+        assert.match(selected.summary, /ExternalName/u);
+
+        dependencyReply = { ...alias, body: { ...alias.body, apiVersion: "example.test/v1" } };
+        const unrelated = (await observations(verifiedConfig)).get("service-egress");
+        assert.equal(unrelated?.status, "unknown");
+        assert.ok(!("resources" in unrelated));
+      } finally {
+        dependencyReply = undefined;
+      }
+    });
     await t.test("a ready Deployment cannot establish another controller's readiness", async () => {
+      const id = "controller:default/controller";
       try {
         for (const mismatch of [{ name: "other-controller" }, { namespace: "other" }]) {
           rolloutIdentity = { ...selectedController, ...mismatch };
           const checks = await observations(verifiedConfig);
           assert.ok(httpsRequests.some(({ path }) => path === rolloutPath));
-          assert.equal(checks.get(rolloutCheck)?.status, "unknown", JSON.stringify(mismatch));
+          assert.equal(checks.get(id)?.status, "unknown", JSON.stringify(mismatch));
         }
       } finally {
         rolloutIdentity = selectedController;
       }
     });
-    await t.test("only Kubernetes NotFound reports a selected Service as absent", async () => {
-      const collectService = async (reply: Reply) => {
-        dependencyReply = reply;
-        const check = (await observations(verifiedConfig)).get("service-egress");
+    await t.test("only Kubernetes NotFound reports a selected Secret as absent", async () => {
+      const collectSecret = async (reply: Reply) => {
+        secretReply = reply;
+        const check = (await observations(verifiedConfig)).get("service-tls");
         assert.ok(
-          httpsRequests.some(({ path }) => path === servicePath),
-          "the API received the named Service read",
+          httpsRequests.some(({ path }) => path === secretPath),
+          "the API received the named Secret read",
         );
         assert.ok(check);
         return check;
       };
       try {
-        const missing = await collectService(kubernetesStatus(404, "NotFound"));
+        const missing = await collectSecret(kubernetesStatus(404, "NotFound"));
         assert.equal(missing.status, "failed");
         assert.match(missing.summary, /does not exist/u);
-        const intermediary = await collectService({
+        const intermediary = await collectSecret({
           status: 404,
           body: { message: "route missing" },
         });
         assert.equal(intermediary.status, "unknown");
         assert.doesNotMatch(intermediary.summary, /does not exist/u);
 
-        // An ExternalName mismatch is conclusive only for the selected Service.
-        const alias = serviceReply("dependency", { type: "ExternalName", externalName: dnsName });
-        const selected = await collectService(alias);
-        assert.equal(selected.status, "failed");
-        assert.match(selected.summary, /ExternalName/u);
-        for (const mismatch of [{ kind: "ConfigMap" }, { apiVersion: "example.test/v1" }]) {
-          const invalid = await collectService({ ...alias, body: { ...alias.body, ...mismatch } });
-          assert.equal(invalid.status, "unknown", JSON.stringify(mismatch));
-          assert.ok(!("resources" in invalid));
-        }
-
-        for (const body of ["", "null", "[]", "42", "{}", "{"]) {
-          const invalid = await collectService({ status: 200, body });
-          assert.equal(invalid.status, "unknown", body || "empty response");
+        // A matching certificate cannot establish the identity of the returned object.
+        const leaf = object("Secret", "leaf", { data: { "tls.crt": certData } });
+        assert.equal((await collectSecret(leaf)).status, "passed");
+        assert.equal((await project(servingCheck)).status, "passed");
+        const malformed = [
+          { ...leaf.body, kind: "ConfigMap" },
+          { ...leaf.body, apiVersion: "example.test/v1" },
+          "",
+          "null",
+          "[]",
+          "42",
+          "{}",
+          "{",
+        ];
+        for (const body of malformed) {
+          secretReply = { status: 200, body };
+          const invalid = await project(servingCheck);
+          assert.deepEqual(
+            httpsRequests.map(({ path }) => path),
+            [secretPath],
+          );
+          const description = typeof body === "string" ? body || "empty response" : body.kind;
+          assert.equal(invalid.status, "unknown", description);
           assert.doesNotMatch(invalid.summary, /does not exist/u);
         }
       } finally {
-        dependencyReply = undefined;
+        secretReply = undefined;
       }
     });
-    await t.test(
-      "the private listener enforces one GET and closes on hard termination",
-      async () => {
-        await writeFile(path, verifiedConfig, { mode: 0o600 });
-        const reached = new Promise<void>((resolve) => {
-          firstServiceRead = resolve;
-        });
-        pauseServiceRead = true;
-        const { processHandle, result } = collect({}, false);
-        try {
-          await Promise.race([
-            reached,
-            result.then(() => assert.fail("the API request did not start")),
-          ]);
-          const [run] = await readdir(scratch);
-          assert.ok(run);
-          const socketDirectory = join(scratch, run);
-          const socketPath = join(socketDirectory, "1");
-          assert.ok((await stat(socketPath)).isSocket());
-          // Test the actual socket in the run directory even when the test
-          // runner itself starts under a longer private temporary path.
-          await using directoryFd =
-            process.platform === "linux" && Buffer.byteLength(socketPath) > 103
-              ? await open(socketDirectory)
-              : undefined;
-          const address = directoryFd ? `/proc/self/fd/${directoryFd.fd}/1` : socketPath;
-          const beforeRejectedReads = httpsRequests.length;
-          for (const [method, path] of [
-            ["POST", apiPath],
-            ["GET", servicePath],
-          ]) {
-            const status = await new Promise<number | undefined>((resolve, reject) => {
-              request(
-                {
-                  socketPath: address,
-                  method,
-                  path,
-                  headers: { host: "localhost" },
-                },
-                (response) => {
-                  response.resume();
-                  resolve(response.statusCode);
-                },
-              )
-                .once("error", reject)
-                .end();
-            });
-            assert.equal(status, 403);
-          }
-          assert.equal(
-            httpsRequests.length,
-            beforeRejectedReads,
-            "the proxy rejected both locally",
-          );
-          processHandle.kill("SIGKILL");
-          await result;
-
-          // The socket's owner observes parent EOF. A dead listener must not
-          // accept new connections even while its pathname remains after SIGKILL.
-          const deadline = performance.now() + 2_000;
-          while (performance.now() < deadline) {
-            const connected = await new Promise<boolean>((resolve) => {
-              const probe = createConnection(address);
-              probe.once("error", () => resolve(false));
-              probe.once("connect", () => {
-                probe.destroy();
-                resolve(true);
-              });
-            });
-            if (!connected) {
-              return;
+    for (const resourcePath of [apiPath, secretPath]) {
+      const resource = resourcePath === apiPath ? "API Service" : "projected Secret";
+      await t.test(
+        `the private ${resource} listener enforces one GET and closes on hard termination`,
+        async () => {
+          await writeFile(path, verifiedConfig, { mode: 0o600 });
+          const reached = new Promise<void>((resolve) => {
+            if (resourcePath === apiPath) {
+              firstServiceRead = resolve;
+              pauseServiceRead = true;
+            } else {
+              onServingSecretRead = resolve;
+              secretReply = { status: 0, body: {} };
             }
-            await delay(20);
+          });
+          const { processHandle, result } = collect({}, false);
+          try {
+            await Promise.race([
+              reached,
+              result.then(() => assert.fail("the API request did not start")),
+            ]);
+            const [run] = await readdir(scratch);
+            assert.ok(run);
+            const socketDirectory = join(scratch, run);
+            const sockets: string[] = [];
+            for (const name of await readdir(socketDirectory)) {
+              if ((await stat(join(socketDirectory, name))).isSocket()) {
+                sockets.push(name);
+              }
+            }
+            assert.equal(sockets.length, 1);
+            const [socketName] = sockets;
+            assert.ok(socketName);
+            const socketPath = join(socketDirectory, socketName);
+            // Test the actual socket in the run directory even when the test
+            // runner itself starts under a longer private temporary path.
+            await using directoryFd =
+              process.platform === "linux" && Buffer.byteLength(socketPath) > 103
+                ? await open(socketDirectory)
+                : undefined;
+            const address = directoryFd
+              ? `/proc/self/fd/${directoryFd.fd}/${socketName}`
+              : socketPath;
+            const beforeRejectedReads = httpsRequests.length;
+            for (const [method, path] of [
+              ["POST", resourcePath],
+              ["GET", resourcePath === apiPath ? secretPath : apiPath],
+            ]) {
+              const status = await new Promise<number | undefined>((resolve, reject) => {
+                request(
+                  {
+                    socketPath: address,
+                    method,
+                    path,
+                    headers: { host: "localhost" },
+                  },
+                  (response) => {
+                    response.resume();
+                    resolve(response.statusCode);
+                  },
+                )
+                  .once("error", reject)
+                  .end();
+              });
+              assert.equal(status, 403);
+            }
+            assert.equal(
+              httpsRequests.length,
+              beforeRejectedReads,
+              "the proxy rejected both locally",
+            );
+            processHandle.kill("SIGKILL");
+            await result;
+
+            // The direct listener receives EOF. During projection the child
+            // observes IPC disconnect and closes its own listener the same way.
+            const deadline = performance.now() + 2_000;
+            while (performance.now() < deadline) {
+              const connected = await new Promise<boolean>((resolve) => {
+                const probe = createConnection(address);
+                probe.once("error", () => resolve(false));
+                probe.once("connect", () => {
+                  probe.destroy();
+                  resolve(true);
+                });
+              });
+              if (!connected) {
+                return;
+              }
+              await delay(20);
+            }
+            assert.fail("the private listener survived the diagnostic process");
+          } finally {
+            processHandle.kill("SIGKILL");
+            await result;
+            firstServiceRead = undefined;
+            pauseServiceRead = false;
+            onServingSecretRead = undefined;
+            secretReply = undefined;
+            await rm(scratch, { recursive: true, force: true });
+            await mkdir(scratch, { mode: 0o700 });
           }
-          assert.fail("the private listener survived the diagnostic process");
-        } finally {
-          processHandle.kill("SIGKILL");
-          await result;
-          firstServiceRead = undefined;
-          pauseServiceRead = false;
-          await rm(scratch, { recursive: true, force: true });
-          await mkdir(scratch, { mode: 0o700 });
-        }
-      },
-    );
+        },
+      );
+    }
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
       ["SIGINT", 130],

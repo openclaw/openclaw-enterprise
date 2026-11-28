@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { hash, X509Certificate } from "node:crypto";
+import { once } from "node:events";
 import { constants } from "node:fs";
-import { mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { get, type IncomingMessage } from "node:http";
-import { isIP } from "node:net";
+import { createConnection, isIP, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 
@@ -15,6 +17,25 @@ type CrdSelection = { name: string; version: string };
 type ServiceDependency = {
   service: DeploymentSelection & { port: number };
   policy: DeploymentSelection;
+  tls?: { secretName: string; serverName: string };
+};
+
+type ClientCertificate = {
+  workload: DeploymentSelection & { kind: "Deployment" | "StatefulSet" };
+  container: string;
+  certificatePath: string;
+};
+type ProjectedCheck =
+  | { kind: "controller"; selection: DeploymentSelection }
+  | { kind: "serving"; selection: DeploymentSelection; serverName: string }
+  | { kind: "client"; selection: ClientCertificate };
+type ProjectionRequest = {
+  policy: KubercSnapshot | null;
+  check: ProjectedCheck;
+  socketPrefix: string;
+  kubeconfig: string;
+  context: string;
+  timeout: number;
 };
 
 type PlanInput = {
@@ -26,6 +47,7 @@ type PlanInput = {
   crds?: { name?: unknown; version?: unknown }[];
   apiCidrs?: unknown;
   serviceDependency?: unknown;
+  clientCertificate?: unknown;
   peakAdditional?: Partial<Record<keyof PeakAdditional, unknown>>;
   eks?: { clusterArn?: unknown; webhookCidrs?: unknown };
 };
@@ -48,6 +70,7 @@ type DiagnosticPlan = {
   crds: CrdSelection[];
   apiCidrs: string[];
   serviceDependency: ServiceDependency | undefined;
+  clientCertificate: ClientCertificate | undefined;
   peakAdditional: PeakAdditional | undefined;
   eks: (EksTarget & { webhookCidrs: string[] }) | undefined;
 };
@@ -59,11 +82,23 @@ type NamedMetadata = KubernetesMetadata & {
   resourceVersion?: string;
 };
 type ResourceObservation = DeploymentSelection & {
-  kind: "Service" | "NetworkPolicy";
+  kind: "Service" | "NetworkPolicy" | "Secret" | ClientCertificate["workload"]["kind"];
   uid: string;
   resourceVersion: string;
 };
 type Condition = { type: string; status: string; observedGeneration?: number };
+type NamedObject = {
+  kind: string;
+  apiVersion: string;
+  metadata: NamedMetadata;
+};
+type TlsSecret = NamedObject & { data?: Record<string, unknown> };
+type ClientWorkload = NamedObject & { spec?: unknown };
+type SecretVolumeMapping = {
+  name: string;
+  optional: boolean;
+  items: { key: string; path: string; invalidPath: boolean }[];
+};
 
 type KubeConnection = {
   server: string;
@@ -134,8 +169,7 @@ type GatewayClass = {
   spec?: { controllerName?: string };
 };
 
-type Deployment = {
-  metadata?: KubernetesMetadata;
+type Deployment = NamedObject & {
   spec?: { replicas?: number };
   status?: {
     conditions?: Condition[];
@@ -212,11 +246,16 @@ class DiagnosticError extends Error {}
 const namePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?![\s\S])/;
 
+// Kubernetes bounds the whole resource name. A TLS hostname also limits each label.
 function isResourceName(value: string): boolean {
   return (
     value.length <= 253 &&
     value.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part))
   );
+}
+
+function isDnsName(value: string): boolean {
+  return value.length <= 253 && value.split(".").every((part) => dnsLabel.test(part));
 }
 
 function isObject(value: unknown, fields?: string[]): value is Record<string, unknown> {
@@ -286,10 +325,10 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!isObject(value, ["service", "policy"])) {
-    throw new DiagnosticError("serviceDependency accepts only service and policy");
+  if (!isObject(value, ["service", "policy", "tls"])) {
+    throw new DiagnosticError("serviceDependency accepts only service, policy and tls");
   }
-  const { service, policy } = value;
+  const { service, policy, tls } = value;
   if (!isObject(service, ["namespace", "name", "port"])) {
     throw new DiagnosticError("serviceDependency.service must specify namespace, name and port");
   }
@@ -313,10 +352,66 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
       "serviceDependency.service.port must be a TCP port from 1 through 65535",
     );
   }
-  return {
+  const selection: ServiceDependency = {
     service: { namespace: serviceNamespace, name: serviceName, port: service.port },
     policy: { namespace: policyNamespace, name: policyName },
   };
+  if (tls !== undefined) {
+    if (!isObject(tls, ["secretName", "serverName"])) {
+      throw new DiagnosticError("serviceDependency.tls must specify secretName and serverName");
+    }
+    const secretName = requireName(tls.secretName, "serviceDependency.tls.secretName");
+    const serverName = typeof tls.serverName === "string" ? tls.serverName.toLowerCase() : "";
+    if (!isResourceName(secretName) || !isDnsName(serverName) || isIP(serverName)) {
+      throw new DiagnosticError(
+        "serviceDependency.tls requires a Secret name and a DNS serverName",
+      );
+    }
+    selection.tls = { secretName, serverName };
+  }
+  return selection;
+}
+
+function clientCertificate(value: unknown): ClientCertificate | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value, ["workload", "container", "certificatePath"])) {
+    throw new DiagnosticError(
+      "clientCertificate accepts only workload, container and certificatePath",
+    );
+  }
+  const { workload, container, certificatePath } = value;
+  if (!isObject(workload, ["kind", "name", "namespace"])) {
+    throw new DiagnosticError("clientCertificate.workload must specify kind, name and namespace");
+  }
+  const { kind, name, namespace } = workload;
+  if (
+    (kind !== "Deployment" && kind !== "StatefulSet") ||
+    typeof name !== "string" ||
+    !isResourceName(name) ||
+    typeof namespace !== "string" ||
+    !dnsLabel.test(namespace) ||
+    typeof container !== "string" ||
+    !dnsLabel.test(container)
+  ) {
+    throw new DiagnosticError(
+      "clientCertificate requires a named Deployment or StatefulSet and container",
+    );
+  }
+  if (
+    typeof certificatePath !== "string" ||
+    Buffer.byteLength(certificatePath) > 1024 ||
+    !posix.isAbsolute(certificatePath) ||
+    certificatePath.endsWith("/") ||
+    certificatePath.includes("\0") ||
+    posix.normalize(certificatePath) !== certificatePath
+  ) {
+    throw new DiagnosticError(
+      "clientCertificate.certificatePath must be a normalized absolute file path",
+    );
+  }
+  return { workload: { kind, name, namespace }, container, certificatePath };
 }
 
 function validateConfig(value: unknown): DiagnosticPlan {
@@ -330,6 +425,7 @@ function validateConfig(value: unknown): DiagnosticPlan {
       "crds",
       "apiCidrs",
       "serviceDependency",
+      "clientCertificate",
       "peakAdditional",
       "eks",
     ])
@@ -391,34 +487,240 @@ function validateConfig(value: unknown): DiagnosticPlan {
     crds,
     apiCidrs,
     serviceDependency: serviceDependency(config.serviceDependency),
+    clientCertificate: clientCertificate(config.clientCertificate),
     peakAdditional,
     eks,
   };
 }
 
-const commandEnv = { ...process.env, AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" };
-const kubectlEnv = { ...commandEnv, KUBECTL_KUBERC: "false", KUBERC: "off" };
+const commandEnv: NodeJS.ProcessEnv = { ...process.env, AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" };
+type KubercSnapshot = {
+  executable: string;
+  clientIdentity: string;
+  source: string;
+  copy: string;
+  sha256: string;
+};
+type ReadCommand = {
+  executable: string;
+  argv0?: "kubectl";
+  env: NodeJS.ProcessEnv;
+  prefix: string[];
+  policy: KubercSnapshot | null;
+};
+const withoutKuberc: ReadCommand = {
+  executable: "kubectl",
+  env: { ...commandEnv, KUBECTL_KUBERC: "false", KUBERC: "off" },
+  prefix: [],
+  policy: null,
+};
+
+// Once a required policy is lost, even an independent diagnostic check must stop.
+class KubercError extends DiagnosticError {}
+const policyChanged =
+  "The required kuberc or kubectl changed or became unreadable. Check both and start a new run.";
+const projectionPolicyFailure = 3;
+
+async function readKuberc(path: string): Promise<Buffer> {
+  // Do not follow a final symlink, block on a FIFO or read an unbounded stream.
+  await using file = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  const info = await file.stat();
+  if (!info.isFile() || info.size < 1 || info.size > 65536) {
+    throw new KubercError("KUBERC must identify a nonempty regular policy file of at most 64 KiB.");
+  }
+  const bytes = Buffer.alloc(info.size + 1);
+  // Reject a short read or growth instead of parsing a prefix as a policy.
+  const { bytesRead } = await file.read(bytes);
+  if (bytesRead !== info.size) {
+    throw new KubercError("The required kuberc changed during the read.");
+  }
+  return bytes.subarray(0, bytesRead);
+}
+
+function isPolicyEntry(entry: unknown): boolean {
+  if (!isObject(entry, ["name"]) || typeof entry.name !== "string") {
+    return false;
+  }
+  const parts = entry.name.startsWith("/") ? entry.name.slice(1).split("/") : [entry.name];
+  return parts.every((part) => /^[A-Za-z0-9_+.-]+$/u.test(part) && part !== "." && part !== "..");
+}
+
+function isPolicyOnly(text: string): boolean {
+  const policy: unknown = JSON.parse(text);
+  if (
+    !isObject(policy, [
+      "apiVersion",
+      "kind",
+      "credentialPluginPolicy",
+      "credentialPluginAllowlist",
+    ]) ||
+    policy.apiVersion !== "kubectl.config.k8s.io/v1beta1" ||
+    policy.kind !== "Preference"
+  ) {
+    return false;
+  }
+  const entries = policy.credentialPluginAllowlist;
+  const supported =
+    (policy.credentialPluginPolicy === "DenyAll" && entries === undefined) ||
+    (policy.credentialPluginPolicy === "Allowlist" &&
+      Array.isArray(entries) &&
+      entries.length > 0 &&
+      entries.every(isPolicyEntry));
+  // All admitted keys and values are ASCII without whitespace. This round trip
+  // rejects duplicate keys and escapes. Hand kubectl the original bytes.
+  return supported && text.replace(/[ \t\r\n]/gu, "") === JSON.stringify(policy);
+}
+
+async function kubectlExecutable(): Promise<string> {
+  // Resolve once so config view and the supervised proxy use the client checked
+  // below. The operator must supply a trusted stock kubectl and trusted PATH.
+  for (const directory of (commandEnv.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(directory)) {
+      break;
+    }
+    try {
+      return await realpath(`${directory}${sep}kubectl`);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR")
+      ) {
+        continue;
+      }
+      break;
+    }
+  }
+  throw new KubercError("Required kuberc needs a trusted kubectl on an absolute PATH.");
+}
+
+// Qualify both plugin denial and a matching allowlist with each stock client.
+const qualifiedKubectlVersions = ["v1.35.0", "v1.36.2", "v1.36.4"];
+
+async function kubectlIdentity(path: string): Promise<string> {
+  const { dev, ino, ctimeNs } = await stat(path, { bigint: true });
+  return `${dev}:${ino}:${ctimeNs}`;
+}
+
+async function verifyPolicy(policy: KubercSnapshot | null) {
+  if (policy === null) {
+    return;
+  }
+  try {
+    if (
+      (await kubectlIdentity(policy.executable)) === policy.clientIdentity &&
+      hash("sha256", await readKuberc(policy.source)) === policy.sha256 &&
+      hash("sha256", await readKuberc(policy.copy)) === policy.sha256
+    ) {
+      return;
+    }
+  } catch {
+    // Filesystem details and policy contents must stay out of reports.
+  }
+  throw new KubercError(policyChanged);
+}
+
+function requiredKubectl(policy: KubercSnapshot): ReadCommand {
+  return {
+    executable: policy.executable,
+    argv0: "kubectl",
+    prefix: ["--kuberc", policy.copy],
+    env: { ...commandEnv, KUBECTL_KUBERC: "true", KUBERC: policy.copy },
+    policy,
+  };
+}
+
+async function withRequiredKuberc(
+  directory: string,
+  deadline: number,
+  signal: AbortSignal,
+): Promise<ReadCommand> {
+  if (process.platform === "win32") {
+    throw new KubercError("Required kuberc needs Unix file and socket support.");
+  }
+  const source = commandEnv.KUBERC;
+  if (
+    !source ||
+    !isAbsolute(source) ||
+    (commandEnv.KUBECTL_KUBERC !== undefined && commandEnv.KUBECTL_KUBERC !== "true")
+  ) {
+    throw new KubercError(
+      "--require-kuberc requires an absolute KUBERC path and KUBECTL_KUBERC unset or true.",
+    );
+  }
+  const copy = resolve(directory, "kuberc.json");
+  let original: Buffer;
+  try {
+    original = await readKuberc(source);
+    if (!isPolicyOnly(original.toString("utf8"))) {
+      throw new Error();
+    }
+    await writeFile(copy, original, { flag: "wx", mode: 0o600 });
+  } catch {
+    throw new KubercError(
+      "Required kuberc must be a readable, policy-only v1beta1 JSON Preference with DenyAll or a nonempty Allowlist.",
+    );
+  }
+  const executable = await kubectlExecutable();
+  const kubectl = requiredKubectl({
+    executable,
+    clientIdentity: await kubectlIdentity(executable),
+    source,
+    copy,
+    sha256: hash("sha256", original),
+  });
+  // The client-only probe must never resolve the selected or ambient credentials.
+  const result = parseJson<unknown>(
+    await commandOutput(
+      kubectl,
+      ["--kubeconfig", "/dev/null", "version", "--client", "-o", "json"],
+      deadline,
+      signal,
+    ),
+  );
+  const version = isObject(result) ? result.clientVersion : undefined;
+  if (
+    !isObject(version) ||
+    version.major !== "1" ||
+    version.gitTreeState !== "clean" ||
+    version.platform !== "linux/amd64" ||
+    typeof version.gitVersion !== "string" ||
+    !qualifiedKubectlVersions.includes(version.gitVersion) ||
+    version.minor !== version.gitVersion.split(".")[1]
+  ) {
+    throw new KubercError(
+      `Required kuberc needs a trusted stock kubectl release for Linux amd64. Supported versions are ${qualifiedKubectlVersions.join(", ")}.`,
+    );
+  }
+  return kubectl;
+}
+
 const outputLimit = 2 * 1024 * 1024;
 
 // A credential plugin can inherit its parent's pipes. Bound both the wait and the
 // captured bytes even when the CLI or a descendant never closes those pipes.
 async function commandOutput(
-  command: string,
+  command: ReadCommand,
   args: string[],
   deadline: number,
   signal: AbortSignal,
+  projection?: ProjectionRequest,
 ): Promise<string> {
+  await verifyPolicy(command.policy);
   signal.throwIfAborted();
-  const timeout = Math.min(20_000, deadline - performance.now());
+  const timeout = Math.min(projection ? projectionTimeout : 20_000, deadline - performance.now());
   if (timeout <= 0) {
     throw new DiagnosticError("The collection deadline expired.");
   }
   const grouped = process.platform !== "win32";
-  const child = spawn(command, args, {
+  const child = spawn(command.executable, [...command.prefix, ...args], {
+    argv0: command.argv0,
     detached: grouped,
-    stdio: ["ignore", "pipe", "pipe"],
-    // Direct AWS calls must preserve the caller’s credential plugin policy.
-    env: command === "kubectl" ? kubectlEnv : commandEnv,
+    stdio: projection ? ["ignore", "pipe", "ignore", "ipc"] : ["ignore", "pipe", "pipe"],
+    env: command.env,
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -436,8 +738,8 @@ async function commandOutput(
       } else {
         child.kill("SIGKILL");
       }
-      child.stdout.destroy();
-      child.stderr.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       cleanup();
       reject(new DiagnosticError(reason));
     }
@@ -452,7 +754,7 @@ async function commandOutput(
       [child.stdout, stdout],
       [child.stderr, stderr],
     ] as const) {
-      stream.on("data", (chunk: Buffer) => {
+      stream?.on("data", (chunk: Buffer) => {
         size += chunk.length;
         if (size > outputLimit) {
           stop("The read exceeded the output limit.");
@@ -475,7 +777,18 @@ async function commandOutput(
       cleanup();
       resolve(code);
     });
+    if (projection) {
+      child.send(projection, (error) => {
+        if (error) {
+          stop("Could not start the private resource check.");
+        }
+      });
+    }
   });
+  if (projection && result === projectionPolicyFailure) {
+    throw new KubercError(policyChanged);
+  }
+  await verifyPolicy(command.policy);
   if (result !== 0) {
     const text = Buffer.concat(stderr).toString();
     let reason = "The read failed or returned incomplete data.";
@@ -503,8 +816,9 @@ async function commandOutput(
 // (stdin EOF) or deadline, including when a credential plugin is still running.
 const proxySupervisor = `
   import { spawn } from "node:child_process";
-  const [timeout, socketFd, ...args] = process.argv.slice(1);
-  const proxy = spawn("kubectl", args, {
+  const [timeout, socketFd, executable, ...args] = process.argv.slice(1);
+  const proxy = spawn(executable, args, {
+    argv0: "kubectl",
     stdio: ["ignore", "ignore", "ignore", ...(socketFd === "3" ? [3] : [])],
   });
   const stop = () => process.kill(-process.pid, "SIGKILL");
@@ -515,6 +829,7 @@ const proxySupervisor = `
 `;
 
 async function kubernetesGet<T>(
+  kubectl: ReadCommand,
   socket: string,
   kubeconfig: string,
   context: string,
@@ -548,6 +863,7 @@ async function kubernetesGet<T>(
     ? `/proc/self/fd/${socketDirectory.fd}/${socketName}`
     : socket;
   const proxySocket = socketDirectory ? `/proc/self/fd/3/${socketName}` : socket;
+  await verifyPolicy(kubectl.policy);
   requestSignal.throwIfAborted();
   const exactPath = path.replace(/\?.*$/u, "").replaceAll(".", "\\.");
   const proxy = spawn(
@@ -558,6 +874,8 @@ async function kubernetesGet<T>(
       proxySupervisor,
       String(timeout),
       socketDirectory ? "3" : "",
+      kubectl.executable,
+      ...kubectl.prefix,
       "--kubeconfig",
       kubeconfig,
       "--context",
@@ -573,7 +891,7 @@ async function kubernetesGet<T>(
     {
       detached: true,
       stdio: ["pipe", "ignore", "ignore", ...(socketDirectory ? [socketDirectory.fd] : [])],
-      env: kubectlEnv,
+      env: kubectl.env,
     },
   );
   proxy.stdin?.on("error", () => {});
@@ -585,21 +903,45 @@ async function kubernetesGet<T>(
       resolve();
     });
   });
-  try {
-    while (!(await stat(localSocket).catch(() => undefined))?.isSocket()) {
-      if (closed) {
-        throw new DiagnosticError(
-          "The private transport to the selected endpoint could not start.",
-        );
+  // bind creates the socket file before listen. Retry only local connection
+  // failures during startup. No HTTP request exists until this loop finishes.
+  async function connectProxy() {
+    while (!closed) {
+      requestSignal.throwIfAborted();
+      const connection = createConnection(localSocket);
+      try {
+        await once(connection, "connect", { signal: requestSignal });
+        return connection;
+      } catch (error) {
+        connection.destroy();
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          (error.code !== "ENOENT" && error.code !== "ECONNREFUSED")
+        ) {
+          throw error;
+        }
       }
       await delay(20, undefined, { signal: requestSignal });
     }
+    throw new DiagnosticError("The private transport to the selected endpoint could not start.");
+  }
 
+  let transport: Socket | undefined;
+  try {
+    const connection = await connectProxy();
+    transport = connection;
+    // The proxy can disconnect during the asynchronous policy check.
+    connection.on("error", () => {});
+    await verifyPolicy(kubectl.policy);
+    if (connection.destroyed) {
+      throw new DiagnosticError("The private transport to the selected endpoint closed.");
+    }
+    requestSignal.throwIfAborted();
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
       get(
         {
-          socketPath: localSocket,
-          agent: false,
+          createConnection: () => connection,
           path,
           headers: { host: "localhost", accept: "application/json" },
           signal: requestSignal,
@@ -674,6 +1016,7 @@ async function kubernetesGet<T>(
     }
     throw new DiagnosticError("The read failed or returned incomplete data.");
   } finally {
+    transport?.destroy();
     proxy.stdin?.end();
     await settled;
     // The enclosing run removes the directory even if this early unlink fails.
@@ -689,13 +1032,14 @@ function parseJson<T>(output: string): T {
 }
 
 async function readSelectedKubeconfig(
+  kubectl: ReadCommand,
   config: Pick<DiagnosticPlan, "kubeconfig" | "context">,
   deadline: number,
   signal: AbortSignal,
 ): Promise<KubeconfigView> {
   const view = parseJson<KubeconfigView>(
     await commandOutput(
-      "kubectl",
+      kubectl,
       [
         "--kubeconfig",
         config.kubeconfig,
@@ -749,8 +1093,10 @@ const namedResources = {
   },
   GatewayClass: { apiVersion: "gateway.networking.k8s.io/v1", plural: "gatewayclasses" },
   Deployment: { apiVersion: "apps/v1", plural: "deployments" },
+  StatefulSet: { apiVersion: "apps/v1", plural: "statefulsets" },
   Service: { apiVersion: "v1", plural: "services" },
   NetworkPolicy: { apiVersion: "networking.k8s.io/v1", plural: "networkpolicies" },
+  Secret: { apiVersion: "v1", plural: "secrets" },
   Namespace: { apiVersion: "v1", plural: "namespaces" },
 };
 
@@ -763,10 +1109,7 @@ function namedReader(kube: <T>(path: string, optional: boolean) => Promise<T | n
     const { apiVersion, plural } = namedResources[kind];
     const api = apiVersion === "v1" ? "/api/v1" : `/apis/${apiVersion}`;
     const scope = namespace === undefined ? api : `${api}/namespaces/${namespace}`;
-    const item = await kube<T & { apiVersion: string; kind: string; metadata: NamedMetadata }>(
-      `${scope}/${plural}/${name}`,
-      optional,
-    );
+    const item = await kube<T & NamedObject>(`${scope}/${plural}/${name}`, optional);
     if (
       item !== null &&
       (item.apiVersion !== apiVersion ||
@@ -813,6 +1156,15 @@ function exactLabels(selector: LabelSelector | undefined, labels: Record<string,
   );
 }
 
+function resourceFailure(resources: ResourceObservation[]) {
+  return (summary: string, action: string): CheckResult => ({
+    status: "failed",
+    summary,
+    action,
+    resources,
+  });
+}
+
 async function serviceEgress(
   selection: ServiceDependency,
   service: ApiService | null,
@@ -828,12 +1180,7 @@ async function serviceEgress(
     };
   }
   const resources = [observeResource("Service", selection.service, service.metadata)];
-  const failure = (summary: string, action: string): CheckResult => ({
-    status: "failed",
-    summary,
-    action,
-    resources,
-  });
+  const failure = resourceFailure(resources);
   if (service.metadata?.deletionTimestamp) {
     return failure("The selected Service is terminating.", serviceAction);
   }
@@ -953,6 +1300,411 @@ async function serviceEgress(
     missing,
     resources,
   };
+}
+
+function inspectCertificate(
+  selection: DeploymentSelection,
+  secret: TlsSecret | null,
+  purpose: { serverName: string } | { volume: SecretVolumeMapping },
+): CheckResult {
+  const secretAction = "Verify the selected TLS Secret with the certificate owner.";
+  if (secret === null) {
+    return {
+      status: "failed",
+      summary: "The selected TLS Secret does not exist.",
+      action: secretAction,
+    };
+  }
+  const resources = [observeResource("Secret", selection, secret.metadata)];
+  const failure = resourceFailure(resources);
+  if (secret.metadata?.deletionTimestamp) {
+    return failure("The selected TLS Secret is terminating.", secretAction);
+  }
+  const data = secret.data;
+  if (data !== undefined && !isObject(data)) {
+    throw new DiagnosticError("The selected Secret has unreadable key data.");
+  }
+  if ("volume" in purpose) {
+    const { items, optional } = purpose.volume;
+    const itemPathAction = "Ask the workload owner to correct the Secret volume's item paths.";
+    const paths = new Set<string>();
+    for (const { key, path, invalidPath } of items) {
+      const value = data && Object.hasOwn(data, key) ? data[key] : undefined;
+      if (value === undefined && optional) {
+        continue;
+      }
+      if (typeof value !== "string") {
+        return failure(
+          "The selected Secret volume maps a required key that the Secret lacks.",
+          secretAction,
+        );
+      }
+      if (invalidPath) {
+        return failure(
+          "A mapped item in the selected Secret volume has a NUL byte or exceeds the filesystem path length limit.",
+          itemPathAction,
+        );
+      }
+      paths.add(path);
+    }
+    for (const path of paths) {
+      for (let parent = posix.dirname(path); parent !== "."; parent = posix.dirname(parent)) {
+        if (paths.has(parent)) {
+          return failure(
+            "The selected Secret volume maps one path as both a file and a directory.",
+            itemPathAction,
+          );
+        }
+      }
+    }
+  }
+  const entry = data?.["tls.crt"];
+  const certificate = typeof entry === "string" ? entry : "";
+  const bytes = Buffer.from(certificate, "base64");
+  const pem = bytes
+    .toString("utf8")
+    .match(/^\s*(-----BEGIN CERTIFICATE-----\s[\s\S]+?-----END CERTIFICATE-----)/u)?.[1];
+  let leaf: X509Certificate;
+  try {
+    if (!pem || bytes.toString("base64") !== certificate) {
+      throw new Error("invalid leaf");
+    }
+    leaf = new X509Certificate(pem);
+  } catch {
+    return failure(
+      "The selected TLS Secret lacks a readable X.509 leaf in tls.crt.",
+      "Ask the certificate owner to verify that tls.crt contains the public certificate.",
+    );
+  }
+  const now = Date.now();
+  const notBefore = leaf.validFromDate.getTime();
+  const notAfter = leaf.validToDate.getTime();
+  if (!Number.isFinite(notBefore) || !Number.isFinite(notAfter)) {
+    return failure("The selected TLS leaf has an unreadable validity window.", secretAction);
+  }
+  if (now < notBefore) {
+    return failure(
+      "The selected TLS leaf is not yet valid.",
+      "Check the collection clock and ask the certificate owner to verify the leaf's validity window.",
+    );
+  }
+  if (now > notAfter) {
+    return failure(
+      "The selected TLS leaf has expired.",
+      "Ask the certificate owner to renew the expired leaf.",
+    );
+  }
+  if ("serverName" in purpose) {
+    if (!leaf.checkHost(purpose.serverName, { subject: "never", partialWildcards: false })) {
+      return failure(
+        "The selected TLS leaf lacks a DNS SAN matching the expected serverName.",
+        "Confirm the expected serverName and ask the certificate owner to correct the DNS SAN if needed.",
+      );
+    }
+    return {
+      status: "passed",
+      summary: "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
+      resources,
+    };
+  }
+  const usages = leaf.keyUsage;
+  // Node reports undefined for both absent and undecodable extensions.
+  if (usages === undefined) {
+    return {
+      status: "unknown",
+      summary:
+        "The client certificate in the selected Secret is current. Its extended key usage does not establish client authentication suitability.",
+      resources,
+    };
+  }
+  if (!usages.includes("1.3.6.1.5.5.7.3.2") && !usages.includes("2.5.29.37.0")) {
+    return failure(
+      "The selected TLS leaf's extended key usage does not permit client authentication.",
+      secretAction,
+    );
+  }
+  return {
+    status: "passed",
+    summary:
+      "The client certificate in the selected Secret is within its validity window and its extended key usage permits client use.",
+    resources,
+  };
+}
+
+function objectList(value: unknown): Record<string, unknown>[] | undefined {
+  return Array.isArray(value) && value.every((entry) => isObject(entry)) ? value : undefined;
+}
+
+function mountedClientSecret(
+  selection: ClientCertificate,
+  workload: ClientWorkload,
+): SecretVolumeMapping | undefined {
+  const { spec } = workload;
+  if (!isObject(spec) || !isObject(spec.template) || !isObject(spec.template.spec)) {
+    throw new DiagnosticError("The selected workload response lacks its Pod template.");
+  }
+  const pod = spec.template.spec;
+  const containers = objectList(pod.containers);
+  const init = objectList(pod.initContainers ?? []);
+  if (!containers || !init) {
+    throw new DiagnosticError("The selected workload response lacks its Pod template containers.");
+  }
+  const selected = [
+    ...containers,
+    ...init.filter((item) => item.restartPolicy === "Always"),
+  ].filter((item) => item.name === selection.container);
+  const [container] = selected;
+  if (selected.length !== 1 || !container) {
+    return undefined;
+  }
+  const mounts = objectList(container.volumeMounts ?? []);
+  if (!mounts) {
+    throw new DiagnosticError("The response lacks valid mount paths in the selected container.");
+  }
+  const path = selection.certificatePath;
+  const matching = [];
+  for (const mount of mounts) {
+    if (
+      typeof mount.name !== "string" ||
+      !dnsLabel.test(mount.name) ||
+      typeof mount.mountPath !== "string" ||
+      !posix.isAbsolute(mount.mountPath)
+    ) {
+      throw new DiagnosticError("The response lacks valid mount paths in the selected container.");
+    }
+    const directory = posix.normalize(mount.mountPath).replace(/\/$/u, "");
+    if (path === directory || path.startsWith(`${directory}/`)) {
+      matching.push({ mount, file: path.slice(directory.length + 1) });
+    }
+  }
+  const [candidate] = matching;
+  // Any other mount over the selected file makes ownership ambiguous.
+  if (matching.length !== 1 || !candidate?.file) {
+    return undefined;
+  }
+  const { mount, file } = candidate;
+  if (
+    [mount.subPath, mount.subPathExpr].some(
+      (part) => part !== undefined && typeof part !== "string",
+    )
+  ) {
+    throw new DiagnosticError("The selected volume mount has an invalid subpath.");
+  }
+  if (mount.subPath || mount.subPathExpr) {
+    return undefined;
+  }
+  if (selection.workload.kind === "StatefulSet") {
+    const claims = objectList(spec.volumeClaimTemplates ?? []);
+    if (
+      !claims ||
+      !claims.every(({ metadata }) => isObject(metadata) && typeof metadata.name === "string")
+    ) {
+      throw new DiagnosticError("The response lacks a valid StatefulSet volume claim inventory.");
+    }
+    // The StatefulSet controller gives claims precedence over same-name Pod volumes.
+    if (claims.some(({ metadata }) => isObject(metadata) && metadata.name === mount.name)) {
+      return undefined;
+    }
+  }
+  const volumes = objectList(pod.volumes ?? []);
+  if (!volumes) {
+    throw new DiagnosticError("The response lacks a valid Pod volume inventory.");
+  }
+  const matchingVolumes = volumes.filter((volume) => volume.name === mount.name);
+  const secret = matchingVolumes.length === 1 ? matchingVolumes[0]?.secret : undefined;
+  if (
+    !isObject(secret) ||
+    typeof secret.secretName !== "string" ||
+    !isResourceName(secret.secretName)
+  ) {
+    return undefined;
+  }
+  const items = objectList(secret.items ?? []);
+  if (!items || (secret.optional !== undefined && typeof secret.optional !== "boolean")) {
+    throw new DiagnosticError("The response lacks the selected Secret volume's item mapping.");
+  }
+  const volume: SecretVolumeMapping = {
+    name: secret.secretName,
+    optional: secret.optional === true,
+    items: [],
+  };
+  if (!items.length) {
+    return file === "tls.crt" ? volume : undefined;
+  }
+  let certificateMapped = false;
+  for (const { key, path: itemPath } of items) {
+    if (typeof key !== "string" || key.length > 253 || !/^[\w.-]+(?![\s\S])/u.test(key)) {
+      throw new DiagnosticError("The selected Secret volume has an invalid item key.");
+    }
+    if (
+      typeof itemPath !== "string" ||
+      !itemPath ||
+      posix.isAbsolute(itemPath) ||
+      itemPath.startsWith("..") ||
+      itemPath.split("/").includes("..")
+    ) {
+      return undefined;
+    }
+    const target = posix.normalize(itemPath).replace(/\/$/u, "");
+    if (target === "." || target.startsWith("..")) {
+      return undefined;
+    }
+    if (target === file) {
+      if (certificateMapped || key !== "tls.crt") {
+        return undefined;
+      }
+      certificateMapped = true;
+    }
+    // The Kubernetes atomic writer measures raw paths before normalizing them.
+    const invalidPath =
+      itemPath.includes("\0") ||
+      Buffer.byteLength(itemPath) > 4_096 ||
+      itemPath.split("/").some((component) => Buffer.byteLength(component) > 255);
+    volume.items.push({ key, path: target, invalidPath });
+  }
+  return certificateMapped ? volume : undefined;
+}
+
+const projectionTimeout = 45_000;
+
+function unreadable(error: unknown): CheckResult {
+  if (error instanceof KubercError) {
+    throw error;
+  }
+  return {
+    status: "unknown",
+    summary:
+      error instanceof DiagnosticError
+        ? error.message
+        : "The read failed or returned incomplete data.",
+  };
+}
+
+function controllerReadiness(selection: DeploymentSelection, item: Deployment | null): CheckResult {
+  if (item === null) {
+    return {
+      status: "failed",
+      summary: "The selected controller Deployment does not exist.",
+    };
+  }
+  const identity = observeResource("Deployment", selection, item.metadata);
+  const desired = item.spec?.replicas ?? 1;
+  const current =
+    !item.metadata?.deletionTimestamp &&
+    Number.isInteger(item.metadata?.generation) &&
+    item.status?.observedGeneration === item.metadata?.generation;
+  const available = item.status?.conditions?.some(
+    (condition) => condition.type === "Available" && condition.status === "True",
+  );
+  const ready =
+    current &&
+    available &&
+    desired > 0 &&
+    item.status?.updatedReplicas === desired &&
+    item.status?.availableReplicas === desired &&
+    item.status?.replicas === desired;
+  return {
+    status: ready ? "passed" : "failed",
+    summary: ready
+      ? "All intended controller replicas are updated and available."
+      : "The controller has not completed its current rollout.",
+    resource: `${selection.namespace}/${selection.name}@${identity.uid}`,
+  };
+}
+
+async function projectCheck(
+  { policy, check, socketPrefix, kubeconfig, context, timeout }: ProjectionRequest,
+  signal: AbortSignal,
+): Promise<CheckResult> {
+  if (
+    basename(kubeconfig) !== "kubeconfig.json" ||
+    dirname(socketPrefix) !== dirname(kubeconfig) ||
+    !/^oce-prerequisites-[A-Za-z0-9]+$/u.test(basename(dirname(kubeconfig))) ||
+    !/^\d+$/u.test(basename(socketPrefix))
+  ) {
+    throw new DiagnosticError("The selected observation requires a private collection directory.");
+  }
+  // Reuse the parent's qualified client and original policy digest. Opening a
+  // new snapshot here would admit a policy loosened since the first API read.
+  if (policy !== null && policy?.copy !== resolve(dirname(kubeconfig), "kuberc.json")) {
+    throw new KubercError(policyChanged);
+  }
+  const kubectl = policy === null ? withoutKuberc : requiredKubectl(policy);
+  if (
+    kubectl.env.KUBERC !== commandEnv.KUBERC ||
+    kubectl.env.KUBECTL_KUBERC !== commandEnv.KUBECTL_KUBERC
+  ) {
+    throw new KubercError(policyChanged);
+  }
+  const deadline = performance.now() + timeout;
+  let readNumber = 0;
+  const read = namedReader(<T>(path: string, optional: boolean) =>
+    kubernetesGet<T>(
+      kubectl,
+      `${socketPrefix}-${++readNumber}`,
+      kubeconfig,
+      context,
+      path,
+      deadline,
+      signal,
+      optional,
+    ),
+  );
+
+  if (check.kind === "controller") {
+    return controllerReadiness(
+      check.selection,
+      await read<Deployment>("Deployment", check.selection),
+    );
+  }
+  if (check.kind === "serving") {
+    return inspectCertificate(check.selection, await read<TlsSecret>("Secret", check.selection), {
+      serverName: check.serverName,
+    });
+  }
+  const { selection } = check;
+  const { kind, namespace } = selection.workload;
+  const workload = await read<ClientWorkload>(kind, selection.workload);
+  if (!workload) {
+    return { status: "failed", summary: "The selected client workload does not exist." };
+  }
+  const identity = observeResource(kind, selection.workload, workload.metadata);
+  const resources = [identity];
+  if (workload.metadata.deletionTimestamp) {
+    return {
+      status: "failed",
+      summary: "The selected client workload is terminating.",
+      resources,
+    };
+  }
+  try {
+    const mount = mountedClientSecret(selection, workload);
+    if (!mount) {
+      return {
+        status: "failed",
+        summary:
+          "The certificate path does not resolve to one mounted tls.crt Secret item in the selected container.",
+        resources,
+      };
+    }
+    const secretSelection = { namespace, name: mount.name };
+    const secret = await read<TlsSecret>("Secret", secretSelection);
+    const current = await read<ClientWorkload>(kind, selection.workload);
+    if (
+      !current ||
+      current.metadata.deletionTimestamp ||
+      !isDeepStrictEqual(observeResource(kind, selection.workload, current.metadata), identity)
+    ) {
+      throw new DiagnosticError(
+        "The response could not bind the selected Secret to the observed workload volume. Run the check again.",
+      );
+    }
+    const result = inspectCertificate(secretSelection, secret, { volume: mount });
+    return { ...result, resources: [...resources, ...(result.resources ?? [])] };
+  } catch (error) {
+    signal.throwIfAborted();
+    return { ...unreadable(error), resources };
+  }
 }
 
 function quantity(value: unknown) {
@@ -1080,8 +1832,12 @@ async function diagnose(
   config: DiagnosticPlan | InventoryPlan,
   directory: string,
   signal: AbortSignal,
+  requireKuberc: boolean,
 ): Promise<DiagnosticReport | AddressInventory> {
   const deadline = performance.now() + 120_000;
+  const kubectl = requireKuberc
+    ? await withRequiredKuberc(directory, deadline, signal)
+    : withoutKuberc;
   const kubeconfig = join(directory, "kubeconfig.json");
   const checks: CheckReport[] = [];
   let localFailure: CheckResult | undefined;
@@ -1089,10 +1845,13 @@ async function diagnose(
   let selectedEndpoint: ReturnType<typeof verifiedHttpsEndpoint>;
   let blocker: { id: "eks-cluster-identity" | "kubernetes-api"; summary: string } | undefined;
   try {
-    const view = await readSelectedKubeconfig(config, deadline, signal);
+    const view = await readSelectedKubeconfig(kubectl, config, deadline, signal);
     connection = view.clusters?.[0]?.cluster;
     selectedEndpoint = connection && verifiedHttpsEndpoint(connection.server);
     const user = view.users?.[0]?.user;
+    const token = user?.token || user?.tokenFile;
+    const certificate = user?.["client-certificate"] || user?.["client-certificate-data"];
+    const key = user?.["client-key"] || user?.["client-key-data"];
     if (user?.["auth-provider"] !== undefined) {
       // Built-in providers can rotate credentials and persist the successor
       // into the selected file. The temporary copy cannot own that refresh.
@@ -1103,6 +1862,18 @@ async function diagnose(
           "Ask the credential owner for a context using an exec plugin, token or client certificate.",
       };
     } else if (
+      requireKuberc &&
+      user?.exec &&
+      (token || certificate || key || user.username || user.password)
+    ) {
+      // A second credential can authenticate the request without running the plugin.
+      localFailure = {
+        status: "failed",
+        summary: "Required kuberc cannot use a context combining exec with other credentials.",
+        action: "Ask the credential owner for a context with a single credential source.",
+      };
+    } else if (
+      !requireKuberc &&
       user?.exec?.command &&
       process.env.KUBERC !== "off" &&
       process.env.KUBECTL_KUBERC !== "false"
@@ -1111,21 +1882,14 @@ async function diagnose(
       // kuberc disabled, even if no policy exists when the context is resolved.
       localFailure = {
         status: "failed",
-        summary: "The selected exec plugin requires explicitly disabled kubectl preferences.",
+        summary: "Choose how kubectl should authorize the selected credential plugin.",
         action:
-          "Set KUBECTL_KUBERC=false for this command only if the credential owner permits using this plugin without kubectl preferences.",
+          "Use --require-kuberc with the credential owner’s policy file, or use an approved non-plugin context. Set KUBECTL_KUBERC=false only if the owner permits disabling preferences.",
       };
     } else if (
       !selectedEndpoint ||
       connection?.["insecure-skip-tls-verify"] ||
-      !(
-        user?.token ||
-        user?.tokenFile ||
-        user?.exec?.command ||
-        ((user?.["client-certificate"] || user?.["client-certificate-data"]) &&
-          (user?.["client-key"] || user?.["client-key-data"])) ||
-        (user?.username && user?.password)
-      )
+      !(token || user?.exec?.command || (certificate && key) || (user?.username && user?.password))
     ) {
       localFailure = {
         status: "failed",
@@ -1138,6 +1902,9 @@ async function diagnose(
     }
   } catch (error) {
     signal.throwIfAborted();
+    if (error instanceof KubercError) {
+      throw error;
+    }
     localFailure = {
       status: "unknown",
       summary:
@@ -1147,12 +1914,16 @@ async function diagnose(
     };
   }
   let readNumber = 0;
-  const kube = <T>(path: string, optional = false) => {
+  function nextSocket() {
     if (blocker) {
       throw new DiagnosticError(blocker.summary);
     }
+    return join(directory, String(++readNumber));
+  }
+  const kube = <T>(path: string, optional = false) => {
     return kubernetesGet<T>(
-      join(directory, String(++readNumber)),
+      kubectl,
+      nextSocket(),
       kubeconfig,
       config.context,
       path,
@@ -1162,6 +1933,26 @@ async function diagnose(
     );
   };
   const getNamed = namedReader(kube);
+  async function project(check: ProjectedCheck): Promise<CheckResult> {
+    const request: ProjectionRequest = {
+      policy: kubectl.policy,
+      check,
+      kubeconfig,
+      context: config.context,
+      socketPrefix: nextSocket(),
+      timeout: Math.floor(Math.min(projectionTimeout, deadline - performance.now())),
+    };
+    return parseJson<CheckResult>(
+      await commandOutput(
+        { executable: process.execPath, env: kubectl.env, prefix: [], policy: kubectl.policy },
+        [import.meta.filename],
+        deadline,
+        signal,
+        request,
+      ),
+    );
+  }
+
   async function check(
     id: string,
     action: string,
@@ -1174,13 +1965,7 @@ async function diagnose(
     } catch (error) {
       signal.throwIfAborted();
       // Provider errors can contain credential-plugin output or private endpoints.
-      result = {
-        status: "unknown",
-        summary:
-          error instanceof DiagnosticError
-            ? error.message
-            : "The read failed or returned incomplete data.",
-      };
+      result = unreadable(error);
     }
     checks.push({
       id,
@@ -1217,7 +2002,8 @@ async function diagnose(
     const aws = async <T>(...args: string[]) =>
       parseJson<T>(
         await commandOutput(
-          "aws",
+          // Direct AWS calls retain the caller’s environment.
+          { executable: "aws", env: commandEnv, prefix: [], policy: kubectl.policy },
           [
             ...args,
             "--region",
@@ -1483,37 +2269,7 @@ async function diagnose(
     await check(
       `controller:${controller.namespace}/${controller.name}`,
       "Inspect this Deployment's rollout, Pods and events; restore its intended replicas before installing OCE.",
-      async () => {
-        const item = await getNamed<Deployment>("Deployment", controller);
-        if (item === null) {
-          return {
-            status: "failed",
-            summary: "The selected controller Deployment does not exist.",
-          };
-        }
-        const desired = item.spec?.replicas ?? 1;
-        const current =
-          !item.metadata?.deletionTimestamp &&
-          Number.isInteger(item.metadata?.generation) &&
-          item.status?.observedGeneration === item.metadata?.generation;
-        const available = item.status?.conditions?.some(
-          (condition) => condition.type === "Available" && condition.status === "True",
-        );
-        const ready =
-          current &&
-          available &&
-          desired > 0 &&
-          item.status?.updatedReplicas === desired &&
-          item.status?.availableReplicas === desired &&
-          item.status?.replicas === desired;
-        return {
-          status: ready ? "passed" : "failed",
-          summary: ready
-            ? "All intended controller replicas are updated and available."
-            : "The controller has not completed its current rollout.",
-          resource: `${controller.namespace}/${controller.name}@${item.metadata?.uid}`,
-        };
-      },
+      () => project({ kind: "controller", selection: controller }),
     );
   }
 
@@ -1527,15 +2283,37 @@ async function diagnose(
 
   const dependency = config.serviceDependency;
   if (dependency) {
+    const { service: selectedService, policy, tls } = dependency;
     await check(
       "service-egress",
       "Verify read access to the selected Service and NetworkPolicy, then retry the checks.",
       async () => {
-        const observedService = await getNamed<ApiService>("Service", dependency.service);
+        const observedService = await getNamed<ApiService>("Service", selectedService);
         return serviceEgress(dependency, observedService, () =>
-          getNamed<NetworkPolicy>("NetworkPolicy", dependency.policy),
+          getNamed<NetworkPolicy>("NetworkPolicy", policy),
         );
       },
+    );
+    if (tls) {
+      await check(
+        "service-tls",
+        "Verify named Secret read access or ask the certificate owner to run this check.",
+        () =>
+          project({
+            kind: "serving",
+            selection: { namespace: selectedService.namespace, name: tls.secretName },
+            serverName: tls.serverName,
+          }),
+      );
+    }
+  }
+
+  if (config.clientCertificate) {
+    const selection = config.clientCertificate;
+    await check(
+      "client-certificate",
+      "Verify the workload, certificate path and named read access with their owners, then retry.",
+      () => project({ kind: "client", selection }),
     );
   }
 
@@ -1642,7 +2420,12 @@ async function diagnose(
       ...(config.serviceDependency
         ? [
             "Verify the selected NetworkPolicy source Pod selector covers the calling workload.",
-            "From the caller's network, verify policy enforcement and, for TLS, the served certificate and trust chain.",
+            "Verify policy enforcement, the served TLS leaf and its trust chain separately from the caller's network.",
+          ]
+        : []),
+      ...(config.clientCertificate
+        ? [
+            "The client certificate check observes the workload template and Secret. Verify the mounted bytes, active process credentials, gateway client-CA policy, peer identity and mTLS RPC separately.",
           ]
         : []),
       "Quota observations do not predict chart admission, node capacity or storage availability.",
@@ -1669,17 +2452,17 @@ async function main(): Promise<void> {
       config: { type: "string" },
       json: { type: "boolean", default: false },
       "inventory-eks": { type: "string" },
+      "require-kuberc": { type: "boolean", default: false },
       kubeconfig: { type: "string" },
       context: { type: "string" },
     },
   });
   let config: DiagnosticPlan | InventoryPlan;
   if (values["inventory-eks"] !== undefined && values.config === undefined && !values.json) {
-    // Pinning this read requires disabling preferences. Require the caller's
-    // choice before a mutable kubeconfig can select a credential plugin.
-    if (process.env.KUBECTL_KUBERC !== "false") {
+    // Require an explicit choice before a mutable kubeconfig can select a plugin.
+    if (!values["require-kuberc"] && process.env.KUBECTL_KUBERC !== "false") {
       throw new DiagnosticError(
-        "EKS address collection requires explicit KUBECTL_KUBERC=false. Proceed only if the credential owner permits running without kubectl preferences.",
+        "Use --require-kuberc with the credential owner’s policy file, or obtain the inventory from the infrastructure owner. Running without preferences requires explicit KUBECTL_KUBERC=false and the credential owner’s permission.",
       );
     }
     config = {
@@ -1697,14 +2480,14 @@ async function main(): Promise<void> {
     config = validateConfig(JSON.parse(await readFile(values.config, "utf8")));
   } else {
     throw new DiagnosticError(
-      "Usage: node scripts/diagnose-kubernetes-prerequisites.ts --config FILE [--json] or --inventory-eks CLUSTER_ARN --kubeconfig FILE --context NAME",
+      "Usage: node scripts/diagnose-kubernetes-prerequisites.ts --config FILE [--json] [--require-kuberc] or --inventory-eks CLUSTER_ARN --kubeconfig FILE --context NAME [--require-kuberc]",
     );
   }
   const directory = await mkdtemp(join(tmpdir(), "oce-prerequisites-"));
   let report: DiagnosticReport | AddressInventory;
   let cleanupFailed = false;
   try {
-    report = await diagnose(config, directory, cancellation.signal);
+    report = await diagnose(config, directory, cancellation.signal, values["require-kuberc"]);
   } finally {
     try {
       await rm(directory, { recursive: true, force: true });
@@ -1753,7 +2536,34 @@ async function main(): Promise<void> {
 }
 
 try {
-  await main();
+  if (process.connected && process.send && process.argv.length === 2) {
+    // Only the private Node IPC channel starts a projection. The parent sends
+    // the request after validating the public plan and copying the kubeconfig.
+    const disconnected = new AbortController();
+    const stop = () => disconnected.abort();
+    const signal = AbortSignal.any([cancellation.signal, disconnected.signal]);
+    process.once("disconnect", stop);
+    try {
+      const [request] = await once(process, "message", { signal });
+      // Only the reduced result crosses stdout. The Secret stays in this child.
+      const result = await projectCheck(request as ProjectionRequest, signal).catch(unreadable);
+      signal.throwIfAborted();
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } catch (error) {
+      if (!(error instanceof KubercError)) {
+        throw error;
+      }
+      // Stop all checks even if the original policy was restored before exit.
+      process.exitCode = projectionPolicyFailure;
+    } finally {
+      process.off("disconnect", stop);
+      if (process.connected) {
+        process.disconnect?.();
+      }
+    }
+  } else {
+    await main();
+  }
 } catch (error) {
   if (signalExitCode !== undefined) {
     process.exitCode = signalExitCode;
