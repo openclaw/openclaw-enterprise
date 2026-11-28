@@ -123,6 +123,12 @@ In signed-in tests, point near the top of **Deployment** in v1’s scrolled
 Click without moving. v1’s **Deployment** opens. Repeat over **Draft credentials**.
 On slow returns, “Still checking…” stays visible until **Credentials** opens.
 
+Test sign-in separately from Storybook. With a disposable Controller, copy the
+**Draft credentials** link from a numbered version. Open the link while signed
+out, sign in, then choose the numbered version again. Follow **Draft credentials**
+with Enter. During a slow read, the snapshot stays visible until **Credentials**
+opens. Repeat with the copied link in an already signed-in browser.
+
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).
    Check the H1’s Agent name is legible at both widths. The summary

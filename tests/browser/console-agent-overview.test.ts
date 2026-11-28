@@ -30,6 +30,7 @@ import {
   grantSecretOperate,
   holdRequests,
   login,
+  loginThroughForm,
   nativeValues,
   newPage,
   nextFrames,
@@ -4337,16 +4338,15 @@ test("A slow return to retained Draft credentials keeps the wait in view", async
   await page.setViewportSize(viewport);
   await trackSettledFetches(page);
 
-  // Follow the same link twice so the second visit rechecks a previously opened draft.
-  await login(
+  // Sign in from the draft link, then return to the same draft through the snapshot shortcut.
+  await loginThroughForm(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, historical.id, "configuration"),
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
   );
   const settled = page.locator(settledView);
   const link = settled.getByRole("link", { name: "Draft credentials", exact: true });
   const save = settled.getByRole("button", { name: "Save authentication source", exact: true });
-  await link.click();
   await save.waitFor();
   await waitForIdleFetches(page);
   const requests = apiRequests(page, fixture.origin);
@@ -4368,8 +4368,8 @@ test("A slow return to retained Draft credentials keeps the wait in view", async
   try {
     await page.keyboard.press("Enter");
     assert.equal(required(await hold.requested).status(), 200);
-    await checking.waitFor();
-    assert.equal(await checking.count(), 1);
+    await checking.or(page.getByText("Reading this Agent.", { exact: true })).waitFor();
+    assert.equal(await checking.count(), 1, "returning to the draft keeps the snapshot in view");
     assert.ok(
       await original.evaluate((node) => node.isConnected && node.closest("[inert]") !== null),
     );

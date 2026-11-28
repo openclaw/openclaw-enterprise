@@ -76,6 +76,15 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     url.searchParams.delete("debug");
     if (selection !== null) {
       url.searchParams.set("namespace", selection);
+      // Sign-in and version links must name the same retained page. Leave extra options alone.
+      if (
+        url.pathname.startsWith("/console/agents/agt_") &&
+        url.searchParams.size === 3 &&
+        url.searchParams.has("revision") &&
+        url.searchParams.has("tab")
+      ) {
+        url.searchParams.sort();
+      }
     }
     return `${url.pathname}${url.search}`;
   }
