@@ -39,7 +39,7 @@ import type {
 import type { Driver, DriverRegistrationRef } from "../index.ts";
 import type {
   AgentRevision,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceReference,
   CredentialSourceType,
   HarnessAuthSnapshot,
@@ -338,7 +338,7 @@ export interface CredentialProviderDefinition {
     config?: Readonly<Record<string, string>>,
   ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
   routes(
-    source: Readonly<CredentialSource>,
+    source: Readonly<LegacyCredentialSource>,
     binding: EgressBinding,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
   ): readonly EgressRoute[];
@@ -610,10 +610,7 @@ const deploymentConsumer = Type.Union([
     { kind: Type.Literal("model"), providerId: nonemptyDeploymentString },
     strictDeploymentShape,
   ),
-  Type.Object(
-    { kind: Type.Literal("repository"), repositoryId: nonemptyDeploymentString },
-    strictDeploymentShape,
-  ),
+  Type.Object({ kind: Type.Literal("repository") }, strictDeploymentShape),
 ]);
 const credentialDeploymentShape = Type.Object(
   {

@@ -10,7 +10,7 @@ import type { Namespace, Restriction } from "../../packages/contracts/src/index.
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,

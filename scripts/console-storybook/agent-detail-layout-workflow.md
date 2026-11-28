@@ -1,7 +1,7 @@
 # Review the Agent detail layout
 
-Use the desktop Console first, then a 390-pixel phone frame. These stories use
-simulated API state; they do not prove persistence or live runtime behavior.
+Start on desktop, then test at 390 px. These stories simulate API responses and
+cannot verify persistence or live runtime behavior.
 
 Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
 then press End and Left to focus the tab before last. Narrow the window to
@@ -102,27 +102,38 @@ controller-backed browser regression in `tests/browser/console-agent-logs.test.t
 checks the source switch through the Console API.
 
 Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
-in its own preview tab. Select **Deploy new version**. Check that the unavailable
-button's accessible description names the Secret in the refusal. Switch to
-another tab and return. The simulated grant clears the refusal and enables
-Deploy on the same draft. Returning to the tab sends no Deploy request.
-Use **Deployment needs Secret operate** to check access that stays denied.
+in its own tab. Select **Deploy new version**. The unavailable button’s
+accessible description should name the Secret. Switch tabs and return. The
+simulated grant clears the refusal and enables Deploy on the same draft without
+sending a Deploy request. Use **Deployment needs Secret operate** to check
+access that stays denied.
 
-1. Separately, open **Pages / Agent detail / New version activated**
-   (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
-   At both widths, confirm its H1 shows a readable Agent name as an independent
-   success case. Check the compact summary separates Selected for service,
-   Latest visible deployment, and Live serving. Choose another **Viewing version**;
-   the service target stays the same.
-   Choose **Open draft**. Check the new-version notice has an even, neutral border
-   without a blue stripe. Open **Edit Configuration**; the notice stays visible.
-   Repeat this check at phone width. For the narrow layout check, choose
-   **Open preview in its own tab**. Set the browser content area to 390 pixels wide
-   and use 200% browser zoom (195 CSS pixels of layout width). Tab to **Viewing
-   version** and check that its label wraps above the picker. Use Home to view
-   **Draft**, then Tab back to the picker and select a numbered version. Both
-   choices stay readable without horizontal scrolling, and neither changes the
-   version selected for service.
+Return to the same version in **Current version's Sandbox lost**. Check the warning.
+
+In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
+Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
+Check v7’s failed record, pending cleanup and unchanged v6 selection. One check
+changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
+Cleanup triggers no further checks.
+
+Reopen the story. Focus **View deployment**. After cleanup, Enter opens v7.
+
+In the signed-in test, scroll down in v1’s **Configuration**. Point near the top
+of **Deployment**. After the simulated worker reports success and v2 is selected
+for service, click without moving. **Deployment** should open for v1.
+
+1. Open **Pages / Agent detail / New version activated**
+   (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).
+   At both widths, check the H1 shows a legible Agent name. The summary
+   distinguishes Selected for service, Latest visible deployment and
+   Live serving. Changing **Viewing version** leaves the service target unchanged.
+   At both widths, choose **Open draft**. The new-version notice has an even,
+   neutral border without a blue stripe. It stays visible after **Edit Configuration**.
+   Choose **Open preview in its own tab**. Set the viewport to
+   390 px wide and zoom to 200% (195 CSS px). Tab to **Viewing version**. Its label
+   should wrap above the picker. Use Home to view **Draft**, then Tab back and
+   select a numbered version. Check both remain readable without horizontal
+   scrolling and leave the service target unchanged.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
    record, and run diagnostics. Switch to Configuration and back: the record and
    results remain. **Logs** still opens the viewed version's output.
@@ -174,9 +185,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    completion. When the badge reads **Completed**, check that focus stays visible.
    Press Enter to open **Deployment** for v7.
 
-8. In **New version queued**, fold **Deployment details**, then Tab to **Run
-   diagnostics for this version**. Routine polls keep the fold and the visible
-   focused button in place. Repeat expanded, at desktop and phone widths.
+8. In **New version queued**, check the picker's keyboard round trip. Fold
+   **Deployment details** and Tab to **Run diagnostics for this version**.
+   Polls keep the fold, focus and button position. Repeat expanded at both widths.
+   In **Deployment activity loading**, Configuration shows **Deploying version**
+   on reply. **Deployment activity unavailable** stays neutral.
    In **New version in progress, one status read fails**, open Deployment before
    the failed poll. The fold stays as chosen through the transient error; the
    selected record shows the error outside it, with one visible alert. Completion

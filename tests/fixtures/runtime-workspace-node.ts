@@ -75,14 +75,29 @@ interface WebSocketModule {
   WebSocketServer: new (options: { host: string; port: number }) => ProxyServer;
 }
 
+interface NodeObserverMethods {
+  "node.list": {
+    params: Record<string, never>;
+    reply: GatewayReplies["node.list"];
+  };
+  "node.describe": {
+    params: { nodeId: string };
+    reply: WorkspaceNode & { deviceTokenAuthenticated: boolean };
+  };
+  "device.pair.setupStatus": {
+    params: { setupId: string };
+    reply: GatewayReplies["device.pair.setupStatus"];
+  };
+}
+
 interface NodeObserver {
   start(): void;
   stop(): void;
-  request(
-    method: "node.describe",
-    params: { nodeId: string },
+  request<Method extends keyof NodeObserverMethods>(
+    method: Method,
+    params: NodeObserverMethods[Method]["params"],
     options: { timeoutMs: number },
-  ): Promise<WorkspaceNode & { deviceTokenAuthenticated: boolean }>;
+  ): Promise<NodeObserverMethods[Method]["reply"]>;
 }
 
 interface GatewayRuntime {
@@ -155,7 +170,7 @@ const gatewayPassword = process.env.OPENCLAW_GATEWAY_PASSWORD;
 await mkdir(home, { recursive: true, mode: 0o700 });
 let setupDelivery: "file" | "envelope" = "file";
 // One deadline, set by the test from its own exec timeout, bounds the whole proof.
-// Each CLI call and wait may use what is left of it. A `gateway call` boots the
+// Each RPC and wait may use what is left of it. A `gateway call` boots the
 // OpenClaw CLI beside the Gateway and the node's own boot, and on a CPU-contended CI
 // runner one took over its former fixed 30 s (finding 2673). A hang still fails
 // before the test's exec timeout, naming the call.
@@ -216,9 +231,15 @@ let lostHelloDeviceId: string | undefined;
 let holdNextBootstrapHello = false;
 let heldHello: HeldHello | undefined;
 let observer: NodeObserver | undefined;
-function describeNode(nodeId: string) {
+function observe<Method extends keyof NodeObserverMethods>(
+  method: Method,
+  params: NodeObserverMethods[Method]["params"],
+): Promise<NodeObserverMethods[Method]["reply"]> {
   assert.ok(observer);
-  return observer.request("node.describe", { nodeId }, { timeoutMs: remainingMs("node.describe") });
+  return observer.request(method, params, { timeoutMs: remainingMs(method) });
+}
+function describeNode(nodeId: string) {
+  return observe("node.describe", { nodeId });
 }
 const rejectedConnects: RejectedConnect[] = [];
 const upstreamSockets = new Set<ProxySocket>();
@@ -361,7 +382,7 @@ async function stop() {
 }
 async function waitForDisconnect(nodeId: string) {
   while (Date.now() < deadline) {
-    const result = await call("node.list");
+    const result = await observe("node.list", {});
     if (!result.nodes.some((item) => item.nodeId === nodeId && item.connected)) {
       const retired = await describeNode(nodeId);
       assert.equal(retired.connected, false);
@@ -378,7 +399,7 @@ async function waitForConfirmedSetup(nodeId: string) {
   let status: GatewayReplies["device.pair.setupStatus"] | undefined;
   while (Date.now() < deadline) {
     try {
-      status = await call("device.pair.setupStatus", { setupId: setup.setupId });
+      status = await observe("device.pair.setupStatus", { setupId: setup.setupId });
     } catch (error) {
       throw new Error(
         `Setup was not confirmed for the connected device; last status: ${JSON.stringify(status)}`,
@@ -402,7 +423,7 @@ async function waitForNode(expectedId: string) {
     if (child.exitCode !== null) {
       throw new Error(`Node exited: ${childLog}`);
     }
-    const result = await call("node.list");
+    const result = await observe("node.list", {});
     const node = result.nodes.find(
       (item) => item.connected && item.displayName === "runtime-workspace-proof",
     );
@@ -555,6 +576,14 @@ try {
   // This node was already paired with the seven-command surface. Redeployment
   // must use the exact retained token and identity without capability approval.
   assert.deepEqual(readSavedNodeCredentials(), savedCredentials);
+  // Check the paired identity and restricted grant through a fresh CLI connection.
+  const { nodes } = await call("node.list");
+  assert.equal(nodes.length, 1, "Expected exactly one workspace node identity.");
+  const [reconnectedNode] = nodes;
+  assert.ok(reconnectedNode);
+  assert.equal(reconnectedNode.nodeId, nodeId);
+  assert.equal(reconnectedNode.connected, true);
+  assert.deepEqual([...reconnectedNode.commands].sort(), commands);
   const reconnected = await call("device.pair.setupStatus", { setupId: setup.setupId });
   assert.deepEqual(reconnected.completion, completion);
 

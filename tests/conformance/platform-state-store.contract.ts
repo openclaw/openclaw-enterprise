@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Installation } from "@openclaw-enterprise/contracts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { verifyDeletedResourceAccessBindingContract } from "./platform-state-access-binding-contract.ts";
@@ -18,17 +20,16 @@ export async function verifyPlatformStateStoreContract(
 ) {
   const seed = await seedPlatformState(store, options.installation);
   await verifyPlatformStateTransactions(store, seed);
-  const lifecycle = await verifyPlatformStateLifecycle(store, seed);
-
-  await verifyCredentialSourceContract(store, {
-    namespace: seed.namespace,
-    harnessSecret: seed.harnessSecret,
-    accountNamespace: lifecycle.accountNamespace,
-    accountConfiguration: lifecycle.accountConfiguration,
-    accountAgent: lifecycle.accountAgent,
-    revision: seed.revision,
-  });
   await verifyStandaloneCredentialStateContract(store, seed);
+  const instance = await store.transact((transaction) =>
+    transaction.installations.selectTokenServiceInstance({
+      id: randomUUID(),
+      driverId: "platform-state-token-service",
+      storeIdentity: "platform-state-contract",
+    }),
+  );
+  const lifecycle = await verifyPlatformStateLifecycle(store, seed, instance.id);
+  await verifyCredentialSourceContract(store, seed, instance.id);
   await verifyEgressSendReceiptContract(
     store,
     seed.installation,
@@ -50,7 +51,6 @@ export async function verifyPlatformStateStoreContract(
     lifecycleAgent: lifecycle.lifecycleAgent,
     serviceAccount: lifecycle.serviceAccount,
     serviceAccountNamespace: lifecycle.accountNamespace,
-    serviceAccountRevision: lifecycle.serviceAccountRevision,
     lifecycleNamespace: lifecycle.lifecycleNamespace,
     deletedAt: lifecycle.deletedAt,
   };

@@ -268,17 +268,21 @@ and [plugin lifecycle](../../reference/agent-plugins.md#lifecycle).
 
 ### Check conversation continuity
 
-Before the upgrade, choose a test conversation on an existing Agent and note a
-harmless exchange. After recovery, reopen that conversation on the same Agent.
-Find the earlier exchange, then send a follow-up and check for a new reply.
-Repeat the check if you return to the old build. A new chat or a restored
-workspace file can work even when the original history is missing.
+Before upgrading, note a harmless exchange in an existing Agent’s test chat.
+For dedicated Codex, record the native thread ID and any reused test worker’s
+ID and last completed turn ID.
 
-For dedicated Codex, the Gateway claim holds the conversation and the
-[Harness claim](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
-holds `codex-sessions`. To check native thread continuity, record the thread ID
-before the change and verify the follow-up used that same thread. Keep IDs and
-results private; omit message bodies and credentials.
+After recovery, find the exchange there. Verify the recorded worker turn’s answer
+before resuming. If history or identity differs, pause and reconcile without
+resending. Send a follow-up and verify the original thread replies. If reusing
+a worker, have the parent assign it new work and use its answer. Repeat after
+rollback.
+
+Dedicated Codex keeps chats on the Gateway claim and `codex-sessions` on the
+[Harness claim](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+Workspace files alone can’t prove continuity.
+
+Keep IDs and results private. Omit message bodies and credentials.
 
 [Re-creating a split-layout tenant](split-layout-upgrade.md#export-and-re-create)
 assigns new Agent IDs; the separate archive keeps old conversations for reference.

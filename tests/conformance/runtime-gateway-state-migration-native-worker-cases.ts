@@ -346,9 +346,11 @@ test("Native worker migrates older node state without the model credential befor
   assert.ok(doctor && connect);
   assert.equal(doctor.env.OPENCLAW_STATE_DIR, nodeState);
   assert.equal(doctor.env.OPENCLAW_CONFIG_PATH, join(nodeState, "openclaw.json"));
+  assert.equal(doctor.env.OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF, "1");
   assert.equal(doctor.env.OPENCLAW_CONFIG_READONLY, "1");
   assert.equal(doctor.env.OPENAI_API_KEY, undefined);
   assert.equal(doctor.env.OPENCLAW_NODE_SETUP_CODE, undefined);
+  assert.equal(connect.env.OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF, "1");
   assert.equal(connect.env.OPENAI_API_KEY, "sk-fixture-native-worker-model-credential");
   assert.ok(outcome.errors.some((line) => /"phase":"state-migration","outcome":"ok"/.test(line)));
   assert.equal(await outcome.ready(), 200);

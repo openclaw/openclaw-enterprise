@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-image.ts";
 import { directGitLaunchVerifier, traceDirectGitBootstrap } from "../helpers/finite-git-agent.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { ensureOpenShellProviderProfile } from "../../apps/controller/src/backends/openshell.ts";
@@ -839,4 +840,118 @@ test("reconciles a Workspace provider profile without replaying a failed write",
   await assert.rejects(reconcile("Unapplied profile"), /UpdateProviderProfiles did not update/);
   assert.deepEqual(calls.splice(0), ["read", "update:9", "read"]);
   assert.equal(stored?.display_name, "Concurrent matching profile");
+});
+
+test("stock Supervisor readiness pins the Pod and its container", async (t) => {
+  const digest = "sha256:" + "a".repeat(64);
+  const configDigest = "sha256:" + "b".repeat(64);
+  const otherDigest = "sha256:" + "c".repeat(64);
+  const expected = {
+    sandboxId: "sandbox",
+    sandboxUid: "sandbox-uid",
+    image: `registry.example/supervisor@${digest}`,
+    digests: [digest, configDigest],
+  };
+  const pod = {
+    metadata: {
+      uid: "pod-uid",
+      name: "supervisor",
+      labels: {
+        "openshell.ai/boundary-role": "supervisor",
+        "openshell.ai/boundary-pair": "pair",
+      },
+      annotations: { "openshell.ai/sandbox-id": expected.sandboxId },
+      ownerReferences: [{ kind: "Sandbox", uid: expected.sandboxUid }],
+    },
+    spec: { containers: [{ name: "supervisor", image: expected.image }] },
+  };
+  const running = {
+    name: "supervisor",
+    ready: true,
+    imageID: `containerd://${configDigest}`,
+    containerID: "containerd://owned",
+    state: { running: {} },
+  };
+  const ready = { ...pod, status: { phase: "Running", containerStatuses: [running] } };
+  const pending = {
+    ...pod,
+    status: {
+      phase: "Pending",
+      containerStatuses: [
+        { name: "supervisor", ready: false, state: { waiting: { reason: "ContainerCreating" } } },
+      ],
+    },
+  };
+  const noRead = async () =>
+    assert.fail("must check the initial identity and image before reading");
+  await t.test("waits for the selected container's ready status and runtime digest", async (t) => {
+    let reads = 0;
+    const readPod = async (signal: AbortSignal) => {
+      assert.equal(signal.aborted, false);
+      reads++;
+      return ready;
+    };
+    assert.deepEqual(await waitForStockSupervisor(pending, readPod, expected, t.signal), running);
+    assert.equal(reads, 1);
+    assert.deepEqual(await waitForStockSupervisor(ready, noRead, expected, t.signal), running);
+  });
+  await t.test("rejects a wrong requested or resolved image before readiness", async (t) => {
+    await assert.rejects(
+      waitForStockSupervisor(
+        { ...pending, spec: { containers: [{ name: "supervisor", image: "other" }] } },
+        noRead,
+        expected,
+        t.signal,
+      ),
+      /must select the verified stock image/,
+    );
+    const wrongImage = {
+      ...ready,
+      status: {
+        ...ready.status,
+        containerStatuses: [{ ...running, ready: false, imageID: otherDigest }],
+      },
+    };
+    await assert.rejects(
+      waitForStockSupervisor(wrongImage, noRead, expected, t.signal),
+      /running supervisor image must match/,
+    );
+  });
+  await t.test("refuses a replaced Pod or restarted container during the wait", async (t) => {
+    await assert.rejects(
+      waitForStockSupervisor(
+        pending,
+        async () => ({ ...ready, metadata: { ...pod.metadata, uid: "replacement" } }),
+        expected,
+        t.signal,
+      ),
+      /supervisor Pod UID changed/,
+    );
+    const starting = {
+      ...ready,
+      status: { ...ready.status, containerStatuses: [{ ...running, ready: false }] },
+    };
+    const replacement = {
+      ...ready,
+      status: {
+        ...ready.status,
+        containerStatuses: [{ ...running, containerID: "containerd://replacement" }],
+      },
+    };
+    await assert.rejects(
+      waitForStockSupervisor(starting, async () => replacement, expected, t.signal),
+      /supervisor container identity changed/,
+    );
+  });
+  await t.test("reports the last waiting reason when startup does not finish", async (t) => {
+    await assert.rejects(
+      waitForStockSupervisor(pending, noRead, expected, t.signal, 25),
+      /did not become ready within 25 ms \(phase=Pending, reason=ContainerCreating/,
+    );
+    const cancellation = new Error("cancelled fixture");
+    await assert.rejects(
+      waitForStockSupervisor(pending, noRead, expected, AbortSignal.abort(cancellation)),
+      (error) => error === cancellation,
+    );
+  });
 });

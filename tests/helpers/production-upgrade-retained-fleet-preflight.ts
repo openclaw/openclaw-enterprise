@@ -328,22 +328,37 @@ export function registerRetainedFleetPreflightTests(
       inventoryNamespaces: [
         {
           ...readyNamespace,
-          // The printed list is bounded. An unprinted Agent still affects admission.
+          // The omitted Agent blocks candidate checks. The operator must still see why.
           agents: [
             ...Array.from({ length: 10 }, (_, index) => ({
               ...retainedAgent,
               id: `agt_${index}`,
               repositoryWorkerRestart: "original-worker-required" as const,
             })),
-            retainedAgent,
+            { ...retainedAgent, repositoryWorkerRestart: "unknown" },
           ],
         },
       ],
     });
-    await assert.rejects(
-      f.run("--preflight-only"),
-      /cannot safely pass the repository worker-restart preflight/u,
-    );
+    const inventory = join(f.evidence, "inventory", "deployment-inventory.json");
+    await assert.rejects(f.run("--preflight-only"), (error: unknown) => {
+      assert.ok(error instanceof Error && "code" in error && "stderr" in error);
+      assert.equal(error.code, 1);
+      assert.ok(typeof error.stderr === "string");
+      assert.match(error.stderr, /cannot safely pass the repository worker-restart preflight/u);
+      assert.match(
+        error.stderr,
+        /Candidate startup and migration checks did not run because at least one restart assessment is unknown or missing\./u,
+      );
+      assert.equal(
+        error.stderr.split("\n").filter((line) => line.startsWith("  Namespace ")).length,
+        10,
+      );
+      assert.doesNotMatch(error.stderr, /Agent "agt_test"/u);
+      assert.ok(error.stderr.includes(`Inspect ${inventory} for the complete inventory.`));
+      assert.match(error.stderr, /No additional OCC writer was stopped\./u);
+      return true;
+    });
     assert.deepEqual(await f.events(), []);
     const state = await f.state();
     assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);

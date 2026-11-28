@@ -572,12 +572,20 @@ else:
           },
         );
       if (signin && signin !== "compatible") {
-        await assert.rejects(
-          pull(),
-          signin === "runtime"
-            ? /Unreviewed historical runtime recipe/
-            : /Unclassified sign-in reader/,
-        );
+        if (signin === "runtime") {
+          await assert.rejects(pull(), (error: unknown) => {
+            assert.ok(
+              error instanceof Error && "stderr" in error && typeof error.stderr === "string",
+            );
+            assert.ok(error.stderr.includes(source));
+            assert.ok(error.stderr.includes("deploy/runtime/Dockerfile"));
+            assert.ok(error.stderr.includes("Select an Enterprise Containers publication"));
+            assert.ok(!/Different release recipe|ARG NODE_BASE_IMAGE=/.test(error.stderr));
+            return true;
+          });
+        } else {
+          await assert.rejects(pull(), /Unclassified sign-in reader/);
+        }
         // A rejected source pair must never hand credentials to Docker or publish a receipt.
         assert.equal(
           (await calls()).some((call) => call.pairDocker),

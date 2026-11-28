@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,

@@ -88,4 +88,4 @@ jobs:
           name: ci-runtime-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-artifact/receipt.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7

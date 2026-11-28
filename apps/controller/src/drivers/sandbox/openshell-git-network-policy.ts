@@ -1,11 +1,13 @@
 import {
   parseRepositoryApiLimits,
+  type DeploymentRequestMatch,
   type RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import {
   repositoryGitRestOperations,
   type RepositoryGitRestAuthority,
 } from "../repo/access/delivery.ts";
+import { githubPullRequestCreationRequest } from "../repo/github/access/registry.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellProviderProfileEndpoint,
@@ -15,12 +17,26 @@ export type OpenShellGitNetworkTarget =
   | { readonly repository: string; readonly installationId?: never }
   | { readonly repository?: never; readonly installationId: string };
 
-const binaries = Object.freeze([
+/** Stock Git and transport helpers eligible to receive Repository credentials. */
+export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
   "/usr/bin/git",
   "/usr/lib/git-core/git-remote-https",
   "/usr/lib/git-core/git-remote-http",
   "/usr/libexec/git-core/git-remote-https",
   "/usr/libexec/git-core/git-remote-http",
+]);
+
+export function openShellRepositoryMetadataRequest(repository: string) {
+  return {
+    binary: "/usr/bin/curl",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+  } satisfies DeploymentRequestMatch;
+}
+
+const binaries = Object.freeze([
+  ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
   "/usr/bin/curl",
   "/usr/local/bin/node",
   "/usr/bin/node",
@@ -137,25 +153,29 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
 
-function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGrant) {
+export function openShellGitServiceRules({ repository, access }: RepositoryNetworkGrant) {
   const root = `/${repository}.git`;
   const services =
     access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+  return services.flatMap((service) => [
+    {
+      allow: {
+        method: "GET",
+        path: `${root}/info/refs`,
+        query: { service: { glob: service } },
+      },
+    },
+    { allow: { method: "POST", path: `${root}/${service}` } },
+  ]);
+}
+
+function repositoryNetworkEndpoint(grant: RepositoryNetworkGrant) {
   return openShellProfileEndpoint({
     host: "github.com",
     port: 443,
     protocol: "rest",
-    path: `${root}/**`,
-    rules: services.flatMap((service) => [
-      {
-        allow: {
-          method: "GET",
-          path: `${root}/info/refs`,
-          query: { service: { glob: service } },
-        },
-      },
-      { allow: { method: "POST", path: `${root}/${service}` } },
-    ]),
+    path: `/${grant.repository}.git/**`,
+    rules: openShellGitServiceRules(grant),
   });
 }
 
@@ -172,7 +192,8 @@ function scopedApiEndpoints(
   )) {
     const rules = [];
     if (pulls === "write") {
-      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+      const { method, path } = githubPullRequestCreationRequest(repository).requestPolicy;
+      rules.push({ allow: { method, path } });
     }
     if (issues === "write") {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });

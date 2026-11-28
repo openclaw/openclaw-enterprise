@@ -19,12 +19,12 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.ts";
 import { admittedConfiguration } from "./admitted-configuration.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.ts";
 import { reservePort, reservedPortArgs } from "./available-port.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { jsonRequestInit } from "./inject-json.ts";
-import { jsonLines as parseJsonLines } from "./json-lines.mjs";
+import { jsonLines as parseJsonLines } from "./json-lines.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,

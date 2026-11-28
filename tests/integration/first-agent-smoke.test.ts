@@ -22,7 +22,11 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
-import { waitForChannelProxyReadiness } from "../../scripts/ci/first-agent-smoke/process.ts";
+import { readyGateway, waitForDeployment } from "../../scripts/ci/first-agent-smoke/agents.ts";
+import {
+  channelProxyDeploymentStep,
+  waitForChannelProxyReadiness,
+} from "../../scripts/ci/first-agent-smoke/process.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
@@ -307,6 +311,61 @@ test("smoke timing isolates channel proxy deployments from subsequent checks", a
   );
 });
 
+test("initial deployment timing distinguishes concurrent callers and omits a pending peer", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = 1000;
+  const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
+  const measureA = channelProxyDeploymentStep({
+    smokeStep,
+    context: "channel-proxy-initial-deploy-a",
+  });
+  const measureB = channelProxyDeploymentStep({
+    smokeStep,
+    context: "channel-proxy-initial-deploy-b",
+  });
+  const failingSubmit = Promise.withResolvers<never>();
+  const peerWait = Promise.withResolvers<void>();
+  const failure = new Error("private deployment diagnostic");
+  const parent = "channel-proxy-initial-deploy";
+  let peer: Promise<void> | undefined;
+  const deployment = smokeStep(parent, () =>
+    Promise.all([
+      measureA("submit", () => failingSubmit.promise),
+      measureB("submit", () => Promise.resolve("private peer revision")).then(() => {
+        peer = measureB("wait", () => peerWait.promise);
+        return peer;
+      }),
+    ]),
+  );
+  try {
+    // Let B enter its wait before A's rejection closes the parent timing row.
+    clock += 7;
+    await drainTurn();
+    assert.ok(peer);
+    clock += 12;
+    failingSubmit.reject(failure);
+    await assert.rejects(deployment, (rejection) => rejection === failure);
+    await writeTimingReport(directory);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8")),
+      {
+        version: 2,
+        rows: [
+          { phase: `${parent}-b-submit`, parent, endMs: 7, status: "ok" },
+          { phase: `${parent}-a-submit`, parent, endMs: 19, status: "failed" },
+          { phase: parent, parent: "controlled-channel-proxy", endMs: 19, status: "failed" },
+        ].map((row) => ({ ...row, startMs: 0 })),
+      },
+    );
+  } finally {
+    failingSubmit.reject(failure);
+    peerWait.resolve();
+    await deployment.catch(() => {});
+    await peer;
+  }
+});
+
 test("smoke timing preserves a rejected proxy wait and omits unreached waits", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -343,6 +402,292 @@ test("smoke timing preserves a rejected proxy wait and omits unreached waits", a
       },
     );
   }
+});
+
+test("channel proxy waits for both signals in one poll and reports each first observation once", async (t) => {
+  const base = "/namespaces/fixture/agents/agent";
+  const deployment = `${base}/deployments/${revision}`;
+  const context = "channel-proxy-move-deploy-a";
+  const previous = "rev_00000000-0000-4000-8000-000000000002";
+  const incomplete = {
+    lastAttempt: {
+      at: "2026-03-02T07:00:00.000Z",
+      code: "REVISION_INCOMPLETE",
+      message: "private diagnostic sentinel",
+    },
+    nextAttemptAt: null,
+  };
+  const unschedulable = {
+    lastAttempt: {
+      at: "2026-03-02T06:59:58.000Z",
+      code: "REVISION_UNSCHEDULABLE",
+      message: "Waiting for capacity",
+    },
+    nextAttemptAt: null,
+  };
+  const cases = [
+    {
+      // The active pointer can advance while the work is still running.
+      samples: [
+        { status: "running", active: previous, progress: unschedulable },
+        { status: "running", active: previous, progress: incomplete },
+        { status: "running", active: revision, progress: incomplete },
+        { status: "succeeded", active: revision, progress: null },
+      ],
+      observations: [
+        "REVISION_INCOMPLETE elapsedMs=2000",
+        "active-revision elapsedMs=4000",
+        "deployment-succeeded elapsedMs=6000",
+      ],
+    },
+    {
+      // The first Agent snapshot predates activation, while the paired deployment read sees success.
+      samples: [
+        { status: "succeeded", active: previous, progress: null },
+        { status: "succeeded", active: revision, progress: null },
+      ],
+      observations: ["deployment-succeeded elapsedMs=0", "active-revision elapsedMs=2000"],
+    },
+  ];
+  for (const { samples, observations } of cases) {
+    const reads: string[] = [];
+    // Let Node write its binary test results through the same stream.
+    const output = t.mock.method(process.stdout, "write");
+    let poll = 0;
+    await waitForDeployment(
+      {
+        namespaceId: "fixture",
+        api: async (method, path) => {
+          reads.push(`${method} ${path}`);
+          const sample = samples[poll];
+          assert.ok(sample, "unexpected extra poll");
+          if (path === deployment) {
+            if (sample.status === "succeeded" && sample.active === previous) {
+              await drainTurn();
+              assert.equal(poll, 1, "the first Agent snapshot must precede deployment success");
+            }
+            return { status: sample.status, progress: sample.progress };
+          }
+          assert.equal(path, base);
+          poll++;
+          return { activeRevisionId: sample.active };
+        },
+      },
+      "agent",
+      revision,
+      "private label",
+      { ...virtualClock(), context },
+    );
+    output.mock.restore();
+    const lines = output.mock.calls
+      .map((call) => call.arguments[0])
+      .filter((chunk) => typeof chunk === "string");
+    assert.deepEqual(
+      reads,
+      samples.flatMap(() => [`GET ${deployment}`, `GET ${base}`]),
+    );
+    assert.deepEqual(
+      lines,
+      observations.map(
+        (observation) => `[first-agent-smoke] ${context} wait observed ${observation}\n`,
+      ),
+    );
+  }
+});
+
+test("channel proxy gateway timings report bounded intervals from the exact Ready Pod", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-gateway-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, "calls");
+  const podList = join(directory, "pods.json");
+  await writeFile(
+    join(directory, "kubectl"),
+    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SMOKE_POD_CALLS"\nexec /bin/cat "$SMOKE_POD_LIST"\n',
+    { mode: 0o755 },
+  );
+  const keyPath = join(directory, "key");
+  const stack = {
+    directory,
+    keyPath,
+    kubeconfig: join(directory, "kubeconfig"),
+    context: "fixture",
+    origin: "http://127.0.0.1",
+    state: { keyPath, cluster: "fixture", apiPort: 0, platformNamespace: "fixture" },
+    api: async () => assert.fail("gateway observation made an API call"),
+  };
+  const context = "channel-proxy-move-deploy-a" as const;
+  const agentId = "agt_00000000-0000-4000-8000-000000000004";
+  const labels = {
+    "openclaw.dev/agent": agentId,
+    "openclaw.dev/workload-role": "gateway",
+  };
+  const running = (startedAt: string) => ({ running: { startedAt } });
+  const gateway = {
+    name: "gateway",
+    ready: true,
+    restartCount: 0,
+    state: running("2026-03-02T07:00:19Z"),
+  };
+  const sidecar = { ...gateway, name: "envoy", state: running("2026-03-02T07:00:08Z") };
+  const scheduled = {
+    type: "PodScheduled",
+    status: "True",
+    lastTransitionTime: "2026-03-02T07:00:07Z",
+  };
+  const ready = { type: "Ready", status: "True", lastTransitionTime: "2026-03-02T07:00:41Z" };
+  const pod = {
+    metadata: {
+      labels,
+      name: "unlogged-pod",
+      namespace: "unlogged-namespace",
+      creationTimestamp: "2026-03-02T07:00:00Z",
+    },
+    // Hashes of the fixture Agent ID and revision in the Kubernetes ConfigMap name.
+    spec: { volumes: [{ configMap: { name: "gateway-55ec0f2908b7-rev-0564d7e3f77e" } }] },
+    status: {
+      phase: "Running",
+      conditions: [scheduled, ready],
+      containerStatuses: [sidecar, gateway],
+    },
+  };
+  const oldPod = {
+    ...pod,
+    // The stale Pod is also Ready, but all of its intervals differ from the requested Pod's.
+    metadata: {
+      ...pod.metadata,
+      name: "unlogged-old-pod",
+      creationTimestamp: "2026-03-02T06:59:00Z",
+    },
+    status: {
+      ...pod.status,
+      conditions: [
+        { ...scheduled, lastTransitionTime: "2026-03-02T06:59:01Z" },
+        { ...ready, lastTransitionTime: "2026-03-02T06:59:06Z" },
+      ],
+      containerStatuses: [sidecar, { ...gateway, state: running("2026-03-02T06:59:03Z") }],
+    },
+    spec: { volumes: [{ configMap: { name: "gateway-55ec0f2908b7-rev-79a910c37317" } }] },
+  };
+  const otherAgent = {
+    ...pod,
+    metadata: { ...pod.metadata, labels: { ...labels, "openclaw.dev/agent": "another-agent" } },
+  };
+  const withContainers = (...containerStatuses: unknown[]) => ({
+    ...pod,
+    status: { ...pod.status, containerStatuses },
+  });
+  const scheduledMs = "createdToScheduledMs=7000";
+  const startMs = "scheduledToGatewayStartMs=12000";
+  const readyMs = "gatewayStartToLatestPodReadyMs=22000";
+  const observations = [
+    {
+      label: "exact revision",
+      items: [oldPod, pod],
+      context,
+      fields: [scheduledMs, startMs, readyMs],
+    },
+    { label: "unrelated call", items: [pod], context: undefined, fields: [] },
+    { label: "mismatched Agent label", items: [otherAgent], context, fields: [] },
+    {
+      label: "missing timing fields",
+      items: [
+        { ...pod, status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] } },
+      ],
+      context,
+      fields: [],
+    },
+    {
+      label: "restarted gateway",
+      items: [withContainers(sidecar, { ...gateway, restartCount: 1 })],
+      context,
+      fields: [scheduledMs],
+    },
+    { label: "sidecar only", items: [withContainers(sidecar)], context, fields: [scheduledMs] },
+    {
+      label: "ambiguous gateway status",
+      items: [withContainers(gateway, gateway)],
+      context,
+      fields: [scheduledMs],
+    },
+    {
+      label: "malformed gateway start",
+      items: [withContainers(sidecar, { ...gateway, state: running("unlogged-invalid-time") })],
+      context,
+      fields: [scheduledMs],
+    },
+    {
+      label: "ambiguous Ready transition",
+      items: [{ ...pod, status: { ...pod.status, conditions: [scheduled, ready, ready] } }],
+      context,
+      fields: [scheduledMs, startMs],
+    },
+    {
+      label: "unusable calendar date and backwards Ready",
+      items: [
+        {
+          ...pod,
+          metadata: { ...pod.metadata, creationTimestamp: "2026-02-30T07:00:00Z" },
+          status: {
+            ...pod.status,
+            conditions: [scheduled, { ...ready, lastTransitionTime: "2026-03-02T07:00:15Z" }],
+          },
+        },
+      ],
+      context,
+      fields: [startMs],
+    },
+    {
+      label: "creation interval above its bound",
+      items: [{ ...pod, metadata: { ...pod.metadata, creationTimestamp: "2026-03-02T05:00:00Z" } }],
+      context,
+      fields: [startMs, readyMs],
+    },
+  ];
+
+  await withEnvironment(
+    { PATH: commandPath(directory), SMOKE_POD_CALLS: calls, SMOKE_POD_LIST: podList },
+    async () => {
+      // Capture the real diagnostic while the existing kubectl lookup consumes each PodList.
+      const lines: string[] = [];
+      const write = t.mock.method(process.stdout, "write", (chunk: string) => {
+        lines.push(chunk);
+        return true;
+      });
+      try {
+        for (const observation of observations) {
+          await writeFile(podList, JSON.stringify({ items: observation.items }));
+          const result = await readyGateway(stack, agentId, revision, observation.context);
+          assert.deepEqual(result, { namespace: "unlogged-namespace", pod: "unlogged-pod" });
+          assert.deepEqual(
+            lines.splice(0),
+            observation.fields.length === 0
+              ? []
+              : [
+                  `[first-agent-smoke] ${context}: sampled gateway Pod intervals ${observation.fields.join(" ")}\n`,
+                ],
+            observation.label,
+          );
+        }
+        // Timing must neither convert a selection failure to success nor log either candidate.
+        await writeFile(podList, JSON.stringify({ items: [pod, pod] }));
+        await assert.rejects(
+          readyGateway(stack, agentId, revision, context),
+          /found 2 of 2 Agent Pods/u,
+        );
+        assert.deepEqual(lines, []);
+      } finally {
+        write.mock.restore();
+      }
+    },
+  );
+  assert.deepEqual(
+    (await readFile(calls, "utf8")).trimEnd().split("\n"),
+    Array.from(
+      { length: observations.length + 1 },
+      () =>
+        `--kubeconfig ${stack.kubeconfig} --context fixture get pods --all-namespaces -l openclaw.dev/agent=${agentId} -o json`,
+    ),
+  );
 });
 
 test("the Actions smoke command reports no retirement waits when image setup is missing", async (t) => {

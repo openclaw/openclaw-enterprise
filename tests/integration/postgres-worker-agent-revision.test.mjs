@@ -20,13 +20,7 @@ import {
   KubernetesSecretWriteForbiddenError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import {
-  createAccessTokenServiceAccount,
-  poolWithOneBackendBindingReadFault,
-  backendDefinition,
-  requiresPostgres,
-  seedBackendBinding,
-} from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import {
   assertFailedDeployment,
@@ -49,10 +43,8 @@ import {
 import { registerRevisionDispatchCases } from "./postgres-worker-agent-revision-dispatch-cases.ts";
 import { createPluginRevisionCases } from "./postgres-worker-agent-revision-plugin-cases.ts";
 import {
-  assertCredentialVariableConflict,
   assertFailedReplacementStaysActive,
   assertGatewayLabelRefusal,
-  assertMissingCredentialGatewayRefusal,
   assertSecretWriteRefusal,
   assertUnsupportedSandboxRefusal,
   maintenanceRefusalCases,
@@ -479,263 +471,6 @@ revisionTest(
       { resource_id: first.id, previous: null },
       { resource_id: second.id, previous: first.id },
     ]);
-  },
-);
-
-revisionTest(
-  "the revision worker rejects associated-account access revoked after admission before invoking Compute",
-  async (fixture) => {
-    const provider = backendDefinition();
-    const account = await createAccessTokenServiceAccount(
-      fixture.state,
-      fixture.namespace.id,
-      "revoked-account",
-    );
-    await seedBackendBinding(fixture.observerPool, account);
-    const { owner, candidate } = await fixture.admitInitialRevision("revoked-service-account", {
-      agent: { executionMode: "dedicated", serviceAccountId: account.id, backendId: provider.id },
-    });
-
-    // Admission captured a readable account, but its exact read permission is revoked before dispatch.
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_restrictions
-         (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, 'read', 'service_account', $3, 'deny')`,
-      [`restriction-${randomUUID()}`, fixture.namespace.id, account.id],
-    );
-
-    const effects = [];
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        effects.push({ action: "prepare", revisionId: revision.id });
-        return fixture.compute.prepareRevision(revision);
-      },
-      async retireRevision(revision) {
-        effects.push({ action: "retire", revisionId: revision.id });
-        return fixture.compute.retireRevision(revision);
-      },
-    });
-
-    const failed = await fixture.work(candidate, "failed_permanent");
-    assert.equal(failed.attempt_count, 1);
-    assert.deepEqual(
-      effects.filter(({ revisionId }) => revisionId === candidate.id),
-      [],
-      "revoked account access must prevent Compute effects for its admitted revision",
-    );
-
-    const active = await fixture.activePointer(owner);
-    assert.equal(active.rows[0].active_revision_id, null);
-
-    // The outer deployment denial names its Agent while retaining the failed exact account decision.
-    const denial = await fixture.observerPool.query(
-      `SELECT action, resource_kind, resource_id, outcome,
-              details->'__occAuditMetadata'->'authorization' AS authorization,
-              details->'__occAuditMetadata'->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE resource_id = $1 AND kind = 'authorization_denial'`,
-      [owner.id],
-    );
-    assert.deepEqual(denial.rows, [
-      {
-        action: "openclaw.agents.deploy",
-        resource_kind: "agent",
-        resource_id: owner.id,
-        outcome: "denied",
-        authorization: {
-          principalId: fixture.actor.id,
-          action: "read",
-          resource: {
-            kind: "service_account",
-            id: account.id,
-            namespaceId: fixture.namespace.id,
-          },
-        },
-        reason_code: "AUTHORIZATION_DENIED",
-      },
-    ]);
-  },
-);
-
-revisionTest(
-  "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
-  async (fixture, context) => {
-    // The shared worker must drain another Namespace without including its
-    // Compute effects in this Namespace's issuance-revocation assertions.
-    const foreign = await setup(context, { database: fixture.database });
-    const foreignOwner = await foreign.agent("issuance-foreign");
-    const foreignRevision = await foreign.revision(foreignOwner, 1);
-    const provider = backendDefinition();
-    const accounts = await Promise.all(
-      ["valid", "issuance-revoked"].map((label) =>
-        createAccessTokenServiceAccount(fixture.state, fixture.namespace.id, label),
-      ),
-    );
-    await Promise.all(accounts.map((account) => seedBackendBinding(fixture.observerPool, account)));
-    const owners = await Promise.all(
-      accounts.map((account) =>
-        fixture.agent(account.name, {
-          executionMode: "dedicated",
-          serviceAccountId: account.id,
-          backendId: provider.id,
-        }),
-      ),
-    );
-    const candidates = await Promise.all(owners.map((owner) => fixture.revision(owner, 1)));
-    // Only issuance metadata is mutable; private Backend/account ownership
-    // remains protected by PostgreSQL grants and the immutable snapshot.
-    await fixture.observerPool.query(
-      "UPDATE occ.service_account_driver_bindings SET external_credential_id = NULL WHERE namespace_id = $1 AND service_account_id = $2",
-      [fixture.namespace.id, accounts[1].id],
-    );
-    const effects = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async bindAgent({ agent }) {
-          if (agent.namespaceId === fixture.namespace.id) {
-            effects.push({ action: "bind", agentId: agent.id });
-          }
-        },
-        async prepareRevision(revision) {
-          if (revision.namespaceId === fixture.namespace.id) {
-            effects.push({ action: "prepare", revisionId: revision.id });
-          }
-          return fixture.compute.prepareRevision(revision);
-        },
-      },
-      { providers: [provider] },
-    );
-    await Promise.all(
-      candidates.map((candidate, index) =>
-        fixture.work(candidate, index === 0 ? "succeeded" : "failed_permanent"),
-      ),
-    );
-    await foreign.work(foreignRevision, "succeeded");
-    assert.deepEqual(effects, [
-      { action: "bind", agentId: owners[0].id },
-      { action: "prepare", revisionId: candidates[0].id },
-    ]);
-    const current = await fixture.currentAgent(owners[1]);
-    assert.equal(current.activeRevisionId, undefined);
-    const failures = await fixture.observerPool.query(
-      "SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events WHERE resource_id = $1 AND action = 'reconcile' AND outcome = 'failure'",
-      [candidates[1].id],
-    );
-    assert.deepEqual(failures.rows, [{ reason_code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" }]);
-    // The status names the fix instead of the generic failure text (finding 828).
-    assert.deepEqual((await fixture.deploymentStatus(owners[1], candidates[1])).error, {
-      code: "SERVICE_ACCOUNT_BACKEND_MISMATCH",
-      message:
-        "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.",
-    });
-  },
-);
-
-test(
-  "the revision worker retries transient Backend binding read failures without activating",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const events = [];
-    const releaseRetry = Promise.withResolvers();
-    const fixture = await setup(context, {
-      async onHealthy() {
-        if (
-          events.some(
-            ({ event, code, namespaceId }) =>
-              event === "worker.completed" &&
-              code === "DEPENDENCY_UNAVAILABLE" &&
-              namespaceId === fixture.namespace.id,
-          )
-        ) {
-          // Hold the next pass while inspecting the failed attempt, regardless
-          // of how much of the retry backoff the observer has already consumed.
-          await releaseRetry.promise;
-        }
-      },
-    });
-    const provider = backendDefinition();
-
-    const account = await createAccessTokenServiceAccount(
-      fixture.state,
-      fixture.namespace.id,
-      "transient-provider-read",
-    );
-    await seedBackendBinding(fixture.observerPool, account);
-    const owner = await fixture.agent("transient-provider-read", {
-      executionMode: "dedicated",
-      serviceAccountId: account.id,
-      backendId: provider.id,
-    });
-
-    const effects = [];
-    try {
-      await fixture.start(
-        {
-          ...fixture.compute,
-          async prepareRevision(revision) {
-            effects.push({ action: "prepare", revisionId: revision.id });
-            return fixture.compute.prepareRevision(revision);
-          },
-        },
-        {
-          emit: (event) => events.push(event),
-          providers: [provider],
-          pool: poolWithOneBackendBindingReadFault(fixture.workerPool),
-        },
-      );
-
-      const candidate = await fixture.revision(owner, 1);
-
-      // A different connection can see the committed retry before the worker
-      // receives COMMIT's acknowledgment and emits its completion event.
-      const completion = await waitFor("transient Provider read failure completion", async () =>
-        events.find(
-          ({ event, code, revisionId }) =>
-            event === "worker.completed" &&
-            code === "DEPENDENCY_UNAVAILABLE" &&
-            revisionId === candidate.id,
-        ),
-      );
-      assert.equal(completion.outcome, "retry");
-      const retried = await waitFor(
-        "transient Backend binding read failure retry evidence",
-        async () => {
-          const result = await fixture.observerPool.query(
-            `SELECT work.state, work.attempt_count,
-                    count(audit.id)::integer AS dependency_failures
-             FROM occ.controller_work AS work
-             LEFT JOIN occ.audit_events AS audit
-               ON audit.namespace_id = work.namespace_id
-              AND audit.resource_id = work.revision_id
-              AND audit.action = 'reconcile'
-              AND audit.details->>'reasonCode' = 'DEPENDENCY_UNAVAILABLE'
-             WHERE work.idempotency_key = $1
-             GROUP BY work.state, work.attempt_count`,
-            [candidate.idempotencyKey],
-          );
-          const row = result.rows[0];
-          if (row?.dependency_failures >= 1 && row.state !== "failed_permanent") {
-            return row;
-          }
-          return undefined;
-        },
-      );
-      assert.deepEqual(retried, { state: "queued", attempt_count: 1, dependency_failures: 1 });
-      assert.deepEqual(effects, [], "transient binding read failures must not invoke Compute");
-      const inactive = await fixture.activePointer(owner);
-      assert.equal(inactive.rows[0].active_revision_id, null);
-
-      releaseRetry.resolve();
-      await fixture.work(candidate, "succeeded");
-      assert.deepEqual(effects, [{ action: "prepare", revisionId: candidate.id }]);
-      const active = await fixture.activePointer(owner);
-      assert.equal(active.rows[0].active_revision_id, candidate.id);
-    } finally {
-      releaseRetry.resolve();
-      await fixture.stop();
-    }
   },
 );
 
@@ -1376,7 +1111,7 @@ revisionTest(
       error: {
         code: "RUNTIME_MODEL_PROBE_FAILED",
         message:
-          "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
+          "The startup model check failed. No credential rejection was reported. Check the model, provider settings, TLS, rate limits and account. With Codex, check that the provider is reachable. After the fix, someone with deploy access can deploy a new version.",
         data: { runtimeFailure },
       },
     });
@@ -1505,16 +1240,6 @@ revisionTest(
 revisionTest(
   "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
   assertSecretWriteRefusal,
-);
-
-revisionTest(
-  "credential sources that share an environment variable fail deployment without retrying",
-  assertCredentialVariableConflict,
-);
-
-revisionTest(
-  "a revision whose Credential Gateway is no longer selected fails with a fixed status message",
-  assertMissingCredentialGatewayRefusal,
 );
 
 revisionTest(

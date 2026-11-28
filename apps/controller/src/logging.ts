@@ -85,6 +85,7 @@ const ALLOWED_FIELDS = new Set([
   "outcome",
   "pending",
   "port",
+  "predecessorStoppingAtMs",
   "prepareMs",
   "presetFile",
   "presetId",
@@ -336,6 +337,9 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
   }
   if (key === "stopYields") {
     return typeof value === "number" && value >= 0 ? safeNumber(key, value) : undefined;
+  }
+  if (key === "predecessorStoppingAtMs") {
+    return typeof value === "number" && value > 0 ? safeNumber(key, value) : undefined;
   }
   if (key === "grpcStatus") {
     return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 16

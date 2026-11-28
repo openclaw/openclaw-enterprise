@@ -59,7 +59,7 @@ OpenClaw gateway multi-tenant.
 The platform supports global Namespace settings. Resource references follow the
 scope and authorization rules of each resource type.
 
-OCC governs platform resource authorization and composition. The selected TokenService owns [CredentialSource lifecycle](reference/credential-sources/managed-static.md); OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
+OCC governs platform resource authorization and composition. The selected TokenService owns the [managed CredentialSource lifecycle](reference/credential-sources.md), and OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
 
 <a id="non-goals"></a>
 
@@ -156,7 +156,7 @@ selected credentials.
 Embedded OpenClaw runs its gateway and Harness together in the data plane.
 Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
 and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
-mounting the Harness workspace. Direct authentication gives the model credential to the executing Harness; managed delivery gives it a placeholder. A dedicated Gateway does not receive the model credential.
+mounting the Harness workspace. Direct authentication gives the model credential to the executing Harness; managed delivery gives it a placeholder. These bindings do not deliver model credentials to the Gateway. An authorized caller can separately bind a supported static Source to the dedicated Gateway, including a Source used by Credential Proxy; see [Gateway credentials](reference/configuration/secrets.md#secret-bindings).
 
 <a id="agent-provisioning-sequence"></a>
 
@@ -175,8 +175,8 @@ When an Agent selects an upstream proxy, Envoy authorizes CONNECT host and port;
 the proxy owns final destination resolution and address enforcement.
 
 Installation configuration selects compute, configuration, IAM, and Secret
-implementations, plus channel and optional service-account, plugin, repository, Sandbox, and
-Credential Gateway integrations. [Driver development](contributing/driver-development.md)
+implementations, plus channel and optional service-account, plugin, repository, Sandbox,
+TokenService, and Credential Proxy integrations. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
 to related Drivers within their documented experimental scope. Driver-owned
@@ -191,10 +191,19 @@ An optional SandboxDriver participates through Compute and can provision a
 dedicated Harness. Its cleanup for each Agent revision and Namespace must complete before
 Compute releases the corresponding infrastructure.
 
-The credential redesign assigns Source and credential custody to TokenService. OCC admits Source access and separate network and credential injection policies; a selected Credential Proxy and Sandbox prepare and enforce delivery before activation. The implemented model path and remaining work are listed in [credential design status](reference/credential-sources.md#implementation-status). Existing Credential Gateway delivery remains available for its recorded Sources and supplies attachments to its paired Sandbox; activation waits for applied attachments. The OpenShell development profile implements a plugin-free
-dedicated Codex path through experimental provider files and bearer passthrough.
-Real activation remains conditional on the documented identity, storage,
-admission, and gateway-authentication preconditions. See
+TokenService owns custody for managed Credential Sources. On the managed
+delivery path, OCC admits Source access and separate network and credential
+injection policies. Credential Proxy and Sandbox prepare and enforce delivery
+before activation. Start with [how Agent credentials work](design/credential-proxy.md)
+and check [current support](reference/credential-sources.md#implementation-status).
+The [Credential Design 1.0 RFC](../specs/rfcs/20261124-credential-design-1-0/index.md)
+records the detailed decisions.
+Credential Gateway and Credential Refresh selections are retired and unsupported.
+The separate [legacy credential-egress Driver](reference/drivers/credential-proxy.md#legacy-protected-egress)
+is deprecated and pending removal. Its special protected metadata and repository exchanges are retired from the 1.0 design.
+
+The OpenShell integration supports dedicated Harness delivery within the documented
+identity, storage, admission, and gateway-authentication limits. See
 [Sandbox](reference/drivers/sandbox.md) and
 [OpenShell limits](reference/drivers/openshell-sandbox.md).
 Other Drivers participate through
@@ -277,7 +286,7 @@ supported capabilities:
 - [Agent gateways and deployment](design/workloads.md)
 - [Drivers and Backends](design/drivers.md)
 - [Platform safeguards](design/safeguards.md)
-- [Credential Proxy](design/credential-proxy.md)
+- [Credential design](design/credential-proxy.md)
 
 ## Related Documentation
 

@@ -2625,29 +2625,30 @@ function publishAgentPluginSkillPath() {
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
 
-type GatewayWorkspaceNodeProfile = {
-  readonly kind: "inspected-dedicated-codex";
-  readonly revisionId: string;
-  readonly bindingPath: string;
-};
+type GatewayWorkspaceNodeProfile =
+  | {
+      readonly kind: "inspected-dedicated-codex";
+      readonly revisionId: string;
+      readonly bindingPath: string;
+    }
+  | { readonly kind: "inspected-dedicated-openclaw"; readonly revisionId: string };
 
 function inspectedWorkspaceNodeRuntime(profile: GatewayWorkspaceNodeProfile): string {
+  const nativeWorker = profile.kind === "inspected-dedicated-openclaw";
   return String.raw`
-const inspectedWorkspaceNode = ${JSON.stringify({
-    revisionId: profile.revisionId,
-    bindingPath: profile.bindingPath,
-  })};
+const inspectedWorkspaceNode = ${JSON.stringify(profile)};
 
 function requireInspectedWorkspaceNodeLaunch(initialConfigPath) {
   if (
-    !process.env.APP_SERVER_URL ||
-    process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined ||
-    process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined ||
-    workspaceNodeBindingPath !== inspectedWorkspaceNode.bindingPath ||
+    ${
+      nativeWorker
+        ? 'process.env.APP_SERVER_URL !== undefined || process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== "dedicated-native" || workspaceNodeBindingPath !== undefined || (process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined && !/^[a-f0-9]{64}$/u.test(process.env.OPENCLAW_WORKSPACE_NODE_ID)) ||'
+        : "!process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined || process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined || workspaceNodeBindingPath !== inspectedWorkspaceNode.bindingPath ||"
+    }
     process.env.OPENCLAW_AGENT_REVISION_ID !== inspectedWorkspaceNode.revisionId ||
     initialConfigPath !== "/etc/openclaw/openclaw.json"
   ) {
-    throw new Error("Inspected workspace replies require a managed dedicated Codex launch with its revision-owned node binding.");
+    throw new Error("Inspected workspace replies require the admitted dedicated Harness launch and revision-owned node binding.");
   }
 }
 
@@ -2727,9 +2728,11 @@ export function gatewayRuntimeEntrypoint(
   if (
     workspaceNodeProfile !== undefined &&
     (!managedMode ||
-      workspaceNodeProfile.kind !== "inspected-dedicated-codex" ||
+      (workspaceNodeProfile.kind !== "inspected-dedicated-codex" &&
+        workspaceNodeProfile.kind !== "inspected-dedicated-openclaw") ||
       !workspaceNodeProfile.revisionId ||
-      !workspaceNodeProfile.bindingPath.startsWith("/"))
+      (workspaceNodeProfile.kind === "inspected-dedicated-codex" &&
+        !workspaceNodeProfile.bindingPath.startsWith("/")))
   ) {
     throw new Error("Invalid inspected workspace node launch profile.");
   }
@@ -4395,9 +4398,13 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
-const BOX_HTTPS_PROVIDER_ARGUMENTS = String.raw`// Box's HTTP egress proxy strips Upgrade. An OpenAI provider with native HTTPS
-// retains the account-selected backend URL and PAT authentication.
-const httpsProviderArguments = loginMode === "codex_pat" && pluginRuntime?.manifest.modelEndpoint === undefined ? [
+function nativeHttpsProviderArguments(loginMode: "codex_pat" | "chatgptAuthTokens"): string {
+  const comment =
+    loginMode === "codex_pat"
+      ? "// Box's HTTP egress proxy strips Upgrade. An OpenAI provider with native HTTPS\n// retains the account-selected backend URL and PAT authentication."
+      : "// The account provider uses native HTTPS with the account-selected backend URL.";
+  return String.raw`${comment}
+const httpsProviderArguments = loginMode === ${JSON.stringify(loginMode)} && pluginRuntime?.manifest.modelEndpoint === undefined ? [
   "-c", 'model_provider="oce-openai-https"',
   "-c", 'model_providers.oce-openai-https.name="OpenAI"',
   "-c", 'model_providers.oce-openai-https.wire_api="responses"',
@@ -4406,6 +4413,7 @@ const httpsProviderArguments = loginMode === "codex_pat" && pluginRuntime?.manif
   "-c", 'model_providers.oce-openai-https.supports_standalone_web_search=true',
 ] : [];
 `;
+}
 
 // Only newly admitted OpenShell PAT launches carry this transcript rule.
 const OPENSHELL_PAT_RECOVERY = String.raw`
@@ -4468,10 +4476,17 @@ function agentRuntimeEntrypoint({
   withNode = false,
   patRecovery = false,
   boxHttps = false,
+  accountHttps = false,
   explicitProxy = false,
   nativeGit = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
+  let httpsArguments = "";
+  if (boxHttps) {
+    httpsArguments = nativeHttpsProviderArguments("codex_pat");
+  } else if (accountHttps) {
+    httpsArguments = nativeHttpsProviderArguments("chatgptAuthTokens");
+  }
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -4597,7 +4612,7 @@ if (pluginRuntime !== undefined) {
   assertCodexPluginRuntime(pluginRuntime);
   writeCodexConfigToml(pluginRuntime);
 }
-${boxHttps ? BOX_HTTPS_PROVIDER_ARGUMENTS : ""}// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
+${httpsArguments}// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
 // classify it. The native PAT auth-file contract still hydrates and validates account metadata.
 const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
 if (providerManagedPat) {
@@ -4852,7 +4867,7 @@ function probeCodexAuthentication(timeout) {
     ];
     result = spawnSync(codexExecutable(), [
       ...nativeTelemetryArguments,
-${boxHttps ? "      ...httpsProviderArguments,\n" : ""}${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
+${boxHttps || accountHttps ? "      ...httpsProviderArguments,\n" : ""}${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
       "--model", modelId,
@@ -5075,7 +5090,7 @@ if (digest === undefined) {
 }
 const nativeArguments = [
     ...nativeTelemetryArguments,
-${boxHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitted model selection for native policy readback.
+${boxHttps || accountHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
@@ -5392,6 +5407,7 @@ ${
   PATH: harnessPath,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: configPath,
+  OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: "1",
   OPENCLAW_NO_AUTO_UPDATE: "1",
 };
 if (process.env.OPENCLAW_NODE_CA_PEM) {
@@ -5879,7 +5895,7 @@ function compactWorkspaceNodeLaunch(child: string): string {
 export interface CodexLaunch {
   readonly providerOwned: boolean;
   readonly protected: boolean;
-  readonly openShellProgram?: "pat" | "ordinary";
+  readonly openShellProgram?: "pat" | "ordinary" | "account";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
   readonly nativeGit?: boolean;
@@ -5944,6 +5960,17 @@ export function codexLaunchEntrypoint(
       ));
     }
     return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+  }
+  if (openShellProgram === "account") {
+    const child = agentRuntimeEntrypoint({
+      protected: protectedLaunch,
+      withNode: Boolean(withNode),
+      accountHttps: true,
+    });
+    if (!withNode) {
+      return child;
+    }
+    return compactWorkspaceNodeLaunch(child);
   }
   if (!withNode) {
     if (strandsBox && !protectedLaunch) {
@@ -6137,7 +6164,13 @@ const nodeEnv = {
   ...(pluginBins.length > 0 && { PATH: [...pluginBins, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
+  OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: "1",
 };
+if (pluginBins.length > 0) {
+  // Only verified installation directories can satisfy the Agent's tool lookup configuration.
+  const execution = JSON.parse(nodeEnv.OPENCLAW_NODE_WORKER_EXECUTION ?? "{}");
+  nodeEnv.OPENCLAW_NODE_WORKER_EXECUTION = JSON.stringify({ ...execution, pathPrepend: pluginBins });
+}
 const gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || (
   process.env.OPENCLAW_NODE_CA_PATH
     ? readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8")
@@ -6163,6 +6196,7 @@ const doctorEnv = {
   TMPDIR: temporary,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
+  OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: nodeEnv.OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF,
   OPENCLAW_NO_AUTO_UPDATE: "1",
   ...(nodeEnv.NODE_EXTRA_CA_CERTS === undefined ? {} : { NODE_EXTRA_CA_CERTS: nodeEnv.NODE_EXTRA_CA_CERTS }),
 };

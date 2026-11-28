@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { constants } from "node:fs";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer, get, request, type ServerOptions } from "node:https";
 import type { IncomingMessage } from "node:http";
 import { json } from "node:stream/consumers";
@@ -41,12 +40,11 @@ import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { injectJson } from "../helpers/inject-json.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.ts";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
@@ -62,39 +60,12 @@ import {
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
-import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
-import {
-  runAgentGrantRehearsal,
-  type AgentGrantRehearsal,
-} from "../helpers/agent-grant-rehearsal.ts";
-import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import {
-  KubernetesComputeDriver,
-  kubernetesNamespaceName,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import {
-  pluginRuntimeEnvironment,
-  pluginRuntimeSpecForRevision,
-} from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   OpenClawController,
   PostgresPlatformState,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
-
-const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
-const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
-if (conversationRequired) {
-  assert.ok(
-    databaseUrl,
-    "external conversation qualification requires an owned PostgreSQL database",
-  );
-  assert.ok(codex, "external conversation qualification requires the shipped Codex executable");
-  await access(codex, constants.X_OK);
-}
 
 // The worker reconciles a protected Git Driver every second. Cases here count reconcile passes
 // and wait for passes to settle deliveries, so every binding in this file uses the same loop with
@@ -543,8 +514,7 @@ function externalGitJourney(
   stopDuringRemoval = false,
   sourceBeforeStop?: "stopped" | "restore-during-bind",
 ) {
-  const modelExecutable = scope === "reducible-installation" && !finiteRemoval ? codex : undefined;
-  const runJourney = async (t: TestContext, rehearsal?: AgentGrantRehearsal) => {
+  return async (t: TestContext) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
     let transport: Awaited<ReturnType<typeof bindRepositoryGitTransport>>;
     let releaseReduction: (() => void) | undefined;
@@ -663,44 +633,6 @@ function externalGitJourney(
       broad ??
       (await standingGitOrigin(t, namespaceId, 300_000, undefined, false, undefined, writes));
     const installationApiOrigin = broad?.gh.origin;
-    const conversation = modelExecutable
-      ? await standingGitConversation(t, modelExecutable)
-      : undefined;
-    let askModel: Awaited<ReturnType<NonNullable<typeof conversation>["launch"]>> | undefined;
-    let modelEnvironment: Record<string, string> | undefined;
-    let modelCustody: ComputeRevisionContext | undefined;
-    let modelClient: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
-    const modelSourceId = "cs_" + randomUUID();
-    const modelGatewayConfiguration = { binaries: [codex!] };
-    const modelGateway = conversation
-      ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
-          id: "external-journey-model",
-          backend: {
-            id: "external-journey-model",
-            drivers: { credential_gateway: "external-journey-model" },
-            client: { placement: () => undefined, clientForNamespace: () => modelClient },
-          } as never,
-        })
-      : undefined;
-    if (modelGateway && conversation) {
-      // A ready gateway-held model source is the same state ordinary registration commits.
-      // The existing stock-wire fixture supplies its independent model attachment below.
-      await f.state.transact(async (unit) => {
-        await unit.credentialSources.createCredentialSource({
-          id: modelSourceId,
-          namespaceId,
-          name: "external-journey-model",
-          type: "openai",
-          config: { authorized_base_url: conversation.baseUrl },
-          secrets: {},
-          ownerCapability: "credential_gateway",
-          driverId: modelGateway.id,
-          state: "registering",
-          createdAt: new Date().toISOString(),
-        });
-        await unit.credentialSources.markCredentialSourceReady(namespaceId, modelSourceId);
-      });
-    }
     const id = "cedar-git-fixture";
     const { directory, entry } = await protectedDriverPackage(t, id, "repository-git");
     const cedar = (await import(
@@ -774,21 +706,6 @@ function externalGitJourney(
           sandboxDriver: liveSender.require("sandbox"),
           proxyDriver: liveSender.require("credential_proxy"),
         }),
-        ...(modelGateway && {
-          credentialGatewayDriver: modelGateway,
-          installation: {
-            ...loaded.installation,
-            drivers: {
-              ...loaded.installation.drivers,
-              credential_gateway: {
-                id: modelGateway.id,
-                implementation: modelGateway.implementation,
-                configuration: modelGatewayConfiguration,
-                definition: OpenShellCredentialGatewayDriver,
-              },
-            },
-          },
-        }),
       };
     };
     let drivers = await loadWorkerDrivers();
@@ -805,26 +722,7 @@ function externalGitJourney(
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
     assert.deepEqual(apiOwner.ref, owner.ref);
-    const kube = modelGateway
-      ? new KubernetesComputeDriver(
-          {
-            ...apiDrivers.installation.drivers.compute.configuration,
-            runtime: {
-              ...(apiDrivers.installation.drivers.compute.configuration
-                .runtime as ConstructorParameters<typeof KubernetesComputeDriver>[0]["runtime"]),
-              modelProvider: { protocol: "openai-responses", baseUrl: conversation!.baseUrl },
-            },
-          } as unknown as ConstructorParameters<typeof KubernetesComputeDriver>[0],
-          {
-            id: apiDrivers.computeDriver.id,
-            implementation: apiDrivers.computeDriver.implementation,
-            protectedDriver: apiOwner,
-            credentialGatewayDriver: modelGateway,
-            // As production composition selects it; this test never enrolls a node.
-            nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
-          },
-        )
-      : (apiDrivers.computeDriver as KubernetesComputeDriver);
+    const kube = apiDrivers.computeDriver as KubernetesComputeDriver;
     const release = new ProtectedExecutionDriver(owner);
     // Use production authority and sender composition, including their background maintenance.
     // The short-lived local issuer makes rotation observable without changing stored deadlines.
@@ -867,8 +765,7 @@ function externalGitJourney(
       installs: peer.delivery.installs,
     });
 
-    // The worker opens a real repository session. Workload placement is controlled locally;
-    // the optional conversation mode runs shipped Codex with the same admitted model source.
+    // The worker opens a real repository session. Workload placement is controlled locally.
     let preparations = 0;
     let withdrawalStarted = false;
     let preparationsBeforeWithdrawal: number;
@@ -889,13 +786,6 @@ function externalGitJourney(
         async retireExpiredRepositoryAccess() {
           assert.fail("V2 policy reduction belongs to the external Driver, not Compute");
         },
-      }),
-      ...(conversation && {
-        // Freeze the model destination through the same configuration path as admission.
-        normalizeHarnessOverrides: kube.normalizeHarnessOverrides.bind(kube),
-        resolveHarnessConfiguration: kube.resolveHarnessConfiguration.bind(kube),
-        validateHarnessCredentialSources: kube.validateHarnessCredentialSources.bind(kube),
-        admitRevision: kube.admitRevision.bind(kube),
       }),
       capability: "compute",
       async bindAgent(context) {
@@ -937,40 +827,6 @@ function externalGitJourney(
         const { egressPlan: plan } = revision;
         assert.ok(plan?.repositoryGit && custody.currentEgressInstallation);
         const context = { plan, revision, namespace, signal: t.signal };
-        if (conversation && modelGateway) {
-          preparationStage = "attach-model-source";
-          assert.equal(custody.harnessAuth?.method, "credential_source");
-          const auth = custody.harnessAuth;
-          assert.ok(auth && auth.method === "credential_source");
-          assert.ok(auth.source);
-          await modelGateway.attachForRevision({
-            revision,
-            namespace,
-            sources: [auth.source],
-            signal: t.signal,
-          });
-          preparationStage = "model-runtime-configuration";
-          const login = kube["harnessAuthForRevision"](revision, custody, {
-            name: kubernetesNamespaceName(namespaceId),
-            plane: "execution",
-          });
-          assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
-          const manifest = pluginRuntimeSpecForRevision(revision, undefined, conversation.baseUrl)!;
-          modelEnvironment = {
-            ...Object.fromEntries(
-              login.environment.map(({ name, value }: { name: string; value?: string }) => [
-                name,
-                value!,
-              ]),
-            ),
-            ...pluginRuntimeEnvironment(manifest),
-            OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: revision.id,
-            [COMPUTE_RELEASE_PUBLIC_KEY]: publicKey
-              .export({ type: "spki", format: "der" })
-              .toString("base64url"),
-          };
-          modelCustody = custody;
-        }
         if (broad && !checkedNegativeCapability) {
           const issuesBefore = gh.issuesOfTokens.length;
           const previousProfile = capability.profile;
@@ -1081,10 +937,6 @@ function externalGitJourney(
     );
     registerCoreDrivers(controller, f.state);
     const { id: who } = actor;
-    if (modelGateway) {
-      controller.registerDriver(modelGateway);
-      controller.selectDriver("credential_gateway", modelGateway.id);
-    }
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
     controller.registerDriver(compute);
     controller.selectDriver(compute.capability, compute.id);
@@ -1168,7 +1020,10 @@ function externalGitJourney(
         name: "Foreign policy",
         executionMode: "dedicated",
         harnessAuth: { method: "runtime" },
-        repositoryBindings: [{ repositoryRef, profile: "github-installation" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef, profile: "github-installation" }],
+        },
       });
       assert.equal(denied.statusCode, 400, denied.body);
       assert.equal(denied.json().error.code, "INVALID_REQUEST");
@@ -1180,23 +1035,23 @@ function externalGitJourney(
     const { id: configurationId } = await controller.createConfiguration(who, {
       namespaceId,
       kind: "agent",
-      values: createHarnessConfiguration("codex", conversation ? "fixture-model" : "fixture"),
+      values: createHarnessConfiguration("codex", "fixture"),
     });
     const agentInput = {
       namespaceId,
       configurationId,
       name: "External Git",
       executionMode: "dedicated",
-      harnessAuth: conversation
-        ? { method: "credential_source", sourceId: modelSourceId }
-        : { method: "runtime" },
-      ...(conversation && { credentialSources: [{ sourceId: modelSourceId }] }),
-      repositoryBindings: [
-        {
-          repositoryRef,
-          profile: broad ? "github-installation" : "git-write",
-        },
-      ],
+      harnessAuth: { method: "runtime" },
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [
+          {
+            repositoryRef,
+            profile: broad ? "github-installation" : "git-write",
+          },
+        ],
+      },
     } satisfies Parameters<typeof controller.createAgent>[1];
     const createdAgent = authenticated
       ? await (async () => {
@@ -1207,22 +1062,6 @@ function externalGitJourney(
         })()
       : await controller.createAgent(who, agentInput, resolveApprovedHarness);
     const { id: agentId, servicePrincipalId } = createdAgent;
-    if (conversation) {
-      // Model authority is independent of the external proxy's metadata route.
-      const role = await controller.createIAMRole(who, {
-        namespaceId,
-        name: "model-source-use",
-        permissions: [{ action: "operate", resourceKind: "credential_source" }],
-      });
-      await controller.createIAMAccessBinding(who, {
-        namespaceId,
-        subjectKind: "identity",
-        subjectId: servicePrincipalId,
-        roleId: role.id,
-        resourceKind: "credential_source",
-        resourceId: modelSourceId,
-      });
-    }
     let independentSourceId: string | undefined;
     let independentRequests = 0;
     if (reducible) {
@@ -1275,10 +1114,7 @@ function externalGitJourney(
           namespaceId,
           agentId,
           configurationId,
-          credentialSources: [
-            ...(conversation ? [{ sourceId: modelSourceId }] : []),
-            { sourceId: source.id },
-          ],
+          credentialSources: [{ sourceId: source.id }],
         },
         resolveApprovedHarness,
       );
@@ -1456,30 +1292,8 @@ function externalGitJourney(
       revision.repositoryCredentials?.standingApprovalId,
       finiteRemoval ? undefined : approvalId,
     );
-    assert.equal(revision.harnessAuth.method, conversation ? "credential_source" : "runtime");
-    if (conversation) {
-      const model = openShellProviderName(modelSourceId);
-      ({ client: modelClient } = await gitExpiryGateway(t, {
-        model,
-        workspace: namespace.name,
-        sandbox: "external-model",
-        deadline: Date.now() + 240_000,
-        platformProfile: false,
-        modelSourceId,
-        revisionId: revision.id,
-      }));
-    }
+    assert.equal(revision.harnessAuth.method, "runtime");
     const ref = { ...key, revisionId: revision.id };
-    const observeAgent = async () => {
-      const current = await f.state.read((view) => view.agents.findAgent(namespaceId, agentId));
-      assert.ok(current?.activeRevisionId);
-      const policy = await peer.observePolicy();
-      return {
-        agentId: current.id,
-        revisionId: current.activeRevisionId,
-        runtimeId: policy.sandboxId,
-      };
-    };
     t.diagnostic("journey revision " + revision.id);
     const startWorker = () =>
       f.start(compute, {
@@ -1556,39 +1370,6 @@ function externalGitJourney(
           25_000,
         );
         await independentRead(200);
-        if (conversation) {
-          assert.ok(modelEnvironment && modelCustody);
-          askModel = await conversation.launch(
-            modelEnvironment,
-            async () => {
-              const receipt = await modelClient.getSandboxProviderStatus(
-                namespace.name,
-                "external-model",
-                openShellProviderName(modelSourceId),
-                t.signal,
-              );
-              assert.equal(receipt?.state, "PROVIDER_READINESS_STATE_READY");
-              assert.equal(
-                (await f.state.read((view) => view.agents.findAgent(namespaceId, agentId)))
-                  ?.activeRevisionId,
-                revision.id,
-              );
-            },
-            async (startup) =>
-              signComputeExecutionRelease(
-                privateKey,
-                startup,
-                await release.current(
-                  { plan: revision.egressPlan!, revision, namespace, signal: t.signal },
-                  modelCustody!,
-                  async () => true,
-                ),
-              ),
-            revision.egressPlan!.routes.length + 1,
-          );
-          const turn = await askModel("before");
-          rehearsal?.modelBefore({ ...(await observeAgent()), ...turn });
-        }
       }
 
       const cwd = await temporaryDirectory(t, "cedar-git-destination-");
@@ -1758,7 +1539,7 @@ function externalGitJourney(
         assert.deepEqual(await cold.uses(), []);
       }
       const firstDecision = peer.decisions.length;
-      const initialFetch = await transfer(cold?.oid ?? (await origin.ref("main")));
+      await transfer(cold?.oid ?? (await origin.ref("main")));
       if (cold) {
         assert.ok(initialMaterial);
         const uses = await cold.uses();
@@ -1785,7 +1566,6 @@ function externalGitJourney(
           })),
         );
       }
-      rehearsal?.gitFetched(initialFetch);
       if (writes) {
         // The sender reports each request's ref and draft scope; the Worker's owner decides
         // against the registry grant (push ref, base, one draft) and records every allow.
@@ -2899,7 +2679,7 @@ function externalGitJourney(
         withdrawalStarted = true;
         await controller.updateAgent(
           who,
-          { ...key, repositoryBindings: [] },
+          { ...key, repositoryAccess: { defaultProfile: "git-write", repositories: [] } },
           resolveApprovedHarness,
         );
         assert.equal(await new f.PostgresWorkQueue(pool).repositoryExpiryState(ref), "removal");
@@ -3134,7 +2914,7 @@ function externalGitJourney(
         assert.ok(attempts.every((attempt) => attempt.deadlineWallMs > Date.now()));
         await controller.updateAgent(
           who,
-          { ...key, repositoryBindings: [] },
+          { ...key, repositoryAccess: { defaultProfile: "git-write", repositories: [] } },
           resolveApprovedHarness,
         );
         const queue = new f.PostgresWorkQueue(pool);
@@ -3146,12 +2926,6 @@ function externalGitJourney(
           expectedGeneration: 1,
         });
       }
-      // A fresh provider-side commit distinguishes refusal from a cached fetch.
-      const withdrawnSha = rehearsal && (await origin.addCommit());
-      if (withdrawnSha) {
-        assert.equal(await origin.ref("main"), withdrawnSha);
-      }
-      const withdrawnBeforePresent = withdrawnSha ? await hasObject(withdrawnSha) : false;
       const denied = await fetch(true);
       assert.deepEqual(
         providerTraffic(),
@@ -3166,15 +2940,6 @@ function externalGitJourney(
       ]);
       assert.equal(denied.code, 128);
       assert.match(denied.stderr.toString(), /403/);
-      if (rehearsal && withdrawnSha) {
-        rehearsal.gitRefused({
-          expectedSha: withdrawnSha,
-          beforePresent: withdrawnBeforePresent,
-          afterPresent: await hasObject(withdrawnSha),
-          exitCode: denied.code,
-          originRequests: providerTraffic().requests - before.requests,
-        });
-      }
       assert.ok(
         Date.now() < Date.parse(second.expiresAt),
         "withdrawal was tested while the installed credential was usable",
@@ -3293,13 +3058,6 @@ function externalGitJourney(
         }
         await independentRead(200);
         assert.equal(independentRequests, 2);
-        if (askModel) {
-          const turn = await askModel("after");
-          rehearsal?.modelAfter({ ...(await observeAgent()), ...turn });
-        }
-        if (conversationRequired && !finiteRemoval) {
-          assert.ok(askModel, "required same-conversation proof ran on v7");
-        }
         peer.reduction.loseReply = false;
         await controller.withdrawAgentCredentialSource(who, {
           namespaceId,
@@ -3379,10 +3137,6 @@ function externalGitJourney(
       await f.stop();
     }
   };
-  return (t: TestContext) =>
-    modelExecutable
-      ? runAgentGrantRehearsal(t, (rehearsal) => runJourney(t, rehearsal))
-      : runJourney(t);
 }
 
 // Loopback transport proof: the counterpart, not an apply acknowledgment, owns the policy.

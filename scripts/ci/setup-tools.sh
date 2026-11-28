@@ -343,22 +343,19 @@ install_actionlint() {
 install_browser_dependencies() {
   if [[ -n "${CI:-}" ]]; then
     need_command pnpm
-    # An explicitly selected, already-installed browser is validated below.
-    # Installing a second Chromium and its dependencies does not prepare that binary.
+    if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" && ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then
+      echo "Selected CI browser executable is unavailable." >&2
+      return 1
+    fi
+    # Installing a second Chromium and its dependencies does not prepare a host browser.
     if [[ -z "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
       pnpm exec playwright install --with-deps --only-shell chromium
     fi
-    if [[ -n "${OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR:-}" ]]; then
-      # Host Chrome does not install Playwright's pinned video encoder.
+    # A system browser does not include Playwright's pinned video encoder.
+    if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" || -n "${OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR:-}" ]]; then
       pnpm exec playwright install ffmpeg
     fi
     if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
-      if [[ ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then
-        echo "Selected CI browser executable is unavailable." >&2
-        return 1
-      fi
-      # A system browser does not include Playwright's video recorder binary.
-      pnpm exec playwright install ffmpeg
       # Verify the selected host browser before building runtime images. Keep job
       # credentials out of its environment and preserve Chromium's sandbox.
       node --input-type=module <<'NODE'
@@ -375,7 +372,8 @@ try {
     executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE,
     headless: true,
     chromiumSandbox: true,
-    env: { HOME: directory, PATH: process.env.PATH, TMPDIR: directory },
+    // Use the system temporary directory so Chromium's Unix socket path stays short.
+    env: { HOME: directory, PATH: process.env.PATH },
   });
   const page = await browser.newPage();
   assert.equal(await page.evaluate(() => 1 + 1), 2);

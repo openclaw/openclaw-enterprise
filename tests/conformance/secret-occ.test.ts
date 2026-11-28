@@ -14,7 +14,6 @@ import type {
   SecretMetadata,
   SecretReference,
 } from "../../packages/contracts/src/index.ts";
-import type { ChannelCredentialReader } from "../../packages/contracts/src/drivers/channel/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
@@ -695,7 +694,7 @@ function directoryLookup() {
   const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
   return (input: Partial<Parameters<OpenClawController["lookupChannelDirectory"]>[2]>) =>
     controller.lookupChannelDirectory(administrator, "ns_directory", {
-      secretId: "secret_directory",
+      sourceId: "source_directory",
       kind: "users",
       ...input,
     });
@@ -982,29 +981,6 @@ test("after a Secret Driver change an Agent update and deploy wait for its Confi
   assert.equal((await deploy()).secretDriverId, replacement.id);
 });
 
-/** A Channel Driver that reads one bound Secret through OCC when `binding` is set. */
-function createTestChannelDriver(binding?: string) {
-  const driver = {
-    id: "channel-test",
-    capability: "channel" as const,
-    enableRouting: () => [],
-    implementation: "test-channel",
-    binding,
-    async validateCredentials(
-      _values: Readonly<Record<string, unknown>>,
-      withSecret: ChannelCredentialReader,
-    ) {
-      if (driver.binding !== undefined) {
-        await withSecret(driver.binding, "/channels/test/token", async () => {});
-      }
-    },
-    async lookupDirectory() {
-      return { entries: [] };
-    },
-  };
-  return driver;
-}
-
 test("after a Secret Driver change Agent provisioning names the fix for its old-driver Secrets", async () => {
   const { configurationDriver, controller, createSecret, iamState, namespace, ...f } =
     await fixture({
@@ -1034,7 +1010,6 @@ test("after a Secret Driver change Agent provisioning names the fix for its old-
       assert.fail("Provisioning admission must not inspect a Configuration.");
     },
   });
-  const channel = f.select(createTestChannelDriver());
   const oldToken = await createSecret("old-gateway-token");
   const oldKey = await createSecret("old-model-key");
   f.replaceSecretDriver();
@@ -1050,7 +1025,11 @@ test("after a Secret Driver change Agent provisioning names the fix for its old-
       executionMode: "dedicated",
       configuration: {
         kind: "agent",
-        values: configurationValues(),
+        values: {
+          ...configurationValues(),
+          agents: { defaults: { model: "codex/gpt-test" } },
+          models: { providers: { codex: { agentRuntime: { id: "codex" } } } },
+        },
         secretBindings: gatewayBinding(token.ref),
       },
       harnessAuth: { method: "api_key", source: key.ref },
@@ -1060,82 +1039,24 @@ test("after a Secret Driver change Agent provisioning names the fix for its old-
     /submit a new provisioning request/,
   );
 
-  // A bound Secret or the Harness key stored through the old driver names the fix, whether the
-  // Channel Driver reads it during admission or only the Secret check does.
-  for (const binding of [undefined, "GATEWAY_TOOL_TOKEN"]) {
-    channel.binding = binding;
-    await assert.rejects(provision(oldToken, currentKey), provisioningFix);
-    await assert.rejects(provision(currentToken, oldKey), provisioningFix);
+  // A non-channel Configuration binding and the Harness key each retain their Secret owner.
+  await assert.rejects(provision(oldToken, currentKey), provisioningFix);
+  await assert.rejects(provision(currentToken, oldKey), provisioningFix);
 
-    // Grants and the lookup still answer first.
-    f.denyOperate(oldToken.id);
-    await assert.rejects(
-      provision(oldToken, currentKey),
-      deniedFirst({ action: "operate", resource: oldToken.ref }),
-    );
-    iamState.restrictions.length = 0;
-    await assert.rejects(provision({ ref: f.missingRef }, currentKey), scopeMiss);
+  // Grants and the lookup still answer first.
+  f.denyOperate(oldToken.id);
+  await assert.rejects(
+    provision(oldToken, currentKey),
+    deniedFirst({ action: "operate", resource: oldToken.ref }),
+  );
+  iamState.restrictions.length = 0;
+  await assert.rejects(provision({ ref: f.missingRef }, currentKey), scopeMiss);
 
-    // Secrets stored through the selected driver pass, reaching the PostgreSQL-only work store.
-    await assert.rejects(provision(currentToken, currentKey), (error) => {
-      assert.ok(error instanceof DependencyUnavailableError);
-      assert.ok(!(error instanceof SecretDriverOwnershipError), error.message);
-      assert.match(error.message, /requires durable PostgreSQL state/);
-      return true;
-    });
-  }
-});
-
-test("after a Secret Driver change a Channel Driver's deploy check names the Configuration fix", async () => {
-  const { agent, deploy, select, ...f } = await fixture();
-  const old = await f.createSecret("old-channel-token");
-  f.grantAgentSecretOperate(agent, old);
-  await f.assignBound(old, { harnessAuth: { method: "runtime" } });
-  select(createTestChannelDriver("GATEWAY_TOOL_TOKEN"));
-  f.replaceSecretDriver();
-
-  // The Channel Driver reads the binding before admission does; both name the same fix.
-  await assert.rejects(deploy(), configurationFix);
-  // The deploy grant still answers first.
-  await assert.rejects(deploy(metadataReader), deniedFirst());
-});
-
-test("an Agent update needs read on its current ServiceAccount, before any lookup", async () => {
-  const { controller, iamState, missingRef, namespace, updateAgent } = await fixture();
-  grantRole(iamState, administrator, {
-    id: "secret-occ-service-account-role",
-    permissions: { service_account: ["create", "read"] },
-    namespaceId: undefined,
-    resource: undefined,
+  // Secrets stored through the selected driver pass, reaching the PostgreSQL-only work store.
+  await assert.rejects(provision(currentToken, currentKey), (error) => {
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.ok(!(error instanceof SecretDriverOwnershipError), error.message);
+    assert.match(error.message, /requires durable PostgreSQL state/);
+    return true;
   });
-  const account = await controller.createServiceAccount(administrator, {
-    namespaceId: namespace.id,
-    name: "harness-account",
-  });
-  const accountRef = {
-    kind: "service_account",
-    namespaceId: namespace.id,
-    id: account.id,
-  } as const;
-  await updateAgent(administrator, { harnessAuth: { method: "codex_pat", source: accountRef } });
-
-  // metadataReader may update the Agent but not read the account it binds.
-  const missing = { method: "api_key", source: missingRef } satisfies HarnessAuthBinding;
-  for (const fields of [{}, { harnessAuth: null }, { harnessAuth: missing }]) {
-    await assert.rejects(
-      updateAgent(metadataReader, fields),
-      deniedFirst({ action: "read", resource: accountRef }),
-    );
-  }
-  bindRole(iamState, metadataReader, {
-    id: "secret-occ-metadata-reader-account",
-    roleId: "secret-occ-service-account-role",
-    namespaceId: namespace.id,
-    resource: { kind: "service_account", id: account.id },
-  });
-  assert.deepEqual((await updateAgent(metadataReader)).harnessAuth, {
-    method: "codex_pat",
-    source: accountRef,
-  });
-  assert.equal((await updateAgent(metadataReader, { harnessAuth: null })).harnessAuth, null);
 });

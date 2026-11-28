@@ -386,7 +386,7 @@ export const RELOAD_DRAFT_BEFORE_SAVING = `${SAVED_CONFIGURATION_CHANGED} Reload
 export const REPOSITORY_ACCESS_CHANGED =
   "Repository access changed while you were editing. Reload this draft before saving.";
 export const CHANNEL_SECRETS_CONFIGURATION_CHANGED =
-  "Configuration changed. Reload this draft before saving channel Secrets.";
+  "Configuration changed. Reload this draft before saving channel credentials.";
 
 // Actions the Agent page holds back while another editor has unsaved changes.
 export const REPOSITORY_EDITS_PENDING =
@@ -413,7 +413,7 @@ export const referenceFormRefusal = (setting, form) =>
 // its name, and other text (which may be the token) not at all
 // (packages/occ/src/channel-secret-bindings.ts).
 export const unboundReferenceRefusal = (setting, name) =>
-  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference.`;
+  `Configuration setting ${setting} references ${name} without a Credential Source binding: bind ${name} to a Credential Source in secretBindings, or remove the reference.`;
 // Kubernetes Compute admission of an Agent's plugin secret input whose unset variable stops its
 // Gateway at startup (findings 3040, 3041, 3042): an APP_SERVER_ variable on an embedded or
 // Dedicated OpenClaw Agent at Agent save and deployment, any other unbound name a binding could
@@ -431,24 +431,23 @@ export const dedicatedCodexVariableRefusal = (
 export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin}${enabledBy === null ? "" : ` or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false`}.`;
 const USE_UPPERCASE =
-  "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
+  "use an uppercase ${NAME} bound to a stored credential in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
   shown === undefined
     ? `Configuration setting ${setting} contains a \${ the runtime does not substitute: ${USE_UPPERCASE}.`
     : `Configuration setting ${setting} contains ${shown}, which the runtime does not substitute: ${USE_UPPERCASE}.`;
 export const unsubstitutedFallbackRefusal = (setting, name) =>
-  `Configuration setting ${setting} contains \${${name}-…}, which the runtime does not substitute: write a fallback as \${${name}:-text}, with ${name} bound to a Secret in secretBindings.`;
+  `Configuration setting ${setting} contains \${${name}-…}, which the runtime does not substitute: write a fallback as \${${name}:-text}, with ${name} bound to a stored credential in secretBindings.`;
 // The Slack token rule's refusal of an object the Slack Channel Driver cannot read: a SecretRef it
 // does not read, or another object (findings 2514, 2518, 2527).
 const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };
 export const unreadableSlackTokenRefusal = (setting, held) =>
   `Configuration setting ${setting} holds ${SLACK_TOKEN_OBJECTS[held]} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings.`;
-// Where the console says to add a Secret binding that a channel refusal asks for: the Agent
-// page's Configuration JSON editor saves none (finding 2494), the Credentials tab binds only Slack's
-// standard names (finding 2542), and Create Agent binds only those too (finding 2506).
+// Console Slack binding remedies match the controls available before creation and during editing.
 const CHANNEL_BINDING_PLACES =
-  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
-export const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
+  "select Credential Sources for the referenced Slack credentials in the Configuration editor or Credentials tab. You can also bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN in the Slack editor on the Channels tab.";
+export const CHANNEL_BINDING_CONSOLE_REMEDY =
+  "Select a Credential Source for each missing Slack binding below, then save Configuration.";
 export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_PLACES}`;
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
@@ -458,12 +457,12 @@ export const CHANNELS_NEED_DEDICATED =
 // configuration-rules.ts). `setting` is channels.<name>.
 export const unsupportedChannelRefusal = (setting) =>
   `Configuration setting ${setting} is not a supported channel: use slack, or set its enabled to false.`;
-// The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
+// The Slack card's setup step, shown until both token Sources are bound (finding 2438), and never
 // on an Embedded Agent, which cannot have channels (finding D708).
 export const SLACK_SETUP_HINT =
-  "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
+  "Bind ready static Credential Sources to SLACK_APP_TOKEN and SLACK_BOT_TOKEN before deployment.";
 export const CHANNEL_BINDING_FORM_REMEDY =
-  "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
+  "Select a Credential Source for each referenced Slack credential in the Slack editor or Slack credential bindings before creating the Agent.";
 // A Codex network proxy setting that blocks the repository credential broker for an Agent with
 // repository bindings (finding 2350): Agent save, provisioning and deployment refuse it, and
 // Compute preparation refuses it too, with a deny of the broker host it learns from the prepared

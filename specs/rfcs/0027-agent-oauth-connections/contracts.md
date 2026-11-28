@@ -74,12 +74,15 @@ A public client uses `none` and needs only its client ID. For `client_secret_bas
 
 At the initial code exchange, OCC resolves the current secret for the pinned registration if its authentication method requires one. A successful exchange hands the user's refresh grant and first access token to the Token Service. On subsequent renewal the Token Service obtains the same registration's current client authentication for the pinned issuer and token endpoint. Rotation at the same registration applies to existing accounts. If the provider rejects the client secret, the administrator can fix the registration and retry. Revoking the user's grant requires new consent.
 
-OCC registers the exchanged grant with the Token Service and keeps the stable account reference. Resolution checks the token’s remaining lifetime. Authorized delivery can start or join renewal as [RFC-0023 specifies](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle). The Token Service records the requested scopes and the scopes the provider granted.
-When the provider omits `scope`, the Token Service records the requested
-scopes. If both omitted it, it records no known scopes. Explicit requests and
-renewals cannot acquire permissions beyond those requested or previously
-granted. Only an authorized consumer with a compatible destination receives
-prepared material. Its binding supplies local delivery names.
+OCC keeps the stable account reference after registering the grant with Token
+Service. Resolution checks token lifetime. Authorized delivery can start or join
+[renewal](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle).
+
+Token Service records requested scopes and valid initial grants separately. The
+issuer can grant more than requested. If the response omits `scope`, the grant
+uses the requested scopes, which may be empty. Refresh can keep or narrow the
+previous grant. The authorized Agent binding limits the requests and names the
+credential projection.
 
 ### Named plugin accounts
 
@@ -161,6 +164,8 @@ A Driver without these methods cannot grant `use` to anyone except Installation
 administrators, who hold every action through the built-in administrator role.
 
 ## Update a running sender
+
+> [Template policy supersession](../20261124-credential-design-1-0/index.md#template-policy-changes)
 
 The worker compares the current delivery policy with the policy installed for that
 Agent. Before changing the recipients, Credential Proxy disables use of the affected binding, including its installed token. Once withdrawal is confirmed, the paired Sandbox applies the updated policy and prevents direct egress. Compute verifies the installed policy for that revision. OCC then rechecks the grant, template and Agent binding before allowing the proxy to use a token prepared by Token Service.

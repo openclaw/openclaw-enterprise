@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 /// <reference lib="es2024.promise" />
 
 import {
@@ -25,6 +26,11 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  consoleViewports,
+  detailUrl,
+  hasFocus,
+  inViewport,
+  nextFrames,
   holdRequests,
   login,
   MEMBER_WRITE,
@@ -32,6 +38,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  selectSecret,
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -147,20 +154,49 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   await page.locator("#repository-default-git-full").check();
   await page.getByText("Choose approved access", { exact: true }).waitFor();
-  assert.equal(await page.locator("#repository-inherit-documentation").isVisible(), true);
+  const inheritDocumentation = page.locator("#repository-inherit-documentation");
+  assert.equal(await inheritDocumentation.isVisible(), true);
   await page.getByText("Contributor · Custom", { exact: true }).waitFor();
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository Agent");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(create);
+  const validation = page
     .getByRole("alert")
-    .filter({ hasText: "Choose approved access for each selected repository." })
-    .waitFor();
+    .filter({ hasText: "Choose approved access for each selected repository." });
+
+  // The repository alert should appear only when the user submits the form.
+  const readOnly = defaultAccess.locator("#repository-default-git-read");
+  await readOnly.press("Enter");
+  assert.equal(await validation.isVisible(), false, "Enter on Read-only submitted Create Agent");
+  assert.equal(await readOnly.isChecked(), false);
+  assert.ok(await hasFocus(readOnly));
+  await defaultAccess.getByText("Customize access", { exact: true }).press("Enter");
+  const manageIssues = defaultAccess.getByLabel("Create and manage issues");
+  assert.ok(await manageIssues.isVisible());
+  await manageIssues.press("Enter");
+  assert.equal(
+    await validation.isVisible(),
+    false,
+    "Enter on the issue management checkbox submitted Create Agent",
+  );
+  assert.ok(await manageIssues.isChecked());
+  assert.ok(await hasFocus(manageIssues));
+  await inheritDocumentation.press("Enter");
+  assert.equal(
+    await validation.isVisible(),
+    false,
+    "Enter on the repository inheritance checkbox submitted Create Agent",
+  );
+  assert.ok(await inheritDocumentation.isChecked());
+  assert.ok(await hasFocus(inheritDocumentation));
+  await create.press("Enter");
+  await validation.waitFor();
   // Only the model credential Secret was created; no Configuration or Agent write started.
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-  await page.locator("#repository-inherit-documentation").uncheck();
+  await inheritDocumentation.press("Space");
   await page.locator("#repository-override-documentation-git-read").check();
   await page.locator("#repository-default-git-read").check();
   // A checkbox round trip restores the original position and explicit access.
@@ -191,7 +227,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       { repositoryRef: "documentation", profile: "git-read" },
     ],
   });
-  assert.deepEqual(created.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(created.repositoryAccess), [
     { repositoryRef: "application", profile: "git-full" },
     { repositoryRef: "documentation", profile: "git-read" },
   ]);
@@ -284,7 +320,10 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     body: {
       name: "Legacy explicit repository access",
       configurationId: created.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "application", profile: "git-read" }],
+      },
     },
   });
   assert.equal(legacyResponse.status, 201);
@@ -424,10 +463,13 @@ test("Agent repository tab offers Save only to drop every binding while reposito
     body: {
       name: "Bound Agent",
       configurationId: configured.configurationId,
-      repositoryBindings: [
-        { repositoryRef: "application", profile: "git-read" },
-        { repositoryRef: "documentation", profile: "git-read" },
-      ],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [
+          { repositoryRef: "application", profile: "git-read" },
+          { repositoryRef: "documentation", profile: "git-read" },
+        ],
+      },
     },
   });
   assert.equal(created.status, 201);
@@ -519,9 +561,15 @@ test("Agent repository tab offers Save only to drop every binding while reposito
   assert.equal((await saved).status(), 200);
   await page.getByText("Repository access saved.", { exact: false }).waitFor();
   const stored = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-  assert.deepEqual((stored.data as AgentWire).repositoryBindings ?? [], []);
+  assert.deepEqual(
+    repositoryAccessSelections((stored.data as AgentWire).repositoryAccess) ?? [],
+    [],
+  );
   // Nothing is left to save, so no dead Save is offered.
   await save.waitFor({ state: "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const access = page.locator('.configuration-summary dt:text-is("Repository access") + dd');
+  assert.equal(await access.textContent(), "None selected");
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
@@ -680,7 +728,9 @@ test("Preset repository access and plugin policies remain independent during Age
     defaultProfile: "git-full",
     repositories: [{ repositoryRef: "project" }],
   });
-  assert.deepEqual(created.repositoryBindings, [{ repositoryRef: "project", profile: "git-full" }]);
+  assert.deepEqual(repositoryAccessSelections(created.repositoryAccess), [
+    { repositoryRef: "project", profile: "git-full" },
+  ]);
 });
 
 test("Repository recovery preserves and updates hosted plugin policy before retry", async (t) => {
@@ -783,7 +833,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
     defaultProfile: "git-full",
     repositories: [{ repositoryRef: "project" }],
   });
-  assert.deepEqual(created.repositoryBindings, [{ repositoryRef: "project", profile: "git-full" }]);
+  assert.deepEqual(repositoryAccessSelections(created.repositoryAccess), [
+    { repositoryRef: "project", profile: "git-full" },
+  ]);
   assert.equal(created.configurationId, savedConfiguration.id);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
@@ -1018,7 +1070,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   const savedAgent: AgentReadWire = saved.data;
   assert.ok("repositoryAccess" in savedAgent);
   assert.deepEqual(savedAgent.repositoryAccess, access("git-read"));
-  assert.deepEqual(savedAgent.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(savedAgent.repositoryAccess), [
     { repositoryRef: "application", profile: "git-read" },
   ]);
 
@@ -1161,6 +1213,51 @@ for (const count of [1, 5, 25, 140]) {
     }
   });
 }
+
+test("Create Agent keeps the full focused repository name above sticky actions on a phone", async (t) => {
+  const prefix =
+    "example-developer-infrastructure/platform-observability-release-readiness-and-incident-response-handbook";
+  const suffix = (i: number) => String(i + 1).padStart(2, "0");
+  const repositoryName = (i: number) => `${prefix}-${suffix(i)}`;
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+    Array.from({ length: 12 }, (_, i) => ({
+      repositoryRef: `approved-catalog-entry-${suffix(i)}`,
+      repositoryId: String(3100 + i),
+      repository: repositoryName(i),
+      namespaces: [{ namespaceId, profiles: ["git-read"] as const }],
+    })),
+  );
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const search = page.getByLabel("Find a repository");
+  await search.fill("platform-observability");
+  await page.getByRole("button", { name: "Browse all repositories" }).click();
+  await search.focus();
+  const results = page.locator("#repository-results");
+  const actions = page.locator("#create-agent-form ~ .form-actions");
+
+  // The checkbox can fit above the sticky buttons while the end of its name is hidden.
+  for (const [key, index] of [
+    ["ArrowDown", 0],
+    ["ArrowDown", 1],
+    ["ArrowDown", 2],
+    ["ArrowDown", 3],
+    ["ArrowUp", 2],
+  ] as const) {
+    const name = repositoryName(index);
+    await page.keyboard.press(key);
+    await nextFrames(page);
+    assert.ok(await hasFocus(repositoryCheckbox(page, name)), `Expected focus on ${name}`);
+    const label = await results.getByText(name, { exact: true }).boundingBox();
+    const footer = await actions.boundingBox();
+    assert.ok(label && footer);
+    const fullyVisible = label.height > 0 && label.y >= 0 && label.y + label.height <= footer.y;
+    assert.ok(fullyVisible, `${key} should leave the full name above sticky actions: ${name}`);
+  }
+  assert.equal(await results.getByRole("checkbox", { checked: true }).count(), 0);
+});
 
 test("Agent repository search is stable in a Turkish browser locale", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
@@ -1366,8 +1463,9 @@ test("Agent repository pagination keeps focus when every result on a page is sel
 });
 
 test("Agent repository search prioritizes exact names before prefix matches", async (t) => {
+  const prefixMatch = "alpha/application-api-with-a-long-common-repository-name-ending-in-blue";
   const repositories = [
-    "alpha/application-api",
+    prefixMatch,
     "beta/my-application",
     "omega/application",
     "zeta/application",
@@ -1401,19 +1499,122 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   // Enter adds the first match, so exact short names must outrank a different owner's prefix.
   assert.deepEqual(
     await page.locator("#repository-results .repository-identity strong").allTextContents(),
-    ["omega/application", "zeta/application", "alpha/application-api", "beta/my-application"],
+    ["omega/application", "zeta/application", prefixMatch, "beta/my-application"],
   );
-  await search.press("Enter");
+  const submissions = await page.evaluateHandle(() => {
+    const count = { value: 0 };
+    document.addEventListener("submit", () => count.value++, true);
+    return count;
+  });
+  // With Create Agent enabled, Enter on a choice must stay in the picker.
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent", exact: true }));
+  const firstChoice = repositoryCheckbox(page, "omega/application");
+  await search.press("ArrowDown");
+  assert.ok(await hasFocus(firstChoice));
+  await page.keyboard.press("Enter");
+  assert.equal(
+    await submissions.evaluate((count) => count.value),
+    0,
+    "Enter on a repository checkbox submitted Create Agent",
+  );
+  assert.equal(await firstChoice.isChecked(), false);
+  assert.ok(await hasFocus(firstChoice));
+  await page.keyboard.press("ArrowUp");
+  assert.ok(await hasFocus(search));
+
+  // Holding Enter must add only the first match.
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(
     await page.locator(".repository-card .repository-identity strong").innerText(),
     "omega/application",
   );
   assert.equal(await search.inputValue(), "ApPlIcAtIoN");
-  // Repeated Enter skips the already checked choice and selects the next match.
+  assert.equal(await submissions.evaluate((count) => count.value), 0);
+
+  // Confirming typed text must not submit the form or select the next match.
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await search.selectText();
+    await cdp.send("Input.imeSetComposition", {
+      text: "application",
+      selectionStart: 11,
+      selectionEnd: 11,
+    });
+    await page.keyboard.press("Enter");
+    assert.equal(await submissions.evaluate((count) => count.value), 0);
+    assert.ok(await search.evaluate((input) => input === document.activeElement));
+    await cdp.send("Input.insertText", { text: "application" });
+    assert.equal(await search.inputValue(), "application");
+  } finally {
+    await cdp.detach();
+  }
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   await search.press("Enter");
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), true);
+
+  // A narrower search hides both selected rows while leaving an unchecked match.
+  await search.fill("application-api");
+  assert.equal(await firstChoice.count(), 0);
+  assert.equal(await repositoryCheckbox(page, "zeta/application").count(), 0);
+  const nextChoice = repositoryCheckbox(page, prefixMatch);
+  assert.equal(await nextChoice.isChecked(), false);
+  const searchDescription = await search.evaluate(
+    (input) =>
+      input.ariaDescribedByElements?.map((description) => description.textContent).join(" ") ?? "",
+  );
+  assert.match(
+    searchDescription,
+    /^2 selected\b/,
+    "The hint must count selections outside the search",
+  );
+  assert.ok(searchDescription.includes(`Enter selects ${prefixMatch}`));
+  await search.fill("application");
+
+  // On a phone the next match can be below the fold. Keep search focused and
+  // leave the results heading above the sticky form actions.
+  await page.setViewportSize(consoleViewports[1]);
+  await nextFrames(page);
+  await results.getByRole("heading", { name: "Approved repositories" }).evaluate((heading) => {
+    heading.scrollIntoView({ block: "end", behavior: "instant" });
+  });
+  assert.ok(await hasFocus(search));
+  assert.ok(await inViewport(search));
+  assert.ok(
+    await results
+      .getByText(prefixMatch, { exact: true })
+      .evaluate((name) => name.getBoundingClientRect().top >= globalThis.innerHeight),
+    "The next result must be below the viewport before Enter",
+  );
+  assert.equal(await nextChoice.isChecked(), false);
+  assert.ok(
+    await search.evaluate(
+      (input, name) =>
+        input.ariaDescribedByElements?.some((description) => {
+          const bounds = description.getBoundingClientRect();
+          return (
+            description.textContent.includes(name) &&
+            bounds.height > 0 &&
+            bounds.top >= 0 &&
+            bounds.bottom <= globalThis.innerHeight &&
+            description.scrollWidth <= description.clientWidth
+          );
+        }),
+      prefixMatch,
+    ),
+    "The focused search must show the full next repository name",
+  );
+
+  await page.keyboard.press("Enter");
+  assert.ok(await nextChoice.isChecked());
+  assert.equal(await repositoryCheckbox(page, "beta/my-application").isChecked(), false);
+  assert.ok(await hasFocus(search));
+  assert.equal(await search.inputValue(), "application");
+  assert.equal(await submissions.evaluate((count) => count.value), 0);
 });
 
 for (const discoveryState of ["later page", "search filter", "dismissed results"]) {
@@ -1478,7 +1679,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
       defaultProfile: "git-full",
       repositories: [{ repositoryRef: "repository-001" }],
     });
-    assert.deepEqual(agent.repositoryBindings, [
+    assert.deepEqual(repositoryAccessSelections(agent.repositoryAccess), [
       { repositoryRef: "repository-001", profile: "git-full" },
     ]);
     assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
@@ -1559,7 +1760,10 @@ test("selected repository collaborators never override an explicit Read-only Age
       profile: "github-repository",
     })),
   });
-  assert.deepEqual(created.repositoryBindings, created.repositoryAccess.repositories);
+  assert.deepEqual(
+    repositoryAccessSelections(created.repositoryAccess),
+    created.repositoryAccess.repositories,
+  );
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByRole("button", { name: "Access for example/a", exact: true }).click();
   await page.locator("#repository-inherit-a").check();
@@ -1573,7 +1777,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   );
   await save.click();
   const saved: AgentResponse = await (await response).json();
-  assert.deepEqual(saved.data.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(saved.data.repositoryAccess), [
     { repositoryRef: "legacy", profile: "git-read" },
   ]);
   assert.equal(saved.data.repositoryAccess?.defaultProfile, "git-read");
@@ -1581,8 +1785,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.ok(modelSecret);
-  await page.locator("#provider-credential-secret").fill(modelSecret.name);
-  await page.getByRole("option", { name: modelSecret.name, exact: true }).click();
+  await selectSecret(page, "API key Secret", modelSecret);
   await page.getByRole("button", { name: "Enter model ID manually" }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Agent name").fill("Fresh collaborators");
@@ -1590,13 +1793,14 @@ test("selected repository collaborators never override an explicit Read-only Age
   await repositoryCheckbox(page, "example/b").check();
   const fresh = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(
-    fresh.repositoryBindings,
+    repositoryAccessSelections(fresh.repositoryAccess),
     ["a", "b"].map((repositoryRef) => ({ repositoryRef, profile: "github-repository" })),
   );
 });
 
 for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
   test(`saved inherited ${defaultProfile} survives repository offering changes without edits`, async (t) => {
+    const approvedProfile: GitHubProfile = defaultProfile === "git-read" ? "git-write" : "git-read";
     const entries = (namespaceId: string, selected: boolean) =>
       ["a", "b"].map((repositoryRef, index) => ({
         repositoryRef,
@@ -1606,11 +1810,8 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
           {
             namespaceId,
             profiles: selected
-              ? ["github-repository" as const]
+              ? [approvedProfile]
               : (["git-read", "git-write", "git-full"] as const),
-            ...(selected
-              ? { permissions: { metadata: "read" as const, contents: "write" as const } }
-              : {}),
           },
         ],
       }));
@@ -1658,7 +1859,11 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
         await page.getByRole("button", { name: `Access for example/${ref}`, exact: true }).click();
       }
       await inherit.uncheck();
-      await page.locator(`#repository-override-${ref}-git-full`).check();
+      await page
+        .locator(
+          `#repository-override-${ref}-${approvedProfile === "git-write" ? "git-full" : approvedProfile}`,
+        )
+        .check();
     }
     const response = page.waitForResponse(
       (r) => r.url().endsWith(`/agents/${agent.id}`) && r.request().method() === "PATCH",
@@ -1669,9 +1874,138 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
       defaultProfile,
       repositories: ["a", "b"].map((repositoryRef) => ({
         repositoryRef,
-        profile: "github-repository",
+        profile: approvedProfile,
       })),
     });
-    assert.deepEqual(saved.data.repositoryBindings, saved.data.repositoryAccess.repositories);
+    assert.deepEqual(
+      repositoryAccessSelections(saved.data.repositoryAccess),
+      saved.data.repositoryAccess.repositories,
+    );
+  });
+}
+
+for (const viewport of consoleViewports) {
+  test(`Back and Forward show how to leave unsaved repository changes at ${viewport.width}px`, async (t) => {
+    const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+      ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"].map((repositoryRef, i) => ({
+        repositoryRef,
+        repositoryId: String(1700 + i),
+        repository: `example/${repositoryRef}`,
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      })),
+    );
+    const agent = await fixture.createAgent(namespace.id, "Plan", nativeValues("base"));
+    const { page } = await newPage(t, fixture);
+    await page.setViewportSize(viewport);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    // Keep real history entries on both sides of Repositories.
+    const configuration = page.url();
+    await page.getByRole("tab", { name: "Repositories" }).click();
+    const search = page.getByLabel("Find a repository");
+    await search.waitFor();
+    const repositories = page.url();
+    await page.getByRole("tab", { name: "Configuration" }).click();
+    await page.goBack({ waitUntil: "commit" });
+    await page.waitForURL(repositories);
+    const choice = repositoryCheckbox(page, "example/alpha");
+    await choice.check();
+    const historyLength = await page.evaluate(() => history.length);
+    const afterReturn = async () => {
+      await page.waitForURL(repositories);
+      // popstate precedes native scroll restoration. Check the settled viewport before
+      // any locator or keyboard action that could scroll the editor into view.
+      await nextFrames(page);
+      assert.equal(await page.evaluate(() => history.length), historyLength);
+    };
+    const cancel = page.getByRole("tabpanel").getByRole("button", { name: "Cancel", exact: true });
+    const save = page.getByRole("button", { name: "Save repository access", exact: true });
+    const status = page.getByText("Save or cancel repository changes before leaving this tab.", {
+      exact: true,
+    });
+    const changes = await page
+      .getByText("Save or cancel repository changes before deploying.", { exact: true })
+      .evaluateHandle((note) => {
+        const count = { value: 0 };
+        new MutationObserver((records) => {
+          count.value += records.length;
+        }).observe(note, { childList: true });
+        return count;
+      });
+    await search.focus();
+    for (const direction of ["goBack", "goForward"] as const) {
+      // Scroll back to the choices without moving focus away from the explanation.
+      await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+      if (direction === "goForward") {
+        assert.ok(await hasFocus(status));
+        assert.equal(await inViewport(status), false);
+      }
+      const before = await changes.evaluate((count) => count.value);
+      await page[direction]({ waitUntil: "commit" });
+      await afterReturn();
+      assert.equal(await changes.evaluate((count) => count.value), before + 1);
+      assert.ok(await hasFocus(status), "Focus the explanation once the browser returns");
+      for (const target of [status, save, cancel]) {
+        assert.ok(await inViewport(target));
+        assert.ok(
+          await target.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return node.contains(
+              document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+            );
+          }),
+        );
+      }
+      assert.ok(await choice.isChecked());
+    }
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await hasFocus(cancel));
+    // A reader who returns to search before the inverse traversal keeps focus there.
+    await search.focus();
+    await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+    await cancel.evaluate((button) => {
+      const input = document.activeElement;
+      if (!(input instanceof HTMLInputElement)) {
+        throw Error("Expected repository search");
+      }
+      window.addEventListener(
+        "popstate",
+        () => {
+          button.focus({ preventScroll: true });
+          input.focus({ preventScroll: true });
+        },
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search), "Keep the reader’s later focus choice");
+    assert.ok(await inViewport(search));
+    // Cancel only the inverse traversal. A later manual Forward reaches the same entry,
+    // but must not deliver the canceled request's feedback.
+    await page.evaluate(() => {
+      const { navigation } = globalThis;
+      navigation.addEventListener(
+        "navigate",
+        () =>
+          navigation.addEventListener("navigate", (event) => event.preventDefault(), {
+            once: true,
+          }),
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await nextFrames(page);
+    assert.equal(page.url(), configuration);
+    await page.goForward({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search));
+    await cancel.click();
+    await waitForEnabled(page.getByRole("tab", { name: "Configuration" }));
+    await page.goBack({ waitUntil: "commit" });
+    await page.waitForURL(configuration);
   });
 }

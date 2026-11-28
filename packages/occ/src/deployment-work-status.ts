@@ -307,7 +307,7 @@ function deploymentErrorMessage(code: string, agentId: string): string {
     case "RUNTIME_MODEL_PROBE_TIMEOUT":
       return "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.";
     case "RUNTIME_MODEL_PROBE_FAILED":
-      return "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.";
+      return "The startup model check failed. No credential rejection was reported. Check the model, provider settings, TLS, rate limits and account. With Codex, check that the provider is reachable. After the fix, someone with deploy access can deploy a new version.";
     case "RUNTIME_LOGIN_FAILED":
       return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
     case "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE":
@@ -400,6 +400,8 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
+    case "GATEWAY_CREDENTIAL_DELIVERY_REFUSED":
+      return "The selected Compute Driver refused Gateway credential delivery. Ask a platform operator to check the worker diagnostic, then correct the credential bindings and deploy again.";
     case "CREDENTIAL_WITHDRAWN":
       return "The Harness credential source was withdrawn from this revision, so the revision cannot start. Bind a replacement source or another authentication method, then deploy again.";
     case "CREDENTIAL_GATEWAY_MISMATCH":

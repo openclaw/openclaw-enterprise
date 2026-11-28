@@ -27,20 +27,10 @@ export const CredentialsSlackHttp = {
 };
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),
-  name: "Slack tokens, viewer can only read",
+  name: "Slack Sources, viewer can only read",
 };
-export const CredentialsSlackSecretsOperateDenied = {
-  ...story("credentialsSlackSecretsOperateDenied"),
-  name: "Slack tokens, editor cannot operate the bound Secrets",
-};
-export const CredentialsSlackReplaceDenied = {
-  ...story("credentialsSlackReplaceDenied"),
-  name: "Slack tokens, editor must replace the bot token Secret",
-};
-export const CredentialsSlackOperateDenied = {
-  ...story("credentialsSlackOperateDenied"),
-  name: "Slack tokens, editor cannot operate one readable Secret",
-};
+export const CredentialsSlackSwappedKeys = story("credentialsSlackSwappedKeys");
+export const CredentialsSlackSourceOperateDenied = story("credentialsSlackSourceOperateDenied");
 export const CredentialsSlackStored = {
   ...story("credentialsSlackStored"),
   name: "Slack tokens stored",
@@ -49,78 +39,21 @@ export const CredentialsSlackReplacement = {
   ...story("credentialsSlackReplacement"),
   name: "Slack token switch",
 };
-export const DiscardSecretChoice = {
-  ...story("credentialsDiscardSecretChoice"),
-  name: "Discard an unsaved Secret choice",
-};
 export const CredentialsSlackCarried = {
   ...story("credentialsSlackCarried"),
   name: "Slack token choice carried through a conflict",
 };
 export const CredentialsSaveProvisioningReserved = {
   ...story("credentialsSaveProvisioningReserved"),
-  name: "Secret choices after a refused save",
+  name: "Credential Source choices after a refused save",
 };
 export const CredentialsSaveChannelRefused = {
   ...story("credentialsSaveChannelRefused"),
-  name: "Channel Secret save refused for a channel setting",
-};
-export const CredentialsSaveChannelBindingRefused = {
-  ...story("credentialsSaveChannelBindingRefused"),
-  name: "Channel Secret save refused for a missing binding",
+  name: "Channel credential save refused for a channel setting",
 };
 export const CredentialsSaveConflict = {
   ...story("credentialsSaveConflict"),
-  name: "Secret choices after a conflict",
-};
-export const CredentialsSecretListDenied = {
-  ...story("credentialsSecretListDenied"),
-  name: "Secret list denied",
-};
-export const CredentialsSecretListRefresh = {
-  ...story("credentialsSecretListRefresh"),
-  name: "Refresh Secret list without saving",
-};
-export const CredentialsSecretListRetry = {
-  ...story("credentialsSecretListRetry"),
-  name: "Retry Secret list without losing a choice",
-};
-export const CredentialsSecretListScrolling = {
-  ...story("credentialsSecretListScrolling"),
-  name: "Scrolling Secret list",
-};
-export const CredentialsSecretListFailsAfterStaging = {
-  ...story("credentialsSecretListFailsAfterStaging"),
-  name: "Secret list fails after a staged Secret",
-};
-export const CredentialsSlackGrantDenied = {
-  ...story("credentialsSlackGrantDenied"),
-  name: "Slack grant denied",
-};
-export const CredentialsSlackGrantMissing = {
-  ...story("credentialsSlackGrantMissing"),
-  name: "Slack Secret bound without an Agent grant",
-};
-export const CredentialsBindingReadDenied = story("credentialsBindingReadDenied");
-export const CredentialsSlackLeftoverGrantMissing = {
-  ...story("credentialsSlackLeftoverGrantMissing"),
-  name: "Slack key left bound without an Agent grant",
-};
-export const CredentialsSlackOffGrantMissing = {
-  ...story("credentialsSlackOffGrantMissing"),
-  name: "Slack off with a bound Secret without an Agent grant",
-};
-export const CredentialsSlackOffRetryUnconfirmed = {
-  ...story("credentialsSlackOffRetryUnconfirmed"),
-  name: "Slack off Retry with an unconfirmed grant",
-};
-export const CredentialsSlackOffRetryAnswerLost = {
-  ...story("credentialsSlackOffRetryAnswerLost"),
-  name: "Slack off Retry whose answer is lost",
-};
-export const CredentialsSlackGrantReadPending = {
-  ...story("credentialsSlackGrantReadPending"),
-  name: "Slack grant read in progress",
+  name: "Credential Source choices after a conflict",
 };
 export const CredentialsSlackSigningSecretMissing = {
   ...story("credentialsSlackSigningSecretMissing"),
@@ -128,17 +61,24 @@ export const CredentialsSlackSigningSecretMissing = {
 };
 export const CredentialsSavePending = {
   ...story("credentialsSavePending"),
-  name: "Channel Secret save pending",
+  name: "Channel credential save pending",
 };
 export const CredentialsSaveUnknown = {
   ...story("credentialsSaveUnknown"),
-  name: "Channel Secret save outcome unknown",
+  name: "Channel credential save outcome unknown",
 };
 export const CredentialsSlackPartial = {
   ...story("credentialsSlackPartial"),
   name: "One Slack token missing",
 };
 export const AuthMissing = { ...story("authMissing"), name: "No authentication source" };
+export const ReplaceExistingCredentialSource = story("credentialsReplaceExistingSource");
+export const FirstManagedCredentialSource = story("credentialsFirstManagedSource");
+export const CodexPatFixedDestination = story("credentialsCodexPatFixedDestination");
+export const CodexOAuthFixedDestination = story("credentialsCodexOAuthFixedDestination");
+export const UnsupportedModelCredentialSource = story("credentialsUnsupportedModelSource");
+export const ReplaceCredentialSourceDenied = story("credentialsReplaceSourceDenied");
+export const ExistingCredentialSource = story("credentialsExistingSource");
 export const AuthApiKeySwitch = {
   ...story("authApiKeySwitch"),
   name: "API key Secret switch",
@@ -185,11 +125,6 @@ export const AuthSaveHoldsNavigation = {
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
 export const AuthenticationNavigation = story("authenticationNavigation");
-
-export const CredentialsSavedRetryReadDenied = {
-  ...story("credentialsSavedRetryReadDenied"),
-  name: "Saved channel bindings, retry read denied",
-};
 
 export const AuthOAuthStartNavigation = story("authOAuthStartNavigation");
 

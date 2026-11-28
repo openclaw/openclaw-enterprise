@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { get } from "node:https";
@@ -206,10 +207,11 @@ test(
             undefined,
             undefined,
             undefined,
-            bindings,
+            undefined,
+            { defaultProfile: "git-write", repositories: bindings ?? [] },
           );
           assert.ok(updated);
-          assert.deepEqual(updated.repositoryBindings ?? [], bindings);
+          assert.deepEqual(repositoryAccessSelections(updated.repositoryAccess) ?? [], bindings);
           assert.equal(updated.activeRevisionId, revision.id);
         });
 

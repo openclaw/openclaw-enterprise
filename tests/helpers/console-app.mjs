@@ -35,7 +35,7 @@ import {
 import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
@@ -191,6 +191,8 @@ export function chromiumTrustArg(certs) {
  * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
  * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
  * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
+ * When the ingress must bind first, pass a function for `upstreamPort` that returns
+ * the port once the upstream is ready and undefined otherwise.
  * Returns the leaf and close().
  */
 export async function startHttpsIngress({
@@ -236,10 +238,16 @@ export async function startHttpsIngress({
     }
   }
   const ingress = createHttpsServer({ key, cert }, (incoming, outgoing) => {
+    const targetPort = typeof upstreamPort === "function" ? upstreamPort() : upstreamPort;
+    if (targetPort === undefined) {
+      outgoing.writeHead(503, { connection: "close" });
+      outgoing.end();
+      return;
+    }
     const upstream = httpRequest(
       {
         hostname: "127.0.0.1",
-        port: upstreamPort,
+        port: targetPort,
         method: incoming.method,
         path: incoming.url,
         headers: incoming.headers,
@@ -387,48 +395,51 @@ export async function createConsoleAppFixture(t, options = {}) {
     });
   /** @type {import("../../packages/occ/src/index.ts").PlatformStateStore} */
   const platformState = options.wrapState?.(basePlatformState) ?? basePlatformState;
-  const iamDriver = new NativeIAMDriver(
-    {
-      async loadNativeIAMState() {
-        // The real evaluator reads Roles and bindings committed by the real policy APIs.
-        if (options.provisionedPeople === undefined) {
-          return policy;
+  const iamState = {
+    async loadNativeIAMState() {
+      // The real evaluator reads Roles and bindings committed by the real policy APIs.
+      if (options.provisionedPeople === undefined && options.stateOwnedIAM !== true) {
+        return policy;
+      }
+      const readPolicy = async (view) => {
+        const namespaces = await view.namespaces.listNamespaces();
+        const roles = [];
+        const bindings = [];
+        const principals = [];
+        for (const namespace of namespaces) {
+          principals.push(...(await view.iamPolicy.listServicePrincipals(namespace.id)));
+          principals.push(
+            ...(await view.agents.listAgents(namespace.id)).map((agent) => ({
+              id: agent.servicePrincipalId,
+              namespaceId: agent.namespaceId,
+              agentId: agent.id,
+              kind: "service_principal",
+            })),
+          );
+          roles.push(...(await view.iamPolicy.listRoles(namespace.id)));
+          bindings.push(...(await view.iamPolicy.listAccessBindings(namespace.id)));
         }
-        const readPolicy = async (view) => {
-          const namespaces = await view.namespaces.listNamespaces();
-          const roles = [];
-          const bindings = [];
-          const principals = [];
-          for (const namespace of namespaces) {
-            principals.push(...(await view.iamPolicy.listServicePrincipals(namespace.id)));
-            principals.push(
-              ...(await view.agents.listAgents(namespace.id)).map((agent) => ({
-                id: agent.servicePrincipalId,
-                namespaceId: agent.namespaceId,
-                agentId: agent.id,
-                kind: "service_principal",
-              })),
-            );
-            roles.push(...(await view.iamPolicy.listRoles(namespace.id)));
-            bindings.push(...(await view.iamPolicy.listAccessBindings(namespace.id)));
-          }
-          return { roles, bindings, principals };
-        };
-        const unit = policyUnit.getStore();
-        const managed = await (unit ? readPolicy(unit) : platformState.read(readPolicy));
-        return {
-          ...policy,
-          identities: [
-            ...policy.identities,
-            ...managed.principals.filter(
-              (principal) => !policy.identities.some((identity) => identity.id === principal.id),
-            ),
-          ],
-          roles: [...policy.roles, ...managed.roles],
-          bindings: [...policy.bindings, ...managed.bindings],
-        };
-      },
+        return { roles, bindings, principals };
+      };
+      const unit = policyUnit.getStore();
+      const managed = await (unit ? readPolicy(unit) : platformState.read(readPolicy));
+      return {
+        ...policy,
+        identities: [
+          ...policy.identities,
+          ...managed.principals.filter(
+            (principal) => !policy.identities.some((identity) => identity.id === principal.id),
+          ),
+        ],
+        roles: [...policy.roles, ...managed.roles],
+        bindings: [...policy.bindings, ...managed.bindings],
+      };
     },
+  };
+  // Source admission delegates exact Agent grants through the selected IAM Driver. This
+  // opt-in makes NativeIAM own the same State instance OCC uses and read its managed policy.
+  const iamDriver = new NativeIAMDriver(
+    options.stateOwnedIAM === true ? Object.assign(platformState, iamState) : iamState,
     { id: "console-native-iam" },
   );
   /** @type {((native: NativeIAMDriver) => NonNullable<import("../../packages/occ/src/index.ts").ControllerOptions["authorize"]>) | undefined} */
@@ -504,6 +515,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       /** @type {import("../../packages/occ/src/index.ts").ControllerOptions} */
       const controllerOptions = {
+        ...(options.oauthIssuer === undefined ? {} : { oauthIssuer: options.oauthIssuer }),
         state: platformState,
         authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
@@ -513,10 +525,17 @@ export async function createConsoleAppFixture(t, options = {}) {
             : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
-        ...(options.pluginSourceReader === undefined
+        modelCredentialSourcePresets: options.modelCredentialSourcePresets,
+        ...(options.modelCredentialPreset === undefined
           ? {}
-          : { pluginSourceReader: options.pluginSourceReader }),
+          : { modelCredentialPreset: options.modelCredentialPreset }),
+        ...(options.supportsCredentialDeployment === undefined
+          ? {}
+          : { supportsCredentialDeployment: options.supportsCredentialDeployment }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        ...(options.prepareStagedRepositorySource === undefined
+          ? {}
+          : { prepareStagedRepositorySource: options.prepareStagedRepositorySource }),
         ...(options.repositoryNetworkPolicyCeiling === undefined
           ? {}
           : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),
@@ -534,6 +553,12 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
+        ...(options.credentialSourceDelivery === undefined
+          ? {}
+          : { credentialSourceDelivery: options.credentialSourceDelivery }),
+        ...(options.gatewayStartupSourceDelivery === undefined
+          ? {}
+          : { gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery }),
       };
       controller =
         options.repositoryAdmission === undefined

@@ -1,6 +1,6 @@
 import type {
+  GitHubAppClient,
   RepositoryAccess,
-  RepositoryBindingRequest,
   RepositoryBindingSelection,
   RepositoryOption as CatalogOption,
   RepositoryNetworkGrant,
@@ -8,7 +8,7 @@ import type {
 import { resourceActionIcon } from "../resource-actions.mjs";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { element, button, setStatusTone } from "../dom.mjs";
+import { element, button, field, setStatusTone, setText } from "../dom.mjs";
 import {
   AGENT_CREATE_DENIED,
   askAdministratorTo,
@@ -17,11 +17,19 @@ import {
 import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
-  githubAccessLabel,
   repositoryProfiles,
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
+
+export function repositorySelections(access: RepositoryAccess | undefined) {
+  return (
+    access?.repositories.map(({ repositoryRef, profile }) => ({
+      repositoryRef,
+      profile: profile ?? access.defaultProfile,
+    })) ?? []
+  );
+}
 
 type RepositoryOption = CatalogOption & { githubAccess?: RepositoryNetworkGrant };
 
@@ -32,7 +40,7 @@ type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "o
 };
 
 export const FIRST_REPOSITORY_DEPLOYMENT_WARNING =
-  "If you deploy without a repository policy, per-repository access requires a new Agent.";
+  "Deploying without a repository policy can require a new Agent to add per-repository access later.";
 
 // An Installation without repository access (no Repo Driver selected, or draft-only discovery).
 const REPOSITORY_ACCESS_NOT_CONFIGURED =
@@ -222,7 +230,6 @@ export function createRepositoryFields(
     agentId?: string;
     repositoryAccess?: RepositoryAccess;
     scopedGrants?: [string, RepositoryNetworkGrant][] | undefined;
-    repositoryBindings?: readonly RepositoryBindingRequest[];
   } = {},
   // Read no choices until start(): Create Agent's permission answer is not known yet.
   { held = false }: { held?: boolean } = {},
@@ -235,12 +242,7 @@ export function createRepositoryFields(
   const state: PickerState = {
     options: [],
     selected: new Map(
-      intent
-        ? intent.repositories.map(({ repositoryRef, profile }) => [repositoryRef, profile ?? null])
-        : (initial.repositoryBindings ?? []).map(({ repositoryRef, profile }) => [
-            repositoryRef,
-            profile ?? "git-write",
-          ]),
+      intent?.repositories.map(({ repositoryRef, profile }) => [repositoryRef, profile ?? null]),
     ),
     profile: intent?.defaultProfile ?? "git-full",
     discovery: held ? "held" : "loading",
@@ -277,6 +279,12 @@ export function createRepositoryFields(
     placeholder: "Search by repository or owner…",
     "aria-controls": "repository-results",
   });
+  const searchAction = element("span", { className: "repository-identity" });
+  const searchField = field({
+    label: "Find a repository",
+    control: search,
+    help: searchAction,
+  });
   const results = element("div", { id: "repository-results" });
   const discovery = element("div", { className: "repository-discovery" });
   const access = element("fieldset", { className: "repository-profile-group" });
@@ -301,7 +309,136 @@ export function createRepositoryFields(
   // a restored selection or a creator's explicit choice on catalog refresh.
   let chooseDefault = !initial.agentId && !intent && !state.selected.size && !initial.scopedGrants;
   const grants = new Map(initial.scopedGrants);
-  mode.value = initial.scopedGrants ? "scoped" : "profiles";
+  mode.value = intent?.githubAppClientId || initial.scopedGrants ? "scoped" : "profiles";
+  let selectedClientId = intent?.githubAppClientId ?? "";
+  let clientState: "idle" | "loading" | "ready" | "failed" = "idle";
+  let clients: Pick<GitHubAppClient, "id" | "displayName" | "appId" | "namespaceId">[] = [];
+  const clientSelect = element("select", { id: "github-app-client" });
+  const clientStatus = element("p", { className: "hint", role: "status" });
+  const retryClients = button("Retry GitHub App Clients", () => void loadClients());
+  const clientField = element(
+    "div",
+    {},
+    field({
+      label: "GitHub App Client",
+      control: clientSelect,
+      help: "Choose a registered App. OCE creates the finite GitHub credential Source when you deploy; its key and token stay outside the Agent.",
+    }),
+    clientStatus,
+    retryClients,
+  );
+  clientSelect.addEventListener("change", () => {
+    selectedClientId = clientSelect.value;
+    changed();
+  });
+  async function loadClients() {
+    if (context.installationAdmin !== true || clientState === "loading") {
+      return;
+    }
+    clientState = "loading";
+    renderClient();
+    try {
+      const result = await context.request("/credential-clients", {
+        installationAdministration: "required",
+        expectedStatus: 200,
+      });
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (!Array.isArray(result)) {
+        throw new Error("Invalid Client catalog response.");
+      }
+      clients = result.flatMap((entry) => {
+        const item = responseFields(entry);
+        return item.kind === "github-app" &&
+          typeof item.id === "string" &&
+          typeof item.displayName === "string" &&
+          typeof item.appId === "string" &&
+          (item.namespaceId === undefined || item.namespaceId === context.namespaceId)
+          ? [
+              {
+                id: item.id,
+                displayName: item.displayName,
+                appId: item.appId,
+                ...(item.namespaceId === context.namespaceId && {
+                  namespaceId: context.namespaceId,
+                }),
+              },
+            ]
+          : [];
+      });
+      clientState = "ready";
+    } catch (error) {
+      if (requestFailure(error).status === 401) {
+        context.onExpired();
+      } else {
+        clientState = "failed";
+        clientStatus.textContent = `GitHub App Clients could not be loaded. ${describeFailure(error)} Retry the Client list.`;
+        setStatusTone(clientStatus, "danger");
+      }
+    } finally {
+      renderClient();
+      onChange(false);
+    }
+  }
+  function renderClient() {
+    clientField.hidden = !hasPolicy();
+    if (clientField.hidden) {
+      return;
+    }
+    if (context.installationAdmin === true && clientState === "idle") {
+      void loadClients();
+    }
+    const entries = clients.map((item) => {
+      const availability = item.namespaceId === undefined ? "Installation-wide" : "This Namespace";
+      return element(
+        "option",
+        { value: item.id },
+        `${item.displayName} (App ${item.appId}) · ${availability}`,
+      );
+    });
+    if (selectedClientId && !clients.some(({ id }) => id === selectedClientId)) {
+      entries.push(
+        element(
+          "option",
+          {
+            value: selectedClientId,
+            disabled: context.installationAdmin === true && clientState === "ready",
+          },
+          context.installationAdmin === true && clientState === "ready"
+            ? "Unavailable GitHub App Client"
+            : "Saved GitHub App Client",
+        ),
+      );
+    }
+    clientSelect.replaceChildren(
+      element("option", { value: "" }, "Select a GitHub App Client"),
+      ...entries,
+    );
+    clientSelect.value = selectedClientId;
+    clientSelect.disabled =
+      state.disabled || context.installationAdmin !== true || clientState === "loading";
+    retryClients.hidden = clientState !== "failed";
+    retryClients.disabled = state.disabled;
+    if (clientState !== "failed") {
+      setStatusTone(clientStatus, null);
+      clientStatus.textContent =
+        clientState === "loading"
+          ? "Loading registered GitHub App Clients…"
+          : context.installationAdmin !== true && !selectedClientId
+            ? "Ask an Installation administrator to select a GitHub App Client."
+            : clientState === "ready" && !clients.length
+              ? "Register a GitHub App Client in Credentials before saving repository access."
+              : "";
+    }
+  }
+  function validClient() {
+    return (
+      Boolean(selectedClientId) &&
+      (context.installationAdmin !== true ||
+        (clientState === "ready" && clients.some(({ id }) => id === selectedClientId)))
+    );
+  }
   const scopeHint = element("p", { className: "hint", id: "repository-mode-help" });
   const modeField = element(
     "div",
@@ -332,6 +469,7 @@ export function createRepositoryFields(
     access,
     choices,
     cards,
+    clientField,
     announcements,
     validation,
     initial.agentId
@@ -564,7 +702,7 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Contributors can push. Opening PRs and creating issues depend on GitHub permissions and the deployed policy."
+      ? "Read-only Git allows cloning and fetching. Read/write Git also allows pushing. Opening pull requests requires Read/write Git, pull request write permission from the GitHub App and Credential Source, and repository policy approval. The Agent must be able to read every repository in the Source. Repository policy can allow public metadata reads for selected repositories without credentials. Pull request creation is the only authenticated GitHub REST operation this policy can grant."
       : "After deploying with access profiles, you need a new Agent to switch to Per-repository access.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
@@ -672,27 +810,33 @@ export function createRepositoryFields(
     searchState.browsing = false;
     renderResults();
   });
+  function isComposing(event: KeyboardEvent) {
+    // The final IME keydown can arrive after composition ends.
+    return event.isComposing || event.keyCode === 229;
+  }
   search.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
+    if (event.key === "ArrowDown" && !isComposing(event)) {
       event.preventDefault();
       searchState.dismissed = false;
       renderResults();
       results.querySelector<HTMLInputElement>('input[type="checkbox"]:not(:disabled)')?.focus();
     }
     if (event.key === "Enter") {
+      // Enter in search must never submit the surrounding form.
       event.preventDefault();
+      if (event.repeat || isComposing(event)) {
+        return;
+      }
       if (searchState.dismissed) {
         searchState.dismissed = false;
         renderResults();
         return;
       }
-      results
-        .querySelector<HTMLInputElement>('input[type="checkbox"]:not(:checked):not(:disabled)')
-        ?.click();
+      nextSearchChoice()?.click();
     }
   });
   discovery.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !search.isConnected) {
+    if (event.key !== "Escape" || isComposing(event) || !search.isConnected) {
       return;
     }
     event.preventDefault();
@@ -700,6 +844,23 @@ export function createRepositoryFields(
     searchState.dismissed = true;
     renderResults();
   });
+  function nextSearchChoice() {
+    return results.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]:not(:checked):not(:disabled)',
+    );
+  }
+  function describeSearchAction() {
+    if (search.disabled || state.discovery !== "ready") {
+      setText(searchAction, "");
+    } else if (searchState.dismissed) {
+      setText(searchAction, "Press Enter to show results");
+    } else {
+      const name = nextSearchChoice()?.dataset.searchName;
+      const summary = state.selected.size ? `${state.selected.size} selected` : "";
+      const hint = name ? `In search, Enter selects ${name}` : "";
+      setText(searchAction, summary && hint ? `${summary} in total. ${hint}` : summary || hint);
+    }
+  }
   function renderResults() {
     results.hidden = searchState.dismissed;
     const { small, query, matches, count, page, visible } = repositoryResults(
@@ -709,6 +870,7 @@ export function createRepositoryFields(
     );
     results.replaceChildren();
     if (state.discovery !== "ready" || !state.options.length) {
+      describeSearchAction();
       return;
     }
     const searchSummary = matches.length
@@ -735,7 +897,9 @@ export function createRepositoryFields(
     const list = element("ul", { className: "repository-results-list" });
     for (const entry of visible) {
       const selected = state.selected.has(entry.repositoryRef);
-      const displayName = searchCase(entry.displayName);
+      const scopedName = scoped() && githubLimit(entry)?.repository;
+      const name = scopedName || entry.displayName || entry.repositoryRef;
+      const displayName = searchCase(name);
       const reference = searchCase(entry.repositoryRef);
       const showReference =
         reference !== displayName && reference !== displayName.split("/").at(-1);
@@ -743,12 +907,11 @@ export function createRepositoryFields(
       const checkbox = element("input", {
         type: "checkbox",
         "data-repository-ref": entry.repositoryRef,
+        "data-search-name": showReference ? `${name} (${entry.repositoryRef})` : name,
         checked: selected,
         disabled:
           !editable() ||
-          (!selected &&
-            (state.selected.size >= MAX_SELECTED ||
-              (scoped() && !githubName(entry.repositoryRef)))),
+          (!selected && (state.selected.size >= MAX_SELECTED || (scoped() && !scopedName))),
       });
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
@@ -765,12 +928,8 @@ export function createRepositoryFields(
         element(
           "span",
           { className: "repository-identity" },
-          element(
-            "strong",
-            {},
-            scoped() ? (githubName(entry.repositoryRef) ?? entry.displayName) : entry.displayName,
-          ),
-          scoped() && !githubName(entry.repositoryRef)
+          element("strong", {}, name),
+          scoped() && !scopedName
             ? element("span", { className: "hint" }, "Requires profile access")
             : null,
           repositoryDescription(entry.description),
@@ -786,6 +945,11 @@ export function createRepositoryFields(
             : null,
         ),
       );
+      checkbox.addEventListener("focus", () => {
+        if (checkbox.matches(":focus-visible")) {
+          row.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
       checkbox.addEventListener("keydown", (event) => {
         if (!["ArrowUp", "ArrowDown"].includes(event.key)) {
           return;
@@ -863,6 +1027,7 @@ export function createRepositoryFields(
         "16 repositories selected. Deselect one to select another.",
       ),
     );
+    describeSearchAction();
   }
   function renderCards() {
     announcements.querySelector("button")?.remove();
@@ -914,9 +1079,9 @@ export function createRepositoryFields(
         const level = element(
           "select",
           { "aria-label": `GitHub access for ${label}`, disabled: !editable() || !available },
-          element("option", { value: "read" }, githubAccessLabel("read")),
+          element("option", { value: "read" }, "Read-only Git"),
           limit?.access === "write"
-            ? element("option", { value: "write" }, githubAccessLabel("write"))
+            ? element("option", { value: "write" }, "Read/write Git")
             : grant?.access === "write"
               ? element("option", { value: "write", disabled: true }, "Unavailable")
               : null,
@@ -1124,10 +1289,7 @@ export function createRepositoryFields(
     }
     const needsSearch = state.options.length > 5;
     if (!results.isConnected || needsSearch !== search.isConnected) {
-      discovery.replaceChildren(
-        ...(needsSearch ? [element("label", { for: search.id }, "Find a repository"), search] : []),
-        results,
-      );
+      discovery.replaceChildren(...(needsSearch ? [searchField] : []), results);
     }
     if (!discovery.isConnected) {
       choices.replaceChildren(discovery);
@@ -1148,10 +1310,12 @@ export function createRepositoryFields(
       if (limit) {
         limit.hidden = state.selected.size < MAX_SELECTED;
       }
+      describeSearchAction();
     } else {
       renderResults();
     }
     renderCards();
+    renderClient();
     for (const details of section.querySelectorAll<HTMLDetailsElement>(
       "details[data-access-customize]",
     )) {
@@ -1162,7 +1326,8 @@ export function createRepositoryFields(
     return (
       state.discovery === "ready" &&
       state.selected.size > 0 &&
-      [...state.selected.keys()].every((ref) => !invalid(ref))
+      [...state.selected.keys()].every((ref) => !invalid(ref)) &&
+      (!scoped() || validClient())
     );
   }
   function validate({ required = false } = {}) {
@@ -1173,6 +1338,13 @@ export function createRepositoryFields(
     }
     if (state.selected.size === 0 && !required) {
       return true;
+    }
+    if (hasPolicy() && !validClient()) {
+      validation.textContent =
+        "Select an available GitHub App Client before saving repository access.";
+      validation.hidden = false;
+      clientSelect.focus();
+      return false;
     }
     if (!state.selected.size || [...state.selected.keys()].some(invalid)) {
       validation.textContent = scoped()
@@ -1196,7 +1368,17 @@ export function createRepositoryFields(
   }
   function accessIntent(): RepositoryAccess {
     if (hasPolicy()) {
-      return { defaultProfile: "git-read", repositories: bindings() };
+      return {
+        defaultProfile: "github-repository",
+        ...(selectedClientId ? { githubAppClientId: selectedClientId } : {}),
+        repositories: [...state.selected.keys()].map((repositoryRef) => ({
+          repositoryRef,
+          access:
+            grants.get(repositoryRef)?.access ??
+            intent?.repositories.find((entry) => entry.repositoryRef === repositoryRef)?.access ??
+            "read",
+        })),
+      };
     }
     return {
       defaultProfile: state.profile,
@@ -1262,6 +1444,14 @@ export function createRepositoryFields(
         const allowedProfiles = option.allowedProfiles.filter((id) => id !== "github-installation");
         return allowedProfiles.length ? [{ ...option, allowedProfiles }] : [];
       });
+      if (intent?.githubAppClientId) {
+        for (const entry of intent.repositories) {
+          const limit = githubLimit(option(entry.repositoryRef));
+          if (limit && entry.access && !grants.has(entry.repositoryRef)) {
+            grants.set(entry.repositoryRef, { ...limit, access: entry.access });
+          }
+        }
+      }
       if (chooseDefault && context.installationAdmin !== false && state.options.some(githubLimit)) {
         mode.value = "scoped";
       }
@@ -1353,7 +1543,7 @@ export function createRepositoryFields(
       status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories.${next}`;
     } else {
       status.textContent = scoped()
-        ? "Select a repository to grant Contributor access, or Read-only if writes are disabled."
+        ? "Select approved repositories and choose Git read or write access."
         : loadedAfterReset
           ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
           : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
@@ -1416,6 +1606,11 @@ export function createRepositoryFields(
       state.options.some(githubLimit),
     // An empty list retains the picker mode when a draft is rebuilt. Submission
     // requires a selection, since an explicit empty API policy would deny all.
+    repositoryNames: () =>
+      [...state.selected.keys()].flatMap((ref) => {
+        const name = githubName(ref);
+        return name ? [name] : [];
+      }),
     scopedGrants: () =>
       scoped() ? [...grants].filter(([ref]) => state.selected.has(ref)) : undefined,
     bindings,

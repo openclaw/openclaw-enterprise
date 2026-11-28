@@ -19,6 +19,7 @@ interface ConsoleModules {
   "api-client.mjs": typeof import("../../apps/controller/src/console/api-client.mts");
   "channels/shared-ui.mjs": typeof import("../../apps/controller/src/console/channels/shared-ui.mts");
   "channels/slack.mjs": typeof import("../../apps/controller/src/console/channels/slack.mts");
+  "credential-value.mjs": typeof import("../../apps/controller/src/console/credential-value.mts");
   "namespaces.mjs": typeof import("../../apps/controller/src/console/namespaces.mts");
   "secrets.mjs": typeof import("../../apps/controller/src/console/secrets.mts");
   "stored-configuration-rules.mjs": typeof import("../../packages/occ/src/stored-configuration-rules.ts");

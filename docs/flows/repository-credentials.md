@@ -8,11 +8,11 @@ last_updated_session: authoring-run/b88f6822-c851-4266-9e3c-475680ad8a40
 
 ## Overview
 
-Operators or workers admit sessions over a private Unix control socket.
-Sessions have a maximum duration and a capped count.
-Clients send Git or selected API requests over HTTPS with a gateway bearer. This trace
-covers forwarding, closure and cleanup in the separate credential process. The
-[Agent flow](agent-repository-credentials.md) owns admission and material delivery.
+This separate broker, including its exact-ref and draft-PR modes, is outside
+Credential 1.0 and independent of `LegacyEgressProxyDriver`. Operators or workers
+admit sessions over private Unix control; clients send Git or selected API requests
+over HTTPS with a gateway bearer. The [Agent flow](agent-repository-credentials.md)
+owns admission and material delivery.
 
 ## Entry Points
 

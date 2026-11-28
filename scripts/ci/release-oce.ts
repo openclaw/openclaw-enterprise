@@ -36,21 +36,31 @@ export function validateProducer(run: unknown, jobs: unknown[], env: NodeJS.Proc
   }
   assert.equal(field(run, "run_attempt"), 1, "The original attempt must still be attempt 1.");
   assert.equal(field(run, "status"), "completed");
+  const interrupted =
+    env.IMAGES_ONLY === "true" ? ["failure", "cancelled", "timed_out"] : ["failure", "cancelled"];
   assert.ok(
-    ["failure", "cancelled"].includes(String(field(run, "conclusion"))),
-    "Recovery requires a failed or cancelled original publish run.",
+    interrupted.includes(String(field(run, "conclusion"))),
+    `Expected the original publish run to conclude with one of: ${interrupted.join(", ")}.`,
   );
-  for (const name of [
-    "Approve release",
-    "Verify approval",
-    "Full Integration / Full Integration Aggregate",
-    "Record qualified release",
-  ]) {
+  const required = new Map<string, string[]>([
+    ["Approve release", ["success"]],
+    ["Verify approval", ["success"]],
+  ]);
+  if (env.IMAGES_ONLY === "true") {
+    required.set("Publish images only (Full Integration skipped)", interrupted);
+  } else {
+    required.set("Full Integration / Full Integration Aggregate", ["success"]);
+    required.set("Record qualified release", ["success"]);
+  }
+  for (const [name, conclusions] of required) {
     const matches = jobs.filter((job) => field(job, "name") === name);
     assert.equal(matches.length, 1, `Missing or ambiguous original job: ${name}.`);
     assert.equal(field(matches[0], "head_sha"), workflowSha);
     assert.equal(field(matches[0], "status"), "completed");
-    assert.equal(field(matches[0], "conclusion"), "success", `Original job did not pass: ${name}.`);
+    assert.ok(
+      conclusions.includes(String(field(matches[0], "conclusion"))),
+      `Unexpected original job outcome: ${name}.`,
+    );
   }
   return workflowSha;
 }
@@ -83,6 +93,9 @@ export async function verifyProducer(env: NodeJS.ProcessEnv) {
 
 async function admit(env: NodeJS.ProcessEnv) {
   publicationAlias(env.IMAGE_TAG);
+  if (env.IMAGES_ONLY === "true") {
+    assert.equal(env.PUBLISH, "true", "Image-only publication requires publish.");
+  }
   await verifyMainSource(env, releaseWorkflow);
   await verifySourceAtDispatch(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
   if (env.PUBLISH === "true") {
@@ -95,6 +108,7 @@ async function admit(env: NodeJS.ProcessEnv) {
 }
 
 export function validateQualification(env: NodeJS.ProcessEnv) {
+  assert.notEqual(env.IMAGES_ONLY, "true", "Image-only publication cannot qualify a full release.");
   match(env.SOURCE_SHA, shaPattern);
   match(env.GITHUB_RUN_ID, integerPattern);
   assert.equal(env.GITHUB_RUN_ATTEMPT, "1");

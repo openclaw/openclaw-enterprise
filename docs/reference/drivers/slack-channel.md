@@ -1,10 +1,11 @@
 # Bundled Slack Channel Driver
 
 The bundled `SlackChannelDriver` reads people and channels for the Console's
-name picker. It uses the Agent's selected same-Namespace `SLACK_BOT_TOKEN`
-Secret; the controller does not configure or store another token.
+name picker. It uses the selected same-Namespace static Credential Source for
+the Slack bot token; the controller does not store another token.
 
-The Driver calls Slack [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/)
+Before any Slack request, the Driver rejects values that do not start with
+`xoxb-`. It then calls Slack [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/)
 to require a bot identity and identify its workspace, then [`users.list`](https://docs.slack.dev/reference/methods/users.list/)
 or [`conversations.list`](https://docs.slack.dev/reference/methods/conversations.list/).
 The bot needs `users:read` for people, `channels:read` for public channels, and
@@ -36,8 +37,9 @@ directory browsing is unavailable.
 ## Credential validation
 
 Before API provisioning or deployment, enabled Slack accounts require
-Secret-backed native environment references: an env SecretRef, or a token that
-is exactly one `${NAME}`, with `NAME` bound to a Secret. Socket Mode app tokens
+bound native environment references: an env SecretRef, or a token that
+is exactly one `${NAME}`, with `NAME` bound to a qualified static Credential
+Source. Socket Mode app tokens
 must start with `xapp-`; bot tokens must start with `xoxb-` and pass `auth.test`
 with a bot identity. An explicit Enterprise Grid installation requires an enterprise ID;
 other installations require a workspace ID. User and channel lookup still
@@ -62,7 +64,7 @@ separate listeners. Envoy receives no provider credentials.
 per-Agent rules and revocation. Provider TLS stays end-to-end and its
 certificates remain verified. Directory lookup cannot select an Agent's listener.
 
-Keep the bot token in its same-Namespace Secret. Lookup returns unavailable when
+Keep the bot token in its same-Namespace Credential Source. Lookup returns unavailable when
 the managed route cannot be used. Exact-ID entry does not bypass credential
 validation. See the [ChannelDriver contract](channel.md) for authorization and
 [Slack Configuration](../configuration/secrets.md#native-channel-configuration)

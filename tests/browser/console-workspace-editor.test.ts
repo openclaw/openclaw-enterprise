@@ -15,7 +15,7 @@ import {
   type AgentRevision,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
-import { proxyErrorResponse } from "../helpers/api-error.mjs";
+import { proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   deploymentStatusResponse,

@@ -67,6 +67,19 @@ and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and conf
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
 
+## Return to an offscreen Configuration selection
+
+Open **Pages → Agent detail → Edit Configuration** in its own preview tab.
+Replace **Configuration JSON** with a long unsaved JSON draft whose last
+setting, just above the closing brace, is `"review": "Review A"`. Press
+Ctrl+End, Up, End, and Left, then Shift+Left to select just the final A.
+
+Wheel to the top inside **Configuration JSON**. Press Shift+Tab, then wheel
+the page up until the editor is below the window. Press Tab. The editor and
+its focus outline should come into view, while the selected line may still
+be below the editor's visible text. Type B and check that the draft now says
+`"review": "Review B"` with the rest unchanged. Leave the draft unsaved.
+
 ## Correct an offscreen Configuration syntax error
 
 In **Pages → Agent detail → Invalid Configuration JSON** (`invalidConfiguration`),
@@ -76,6 +89,69 @@ activate **Save Configuration**. When the editor and error fit, check that both
 are visible and the caret is before `x`. Enlarge the editor manually
 and try saving again. If both no longer fit, check that the editor keeps its
 size and the caret stays visible. Press Delete and save the corrected draft.
+
+Repeat at 320×480. On a line after line 10, add spaces before a string
+value so its opening quote is past column 100. Replace that quote with
+`“`. Move to the end so the typo scrolls out of view. Press Tab and Enter
+to save. The caret and the instruction to use a straight quote should both
+be visible. Without clicking, press Delete and type `"` to repair the draft.
+
+Repeat the syntax error in a wide window. While the caret is at the typo,
+shrink the window before typing. Check that the caret line and the full error
+stay visible when both fit. The editor should keep focus and the rest of the
+draft should stay unchanged. Scroll away deliberately and resize again. The
+page should stay where you scrolled. Move focus elsewhere and resize once
+more. Focus should stay where you put it.
+
+Repeat this resize check in **Pages → Agent detail → Plugins Required Fields**.
+Enter a typo in **Plugin selections JSON** and press **Save plugin selections**.
+
+In **Pages → Agent detail → Plugins Draft**, set **Plugin selections JSON** to
+`{}`. Check that the summary reports zero. Open **Configure plugins** and
+check that **Configured** also reports zero. Choose **Done** and replace the
+draft with `[`. The summary should tell you which field to fix. Reopen the
+picker. **Configured** should explain the missing catalog credential without
+showing a count or inviting you to add a plugin. Choose **Done**, enter
+`{"sample":{"enabled":false}}`, and check that the summary and **Configured**
+both count the disabled plugin once.
+
+On a saved Agent with a working catalog, repeat the invalid edit at 390 px.
+**Configured** should direct you to **Done** and the JSON editor. In **Available**,
+open a plugin. Check that it has no **Not selected** label. Use the keyboard to
+activate **Back to plugins**. Focus should return to **Search plugins**.
+
+On the same signed-in Agent, restore readable JSON and open a plugin whose tools
+are still loading. At 390 px, focus **Back to plugins** before the tool list
+arrives. When the tools appear, focus should remain on **Back to plugins**.
+Press Enter. The list should return with **Search plugins** focused. Open another
+plugin and move focus to **Done** while its tools load. Check that focus stays
+on **Done**.
+
+In **Pages → Create Agent → Load plugin tools**, choose **Add Calendar**.
+Under **Plugin policies**, check that selectors on each row line up even when
+a label wraps. At 390 px, check that the fields stack in the same order.
+Tab to **Filter tools** and type `create`. Check that the field stays in place when
+**Create event** fits below it. Type `x` to hide the last match. Check that
+you can see the field and the message. Press Backspace to see the result again.
+
+On a signed-in saved Agent with a working catalog, start at 1280 × 900. Set an
+unsaved enablement and approval override for an available tool. Check its
+**Overrides** badge and values, and leave another tool inheriting defaults. In
+the available plugin's details, enter a query in **Filter tools** that matches
+no tools. Check that **Tools** still shows the unfiltered total and that the pane
+says "No matching tools. Change or clear the filter." Choose **Done** and remove
+the final `}` from **Plugin selections JSON**. Reopen **Configure plugins** and
+return to the same plugin's details. The query and guidance should still be
+present, and **Filter tools** should remain enabled. Focus the search field,
+select its text with the keyboard and press Backspace. The guidance should disappear.
+The tool rows should return. Expand the same tool. Its name, ID when different,
+description and provider should remain available under **Details**. The policy
+is unknown while the draft is unreadable. The override and inheritance badges,
+enablement switch, approval and reviewer values, policy hints and controls must
+disappear. A tool genuinely marked **Unavailable** by the catalog must retain
+that status and its reason. Restore the final brace and check that the exact
+unsaved draft, override values and untouched tool's inheritance return. Repeat
+at 390 × 844 and leave the draft unsaved.
 
 ## Correct an out-of-range Configuration number
 
@@ -97,6 +173,47 @@ Restore the original Model ID before retrying.
 Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
+
+To check the error in a short window, open **Pages → Create Agent → GitHub
+repository access with a registered App** at 1024 × 360 and 390 × 360. Under
+**Authentication method**, choose **Service Accounts**. Leave the credential
+field empty. Open **Advanced settings**, use the same nested array as above and
+select `1e400` in **Configuration JSON**. Change **Model ID** and press Tab.
+Before scrolling, check that the selection and the whole error are visible above
+the buttons. Type `2` to replace just the selected number. Repeat with the
+application repository unchecked. The deployment warning should stay visible too.
+
+Repeat the rejection in a tall window. Keep **Configuration JSON** focused as
+you shrink the window. When both fit, the selection and full error should stay
+visible. Leave the editor focused, scroll away from the error, then resize again.
+Check that the page stays where you scrolled and the editor keeps focus.
+
+## Keep Runtime details visible while tabbing
+
+Open **Pages → Create Agent → GitHub repository access with a registered App**
+at 1024 × 360. Choose **Service Accounts**, leave the credential field empty,
+and uncheck the application repository to show the deployment warning. Focus
+**Model ID**, scroll down one wheel step beside the form, then press Tab. Check
+that **Runtime details · Dedicated** and its full focus outline are visible above
+the sticky actions. Repeat with the repository selected and no warning.
+
+## Correct a Create Agent Configuration syntax error
+
+Open **Pages → Create Agent → Invalid Configuration JSON**
+(`createInvalidConfiguration`). Tab to **Reset template**, press Enter, and
+confirm the discard prompt to restore the valid draft. Reopen **Advanced
+settings** if needed and focus **Configuration JSON**. Press Ctrl+Home, then
+Right Arrow. Type a comma after the opening brace. Press Ctrl+End, tab to
+**Create Agent**, and press Enter.
+
+At 1024 × 360 and at phone width, check that you can see both the caret before
+the comma and the full error for line 1, column 2 without scrolling. Press
+Delete once. The editor must match the restored draft exactly, the error must
+clear, and the other form fields must stay unchanged.
+
+In a tall window, repeat with an extra `x` before the opening brace. Check
+that you can still resize the editor. If you make it too tall to fit alongside
+the error, the caret must stay visible. Leave the corrected draft unsaved.
 
 ## Inspect, save, and withdraw repository grants
 

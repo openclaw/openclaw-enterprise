@@ -249,9 +249,8 @@ test("staged release chart records both verified digests and defaults to the con
   const directory = await temporaryDirectory(t, "oce-release-chart-");
   const prepared = join(directory, "prepared");
   const environment = {
-    ...process.env,
-    SOURCE_SHA: sourceSha,
-    GITHUB_WORKFLOW_SHA: sourceSha,
+    ...env,
+    OCC_HELM_BIN: helm,
     GITHUB_RUN_ID: "123",
     GITHUB_RUN_ATTEMPT: "1",
     CI_RUN_ID: "456",
@@ -664,53 +663,122 @@ test("container release requires exact successful CI identity and its aggregate 
 const { workflow: sourceWorkflow, run: sourceRun, required: aggregate } = successfulCi();
 const sourceJob = { ...aggregate, run_id: sourceRun.id, run_attempt: sourceRun.run_attempt };
 const mainRef = { ref: "refs/heads/main", object: { sha: sourceSha } };
+const movedTip = { ...mainRef, object: { sha: "b".repeat(40) } };
+const movedTipError =
+  /Review the current main tip b{40} for Enterprise Containers\. If a full release is appropriate, Release OCE can rehearse a reviewed earlier main commit\./;
+const invalidRefError = /^Could not verify the Enterprise main ref\. Check the ref in GitHub\.\n$/;
 const runsPath = `actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${sourceSha}&per_page=100`;
 const jobsPath = "actions/runs/456/attempts/2/jobs?per_page=100";
+const inspectAttempt =
+  "Inspect https://github.com/openclaw/openclaw-enterprise/actions/runs/456/attempts/2\n";
+const genericRefusal = `CI does not qualify this commit. ${inspectAttempt}`;
+const failedRun = { ...sourceRun, conclusion: "failure" };
 
 for (const scenario of [
-  { name: "prints the stable SHA and CI run" },
+  { name: "prints the stable SHA and CI run", calls: 6 },
+  {
+    name: "identifies the current main tip before CI lookup",
+    initialTip: movedTip,
+    error: movedTipError,
+    calls: 1,
+  },
   {
     name: "refuses a moved main tip after CI lookup",
-    tip: { ...mainRef, object: { sha: "b".repeat(40) } },
-    error: /Enterprise main does not match/,
+    tip: movedTip,
+    error: movedTipError,
+    calls: 6,
+  },
+  {
+    name: "refuses a malformed tip without printing its value",
+    initialTip: { ...mainRef, object: { sha: "untrusted text\non a second line" } },
+    error: invalidRefError,
+    calls: 1,
+  },
+  {
+    name: "refuses an unexpected ref even if it reports a full SHA",
+    initialTip: { ...movedTip, ref: "refs/heads/unexpected" },
+    error: invalidRefError,
+    calls: 1,
+  },
+  {
+    name: "links to the active CI attempt for the reviewed source",
+    initialRun: { ...sourceRun, id: 789, run_attempt: 4, status: "in_progress", conclusion: null },
+    error:
+      "Wait for the whole CI run to finish, even if CI Required has already passed. Watch https://github.com/openclaw/openclaw-enterprise/actions/runs/789/attempts/4 and recheck the same source.\n",
+    calls: 3,
   },
   {
     name: "refuses a rerun started during lookup",
     currentRun: { ...sourceRun, run_attempt: 3, status: "in_progress", conclusion: null },
     error: /CI run or attempt changed/,
+    calls: 5,
+  },
+  {
+    name: "reports a failed workflow despite a successful CI Required job",
+    initialRun: failedRun,
+    currentRun: failedRun,
+    error: `CI does not qualify this commit. The workflow failed. The CI Required job passed. ${inspectAttempt}`,
+    calls: 5,
   },
   {
     name: "refuses a successful run with a skipped CI Required job",
-    job: { ...sourceJob, conclusion: "skipped" },
-    error: /CI does not qualify this commit/,
+    jobs: [{ ...sourceJob, conclusion: "skipped" }],
+    error: `CI does not qualify this commit. The workflow passed. The CI Required job was skipped. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
+    name: "reports a missing CI Required job on a complete jobs page",
+    jobs: [],
+    error: `CI does not qualify this commit. The workflow passed. The CI Required job is missing. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
+    name: "links to the attempt without repeating an unknown job conclusion",
+    jobs: [{ ...sourceJob, conclusion: "untrusted feedback\non a second line" }],
+    error: genericRefusal,
+    calls: 5,
+  },
+  {
+    name: "withholds the diagnosis when the workflow identity changes after a failure",
+    initialRun: failedRun,
+    currentRun: { ...failedRun, workflow_id: 999 },
+    error: genericRefusal,
+    calls: 5,
+  },
+  {
+    name: "reports cancellation without treating a cancelled job as a test failure",
+    initialRun: { ...sourceRun, conclusion: "cancelled" },
+    currentRun: { ...sourceRun, conclusion: "cancelled" },
+    jobs: [{ ...sourceJob, conclusion: "cancelled" }],
+    error: `CI does not qualify this commit. The workflow was cancelled. The CI Required job was cancelled. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
+    name: "links to the attempt without reporting a conflicting workflow conclusion",
+    currentRun: failedRun,
+    error: genericRefusal,
+    calls: 5,
   },
   {
     name: "refuses a job from another attempt",
-    job: { ...sourceJob, run_attempt: 1 },
+    jobs: [{ ...sourceJob, run_attempt: 1 }],
     error: /CI jobs do not match the completed source and attempt/,
-    discardAfterJobs: true,
+    calls: 4,
   },
 ]) {
   test(`container source ${scenario.name}`, async (t) => {
     const directory = await temporaryDirectory(t, "oce-container-source-");
     const calls = join(directory, "calls");
+    const jobs = scenario.jobs ?? [sourceJob];
+    // The API stand-in can change either identity between the two reads.
     const replies: [string, unknown][] = [
-      ["git/ref/heads/main", mainRef],
+      ["git/ref/heads/main", scenario.initialTip ?? mainRef],
       ["actions/workflows/ci.yml", sourceWorkflow],
-      [runsPath, { total_count: 1, workflow_runs: [sourceRun] }],
-      [jobsPath, { total_count: 1, jobs: [scenario.job ?? sourceJob] }],
+      [runsPath, { total_count: 1, workflow_runs: [scenario.initialRun ?? sourceRun] }],
+      [jobsPath, { total_count: jobs.length, jobs }],
+      [runsPath, { total_count: 1, workflow_runs: [scenario.currentRun ?? sourceRun] }],
+      ["git/ref/heads/main", scenario.tip ?? mainRef],
     ];
-    // The API stand-in changes its observations between the two reads. The
-    // real CLI must refuse to emit release inputs if either identity changed.
-    if (!scenario.discardAfterJobs) {
-      replies.push([
-        runsPath,
-        { total_count: 1, workflow_runs: [scenario.currentRun ?? sourceRun] },
-      ]);
-    }
-    if (!scenario.error || scenario.tip) {
-      replies.push(["git/ref/heads/main", scenario.tip ?? mainRef]);
-    }
     const cases = replies.map(
       ([path, response], index) =>
         `${index}) expected='repos/${repository}/${path}'; response='${JSON.stringify(response)}' ;;`,
@@ -721,12 +789,12 @@ for (const scenario of [
       [
         "count=0",
         'if [ -f "$CALLS" ]; then read -r count < "$CALLS"; fi',
+        'printf "%s\\n" "$((count + 1))" > "$CALLS"',
         'case "$count" in',
         ...cases,
         "*) exit 1 ;;",
         "esac",
         '[ "$#" -eq 6 ] && [ "$*" = "api --hostname github.com --method GET $expected" ] || exit 1',
-        'printf "%s\\n" "$((count + 1))" > "$CALLS"',
         'printf "%s\\n" "$response"',
       ].join("\n"),
     );
@@ -735,12 +803,16 @@ for (const scenario of [
       encoding: "utf8",
       env: { PATH: directory, CALLS: calls },
     });
-    assert.equal(await readFile(calls, "utf8"), `${replies.length}\n`);
+    assert.equal(await readFile(calls, "utf8"), `${scenario.calls}\n`);
     assert.ifError(result.error);
     if (scenario.error) {
       assert.equal(result.status, 1);
       assert.equal(result.stdout, "");
-      assert.match(result.stderr, scenario.error);
+      if (typeof scenario.error === "string") {
+        assert.equal(result.stderr, scenario.error);
+      } else {
+        assert.match(result.stderr, scenario.error);
+      }
       assert.equal(result.stderr.trimEnd().split("\n").length, 1);
     } else {
       assert.equal(result.status, 0);
@@ -1473,6 +1545,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     const output = join(directory, name);
     const env = {
       ...process.env,
+      GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/main`,
       GITHUB_OUTPUT: join(output, "outputs"),
       IMAGE: "runtime",
       SOURCE_SHA: sourceSha,

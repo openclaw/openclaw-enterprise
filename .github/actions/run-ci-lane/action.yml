@@ -204,8 +204,8 @@ runs:
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
       id: setup-go
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'images-packaging' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'k3d-fixture-configuration' || inputs.lane == 'k3d-observability' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'helper-timeout' || inputs.lane == 'qa-matrix' || inputs.lane == 'images-packaging' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'k3d-fixture-configuration' || inputs.lane == 'k3d-observability' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
       with:
         go-version-file: go.mod
         cache: ${{ inputs.lane != 'checks-browser' }}
@@ -432,8 +432,9 @@ runs:
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
           selection=(--file "$CI_SELECTED_TEST_FILE")
         fi
-        if [[ "${{ inputs.lane }}" == checks-baseline-1 && -z "$CI_SELECTED_TEST_FILE" ]]; then
-          # These three dev-up files run in separate processes and use the same CLI.
+        if [[ "${{ inputs.lane }}" == helper-timeout ||
+          ( "${{ inputs.lane }}" == checks-baseline-1 && -z "$CI_SELECTED_TEST_FILE" ) ]]; then
+          # Keep the build outside the helper timeout test and share it across baseline-1 dev-up files.
           dev_up_cli_dir=$(mktemp -d "$RUNNER_TEMP/oce-dev-up-cli.XXXXXX")
           trap 'rm -rf -- "$dev_up_cli_dir"' EXIT
           go build -o "$dev_up_cli_dir/occ" ./cmd/occ

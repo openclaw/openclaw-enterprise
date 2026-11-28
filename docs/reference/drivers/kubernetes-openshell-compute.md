@@ -34,8 +34,9 @@ drivers:
           readOnly: false
 ```
 
-Keep the Sandbox and Credential Gateway members on the same Backend and set an
-OpenShell endpoint reachable from the OCE namespace. `legacy` is the default.
+List the Sandbox Driver on the OpenShell Backend and set an endpoint reachable
+from the OCE Namespace. Use TokenService and its paired native Credential Proxy
+for managed Sources. `legacy` is the default OpenShell integration mode.
 Both modes keep the configured Compute Driver ID and use `occ/kubernetes`.
 The Compute schema rejects the removed `managedOpenShell` block.
 
@@ -49,6 +50,15 @@ deployment. Configure the OpenShell gateway's workspace mode independently.
 The workspace node uses the [Envoy route](../gateway-routing.md#native-node-endpoint).
 The Gateway admits the Envoy Pods, and activation removes obsolete direct
 workspace-node policies. Separate-cluster connectivity remains unqualified.
+
+Set `server.workspaceStorageClass` in the OpenShell Helm values to select the
+StorageClass for Sandbox workspace volumes. When the workspace StorageClass is
+unset, Kubernetes uses the cluster default.
+
+In a fresh Dedicated OpenClaw Sandbox, run `stat -c '%a %n' /sandbox` after
+Kubernetes applies `fsGroup`. Mode `2777` fails the
+[worker's storage permissions check](#lifecycle-and-retained-files) because it lacks
+the sticky bit.
 
 For an OpenShell-managed namespace, allow its supervisor Pods to reach both
 the OpenShell gateway (TCP 8080) and the Envoy HTTPS listener (default target
@@ -148,16 +158,14 @@ failure handling.
   workspace path; no mount using them is submitted to OpenShell.
 - Changing the Harness type, static policy, non-Git middleware bindings, or resource
   requests or limits through workload replacement is refused.
-- Agents can enable or disable Git and change repository selections and resolved
-  permissions between revisions. Cleanup closes the old authorization and removes
-  its Provider and middleware before preparing the successor. Enabling Git requires
-  a stopped predecessor with no remaining Git authority and a durable route store.
-  Disabling Git removes its launch environment and enrollment configuration; files
-  already fetched remain in the workspace. Profile changes that alter static
-  filesystem policy, restart policy or non-Git middleware remain unsupported.
-  Revoke any standing approval before changing its bound repository.
-  [Live Git replacement verification](../../testing/openshell-git-replacement.md)
-  requires configured GitHub access and records the tested scope.
+- For [Source-backed Git](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent),
+  use dedicated Codex. Stop an active Agent before deploying changes to managed
+  credential delivery. To remove Git from a running Agent, clear its saved
+  repository selection and verify withdrawal. Files already fetched remain in
+  the workspace. See [native Git proof](https://github.com/openclaw/openclaw-enterprise/pull/7224).
+- For [prepared Git](../repository-credentials/protected-openshell-git.md), retire
+  the previous route and any standing approval before changing the bound
+  repository. Its protected sender requires its own durable route store.
 - Replacement relies on one OCE worker and OpenShell's serialized lifecycle
   operations. See [stop and replacement ordering](../../flows/openshell-managed-workload.md#stop-and-replacement-ordering)
   for the cancellation argument. Provider credential mutations and exposure

@@ -39,7 +39,7 @@ import {
 } from "./list.mjs";
 import { NAME_MAX_CHARACTERS, namespaceNameProblem } from "../namespaces.mjs";
 import { createRequestTurns, type RequestInTurn } from "../request-turns.mjs";
-import { secretValueControl } from "../secrets.mjs";
+import { credentialValueControl } from "../credential-value.mjs";
 
 // A preview can show an existing reference without a live Namespace or request function.
 type SecretContext = Partial<AgentAccessContext> & {
@@ -960,7 +960,7 @@ export function createSecretReferenceField({
     name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
     // The Secrets page's value control: a multiline value is kept exactly, and a value the API
     // would refuse is named under the field before any request.
-    const { value, reveal, multiline } = secretValueControl(`create-${id}-value`);
+    const { value, reveal, multiline } = credentialValueControl(`create-${id}-value`);
     const valueField = formField({
       label: "Value",
       control: value,
