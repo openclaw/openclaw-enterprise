@@ -15,14 +15,17 @@ import {
   publishPostgresImage,
   smokeBakeDefinition,
   smokeImageEnvironment,
+  smokeSlotNames,
 } from "../../scripts/ci/first-agent-smoke.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 
 export function registerImageCases() {
+  const { registry, model } = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+  const revision = "0123456789abcdef0123456789abcdef01234567";
   const bakeInput = {
-    revision: "0123456789abcdef0123456789abcdef01234567",
-    controllerTag: "127.0.0.1:5000/oce-smoke/controller:0123456789abcdef0123456789abcdef01234567",
-    smokeRuntimeTag: "127.0.0.1:5000/oce-smoke/runtime:0123456789abcdef0123456789abcdef01234567",
+    revision,
+    controllerTag: `${registry}/oce-smoke/controller:${revision}`,
+    smokeRuntimeTag: `${registry}/oce-smoke/runtime:${revision}`,
     context: "/work/runtime-trust",
     providerContext: "/work/provider-image",
     nodeRuntimeBaseImage: `docker.io/library/node:24.22.1-bookworm-slim@sha256:${"a".repeat(64)}`,
@@ -59,7 +62,7 @@ export function registerImageCases() {
       context: "/work/provider-image",
       contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
       args: { NODE_RUNTIME_BASE_IMAGE: bakeInput.nodeRuntimeBaseImage },
-      output: [`type=docker,name=oce-first-agent-smoke-model-provider:${bakeInput.revision}`],
+      output: [`type=docker,name=${model}-provider:${bakeInput.revision}`],
     });
     for (const definition of Object.values(target)) {
       for (const output of "output" in definition ? definition.output : []) {
@@ -138,8 +141,8 @@ export function registerImageCases() {
       "smoke-provider": { "containerimage.config.digest": digest("3") },
     };
     assert.deepEqual(bakeReferences(metadata, bakeInput), [
-      `127.0.0.1:5000/oce-smoke/controller@${digest("1")}`,
-      `127.0.0.1:5000/oce-smoke/runtime@${digest("2")}`,
+      `${registry}/oce-smoke/controller@${digest("1")}`,
+      `${registry}/oce-smoke/runtime@${digest("2")}`,
     ]);
     for (const name of ["smoke-controller", "smoke-runtime"] as const) {
       const incomplete = structuredClone(metadata);
@@ -157,10 +160,7 @@ export function registerImageCases() {
       }
     }
     // The provider runs by its per-slot, per-revision name, in either engine image store.
-    assert.equal(
-      providerImageTag(bakeInput.revision),
-      `oce-first-agent-smoke-model-provider:${bakeInput.revision}`,
-    );
+    assert.equal(providerImageTag(bakeInput.revision), `${model}-provider:${bakeInput.revision}`);
   });
 
   test("the provider image is the runtime's pinned Node base with only the runtime's ws package", async () => {
