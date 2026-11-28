@@ -492,11 +492,11 @@ controls:
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
   Upload screenshots and a short video as native GitHub attachments. Do not use
-  gists for PR evidence. Show the attachments in the PR's Verification section. Before and
+  gists for PR evidence. Show the attachments in the PR's Evidence section. Before and
   after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the
-  PR's Verification section. Embed media where supported; otherwise provide
+  PR's Evidence section. Embed media where supported; otherwise provide
   direct, reviewer-accessible links with captions. A local path or a claim that
   evidence exists is not a usable PR attachment.
   When no PR exists yet, deliver the evidence in the conversation and carry the
