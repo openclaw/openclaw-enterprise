@@ -62,10 +62,6 @@ import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   EMBEDDED_API_KEY_REQUIRED,
   unsupportedChannelRefusal,
-  unboundReferenceRefusal,
-  unreadableSlackTokenRefusal,
-  unsubstitutedFallbackRefusal,
-  unsubstitutedReferenceRefusal,
 } from "../helpers/refusal-text.mjs";
 import {
   tenant,
@@ -142,8 +138,10 @@ import {
   checkGatewayCredentialAggregateLimit,
   checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
+  checkSlackCredentialBindings,
   checkPodModelCredentialPlacement,
   checkStoppedRevisionCredentialCleanup,
+  createStagedCredentialRegistration,
 } from "./kubernetes-credential-delivery-cases.ts";
 import {
   checkDedicatedPredecessorPolicyRetirement,
@@ -342,90 +340,52 @@ test(
 );
 
 test("repository capability admits only configured Compute-owned native topologies", () => {
+  const repositoryCredentials = {
+    namespace: "repository-service",
+    podLabels: { app: "repository" },
+    port: 8443,
+  };
   const configured = options({
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-    network: {
-      ...options().network,
-      repositoryCredentials: {
-        namespace: "repository-service",
-        podLabels: { app: "repository" },
-        port: 8443,
-      },
-    },
+    network: { ...options().network, repositoryCredentials },
   });
+  // Construct every driver outside the refusal assertions: only validation may reject.
   const driver = new KubernetesComputeDriver(configured);
-  const dualCluster = new KubernetesComputeDriver({
-    ...configured,
-    gatewayRouting: {
-      hostname: "gateway.example.test",
-      gatewayName: "gateway",
-      gatewayNamespace: "system",
-      envoyNamespace: "envoy",
-    },
-    network: Object.fromEntries(
-      Object.entries(configured.network).filter(([key]) => key !== "gatewayClients"),
-    ),
-    executionCluster: {
-      authentication: {
-        mode: "kubeconfig",
-        kubeconfigPath: "/fixture/execution",
-        context: "execution",
-      },
-      harnessRouting: {
-        hostname: "harness.example.test",
-        gatewayName: "harness",
-        gatewayNamespace: "system",
-        envoyNamespace: "envoy",
-      },
-      network: {
-        dns: configured.network.dns,
-        harnessEndpointCidrs: ["192.0.2.2/32"],
-        gatewayEndpointCidrs: ["192.0.2.1/32"],
-        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
-      },
-    },
+  const { runtime: _runtime, ...withoutRuntime } = configured;
+  const noRuntime = new KubernetesComputeDriver(withoutRuntime);
+  const noEndpoint = new KubernetesComputeDriver({ ...configured, network: options().network });
+  const withSandbox = new KubernetesComputeDriver(configured, {
+    sandboxDriver: { id: "sandbox", implementation: "sandbox", capability: "sandbox" },
   });
-  assert.throws(
-    () => dualCluster.validateRepositoryCredentialSupport(),
-    /not supported by the experimental two-cluster profile/,
-  );
+  const routed = twoClusterOptions();
+  const dualCluster = new KubernetesComputeDriver({
+    ...routed,
+    network: { ...routed.network, repositoryCredentials },
+  });
+  assert.throws(() => dualCluster.validateRepositoryCredentialSupport(), {
+    message:
+      "Repository credential delivery is not supported by the experimental two-cluster profile.",
+  });
+
+  const unsupported = {
+    message:
+      "Repository credentials require a configured Kubernetes runtime and credential endpoint without a SandboxDriver.",
+  };
   for (const [id, mode] of [
     ["openclaw", "embedded"],
     ["codex", "dedicated"],
   ]) {
     const harness = { id, mode, version: "1.0.0" };
-    assert.doesNotThrow(() => driver.validateRepositoryCredentials(harness));
+    driver.validateRepositoryCredentials(harness);
     assert.throws(
       () => driver.validateRepositoryCredentials(harness, "selected-sandbox"),
-      /without a SandboxDriver/,
-    );
-    // Each Driver misses one prerequisite: a runtime, the credential endpoint, or the
-    // absence of a SandboxDriver.
-    const { runtime: _runtime, ...withoutRuntime } = configured;
-    const unsupported = {
-      message:
-        "Repository credentials require a configured Kubernetes runtime and credential endpoint without a SandboxDriver.",
-    };
-    assert.throws(
-      () => new KubernetesComputeDriver(withoutRuntime).validateRepositoryCredentials(harness),
       unsupported,
     );
-    assert.throws(
-      () =>
-        new KubernetesComputeDriver({
-          ...configured,
-          network: options().network,
-        }).validateRepositoryCredentials(harness),
-      unsupported,
-    );
-    const sandboxDriver = { id: "sandbox", implementation: "sandbox", capability: "sandbox" };
-    assert.throws(
-      () =>
-        new KubernetesComputeDriver(configured, { sandboxDriver }).validateRepositoryCredentials(
-          harness,
-        ),
-      { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
-    );
+    assert.throws(() => noRuntime.validateRepositoryCredentials(harness), unsupported);
+    assert.throws(() => noEndpoint.validateRepositoryCredentials(harness), unsupported);
+    assert.throws(() => withSandbox.validateRepositoryCredentials(harness), {
+      code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+    });
   }
   for (const [id, mode] of [
     ["codex", "embedded"],
@@ -789,31 +749,11 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
       return { state: "starting" };
     },
   };
-  const proxy = {
-    id: sandbox.id,
-    implementation: sandbox.implementation,
-    capability: "credential_proxy_delivery",
-    async deployProxy() {
-      return {};
-    },
+  const owner = createStagedCredentialRegistration(sandbox, {
     async configureDeployment() {
       assert.fail("Worker configures the credential binding");
     },
-    async getDeploymentStatus() {
-      return { state: "ready" };
-    },
-    async removeDeployment() {},
-  };
-  const owner = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
+  });
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver: sandbox,
     credentialDeliveryRegistration: owner,
@@ -850,7 +790,7 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
       },
       executionAdmission: { version: 8, mode: "standalone" },
       credentialDeployment: {
-        proxyDriverId: proxy.id,
+        proxyDriverId: owner.ref.id,
         driver: owner.ref,
         networkAccessPolicy: {
           allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
@@ -966,29 +906,9 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         requirements = context.requirements;
         throw captured;
       });
-      const proxy = {
-        id: sandbox.id,
-        implementation: sandbox.implementation,
-        capability: "credential_proxy_delivery",
-        async deployProxy() {
-          return {};
-        },
+      const registration = createStagedCredentialRegistration(sandbox, {
         async configureDeployment() {},
-        async getDeploymentStatus() {
-          return { state: "ready" };
-        },
-        async removeDeployment() {},
-      };
-      const registration = {
-        ref: {
-          id: sandbox.id,
-          implementation: sandbox.implementation,
-          configurationId: "a".repeat(64),
-        },
-        require(capability) {
-          return capability === "sandbox" ? sandbox : proxy;
-        },
-      };
+      });
       const auth = {
         method: "credential_source",
         sourceId: "cs_model",
@@ -1092,7 +1012,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
               repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
             },
             credentialDeployment: {
-              proxyDriverId: proxy.id,
+              proxyDriverId: registration.ref.id,
               driver: registration.ref,
               bindings: [model, repository],
               networkAccessPolicy: { allowed: [modelRequest, ...repositoryRequests] },
@@ -1327,33 +1247,14 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       return { state: "starting" };
     },
   };
-  const proxy = {
-    id: sandbox.id,
-    implementation: sandbox.implementation,
-    capability: "credential_proxy_delivery",
-    async deployProxy() {
-      return {};
-    },
+  const registration = createStagedCredentialRegistration(sandbox, {
     async configureDeployment() {
       assert.fail("Worker owns credential configuration");
-    },
-    async getDeploymentStatus() {
-      return { state: "ready" };
     },
     async removeDeployment(_context, removal) {
       removals.push(removal);
     },
-  };
-  const registration = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
+  });
   const harnessAuth = stagedAuth;
   const modelSource = {
     ...pluginSource,
@@ -1410,7 +1311,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       },
       executionAdmission: { version: 8, mode: "standalone" },
       credentialDeployment: {
-        proxyDriverId: proxy.id,
+        proxyDriverId: registration.ref.id,
         driver: registration.ref,
         networkAccessPolicy: {
           allowed: [
@@ -1472,19 +1373,18 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     driver.withdrawCredentialSource(revision, { ...pluginSource, namespaceId: "other" }, signal),
     { code: "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT" },
   );
+  assert.deepEqual(removals, []);
+  const removal = { targetRef: target, bindingRefs: [pluginBinding.bindingRef] };
   const withdrawn = { sourceId: pluginSource.id, state: "revoked" };
   assert.deepEqual(
     await driver.withdrawCredentialSource(revision, pluginSource, signal),
     withdrawn,
   );
+  assert.deepEqual(removals, [removal]);
   assert.deepEqual(
     await driver.withdrawCredentialSource(revision, pluginSource, signal, { recheck: true }),
     withdrawn,
   );
-  const removal = {
-    targetRef: target,
-    bindingRefs: [pluginBinding.bindingRef],
-  };
   assert.deepEqual(removals, [removal, removal]);
 
   // The trusted Worker omits the withdrawn optional binding on the next reconciliation.
@@ -1610,10 +1510,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       state.providerPod = undefined;
     },
   };
-  const proxyDriver = {
-    id: sandboxDriver.id,
-    implementation: sandboxDriver.implementation,
-    capability: "credential_proxy_delivery",
+  const selectedOwner = createStagedCredentialRegistration(sandboxDriver, {
     async deployProxy() {
       events.push("deploy-proxy");
       return {};
@@ -1643,17 +1540,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
         throw boundRemovalFailure;
       }
     },
-  };
-  const selectedOwner = {
-    ref: {
-      id: sandboxDriver.id,
-      implementation: sandboxDriver.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandboxDriver : proxyDriver;
-    },
-  };
+  });
   const context = {
     harnessAuth: auth,
     workspaceSetup: {
@@ -1682,7 +1569,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     },
     executionAdmission: { version: 8, mode: "standalone" },
     credentialDeployment: {
-      proxyDriverId: proxyDriver.id,
+      proxyDriverId: selectedOwner.ref.id,
       driver: selectedOwner.ref,
       networkAccessPolicy: {
         allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
@@ -1825,6 +1712,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   workspaceRefused = true;
   assert.equal((await prepare()).runtimeFailure.code, "WORKSPACE_SETUP_REFUSED");
   workspaceRefused = false;
+  const prepareStart = events.length;
   const prepared = await prepare();
   assert.equal(prepared.preparedForCredentialActivation, true);
   assert.ok(events.includes("workspace-setup"), "the ready Sandbox must initialize its workspace");
@@ -1839,9 +1727,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.ok(events.indexOf("network-status") < events.indexOf("apply-network"));
   assert.ok(events.indexOf("apply-network") < events.indexOf("proxy-ready"));
   assert.ok(events.indexOf("apply-network") < events.lastIndexOf("prepare-launch"));
-  assert.ok(events.indexOf("workspace-setup") < events.lastIndexOf("prepare-launch"));
-  assert.ok(events.lastIndexOf("network-status") < events.lastIndexOf("prepare-launch"));
-  assert.ok(events.lastIndexOf("proxy-status") < events.lastIndexOf("prepare-launch"));
+  const prepareEvents = events.slice(prepareStart);
+  const launch = prepareEvents.indexOf("prepare-launch");
+  for (const event of ["workspace-setup", "network-status", "proxy-status"]) {
+    const observed = prepareEvents.lastIndexOf(event);
+    assert.ok(observed >= 0, `successful preparation must record ${event}`);
+    assert.ok(observed < launch, `${event} must precede launch`);
+  }
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
   assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   assert.equal(events.filter((event) => event === "provision-idle").length, 1);
@@ -1914,6 +1806,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   // retains only the target ID so a later ordinary Stop can retry the removal.
   const targetName = driver.credentialDeploymentTargetName(revision);
   boundRemovalFailure = new Error("bound Proxy removal failed");
+  const stopStart = events.length;
   await assert.rejects(
     withYieldingComputeStop(() => driver.stopRevision(revision)),
     /bound Proxy removal failed/,
@@ -1921,9 +1814,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
   assert.deepEqual(removedTarget, targetRef);
   assert.equal(read("ConfigMap", targetName).data.sandboxId, targetRef.sandboxId);
-  assert.ok(events.lastIndexOf("sandbox-cleanup") < events.lastIndexOf("remove-bound"));
+  const cleanup = events.lastIndexOf("sandbox-cleanup");
+  assert.ok(cleanup >= stopStart, "this stop must clean up the Sandbox");
+  assert.ok(cleanup < events.indexOf("remove-bound", stopStart), "cleanup must precede removal");
   boundRemovalFailure = undefined;
+  removedTarget = undefined;
   await withYieldingComputeStop(() => driver.stopRevision(revision));
+  assert.deepEqual(removedTarget, targetRef);
   assert.equal(objects.has(key("ConfigMap", targetName)), false);
 });
 
@@ -5122,24 +5019,6 @@ test("native channel settings require readable Credential Source bindings", asyn
   };
   revision.configuration = createHarnessConfiguration("codex", "gpt-5");
   admitRevisionHarness(driver, revision);
-  const secretBindings = Object.freeze({
-    SLACK_APP_TOKEN: {
-      source: {
-        kind: "credential_source",
-        namespaceId: tenant.id,
-        id: "cs_00000000-0000-4000-8000-000000000001",
-      },
-      delivery: { type: "env" },
-    },
-    SLACK_BOT_TOKEN: {
-      source: {
-        kind: "credential_source",
-        namespaceId: tenant.id,
-        id: "cs_00000000-0000-4000-8000-000000000002",
-      },
-      delivery: { type: "env" },
-    },
-  });
 
   // Real Gateway/Harness projection and revocation run in the credentialed
   // Kubernetes workflow. This case checks credential-reference admission only.
@@ -5160,219 +5039,7 @@ test("native channel settings require readable Credential Source bindings", asyn
     { message: unsupportedChannelRefusal("channels.discord") },
   );
 
-  const slackToken = (botToken) => ({
-    agents: { defaults: { model: "codex/gpt-5" } },
-    channels: {
-      slack: {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken,
-      },
-    },
-  });
-  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
-
-  // A Configuration stored before the cutover cannot start another revision with a
-  // public Namespace Secret in a Slack credential field.
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
-        {
-          ...appBinding,
-          SLACK_BOT_TOKEN: {
-            source: {
-              kind: "secret",
-              namespaceId: tenant.id,
-              id: "sec_00000000-0000-4000-8000-000000000002",
-            },
-          },
-        },
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
-    },
-  );
-
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
-        { ...appBinding },
-      ),
-    // A row stored before Configuration save checked it: admission names the setting and the
-    // missing binding, as save does.
-    {
-      name: "ConfigurationHarnessError",
-      message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
-    },
-  );
-  // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
-  driver.validateHarnessAuth(
-    revision.harness,
-    revision.harnessAuth,
-    slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
-    null,
-  );
-  // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
-  // env SecretRef id that is not a plain name, or is longer than 32 characters, is quoted and
-  // shortened, so the message keeps its 256-character cap.
-  const unboundId = `constructor ${"x".repeat(300)}`;
-  for (const [id, shown] of [
-    ["constructor", "constructor"],
-    [unboundId, `"constructor ${"x".repeat(19)}…"`],
-    ["slack-bot", '"slack-bot"'],
-    ["SLACK_BOT_TOKEN_FOR_THE_WORKSPACE_ACCOUNT", '"SLACK_BOT_TOKEN_FOR_THE_WORKSPA…"'],
-  ]) {
-    const values = {
-      agents: { defaults: { model: "codex/gpt-5" } },
-      channels: {
-        slack: { accounts: { ops: { botToken: { source: "env", provider: "default", id } } } },
-      },
-    };
-    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, null);
-    assert.throws(
-      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, values, {}),
-      (error) => {
-        assert.equal(error.name, "ConfigurationHarnessError");
-        // A long name shortens the setting path to fit the cap.
-        assert.match(error.message, /^Configuration setting channels\.slack\.accounts/);
-        assert.ok(
-          error.message.endsWith(
-            ` references ${shown} without a Credential Source binding: bind ${shown} to a Credential Source in secretBindings, or remove the reference.`,
-          ),
-          error.message,
-        );
-        assert.ok(error.message.length <= 256, error.message);
-        return true;
-      },
-    );
-  }
-  // Admission reads a string as the runtime substitutes it (finding 2475): a reference anywhere
-  // in the text, or with a `:-fallback`, still needs a binding, since the fallback would replace
-  // the unset name. The `$${NAME}` escape is literal text.
-  // In a secret-input field such as botToken, a whole `$NAME` is an environment SecretRef too
-  // (finding 2476).
-  for (const botToken of [
-    "xoxb-${SLACK_BOT_TOKEN}",
-    "${SLACK_BOT_TOKEN:-}",
-    "${SLACK_APP_TOKEN}${SLACK_BOT_TOKEN:-xoxb-fallback}",
-    " $SLACK_BOT_TOKEN ",
-  ]) {
-    assert.throws(
-      () =>
-        driver.validateHarnessAuth(
-          revision.harness,
-          revision.harnessAuth,
-          slackToken(botToken),
-          appBinding,
-        ),
-      {
-        name: "ConfigurationHarnessError",
-        message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
-      },
-      botToken,
-    );
-  }
-  for (const botToken of ["xoxb-$${SLACK_BOT_TOKEN}", "$SLACK_APP_TOKEN"]) {
-    driver.validateHarnessAuth(
-      revision.harness,
-      revision.harnessAuth,
-      slackToken(botToken),
-      appBinding,
-    );
-  }
-  // A `${` the runtime does not substitute would reach Slack as written: a secret-input field
-  // refuses it whatever the bindings hold (finding 2477). That text may be the token itself, so
-  // the message shows it only as a plain `${name}`, or only the name of `${NAME-text}`; the
-  // message is also the deployment diagnostic.
-  const token = "xoxb-1234567890-0987654321-AbCdEfGhIjKl";
-  const tokenForm = unsubstitutedReferenceRefusal("channels.slack.botToken");
-  for (const [botToken, message] of [
-    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
-    [
-      "${SLACK_BOT_TOKEN-xoxb-fallback}",
-      unsubstitutedFallbackRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
-    ],
-    [`\${${token}}`, tokenForm],
-    [`\${${token}`, tokenForm],
-    // An identifier-shaped token: only a lowercase name is shown (finding 2485).
-    ["${Zr9kq2LmP4xT7vB1nW3c}", tokenForm],
-    ["${Zr9kq2LmP4xT7vB1n1234567890}", tokenForm],
-  ]) {
-    assert.throws(
-      () =>
-        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackToken(botToken), {
-          ...appBinding,
-          slack_bot: secretBindings.SLACK_BOT_TOKEN,
-          SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
-        }),
-      (error) => {
-        assert.equal(error.name, "ConfigurationHarnessError");
-        assert.equal(error.message, message, botToken);
-        assert.equal(error.message.includes("1234567890"), false, botToken);
-        return true;
-      },
-    );
-  }
-  // Named Slack accounts have the same secret-input fields, nested `relay.authToken` included.
-  const slackAccount = (account) => ({
-    agents: { defaults: { model: "codex/gpt-5" } },
-    channels: { slack: { accounts: { ops: account } } },
-  });
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackAccount({ botToken: "$OPS_BOT" }),
-        {},
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: unboundReferenceRefusal("channels.slack.accounts.ops.botToken", "OPS_BOT"),
-    },
-  );
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackAccount({ relay: { authToken: "${relay}" } }),
-        {},
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: unsubstitutedReferenceRefusal(
-        "channels.slack.accounts.ops.relay.authToken",
-        "${relay}",
-      ),
-    },
-  );
-  // Admission refuses a Slack token SecretRef the Slack Channel Driver cannot read, as save does
-  // (finding 2514).
-  assert.throws(
-    () =>
-      driver.validateHarnessAuth(
-        revision.harness,
-        revision.harnessAuth,
-        slackAccount({ botToken: { source: "file", provider: "default", id: "/run/slack/bot" } }),
-        {},
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: unreadableSlackTokenRefusal("channels.slack.accounts.ops.botToken", "secretRef"),
-    },
-  );
-  // Outside a secret-input field the runtime keeps `$NAME` and other `${` text as written, and a
-  // `:-fallback` fills an unset name, so none of them needs a binding.
-  for (const name of ["$OPS", "${x}", "${OPS_NAME:-ops}"]) {
-    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, slackAccount({ name }), {});
-  }
+  checkSlackCredentialBindings(driver, revision);
 });
 
 test(

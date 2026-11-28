@@ -1,7 +1,12 @@
 import type {
   AgentRevision,
   ComputeRevisionContext,
+  CredentialProxyDriver,
   HarnessAuthSnapshot,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+  SandboxDriver,
+  SecretBindings,
 } from "../../packages/contracts/src/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
@@ -32,11 +37,54 @@ import {
   resourceRecord,
   resourceRecords,
 } from "../helpers/kubernetes-rendered-resources.ts";
+import {
+  unboundReferenceRefusal,
+  unreadableSlackTokenRefusal,
+  unsubstitutedFallbackRefusal,
+  unsubstitutedReferenceRefusal,
+} from "../helpers/refusal-text.mjs";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type Deployment = Awaited<
   ReturnType<InstanceType<KubernetesSdk["AppsV1Api"]>["readNamespacedDeployment"]>
 >;
+
+type StagedProxyCalls = Pick<
+  CredentialProxyDriver,
+  "deployProxy" | "getDeploymentStatus" | "removeDeployment"
+>;
+
+export function createStagedCredentialRegistration<
+  Sandbox extends Pick<SandboxDriver, "id" | "implementation">,
+>(
+  sandbox: Sandbox,
+  overrides: Partial<StagedProxyCalls> & {
+    configureDeployment(
+      ...args: Parameters<CredentialProxyDriver["configureDeployment"]>
+    ): Promise<void>;
+  },
+) {
+  const { id, implementation } = sandbox;
+  const proxy = {
+    id,
+    implementation,
+    capability: "credential_proxy_delivery" as const,
+    async deployProxy() {
+      return {};
+    },
+    async getDeploymentStatus(): ReturnType<CredentialProxyDriver["getDeploymentStatus"]> {
+      return { state: "ready" };
+    },
+    async removeDeployment() {},
+    ...overrides,
+  };
+  return {
+    ref: { id, implementation, configurationId: "a".repeat(64) },
+    require(capability: "sandbox" | "credential_proxy_delivery") {
+      return capability === "sandbox" ? sandbox : proxy;
+    },
+  };
+}
 
 export function checkExactAccountTokenEgress() {
   const driver = createKubernetesComputeDriver(
@@ -579,4 +627,164 @@ export async function checkStoppedRevisionCredentialCleanup(embedded: boolean) {
   );
   await driver.prepareRevision(revision, context);
   assert.ok(revisionScoped().includes(credentialCopy));
+}
+
+export function checkSlackCredentialBindings(
+  driver: Pick<KubernetesComputeDriver, "validateHarnessAuth">,
+  revision: Pick<AgentRevision, "harness" | "harnessAuth">,
+) {
+  const credentialSourceBinding = (id: string): SecretBindings[string] => ({
+    source: { kind: "credential_source", namespaceId: tenant.id, id },
+    delivery: { type: "env" },
+  });
+  const secretBindings = Object.freeze({
+    SLACK_APP_TOKEN: credentialSourceBinding("cs_00000000-0000-4000-8000-000000000001"),
+    SLACK_BOT_TOKEN: credentialSourceBinding("cs_00000000-0000-4000-8000-000000000002"),
+  });
+
+  const channelConfiguration = (channels: OpenClawConfigurationDocument) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels,
+  });
+  function validate(configuration: OpenClawConfigurationDocument, bindings: SecretBindings | null) {
+    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, configuration, bindings);
+  }
+  const envRef = (id: string) => ({ source: "env", provider: "default", id });
+  const slackToken = (botToken: OpenClawConfigurationValue) =>
+    channelConfiguration({ slack: { appToken: envRef("SLACK_APP_TOKEN"), botToken } });
+  const slackAccount = (account: OpenClawConfigurationDocument) =>
+    channelConfiguration({ slack: { accounts: { ops: account } } });
+  const slackConfig = slackToken(envRef("SLACK_BOT_TOKEN"));
+  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+  const unboundBotRefusal = {
+    name: "ConfigurationHarnessError",
+    message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
+  };
+
+  // A stored Configuration may still bind a Namespace Secret. Its presence cannot
+  // satisfy a Slack token reference that requires a Credential Source.
+  assert.throws(
+    () =>
+      validate(slackConfig, {
+        ...appBinding,
+        SLACK_BOT_TOKEN: {
+          source: {
+            kind: "secret",
+            namespaceId: tenant.id,
+            id: "sec_00000000-0000-4000-8000-000000000002",
+          },
+        },
+      }),
+    unboundBotRefusal,
+  );
+  assert.throws(() => validate(slackConfig, appBinding), unboundBotRefusal);
+  assert.throws(() => validate(slackConfig, { SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN }), {
+    name: "ConfigurationHarnessError",
+    message: unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN"),
+  });
+  validate(slackConfig, secretBindings);
+  // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
+  validate(slackConfig, null);
+  // Inherited keys cannot satisfy a binding. Quote non-plain names and shorten long names
+  // without losing the setting path prefix or exceeding the diagnostic limit.
+  const unboundId = `constructor ${"x".repeat(300)}`;
+  for (const [id, shown] of [
+    ["constructor", "constructor"],
+    [unboundId, `"constructor ${"x".repeat(19)}…"`],
+    ["slack-bot", '"slack-bot"'],
+    ["SLACK_BOT_TOKEN_FOR_THE_WORKSPACE_ACCOUNT", '"SLACK_BOT_TOKEN_FOR_THE_WORKSPA…"'],
+  ] as const) {
+    const values = slackAccount({ botToken: envRef(id) });
+    validate(values, null);
+    assert.throws(
+      () => validate(values, {}),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "ConfigurationHarnessError");
+        // A long name shortens the setting path to fit the cap.
+        assert.match(error.message, /^Configuration setting channels\.slack\.accounts/);
+        assert.ok(
+          error.message.endsWith(
+            ` references ${shown} without a Credential Source binding: bind ${shown} to a Credential Source in secretBindings, or remove the reference.`,
+          ),
+          error.message,
+        );
+        assert.ok(error.message.length <= 256, error.message);
+        return true;
+      },
+    );
+  }
+  // Interpolation in any position (2475) and whole bare names in token fields (2476) need
+  // bindings, even with a fallback. An escaped interpolation is literal text.
+  for (const botToken of [
+    "xoxb-${SLACK_BOT_TOKEN}",
+    "${SLACK_BOT_TOKEN:-}",
+    "${SLACK_APP_TOKEN}${SLACK_BOT_TOKEN:-xoxb-fallback}",
+    " $SLACK_BOT_TOKEN ",
+  ]) {
+    assert.throws(() => validate(slackToken(botToken), appBinding), unboundBotRefusal, botToken);
+  }
+  for (const botToken of ["xoxb-$${SLACK_BOT_TOKEN}", "$SLACK_APP_TOKEN"]) {
+    validate(slackToken(botToken), appBinding);
+  }
+  // Malformed references reach the runtime as literal text (2477). Even when a binding is
+  // supplied, refuse them without disclosing a possible token in the deployment diagnostic.
+  const token = "xoxb-1234567890-0987654321-AbCdEfGhIjKl";
+  const tokenForm = unsubstitutedReferenceRefusal("channels.slack.botToken");
+  for (const [botToken, message] of [
+    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
+    [
+      "${SLACK_BOT_TOKEN-xoxb-fallback}",
+      unsubstitutedFallbackRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
+    ],
+    [`\${${token}}`, tokenForm],
+    [`\${${token}`, tokenForm],
+    // An identifier-shaped token: only a lowercase name is shown (finding 2485).
+    ["${Zr9kq2LmP4xT7vB1nW3c}", tokenForm],
+    ["${Zr9kq2LmP4xT7vB1n1234567890}", tokenForm],
+  ] as const) {
+    assert.throws(
+      () =>
+        validate(slackToken(botToken), {
+          ...appBinding,
+          slack_bot: secretBindings.SLACK_BOT_TOKEN,
+          SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "ConfigurationHarnessError");
+        assert.equal(error.message, message, botToken);
+        assert.equal(error.message.includes("1234567890"), false, botToken);
+        return true;
+      },
+    );
+  }
+  // Named Slack accounts have the same secret-input fields, nested `relay.authToken` included.
+  assert.throws(() => validate(slackAccount({ botToken: "$OPS_BOT" }), {}), {
+    name: "ConfigurationHarnessError",
+    message: unboundReferenceRefusal("channels.slack.accounts.ops.botToken", "OPS_BOT"),
+  });
+  assert.throws(() => validate(slackAccount({ relay: { authToken: "${relay}" } }), {}), {
+    name: "ConfigurationHarnessError",
+    message: unsubstitutedReferenceRefusal(
+      "channels.slack.accounts.ops.relay.authToken",
+      "${relay}",
+    ),
+  });
+  // Refuse sources the Slack Channel Driver cannot read, just as Configuration save does (2514).
+  assert.throws(
+    () =>
+      validate(
+        slackAccount({ botToken: { source: "file", provider: "default", id: "/run/slack/bot" } }),
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: unreadableSlackTokenRefusal("channels.slack.accounts.ops.botToken", "secretRef"),
+    },
+  );
+  // Ordinary text fields can contain literal names, malformed references or fallbacks.
+  for (const name of ["$OPS", "${x}", "${OPS_NAME:-ops}"]) {
+    validate(slackAccount({ name }), {});
+  }
 }
