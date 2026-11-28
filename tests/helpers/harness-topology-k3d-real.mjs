@@ -4989,9 +4989,10 @@ async function assertActualPublicGithubRead(topology) {
   );
   // The fresh, unbound Agent must discover the actual endpoint and obtain a
   // title absent from its prompt using the limited native proxy and Helm Service.
+  const sessionKey = "agent:main:read-public-pull";
   const answer = await requestDedicatedAgentTurn(
     topology,
-    "agent:main:read-public-pull",
+    sessionKey,
     "Use your credential-free public GitHub reader to read pull request 27 in known public repository example/public-project. " +
       "Request the single pull's detail, not a list. Return its exact title. Use no credentials or escalated execution.",
   );
@@ -4999,6 +5000,7 @@ async function assertActualPublicGithubRead(topology) {
     answer.includes(topology.publicGithubRead.marker),
     "the Agent did not return the provider's pull title",
   );
+  return sessionKey;
 }
 
 const nativeChildCommand = 'node -p "crypto.randomUUID()"';
@@ -7241,10 +7243,12 @@ export {
   assertStartupFailureDeploymentStatusDurable,
   assertUnauthorizedCodexSocket,
   assertUnboundSecretDeletion,
+  gatewayCall,
   hash,
   inspectProjectedIdentity,
   inspectWorkloadEnvironment,
   kubectl,
+  messageText,
   modelPrefix,
   requiresGatewayRouting,
   requiresNativeAdminRouting,
@@ -7256,5 +7260,6 @@ export {
   secretRotationProbe,
   storedSecret,
   waitFor,
+  waitForGatewayHistory,
   waitForReadyGatewayPod,
 };
