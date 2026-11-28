@@ -2726,8 +2726,8 @@ export async function renderAgentDetail(
     }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
-    const workspaceStripTop =
-      workspaceAvailabilityChanged && mountedTab?.id === "workspace" ? inUseTabStripTop() : null;
+    // A change in the serving version can move the heading above an in-use tab.
+    const stripTop = revisionChanged ? inUseTabStripTop() : null;
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -2762,9 +2762,7 @@ export async function renderAgentDetail(
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
     logsServingChange?.(servingChange());
-    // The panel can grow after a deployment notice shrank the page. Keep the tab in view at
-    // the position it occupied before this synchronous rebuild.
-    restoreTabStripTop(workspaceStripTop);
+    restoreTabStripTop(stripTop);
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
