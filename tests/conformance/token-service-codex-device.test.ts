@@ -3,8 +3,18 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import type {
+  CredentialSourceReference,
+  CredentialUpdateNotification,
+  ResolvedCredential,
+  TokenServiceSourceInstance,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   pollCodexDeviceAuthorization,
@@ -66,7 +76,10 @@ test("Codex device authorization validates issuer transport and grant fields", a
           // Native fetch refuses the redirect itself (redirect: "error").
           await assert.rejects(
             pollCodexDeviceAuthorization(login.privateState, signal),
-            (error) => error instanceof TypeError && error.cause?.message === "unexpected redirect",
+            (error) =>
+              error instanceof TypeError &&
+              error.cause instanceof Error &&
+              error.cause.message === "unexpected redirect",
           );
         }
       }
@@ -89,7 +102,7 @@ test("Codex device authorization validates issuer transport and grant fields", a
         chatgpt_plan_type: "business",
       },
     });
-    let tokenType = "Bearer";
+    let tokenType: string | undefined = "Bearer";
     const server = await startProviderServer(t, (request, response) => {
       request.resume();
       response.setHeader("content-type", "application/json");
@@ -154,26 +167,33 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const f = await createConsoleAppFixture(t, { state, secretDriver });
   await f.bootstrap();
   const namespace = await f.createNamespace("Codex refresh", { ready: true });
-  const deliveryEvents = [];
+  const deliveryEvents: {
+    notification: CredentialUpdateNotification;
+    credential: ResolvedCredential;
+  }[] = [];
   let deliveryFailure = false;
-  const delivery = {
-    async notifyCredentialUpdated(notification, resolveCredential, signal) {
-      signal.throwIfAborted();
-      deliveryEvents.push({ notification, credential: await resolveCredential() });
-      if (deliveryFailure) {
-        throw new Error("private delivery diagnostic");
-      }
-    },
+  const notify: OpenShellCredentialProxyDriver["notifyCredentialUpdated"] = async (
+    notification,
+    resolveCredential,
+    signal,
+  ) => {
+    signal.throwIfAborted();
+    deliveryEvents.push({ notification, credential: await resolveCredential() });
+    if (deliveryFailure) {
+      throw new Error("private delivery diagnostic");
+    }
   };
-  await installTokenServiceDriver(
-    f.controller,
-    {
-      installation: { drivers: { token_service: { id: "codex-refresh-owner" } } },
-      secretDriver,
-      credentialDeliveryRegistration: { require: () => delivery },
-    },
-    state,
-  );
+  const base = createCredentialProxyInstallationConfiguration();
+  const drivers = await loadInstallationFile(t, {
+    ...base,
+    drivers: { ...base.drivers, token_service: { id: "occ", configuration: {} } },
+  });
+  assert.ok(drivers);
+  const proxy = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
+  // Control only delivery; startup still selects the actual TokenService and registered Proxy.
+  t.mock.method(proxy, "notifyCredentialUpdated", notify);
+  await installTokenServiceDriver(f.controller, { ...drivers, secretDriver }, state);
   const owner = f.controller.selectedDriver("token_service");
   const instanceId = f.controller.currentTokenServiceInstanceId();
   const signal = AbortSignal.timeout(10_000);
@@ -189,7 +209,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     exp: renewedExpiry,
     "https://api.openai.com/auth": { chatgpt_account_id: "account-fixture" },
   });
-  const registerSource = (name, refreshToken, scopes = []) =>
+  const registerSource = (name: string, refreshToken: string, scopes: string[] = []) =>
     owner.createSource(
       {
         kind: "oauth_refresh_token",
@@ -214,20 +234,21 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     "openid",
     "profile",
   ]);
-  const sourceInstance = {
+  const sourceInstance: TokenServiceSourceInstance<CredentialSourceReference> = {
     sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
     tokenServiceInstanceId: instanceId,
   };
-  const received = [];
-  let replies = [];
-  const useIssuerReplies = (...next) => {
+  type IssuerReply = { status?: number; body: Record<string, unknown> };
+  const received: { contentType: string | undefined; body: unknown }[] = [];
+  let replies: IssuerReply[] = [];
+  const useIssuerReplies = (...next: IssuerReply[]) => {
     received.length = 0;
     replies = next;
   };
   const privateIssuerMessage = "provider diagnostic must remain private";
   const server = await startProviderServer(t, async (request, response) => {
     const raw = await readProviderRequestBody(request);
-    let body;
+    let body: unknown;
     try {
       body = JSON.parse(raw);
     } catch {
@@ -245,6 +266,14 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     new Set([BUILTIN_CODEX_OAUTH_PRESET.tokenUrl]),
     `http://127.0.0.1:${server.port}`,
   );
+
+  const issuerRequest = (index: number) => {
+    const request = received[index];
+    assert.ok(request, `expected issuer request at index ${index}`);
+    const body = asRecord(request.body);
+    assert.ok(body, "expected the issuer request to contain a JSON object");
+    return { contentType: request.contentType, body };
+  };
 
   // Codex supplies expiry in the access JWT rather than generic OAuth expires_in.
   useIssuerReplies(
@@ -272,7 +301,11 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const settled = await state.read(({ credentialSources }) =>
     credentialSources.findCredentialSource(namespace.id, source.id),
   );
+  assert.ok(
+    settled?.ownerCapability === "token_service" && settled.type === "oauth2-refresh-token",
+  );
   assert.deepEqual(settled.consent.grantedScopes, ["openid"]);
+  assert.equal(settled.consent.kind, "builtin_codex");
   assert.deepEqual(settled.consent.account, {
     accountId: "account-fixture",
     planType: "plus",
@@ -282,16 +315,18 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     !JSON.stringify(source).includes(initialRefresh),
     "the Source response has no refresh token",
   );
-  assert.match(received[0].contentType, /^application\/json(?:;|$)/i);
-  assert.deepEqual(Object.keys(received[0].body).sort(), [
+  const firstRequest = issuerRequest(0);
+  assert.ok(firstRequest.contentType);
+  assert.match(firstRequest.contentType, /^application\/json(?:;|$)/i);
+  assert.deepEqual(Object.keys(firstRequest.body).sort(), [
     "client_id",
     "grant_type",
     "refresh_token",
   ]);
-  assert.equal(received[0].body.grant_type, "refresh_token");
-  assert.equal(received[0].body.client_id, BUILTIN_CODEX_OAUTH_PRESET.clientId);
+  assert.equal(firstRequest.body.grant_type, "refresh_token");
+  assert.equal(firstRequest.body.client_id, BUILTIN_CODEX_OAUTH_PRESET.clientId);
   assert.ok(
-    received[0].body.refresh_token === initialRefresh,
+    firstRequest.body.refresh_token === initialRefresh,
     "the issuer receives the private grant from custody",
   );
 
@@ -307,7 +342,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   assert.equal(retained.expiresAt, access.expiresAt);
   assert.equal(retained.version, access.version);
   assert.ok(
-    received[1].body.refresh_token === rotatedRefresh,
+    issuerRequest(1).body.refresh_token === rotatedRefresh,
     "partial renewal consumes the rotated grant from custody",
   );
 
@@ -318,7 +353,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   assert.equal(refused.state, "failed");
   assert.equal(refused.failureCode, "invalid_access_token");
   assert.ok(
-    received[2].body.refresh_token === rotatedAgain,
+    issuerRequest(2).body.refresh_token === rotatedAgain,
     "renewal retained the partial grant rotation in custody",
   );
 
@@ -385,6 +420,9 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const unchanged = await state.read(({ credentialSources }) =>
     credentialSources.findCredentialSource(namespace.id, scopedSource.id),
   );
+  assert.ok(
+    unchanged?.ownerCapability === "token_service" && unchanged.type === "oauth2-refresh-token",
+  );
   assert.deepEqual(unchanged.consent.grantedScopes, ["openid", "profile"]);
   assert.equal(deliveryEvents.length, deliveriesBeforePartial, "no malformed grant is pushed");
   await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
@@ -413,13 +451,13 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const clientRetry = await owner.forceRefresh(clientInstance, signal);
   const pending = await owner.getRefreshStatus(clientRetry, signal);
   assert.equal(pending.state, "pending");
-  assert.equal(received[1].body.refresh_token, clientRefresh);
+  assert.equal(issuerRequest(1).body.refresh_token, clientRefresh);
   await assert.rejects(owner.resolveCredential(clientInstance, signal), {
     name: "ResourceStateConflictError",
   });
   const recovered = await owner.forceRefresh(clientInstance, signal);
   assert.equal((await owner.getRefreshStatus(recovered, signal)).state, "ready");
-  assert.equal(received[2].body.refresh_token, clientRotatedRefresh);
+  assert.equal(issuerRequest(2).body.refresh_token, clientRotatedRefresh);
 
   // Delivery cannot roll back an issuer rotation. A failed push retains the committed
   // grant and due schedule; retry pushes the same version without exchanging it again.
@@ -434,24 +472,26 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   };
   deliveryFailure = true;
   await assert.rejects(owner.forceRefresh(failedInstance, signal), (error) => {
+    assert.ok(error instanceof Error);
     assert.equal(error.name, "CredentialDeliveryFailedError");
     assert.ok(!error.message.includes("private delivery diagnostic"));
     return true;
   });
   const failedDelivery = deliveryEvents.at(-1);
+  assert.ok(failedDelivery);
   const due = await state.read((view) =>
     view.oauthCredentials.findTokenCustody(namespace.id, failedSource.id),
   );
-  assert.equal(due.due, true);
+  assert.equal(due?.due, true);
   const exchanges = received.length;
   deliveryFailure = false;
   await owner.forceRefresh(failedInstance, signal);
   assert.equal(received.length, exchanges, "delivery retry reuses committed custody");
-  assert.equal(deliveryEvents.at(-1).notification.version, failedDelivery.notification.version);
+  assert.equal(deliveryEvents.at(-1)?.notification.version, failedDelivery.notification.version);
   await owner.forceRefresh(failedInstance, signal);
-  assert.equal(received[1].body.refresh_token, rotatedAfterDeliveryFailure);
+  assert.equal(issuerRequest(1).body.refresh_token, rotatedAfterDeliveryFailure);
 });
 
-function jwt(payload) {
+function jwt(payload: Record<string, unknown>) {
   return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
 }
