@@ -89,6 +89,7 @@ import {
   canRetrySkippedBackendTurn,
   hasCachedRefreshToken,
   matchesShellCommand,
+  matchesToolToken,
   onlyMatchingCommand,
   selectBackendCommand,
   settledPolicyCommands,
@@ -97,7 +98,6 @@ import {
   openShellSettingsChange,
   observeSandboxProbe,
   observedTurn,
-  tokenEchoDigest,
   tokenEchoReply,
   createOpenShellWorkerLogEmitter,
   workerFailureDetail,
@@ -3970,12 +3970,11 @@ async function assertNonModelCredentialSource(topology) {
       b: tokenEchoReply(commands, toolB.url, secrets),
     };
   };
-  // Digests are compared, never shown; `shown` says what the command printed instead. A checked
-  // call whose output is not JSON fails in tokenEchoDigest.
+  // Compare only booleans so failures show the redacted command and output without the digests.
   const assertDelivered = (observed, tool, message) =>
-    assert.equal(tokenEchoDigest(observed) === tool.digest, true, `${message}: ${observed.shown}`);
+    assert.equal(matchesToolToken(observed, tool), true, `${message}: ${observed.shown}`);
   const assertWithheld = (observed, tool, message) =>
-    assert.equal(tokenEchoDigest(observed) === tool.digest, false, `${message}: ${observed.shown}`);
+    assert.equal(matchesToolToken(observed, tool), false, `${message}: ${observed.shown}`);
   const withdrawalPath = (tool) =>
     `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${tool.id}`;
   const readWithdrawal = async (tool) => {

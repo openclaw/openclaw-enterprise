@@ -12,6 +12,7 @@ import {
   codexTurnTrace,
   hasCachedRefreshToken,
   matchesShellCommand,
+  matchesToolToken,
   observeSandboxProbe,
   observedTurn,
   onlyMatchingCommand,
@@ -19,7 +20,6 @@ import {
   settledPolicyCommands,
   summarizeOtherBackendCommands,
   podFailureDiagnostic,
-  tokenEchoDigest,
   tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
@@ -965,83 +965,46 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
   const otherCompletion = event("completed", { ...unrelated.params.item, id: probe.id });
   const embedded = { ...scope, item: { id: probe.id, command: unrelated.params.item.command } };
   const conflictingApproval = { ...approval, params: { ...approval.params, ...embedded } };
+  const wrongCommand = { ...output, params: { ...output.params, command: "pwd" } };
+  const idApproval = { ...approval, params: { ...scope, itemId: probe.id } };
+  const nested = { ...approval, params: embedded };
+  const wrongId = { ...output, params: { ...output.params, itemId: "other" } };
+  const noId = { ...approval, params: scope };
+  const nestedId = { ...output, params: { ...output.params, item: { id: "other" } } };
+  const otherTurn = { ...output, params: { ...output.params, turnId: "elsewhere" } };
+  const otherThread = { ...approval, params: { ...approval.params, threadId: "elsewhere" } };
+  const mismatchedEnd = { ...end, params: { ...end.params, itemId: "other" } };
+  const unscoped = { turn: { status: "completed" } };
+  const wrongType = event("started", { ...probe, type: " " });
+  const pending = event("completed", { ...probe, exitCode: 52, status: "inProgress" });
   for (const [name, turns, expected, turnCompleted = terminal] of [
     ["orphan output", [[output]], "unknown"],
     ["approval without completion", [[approval]], "unknown"],
     ["approval and output settled by completion", [[approval, output, end]], "completed"],
-    [
-      "output names a different command",
-      [[{ ...output, params: { ...output.params, command: "pwd" } }, end]],
-      "unknown",
-    ],
-    [
-      "approval with only an item ID",
-      [[{ ...approval, params: { ...scope, itemId: probe.id } }, end]],
-      "completed",
-    ],
+    ["output names a different command", [[wrongCommand, end]], "unknown"],
+    ["approval with only an item ID", [[idApproval, end]], "completed"],
     ["probe approval followed by a different command", [[approval, otherCompletion]], "unknown"],
-    [
-      "embedded approval for a different command followed by the probe",
-      [[{ ...approval, params: embedded }, end]],
-      "unknown",
-    ],
+    ["embedded approval for a different command followed by the probe", [[nested, end]], "unknown"],
     ["only the direct approval command matches", [[conflictingApproval, end]], "unknown"],
     [
       "only the embedded approval command matches",
       [[conflictingApproval, otherCompletion]],
       "unknown",
     ],
-    [
-      "unsettled output alongside completed probe",
-      [[end, { ...output, params: { ...output.params, itemId: "other" } }]],
-      "unknown",
-    ],
-    [
-      "approval missing item ID alongside probe",
-      [[{ ...approval, params: scope }, end]],
-      "unknown",
-    ],
-    [
-      "contradictory item IDs",
-      [[{ ...output, params: { ...output.params, item: { id: "other" } } }, end]],
-      "unknown",
-    ],
-    [
-      "output from another turn",
-      [[{ ...output, params: { ...output.params, turnId: "elsewhere" } }], [end]],
-      "completed",
-    ],
-    [
-      "approval from another thread",
-      [[{ ...approval, params: { ...approval.params, threadId: "elsewhere" } }], [end]],
-      "completed",
-    ],
-    [
-      "completion disagrees with its own item ID",
-      [[{ ...end, params: { ...end.params, itemId: "other" } }]],
-      "unknown",
-    ],
-    [
-      "no terminal IDs to prove output foreign",
-      [[output]],
-      "unknown",
-      { turn: { status: "completed" } },
-    ],
+    ["unsettled output alongside completed probe", [[end, wrongId]], "unknown"],
+    ["approval missing item ID alongside probe", [[noId, end]], "unknown"],
+    ["contradictory item IDs", [[nestedId, end]], "unknown"],
+    ["output from another turn", [[otherTurn], [end]], "completed"],
+    ["approval from another thread", [[otherThread], [end]], "completed"],
+    ["completion disagrees with its own item ID", [[mismatchedEnd]], "unknown"],
+    ["no terminal IDs to prove output foreign", [[output]], "unknown", unscoped],
     ["split shell spelling, no completion", [[splitStart]], "unknown"],
     ["unsettled command before completed probe", [[otherStart, start, end]], "unknown"],
     ["unsettled command after completed probe", [[start, end, otherStart]], "unknown"],
     ["duplicate start", [[start, start, end]], "unknown"],
     ["duplicate completion", [[start, end, end]], "unknown"],
-    [
-      "blank item type alongside a completed probe",
-      [[event("started", { ...probe, type: " " }), end]],
-      "unknown",
-    ],
-    [
-      "nonterminal status despite an exit code",
-      [[start, event("completed", { ...probe, exitCode: 52, status: "inProgress" })]],
-      "unknown",
-    ],
+    ["blank item type alongside a completed probe", [[wrongType, end]], "unknown"],
+    ["nonterminal status despite an exit code", [[start, pending]], "unknown"],
     ["conflicting command for the same id", [[splitStart, end]], "unknown"],
     [
       "completed unrelated start, then probe",
@@ -1062,15 +1025,17 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
   ] as const) {
     await t.test(name, async () => {
       let calls = 0;
+      let lastTurn: ReturnType<typeof observedTurn> | undefined;
       const observation = observeSandboxProbe({
         nonce,
         traceSecrets: secrets,
         async requestTurn() {
           const events = turns[calls++];
           assert.ok(events, "must not send another turn after a possible probe effect");
-          return observedTurn({
+          lastTurn = observedTurn({
             items: [...events, { method: "turn/completed", params: turnCompleted }],
           });
+          return lastTurn;
         },
       });
       if (expected === "unknown") {
@@ -1081,7 +1046,8 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
           return true;
         });
       } else {
-        const { run, traces }: { run?: unknown; traces: string[] } = await observation;
+        const { result, run, traces } = await observation;
+        assert.ok(result === (expected === "completed" ? lastTurn : undefined), "wrong probe turn");
         assert.equal(run, expected === "completed" ? end.params.item : undefined);
         assert.equal(traces.length, expected === "completed" ? calls - 1 : calls);
       }
@@ -1103,6 +1069,7 @@ const echoCommand = (aggregatedOutput: string, exitCode = 0) => ({
   aggregatedOutput,
 });
 const sha256 = "a".repeat(64);
+const tool = { url: echoUrl, digest: sha256 };
 
 test("a token echo call that prints no JSON fails naming the command and its redacted output", () => {
   const output =
@@ -1118,7 +1085,7 @@ test("a token echo call that prints no JSON fails naming the command and its red
   assert.ok("unparsed" in reply && typeof reply.unparsed === "string");
   const unparsed = reply.unparsed;
   assert.throws(
-    () => tokenEchoDigest(reply),
+    () => matchesToolToken(reply, tool),
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal(error.name, "AssertionError");
@@ -1129,9 +1096,9 @@ test("a token echo call that prints no JSON fails naming the command and its red
       assert.match(error.message, /"digest":"\[sha256\]"/);
       assert.ok(error.message.length < 1_000, "the output start is bounded");
       for (const hidden of [syntheticToolToken, syntheticPlaceholder, sha256]) {
-        assert.equal(JSON.stringify(error).includes(hidden), false, hidden);
-        assert.equal(error.message.includes(hidden), false, hidden);
-        assert.equal(unparsed.includes(hidden), false, hidden);
+        assert.equal(JSON.stringify(error).includes(hidden), false, "must mask diagnostic values");
+        assert.equal(error.message.includes(hidden), false, "must mask diagnostic values");
+        assert.equal(unparsed.includes(hidden), false, "must mask diagnostic values");
       }
       return true;
     },
@@ -1140,37 +1107,54 @@ test("a token echo call that prints no JSON fails naming the command and its red
 });
 
 test("a token echo reply gives its digest, and OpenShell's refusal is shown without one", () => {
-  const echoed: unknown = tokenEchoReply(
-    [echoCommand(`{"path":"/tool-a","digest":"${sha256}","placeholder":false,"length":43}\n`)],
-    echoUrl,
-    echoSecrets,
-  );
-  assert.equal(tokenEchoDigest(echoed), sha256);
-  assert.ok(
-    typeof echoed === "object" &&
-      echoed !== null &&
-      "shown" in echoed &&
-      typeof echoed.shown === "string",
-  );
-  assert.equal(echoed.shown.includes(sha256), false, "digests are compared, never shown");
-  const refused = tokenEchoReply(
-    [
-      echoCommand(
-        '{"error":"credential_unavailable","message":"Credential placeholder could not be resolved"}',
-      ),
-    ],
-    echoUrl,
-    echoSecrets,
-  );
-  assert.equal(tokenEchoDigest(refused), undefined);
+  const echo = { path: "/tool-a", digest: sha256, placeholder: false, length: 43 };
+  const refusal = {
+    error: "credential_unavailable",
+    message: "Credential placeholder could not be resolved",
+  };
+  const command = (body: object) => echoCommand(`${JSON.stringify(body)}\n`);
+  const read = (body: object) => tokenEchoReply([command(body)], echoUrl, echoSecrets);
+  const delivered = command(echo);
+  const denied = command(refusal);
+  for (const pair of [
+    [delivered, denied],
+    [denied, delivered],
+  ]) {
+    assert.throws(() => tokenEchoReply(pair, echoUrl, echoSecrets), {
+      message: "multiple matching command completions",
+    });
+  }
+  for (const invalid of [{}, { command: [echoUrl] }]) {
+    assert.throws(() => tokenEchoReply([invalid], echoUrl, echoSecrets), /the Harness must call/);
+  }
+
+  const echoed = read(echo);
+  const refused = read(refusal);
+  for (const reply of [echoed, refused]) {
+    assert.ok(typeof reply === "object" && reply !== null && typeof reply.shown === "string");
+    assert.equal(reply.shown.includes(sha256), false, "digests are compared, never shown");
+  }
+  assert.equal(matchesToolToken(echoed, tool), true);
+  assert.equal(matchesToolToken(refused, tool), false);
   assert.equal(hasCachedRefreshToken(refused, "/tool-a", 100), false);
-  assert.ok(
-    typeof refused === "object" &&
-      refused !== null &&
-      "shown" in refused &&
-      typeof refused.shown === "string",
-  );
   assert.match(refused.shown, /\(exit 0\) printed \{"error":"credential_unavailable"/);
+
+  // A complete echo with a different digest rules out delivery of this particular token.
+  assert.equal(matchesToolToken(read({ ...echo, digest: "b".repeat(64) }), tool), false);
+  for (const invalid of [
+    {},
+    { status: "unavailable" },
+    { ...echo, length: undefined },
+    { ...echo, path: "/other" },
+  ]) {
+    assert.throws(() => matchesToolToken(read(invalid), tool), /expected path and echo fields/);
+  }
+  for (const invalid of [
+    { ...refusal, error: "other" },
+    { ...refusal, ...echo },
+  ]) {
+    assert.throws(() => matchesToolToken(read(invalid), tool), /unrecognized refusal/);
+  }
 });
 
 test("the refresh epoch waits only for an old token and requires evidence of its loss", () => {

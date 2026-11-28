@@ -1137,7 +1137,7 @@ export function tokenEchoReply(
   url: string,
   secrets: Secrets,
 ): EchoReply {
-  const echo = commands.find(({ command }) => String(command).includes(url));
+  const echo = onlyMatchingCommand(commands, (command) => command.includes(url));
   assert.ok(echo, `the Harness must call ${url}`);
   const output = String(echo.aggregatedOutput ?? "").trim();
   const printed = output.length === 0 ? "nothing" : shownEchoText(output, secrets, echoShownChars);
@@ -1157,18 +1157,41 @@ export function tokenEchoReply(
   return { ...reply, shown };
 }
 
-/**
- * The digest in a token echo reply. Output that is not the echo's or OpenShell's JSON fails
- * here, naming the command and what it printed (finding 2281: a curl error or two merged
- * commands read as digest `undefined`). JSON without a digest, such as OpenShell's credential
- * refusal, gives `undefined`, for the caller to judge with `reply.shown` in its message.
- */
-export function tokenEchoDigest(reply: unknown): string | undefined {
-  const value = asRecord(reply);
-  if (value?.unparsed !== undefined) {
-    assert.fail(`the token echo call must print JSON: ${value.shown}`);
+function readTokenEcho(
+  reply: EchoReply,
+  expectedPath: string,
+  call: "refresh token" | "token echo",
+) {
+  if (reply.error !== undefined) {
+    // Recognize the recorded refusal. A different error or a mix of refusal and echo fields
+    // is inconclusive. Do not include an arbitrary error body in the assertion.
+    assert.ok(
+      reply.error === "credential_unavailable" &&
+        typeof reply.message === "string" &&
+        reply.message.trim() !== "" &&
+        Object.keys(reply).every((key) => ["error", "message", "shown"].includes(key)),
+      `the ${call} call returned an unrecognized refusal`,
+    );
+    return undefined;
   }
-  return typeof value?.digest === "string" ? value.digest : undefined;
+  assert.ok(
+    reply.path === expectedPath &&
+      typeof reply.digest === "string" &&
+      /^[0-9a-f]{64}$/u.test(reply.digest) &&
+      typeof reply.placeholder === "boolean" &&
+      isBoundedInteger(reply.length, Number.MAX_SAFE_INTEGER),
+    `the ${call} call must return the expected path and echo fields`,
+  );
+  return { digest: reply.digest, placeholder: reply.placeholder, length: reply.length };
+}
+
+export function matchesToolToken(reply: EchoReply, tool: { url: string; digest: string }): boolean {
+  if (reply.unparsed !== undefined) {
+    assert.fail(`the token echo call must print JSON: ${reply.shown}`);
+  }
+  const url = new URL(tool.url);
+  const echo = readTokenEcho(reply, url.pathname + url.search, "token echo");
+  return echo !== undefined && echo.digest === tool.digest;
 }
 
 /** Only a recognized refusal or a reply from the expected echo can establish token loss. */
@@ -1178,27 +1201,8 @@ export function hasCachedRefreshToken(
   reconfiguredAt: number,
 ): boolean {
   assert.ok(reply.unparsed === undefined, "the refresh token echo must print one JSON object");
-  if (reply.error !== undefined) {
-    // Recognize the recorded refusal. A different error or a mix of refusal and echo fields
-    // is inconclusive. Do not include an arbitrary error body in the assertion.
-    assert.ok(
-      reply.error === "credential_unavailable" &&
-        typeof reply.message === "string" &&
-        reply.message.trim() !== "" &&
-        Object.keys(reply).every((key) => ["error", "message", "shown"].includes(key)),
-      "the refresh token call returned an unrecognized refusal",
-    );
-    return false;
-  }
-  assert.ok(
-    reply.path === expectedPath &&
-      typeof reply.digest === "string" &&
-      /^[0-9a-f]{64}$/u.test(reply.digest) &&
-      typeof reply.placeholder === "boolean" &&
-      isBoundedInteger(reply.length, Number.MAX_SAFE_INTEGER),
-    "the refresh token call must return the expected path and echo fields",
-  );
-  if (reply.jwt === undefined) {
+  const echo = readTokenEcho(reply, expectedPath, "refresh token");
+  if (!echo || reply.jwt === undefined) {
     return false;
   }
   const jwt = asRecord(reply.jwt);
@@ -1207,10 +1211,7 @@ export function hasCachedRefreshToken(
     return false;
   }
   assert.ok(
-    !reply.placeholder &&
-      reply.length > 0 &&
-      typeof jwt.iat === "number" &&
-      Number.isFinite(jwt.iat),
+    !echo.placeholder && echo.length > 0 && typeof jwt.iat === "number" && Number.isFinite(jwt.iat),
     "a valid JWT must arrive substituted and have a numeric issue time",
   );
   assert.ok(
