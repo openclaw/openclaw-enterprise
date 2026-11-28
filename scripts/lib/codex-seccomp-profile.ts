@@ -123,6 +123,7 @@ interface SeccompArgument {
   index: number;
   op: string;
   value: number;
+  valueTwo?: number;
 }
 
 interface SeccompRule {
@@ -350,14 +351,64 @@ function validateRuntimeDefaultSeccompProfile(
   );
 }
 
+function seccompArgumentMatches({ op, value, valueTwo = 0 }: SeccompArgument, actual: number) {
+  switch (op) {
+    case "SCMP_CMP_NE":
+      return actual !== value;
+    case "SCMP_CMP_LT":
+      return actual < value;
+    case "SCMP_CMP_LE":
+      return actual <= value;
+    case "SCMP_CMP_EQ":
+      return actual === value;
+    case "SCMP_CMP_GE":
+      return actual >= value;
+    case "SCMP_CMP_GT":
+      return actual > value;
+    case "SCMP_CMP_MASKED_EQ":
+      return (actual & value) >>> 0 === valueTwo;
+    default:
+      return true;
+  }
+}
+
+function denialOverlapsAddition(rule: SeccompRule, addition: SeccompRule) {
+  if (rule.action === "SCMP_ACT_ALLOW" || rule.action === "SCMP_ACT_LOG") {
+    return false;
+  }
+  if (!rule.names.some((name) => addition.names.includes(name))) {
+    return false;
+  }
+  const [added] = addition.args ?? [];
+  return (
+    added === undefined ||
+    (rule.args ?? [])
+      .filter((arg) => arg.index === added.index)
+      .every((arg) => seccompArgumentMatches(arg, added.value))
+  );
+}
+
 function deriveCodexBwrapProfile(
   baseline: unknown,
   { codexVersion = "0.164.0" }: { codexVersion?: string } = {},
 ) {
   assertReviewedCodexVersion(codexVersion);
   validateRuntimeDefaultSeccompProfile(baseline);
+  const additions = codexBwrapAdditionalSyscalls();
+  const denied = new Set(
+    additions
+      .filter((addition) =>
+        baseline.syscalls.some((rule) => denialOverlapsAddition(rule, addition)),
+      )
+      .flatMap((addition) => addition.names),
+  );
+  assert.equal(
+    denied.size,
+    0,
+    `RuntimeDefault seccomp profile explicitly denies ${[...denied].join(", ")}, which the bwrap rules must allow. Appending allow rules cannot override that deny (for example in a CRI-O baseline), so this generator does not support the baseline.`,
+  );
   const profile = structuredClone(baseline);
-  profile.syscalls = [...profile.syscalls, ...codexBwrapAdditionalSyscalls()];
+  profile.syscalls = [...profile.syscalls, ...additions];
   return profile;
 }
 

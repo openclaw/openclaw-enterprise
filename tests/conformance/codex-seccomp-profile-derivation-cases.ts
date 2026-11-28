@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   codexBwrapAdditionalSyscalls,
   deriveCodexBwrapProfile,
+  validateRuntimeDefaultSeccompProfile,
 } from "../../scripts/lib/codex-seccomp-profile.ts";
 import {
   fixture,
@@ -116,6 +117,43 @@ export function registerSeccompProfileDerivationCases() {
       () => deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.153.0" }),
       /reviewed Codex versions: 0\.152\.1, 0\.154\.0, 0\.156\.0/,
     );
+  });
+
+  test("codex seccomp profile derivation rejects a baseline that denies a call bwrap needs", () => {
+    // CRI-O's RuntimeDefault denies clone with any namespace flag; appended allows would not override it.
+    const deniesClone = {
+      ...runtimeDefaultBaseline,
+      syscalls: [
+        ...runtimeDefaultBaseline.syscalls,
+        {
+          names: ["clone"],
+          action: "SCMP_ACT_ERRNO",
+          errnoRet: 1,
+          args: [{ index: 0, op: "SCMP_CMP_MASKED_EQ", value: 0x20000, valueTwo: 0x20000 }],
+        },
+      ],
+    };
+    assert.throws(() => deriveCodexBwrapProfile(deniesClone), /explicitly denies clone/);
+    assert.doesNotThrow(() => validateRuntimeDefaultSeccompProfile(deniesClone));
+  });
+
+  test("codex seccomp profile derivation admits denials that cannot block a bwrap call", () => {
+    const harmless = [
+      {
+        names: ["unshare"],
+        action: "SCMP_ACT_ERRNO",
+        args: [{ index: 0, op: "SCMP_CMP_EQ", value: 0x40000000 }],
+      },
+      { names: ["clone"], action: "SCMP_ACT_LOG" },
+    ];
+    for (const rule of harmless) {
+      assert.doesNotThrow(() =>
+        deriveCodexBwrapProfile({
+          ...runtimeDefaultBaseline,
+          syscalls: [...runtimeDefaultBaseline.syscalls, rule],
+        }),
+      );
+    }
   });
 
   test("codex seccomp profile derivation admits reviewed native architecture compat groups", () => {

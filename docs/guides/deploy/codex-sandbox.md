@@ -122,7 +122,8 @@ architectures, added-rule count, and reviewed upstream source hashes.
 The shared generator preserves the baseline and appends the reviewed
 bubblewrap calls. It requires an `SCMP_ACT_ERRNO` baseline with containerd's
 `clone3` ENOSYS rule and rejects unreviewed Codex versions or unsupported
-architectures. Admission by the generator is not runtime proof. Inspect the
+architectures. It also rejects a baseline that explicitly denies a call it adds,
+such as the `clone` namespace deny in a CRI-O baseline. Admission by the generator is not runtime proof. Inspect the
 delta and repeat live verification for your selected runtime and node versions.
 Do not substitute an arbitrary profile or `Unconfined` policy.
 
