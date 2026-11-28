@@ -1,6 +1,6 @@
 ---
 created: 2026-09-23
-updated: 2026-11-24
+updated: 2026-11-26
 last_updated_session: authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa
 ---
 
@@ -150,6 +150,7 @@ Admission failure retains protected diagnostics and prevents shutdown.
 `scripts/upgrade-startup-preflight.ts` builds single-Pod Jobs with candidate
 images, credentials, mounts, deadline and zero retries. `preflight_startup`
 refuses changed UIDs or multiple children. Job failure overrides child success.
+A refusal reports an unstarted Pod's last Warning event.
 
 `migrationMode` reads the rendered initialization Job. `--require-current`
 selects separate mode. Invalid and new-install invocations fail. `migrationJob`

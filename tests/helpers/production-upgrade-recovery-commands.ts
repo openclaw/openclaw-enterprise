@@ -1066,6 +1066,20 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         } else {
           out(kind === "pod" ? preflightPodStatus(object) : object);
         }
+      } else if (args.includes("get") && args.includes("events")) {
+        // A scripted Pod's `events` are Warning events the kubelet recorded against it.
+        const selector = requiredArg("--field-selector");
+        const uid = selector.slice("involvedObject.uid=".length);
+        const pod = Object.values(record(field(preflight, "pods"), "preflight Pods")).find(
+          (item) => optionalResourceField(item, "uid") === uid,
+        );
+        out({
+          items: list(optionalField(pod, "events") ?? [], "preflight Pod events").map((event) => ({
+            ...properties(event),
+            type: "Warning",
+            involvedObject: { uid },
+          })),
+        });
       } else if (
         args.includes("get") &&
         args.includes("pods") &&

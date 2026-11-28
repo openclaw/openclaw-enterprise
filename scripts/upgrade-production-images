@@ -1485,6 +1485,17 @@ read_preflight_child() {
     "$evidence_dir/preflight-$component-pods.json" "$previous_uid"
 }
 
+# Best effort: a Pod that cannot start (for example FailedMount) never reports
+# through its status, and its events are gone once the Job deadline removes it.
+read_preflight_warning() {
+  local component=$1 pod_uid=$2
+  "${kube[@]}" --request-timeout=10s --namespace "$namespace" get events \
+    --field-selector "involvedObject.uid=$pod_uid" --output json \
+    >"$evidence_dir/preflight-$component-events.json" 2>/dev/null &&
+    node scripts/upgrade-startup-preflight.ts pod-warning \
+      "$evidence_dir/preflight-$component-events.json" "$pod_uid" 2>/dev/null
+}
+
 read_preflight_logs() {
   local container=$1 pod=$2 errors=$3
   # Bash drops NUL bytes; reject them before they can change a result marker.
@@ -1502,7 +1513,7 @@ sys.stdout.buffer.write(data)'
 # use the candidate configuration and their own startup identities.
 run_preflight_jobs() {
   local components=("$@") job_uids=() builder=()
-  local component preflight_input job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
+  local component preflight_input job_prefix job job_uid pod pod_uid child phase waiting warning deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
   local index=0 writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
   # Leave room for the suffix; a trailing dot would create an invalid DNS label.
@@ -1568,6 +1579,10 @@ run_preflight_jobs() {
         fi
         phase=$(node scripts/upgrade-startup-preflight.ts phase "$evidence_dir/preflight-$component-status.json" \
           "$evidence_dir/preflight-$component-job-status.json")
+        if [[ "$phase" == Running && "$(jq -r '.status.phase' <<<"$child")" == Pending ]]; then
+          warning=$(read_preflight_warning "$component" "$pod_uid") || warning=
+          [[ -z "$warning" ]] || waiting=$warning
+        fi
       fi
       case "$phase" in
         Running | Pending:*)
@@ -1614,8 +1629,8 @@ run_preflight_jobs() {
         fi
       fi
     fi
-    if (( ! identity_valid )) && [[ "$phase" == Pending:* ]]; then
-      message+=" Last scheduler report for the original Pod: ${phase#Pending:}"
+    if (( ! identity_valid )) && [[ -n "$waiting" ]]; then
+      message+=" Last report for the original Pod: $waiting"
     fi
     if [[ -z "$message" ]]; then
       case "$phase" in

@@ -1309,12 +1309,43 @@ function phase([statusPath, jobPath]: [string, string]): string {
     }),
   );
   if (unscheduled) {
-    const message = String(unscheduled.message ?? "")
-      .replace(/\s+/g, " ")
-      .slice(0, 300);
-    return `Pending:${String(unscheduled.reason ?? "Unschedulable")}: ${message}`;
+    return `Pending:${report(unscheduled.reason, unscheduled.message, "Unschedulable")}`;
   }
   return "Running";
+}
+
+function report(reason: unknown, message: unknown, fallback: string): string {
+  const text = String(message ?? "")
+    .replace(/\s+/g, " ")
+    .slice(0, 300);
+  return `${String(reason ?? fallback)}: ${text}`;
+}
+
+// Prints the newest Warning event for the Pod, such as FailedMount, or nothing.
+function podWarning([eventsPath, podUid]: [string, string]): string {
+  const items = readObject(eventsPath).items;
+  if (!Array.isArray(items)) {
+    fail("cannot read startup preflight Pod events.");
+  }
+  // A repeated event keeps its first time in eventTime; series holds the latest.
+  const time = (event: JsonObject) =>
+    Date.parse(
+      String(
+        object(event.series)?.lastObservedTime ??
+          event.lastTimestamp ??
+          event.eventTime ??
+          object(event.metadata)?.creationTimestamp,
+      ),
+    ) || 0;
+  const [latest] = items
+    .flatMap((item) => {
+      const event = object(item);
+      return event?.type === "Warning" && object(event.involvedObject)?.uid === podUid
+        ? [event]
+        : [];
+    })
+    .sort((a, b) => time(b) - time(a));
+  return latest ? report(latest.reason, latest.message, "Warning") : "";
 }
 
 type Command =
@@ -1328,7 +1359,8 @@ type Command =
   | { action: "remaining"; input: Parameters<typeof remaining>[0] }
   | { action: "refusals"; input: Parameters<typeof refusals>[0] }
   | { action: "networkpolicy"; input: Parameters<typeof networkPolicy>[0] }
-  | { action: "phase"; input: Parameters<typeof phase>[0] };
+  | { action: "phase"; input: Parameters<typeof phase>[0] }
+  | { action: "pod-warning"; input: Parameters<typeof podWarning>[0] };
 
 function parseCommand([action, ...input]: string[]): Command {
   switch (action) {
@@ -1395,6 +1427,7 @@ function parseCommand([action, ...input]: string[]): Command {
     case "networkpolicy":
       return { action, input: argumentsOf(input, 4) };
     case "phase":
+    case "pod-warning":
       return { action, input: argumentsOf(input, 2) };
     default:
       return failUsage();
@@ -1450,6 +1483,8 @@ function run(command: Command): string | number {
       return JSON.stringify(networkPolicy(command.input));
     case "phase":
       return phase(command.input);
+    case "pod-warning":
+      return podWarning(command.input);
   }
 }
 
