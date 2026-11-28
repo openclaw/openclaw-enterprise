@@ -71,7 +71,7 @@ and `configurationReadError` on decode failure. Operational reads/queries stay s
 **Selected for service** uses `activeRevisionId`.
 **Viewing version** switches `revision=draft`/`revision=<id>` without activation.
 With Configuration `read`, **Draft credentials** and **Draft repositories** open drafts without copying snapshots.
-**Load older versions** preserves selection and allows retry. On the last page, focus moves from the button to the picker.
+**Load older versions** keeps selection on retry. Pages update the Stop label. The last page focuses the picker.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
 **Deployment** shows activity, selected records and diagnostics

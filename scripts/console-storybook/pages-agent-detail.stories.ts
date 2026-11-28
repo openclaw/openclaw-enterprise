@@ -353,6 +353,10 @@ export const SharingUnknown = { ...story("agentSharingUnknown") };
 export const CurrentVersionHidden = story("agentCurrentVersionHidden");
 export const CurrentVersionHiddenLogs = story("agentCurrentVersionHiddenLogs");
 export const CurrentVersionHiddenLogsStopped = story("agentCurrentVersionHiddenLogsStopped");
+export const StopFeedbackCurrentVersionPagination = {
+  ...story("stopFeedbackCurrentVersionPagination"),
+  name: "Stopped Agent with an unreadable current version",
+};
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");

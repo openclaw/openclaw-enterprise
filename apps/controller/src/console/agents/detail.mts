@@ -1544,14 +1544,19 @@ export async function renderAgentDetail(
       selectionConfirmedAfterSuccess && latestDeploymentStatus === "succeeded",
     );
   }
-  // The current version as the page names it: its number, those words, else its short ID.
+  function versionLabel(id: string) {
+    const revision = listedRevisions.get(id);
+    if (revision) {
+      return `v${revision.revision}`;
+    }
+    return id === currentRevisionId ? (unreadableCurrentLabel() ?? undefined) : undefined;
+  }
   function currentVersionLabel() {
-    const current = currentListedRevision();
-    return current
-      ? `v${current.revision}`
-      : (unreadableCurrentLabel() ?? shortId(currentRevisionId ?? ""));
+    const id = currentRevisionId ?? "";
+    return versionLabel(id) ?? shortId(id);
   }
   function renderCurrentVersion() {
+    stopPanel.setVersionLabel(versionLabel);
     setText(currentVersionValue, currentRevisionId ? currentVersionLabel() : "None");
     setText(
       currentVersionNote,
@@ -1572,7 +1577,6 @@ export async function renderAgentDetail(
         : "Deploy a new version to start this Agent again.",
     );
   }
-  renderCurrentVersion();
   // Stop changes only the runtime state and the current version, so update the page in place.
   // Reloading it collapsed the version detail, moved the reader and dropped focus (finding 1419).
   const stopPanel = createAgentStop(
@@ -1586,6 +1590,7 @@ export async function renderAgentDetail(
     // refocus reread still in flight, cannot lift it (finding 2966), as on the Agents list.
     () => permissionsRereads,
   );
+  renderCurrentVersion();
   const deletion = createAgentDeletion(
     context,
     path,
@@ -3368,12 +3373,6 @@ export async function renderAgentDetail(
       selectionConfirmedAfterSuccess = false;
     }
     stopPanel.setNoReadableVersions(page ? revisions.length === 0 : null);
-    const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
-    // A current version the caller cannot read keeps the page's words, not its ID (finding D791).
-    stopPanel.setVersionLabel(
-      (id) =>
-        labels.get(id) ?? (id === currentRevisionId ? unreadableCurrentLabel() : null) ?? undefined,
-    );
     renderCurrentVersion();
     nativeAdmin.updateTarget();
     renderVersions(revisions, snapshot, revisionResult);

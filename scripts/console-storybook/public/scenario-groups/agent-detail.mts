@@ -3042,6 +3042,21 @@ export function createAgentDetailScenarios({
         ],
         gap: "Simulated UI state only; this preview does not prove a live stop or the screen reader announcement.",
       },
+      stopFeedbackCurrentVersionPagination: {
+        ...hiddenCurrentLogsPage,
+        name: "Stopped Agent with an unreadable current version",
+        path: `${candidateVersion}&tab=configuration`,
+        stopped: true,
+        candidateDeploymentStatus: "failed",
+        revisionPageSize: 1,
+        description:
+          "A stopped Agent retains a current version the viewer cannot read. Its two readable versions load one page at a time.",
+        steps: [
+          'Under Configuration, find the Stop Agent region. Its Current version initially reads "Version" followed by the short ID.',
+          'Choose Load older versions. After the last page, Current version reads "A version you cannot read" and focus returns to Viewing version.',
+        ],
+        gap: "This preview simulates the Stop status and read permissions.",
+      },
       deploymentSucceeded: {
         group: "Pages/Agent detail",
         name: "New version activated",

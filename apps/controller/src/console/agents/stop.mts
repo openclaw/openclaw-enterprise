@@ -41,6 +41,7 @@ export function createAgentStop(
   // started after it can lift the refusal (finding 2966).
   let refusedAfterReads = 0;
   const feedback = element("div", { className: "danger-zone-feedback" });
+  const currentVersion = element("dd", {});
   const actions = element("div", { className: "danger-zone-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
   const refresh = button("Refresh stop status", () => void refreshStatus(), {
@@ -74,7 +75,6 @@ export function createAgentStop(
     notice: "",
     error: null,
     noReadableVersions: undefined,
-    // The page's "vN" label for a version id, once its version list loads.
     versionLabel: () => undefined,
     // Set once this viewer opens Stop or refreshes here, so the row never vanishes under them.
     used: false,
@@ -90,6 +90,15 @@ export function createAgentStop(
     actions,
     feedback,
   );
+
+  function currentVersionCell() {
+    const id = state.agent.activeRevisionId;
+    setText(
+      currentVersion,
+      id ? (state.versionLabel(id) ?? `Version ${shortId(id)}`) : "No current version",
+    );
+    return currentVersion;
+  }
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
@@ -124,14 +133,7 @@ export function createAgentStop(
               element("dt", {}, "Requested runtime state"),
               element("dd", {}, "Stopped"),
               element("dt", {}, "Current version"),
-              element(
-                "dd",
-                {},
-                state.agent.activeRevisionId
-                  ? (state.versionLabel(state.agent.activeRevisionId) ??
-                      `Version ${shortId(state.agent.activeRevisionId)}`)
-                  : "No current version",
-              ),
+              currentVersionCell(),
             ),
             statusBlock(
               "info",
@@ -538,14 +540,11 @@ export function createAgentStop(
       state.latestDeployment = value;
       render();
     },
-    // `label(id)` names a version as the page does ("v3"), or is undefined when unlisted. Only a
-    // changed label rerenders, so polls do not rewrite the status region.
     setVersionLabel(label: typeof state.versionLabel) {
-      const id = state.agent.activeRevisionId;
-      const before = id ? state.versionLabel(id) : undefined;
+      // Loading a page can change the same lookup's answer. Compare with the text already shown.
       state.versionLabel = label;
-      if (id && label(id) !== before) {
-        render();
+      if (state.agent.desiredRuntimeState === "stopped") {
+        currentVersionCell();
       }
     },
     updateAgent(next: AgentRead) {

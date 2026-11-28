@@ -164,6 +164,8 @@ over **Draft credentials** to open the draft’s **Credentials** tab.
 
 3. Open **Pages / Agent detail / Long version history**. Load older pages. The
    viewed version stays selected; the last page returns focus to its picker.
+   In **Stopped Agent with an unreadable current version**, check the Stop Agent
+   region under **Configuration** before and after loading the last page.
 4. Open **Components / Native admin / Available**. **Open Agent UI** launches
    the selected version's interface directly in a new tab; review its target and
    Gateway managed-mode warning. Stopped, unsupported, denied, and failed stories

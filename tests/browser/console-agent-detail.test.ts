@@ -33,6 +33,7 @@ import {
   apiRequests,
   createSlackSourceConsoleFixture,
   deniedCreateSecretOption,
+  denyRevisionRead,
   detailUrl,
   expectNoText,
   expectReachableReason,
@@ -74,7 +75,7 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import { responseTo } from "./console-action-helpers.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import { refocusHeld, tagView, viewTag } from "./console-refocus-helpers.ts";
 import {
   withholdPermissionSummary,
@@ -1909,10 +1910,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
     });
 
   await stop.click();
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await stopRegion.getByRole("status").getByText("Stop requested.").waitFor();
   // A closed dialog has no dialog role, so wait for its close handler to remove the element.
   await page.locator("dialog.agent-stop-dialog").waitFor({ state: "detached" });
@@ -2081,10 +2079,7 @@ test("Agent stop keeps a used card for a viewer who reads no version", async (t)
   await page.getByRole("heading", { name: "Unreadable Stop" }).waitFor();
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await stopRegion.getByRole("status").getByText("Stop requested.").waitFor();
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   await summary.getByText("Stop requested", { exact: true }).waitFor();
@@ -2137,10 +2132,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await page.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
   // Only Refresh is offered until a readback settles the outcome.
   const stopControls = page
@@ -2246,10 +2238,7 @@ test("An uncertain repeated Stop offers only Refresh stop status", async (t) => 
   );
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRegion.getByRole("button", { name: "Request Stop again", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await stopRegion.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
   // No disabled Request Stop again beside Refresh (finding 1899).
   assert.deepEqual(await stopRegion.getByRole("button").allTextContents(), ["Refresh stop status"]);
@@ -2284,10 +2273,7 @@ test("an uncertain Stop the API never received reads back as still requested to 
   );
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await stopRegion.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
   const current = wireBody(
     fixture,
@@ -2337,10 +2323,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
       response.request().method() === "POST",
   );
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   assert.equal((await denied).status(), 403);
 
   await page.getByText(stopRefused("Denied Stop Candidate")).waitFor();
@@ -4122,40 +4105,87 @@ test("a null revision-history rejection preserves the readable draft Configurati
 });
 
 test("a null older-history rejection keeps the current version and allows retry", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Older history retry", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Older history", nativeValues("v1"));
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Older history retry");
+  const agent = await fixture.createAgent(namespace.id, "Older history", nativeValues("v1"), {
+    harnessAuth: { method: "runtime" },
+  });
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const latest = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  // A newer deployment supplies the viewed version while v2 is still selected for service.
+  const latest = await fixture.deployAgent(namespace.id, agent.id);
+  const url = detailUrl(fixture, namespace.id, agent.id, latest.id, "configuration");
   const { page } = await newPage(t, fixture);
   let olderReads = 0;
   await routeOneVersionPerPage(page, fixture, namespace, agent, () => {
     olderReads += 1;
   });
-  const revisions = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
-  await rejectNextHistoryGet(page, `${revisions}?cursor=older-page`);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, latest.revision.id));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const olderPath = `${agentPath}/revisions?cursor=older-page`;
+  await rejectNextHistoryGet(page, olderPath);
+  await login(page, fixture, url);
 
   const selector = page.getByRole("region", { name: "Version being viewed", exact: true });
   const chooser = versionChooser(selector);
   const older = selector.getByRole("button", { name: "Load older versions", exact: true });
   const firstOption = chooser.locator(`option[value="${first.revision.id}"]`);
-  await older.click();
-  const warning = selector.getByText(/^Older versions unavailable\./);
-  await warning.waitFor();
-  assert.equal(await chooser.inputValue(), latest.revision.id);
-  assert.equal(await firstOption.count(), 0);
-  assert.equal(olderReads, 0);
-  assert.ok(await hasFocus(older));
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const currentVersion = stopRegion.locator('dt:text-is("Current version") + dd');
+  const pendingVersion = currentVersion.filter({ hasText: /^Version \S+$/ });
+  // The injected rejection happens once per document, including after reload.
+  async function retryLastPage(revisionIds: string[], completedReads: number) {
+    await pendingVersion.waitFor();
 
-  await older.click();
-  await firstOption.waitFor({ state: "attached" });
-  await warning.waitFor({ state: "detached" });
-  assert.equal(await older.count(), 0);
-  assert.equal(await chooser.inputValue(), latest.revision.id);
-  assert.ok(await hasFocus(chooser));
-  assert.equal(olderReads, 1);
+    await older.click();
+    const warning = selector.getByText(/^Older versions unavailable\./);
+    await warning.waitFor();
+    assert.equal(await chooser.inputValue(), latest.id);
+    assert.equal(await firstOption.count(), 0);
+    assert.equal(olderReads, completedReads);
+    assert.ok(await hasFocus(older));
+    assert.equal(await pendingVersion.isVisible(), true);
+
+    const [response] = await Promise.all([
+      responseTo(page, "GET", fixture.origin + olderPath),
+      older.click(),
+    ]);
+    assert.equal(response.status(), 200);
+    const history = wireBody(fixture, AgentRevisionListResponse, await response.json());
+    assert.deepEqual(
+      history.data.map((revision) => revision.id),
+      revisionIds,
+    );
+    assert.equal(history.meta.nextCursor, null);
+    await firstOption.waitFor({ state: "attached" });
+    await warning.waitFor({ state: "detached" });
+    assert.equal(olderReads, completedReads + 1);
+    assert.equal(await older.count(), 0);
+    assert.equal(await chooser.inputValue(), latest.id);
+    assert.ok(await hasFocus(chooser));
+  }
+
+  await older.waitFor();
+  await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  const [response] = await Promise.all([
+    responseTo(page, "POST", `${fixture.origin}${agentPath}/stop`),
+    confirmAgentAction(page, "Stop this Agent?", "Stop"),
+  ]);
+  assert.equal(response.status(), 202);
+  const stopped = wireBody(fixture, AgentResponse, await response.json()).data;
+  assert.equal(stopped.desiredRuntimeState, "stopped");
+  assert.equal(stopped.activeRevisionId, active.revision.id);
+  await retryLastPage([active.revision.id, first.revision.id], 0);
+  assert.equal(await currentVersion.textContent(), "v2");
+
+  // v1 is still readable. Only a successful final page can rule out v2.
+  denyRevisionRead(fixture, namespace, active.revision);
+  await page.reload();
+  await older.waitFor();
+  await retryLastPage([first.revision.id], 1);
+  assert.equal(
+    await currentVersion.textContent(),
+    "A version you cannot read",
+    "Stop resolves the current version after the last page",
+  );
 });
 
 test("Agent detail clears the version-history fallback after an empty reread", async (t) => {
