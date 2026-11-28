@@ -129,9 +129,11 @@ function retirementFixture(
         readNamespacedService: readNamespaced("Service"),
         async patchNamespacedService({
           name,
+          namespace: requestNamespace,
           body,
         }: Parameters<Clients["core"]["patchNamespacedService"]>[0]) {
           const service = body as ObservedResource;
+          assert.equal(requestNamespace, namespace);
           assert.equal(service.kind, "Service");
           assert.equal(service.metadata.name, name);
           assert.equal(service.metadata.namespace, namespace);
@@ -202,6 +204,7 @@ function retirementFixture(
 
   return {
     observe,
+    read,
     reset,
     nodeResources,
     clearNodeResources,
@@ -286,18 +289,22 @@ export async function checkGatewayRetirement() {
   ];
   fixture.reset(gateway, ...survivingResources);
 
-  const gatewayDeletes: Deletion[] = [
-    [
+  function routeDeletion(name: string, uid: string, resourceVersion: string): Deletion {
+    return [
       "HTTPRoute",
       {
         spec: {
           apiVersion: "gateway.networking.k8s.io/v1",
           kind: "HTTPRoute",
-          metadata: { name: gatewayName, namespace },
+          metadata: { name, namespace },
         },
-        body: { preconditions: { uid: "route-uid", resourceVersion: "route-version-2" } },
+        body: { preconditions: { uid, resourceVersion } },
       },
-    ],
+    ];
+  }
+
+  const gatewayDeletes: Deletion[] = [
+    routeDeletion(gatewayName, "route-uid", "route-version-2"),
     [
       "Service",
       { name: gatewayName, namespace, body: { preconditions: { uid: "gateway-service-uid" } } },
@@ -323,10 +330,9 @@ export async function checkGatewayRetirement() {
 
   fixture.setServiceDeleteFailure(true);
   await assert.rejects(driver["removeRetiredGateway"](active, target), /service delete failed/);
-  assert.deepEqual(deletions, gatewayDeletes.slice(0, 2));
-  assert.equal(
-    deletions.some(([kind]) => kind === "Deployment"),
-    false,
+  assert.deepEqual(
+    deletions,
+    gatewayDeletes.slice(0, 2),
     "Deployment must remain as the retry witness until Service deletion succeeds",
   );
 
@@ -347,10 +353,6 @@ export async function checkGatewayRetirement() {
   fixture.reset(...survivingResources);
   await driver["removeRetiredGateway"](active, target);
   assert.deepEqual(deletions, [...gatewayDeletes, ...harnessDeletes]);
-  assert.equal(
-    deletions.some(([kind]) => kind === "PersistentVolumeClaim"),
-    false,
-  );
 
   deletions.length = 0;
   fixture.observe({
@@ -380,31 +382,34 @@ export async function checkGatewayRetirement() {
     });
   }
 
-  function expectChatRetirement(revision: AgentRevision) {
+  async function retireChat(revision: AgentRevision) {
     const name = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+    assert.partialDeepStrictEqual(fixture.read("Service", namespace, name), {
+      spec: { selector: { "openclaw.dev/revision": revision.id } },
+    });
+    await driver["removeRetiredGateway"](revision, target);
     assert.deepEqual(deletions, [
-      [
-        "HTTPRoute",
-        {
-          spec: {
-            apiVersion: "gateway.networking.k8s.io/v1",
-            kind: "HTTPRoute",
-            metadata: { name, namespace },
-          },
-          body: { preconditions: { uid: name + "-route-uid", resourceVersion: "1" } },
-        },
-      ],
+      routeDeletion(name, name + "-route-uid", "1"),
       ["Service", { name, namespace, body: { preconditions: { uid: name + "-service-uid" } } }],
     ]);
     deletions.length = 0;
+  }
+
+  function expectNodeResources({ id, revision }: AgentRevision) {
+    const nodes = fixture.nodeResources();
+    assert.deepEqual(new Set(nodes.keys()), new Set(["HTTPRoute", "SecurityPolicy"]));
+    for (const { metadata } of nodes.values()) {
+      assert.equal(metadata.annotations?.["openclaw.dev/agent-revision-id"], id);
+      assert.equal(metadata.annotations?.["openclaw.dev/agent-revision"], String(revision));
+    }
+    return nodes;
   }
 
   // Preparation can run while the previous Gateway still serves requests. A
   // failed candidate must not acquire and then delete that Gateway's node route.
   observeGateway(active);
   await driver["reconcileGatewayRoute"](active, ownership, target);
-  const activeNodeResources = fixture.nodeResources();
-  assert.equal(activeNodeResources.size, 2);
+  const activeNodeResources = expectNodeResources(active);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
 
@@ -412,34 +417,20 @@ export async function checkGatewayRetirement() {
   // Preparing its successor must create one under the serving revision, or
   // node readiness would wait for activation while activation waits for it.
   fixture.clearNodeResources();
+  assert.equal(fixture.nodeResources().size, 0);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
-  await driver["removeRetiredGateway"](candidate, target);
-  expectChatRetirement(candidate);
+  await retireChat(candidate);
 
   // Once activation replaces the Gateway, the same endpoint belongs to the new
   // revision. Retiring the predecessor must leave it usable by the new node.
   observeGateway(candidate);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
-  const candidateNodes = fixture.nodeResources();
-  for (const resource of candidateNodes.values()) {
-    assert.equal(resource.metadata.annotations?.["openclaw.dev/agent-revision-id"], candidate.id);
-  }
-  await driver["removeRetiredGateway"](active, target);
-  expectChatRetirement(active);
+  const candidateNodes = expectNodeResources(candidate);
+  await retireChat(active);
   await driver["removeRetiredGateway"](candidate, target);
   assert.deepEqual(deletions.slice(0, 2), [
-    [
-      "HTTPRoute",
-      {
-        spec: {
-          apiVersion: "gateway.networking.k8s.io/v1",
-          kind: "HTTPRoute",
-          metadata: { name: nodeName, namespace },
-        },
-        body: { preconditions: { uid: "HTTPRoute-node-uid", resourceVersion: "1" } },
-      },
-    ],
+    routeDeletion(nodeName, "HTTPRoute-node-uid", "1"),
     [
       "SecurityPolicy",
       {
@@ -478,6 +469,58 @@ export async function checkGatewayRetirement() {
   assert.equal(deletions.length, 0);
 }
 
+export function retirementArtifactFixture(namespace: string) {
+  const key = (kind: string | undefined, name: string) => `${kind}:${name}`;
+  const { resources, observe, read, readNamespaced } = observedResources(
+    (kind, _namespace, name) => key(kind, name),
+    (kind, name) => `${kind} ${name} not found`,
+  );
+  function save<T extends ObservedResource>(object: T) {
+    assert.equal(object.metadata.namespace ?? namespace, namespace);
+    object.metadata.uid ??= `${object.metadata.name}-uid`;
+    observe(object);
+  }
+  const deletions: { kind: string; name: string }[] = [];
+  const removeArtifact =
+    (kind: string) =>
+    async (request: Pick<NamespacedDelete["Deployment"], "name" | "namespace" | "body">) => {
+      const current = read(kind, namespace, request.name);
+      assert.equal(request.namespace, namespace);
+      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
+      deletions.push({ kind, name: request.name });
+      resources.delete(key(kind, request.name));
+      return {};
+    };
+  const clients = {
+    core: {
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [] };
+      },
+      async readNamespace({ name }: Parameters<Clients["core"]["readNamespace"]>[0]) {
+        return read("Namespace", undefined, name);
+      },
+      readNamespacedSecret: readNamespaced("Secret"),
+      readNamespacedConfigMap: readNamespaced("ConfigMap"),
+      deleteNamespacedConfigMap: removeArtifact("ConfigMap"),
+      readNamespacedServiceAccount: readNamespaced("ServiceAccount"),
+      deleteNamespacedServiceAccount: removeArtifact("ServiceAccount"),
+      readNamespacedService: readNamespaced("Service"),
+      deleteNamespacedService: removeArtifact("Service"),
+      readNamespacedPersistentVolumeClaim: readNamespaced("PersistentVolumeClaim"),
+      deleteNamespacedPersistentVolumeClaim: removeArtifact("PersistentVolumeClaim"),
+    },
+    apps: {
+      readNamespacedDeployment: readNamespaced("Deployment"),
+      deleteNamespacedDeployment: removeArtifact("Deployment"),
+    },
+    networking: {
+      readNamespacedNetworkPolicy: readNamespaced("NetworkPolicy"),
+      deleteNamespacedNetworkPolicy: removeArtifact("NetworkPolicy"),
+    },
+  };
+  return { clients, resources, key, save, read, removeArtifact, deletions };
+}
+
 export async function checkEmbeddedGatewayRetirement() {
   const driver = createKubernetesComputeDriver(
     options({
@@ -512,15 +555,7 @@ export async function checkEmbeddedGatewayRetirement() {
   const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
   const configurationName = `${gatewayName}-rev-${digest(revision.id)}`;
   const pluginName = `plugin-runtime-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const key = (kind: string | undefined, name: string) => `${kind}:${name}`;
-  const { resources, observe, read, readNamespaced } = observedResources(
-    (kind, _namespace, name) => key(kind, name),
-    (kind, name) => `${kind} ${name} not found`,
-  );
-  function save<T extends ObservedResource>(object: T) {
-    object.metadata.uid ??= `${object.metadata.name}-uid`;
-    observe(object);
-  }
+  const { clients, resources, key, save, read, deletions } = retirementArtifactFixture(namespace);
 
   save({
     ...driver["manifest"]("v1", "Namespace", namespace, { namespaceId: revision.namespaceId }),
@@ -549,7 +584,7 @@ export async function checkEmbeddedGatewayRetirement() {
     revision,
     target,
   );
-  const policies: ObservedResource[] = [...agentPolicies.map(({ resource }) => resource)];
+  const policies = agentPolicies.map(({ resource }) => resource);
   for (const policy of policies) {
     save(policy);
   }
@@ -576,25 +611,12 @@ export async function checkEmbeddedGatewayRetirement() {
       },
     },
   };
-  const deletions: { kind: string; name: string }[] = [];
   let podObservations = 0;
-  const removeArtifact =
-    (kind: string) => async (request: Pick<NamespacedDelete["Deployment"], "name" | "body">) => {
-      const current = read(kind, namespace, request.name);
-      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
-      deletions.push({ kind, name: request.name });
-      resources.delete(key(kind, request.name));
-      return {};
-    };
   Object.assign(driver, {
     apiClients: Promise.resolve({
+      ...clients,
       core: {
-        async listNamespace() {
-          return { apiVersion: "v1", kind: "NamespaceList", items: [] };
-        },
-        async readNamespace({ name }: Parameters<Clients["core"]["readNamespace"]>[0]) {
-          return read("Namespace", undefined, name);
-        },
+        ...clients.core,
         async listNamespacedPod({
           namespace: requestedNamespace,
           labelSelector,
@@ -610,23 +632,6 @@ export async function checkEmbeddedGatewayRetirement() {
             items: podObservations === 1 ? [terminatingPod] : [],
           };
         },
-        readNamespacedSecret: readNamespaced("Secret"),
-        readNamespacedConfigMap: readNamespaced("ConfigMap"),
-        deleteNamespacedConfigMap: removeArtifact("ConfigMap"),
-        readNamespacedServiceAccount: readNamespaced("ServiceAccount"),
-        deleteNamespacedServiceAccount: removeArtifact("ServiceAccount"),
-        readNamespacedService: readNamespaced("Service"),
-        deleteNamespacedService: removeArtifact("Service"),
-        readNamespacedPersistentVolumeClaim: readNamespaced("PersistentVolumeClaim"),
-        deleteNamespacedPersistentVolumeClaim: removeArtifact("PersistentVolumeClaim"),
-      },
-      apps: {
-        readNamespacedDeployment: readNamespaced("Deployment"),
-        deleteNamespacedDeployment: removeArtifact("Deployment"),
-      },
-      networking: {
-        readNamespacedNetworkPolicy: readNamespaced("NetworkPolicy"),
-        deleteNamespacedNetworkPolicy: removeArtifact("NetworkPolicy"),
       },
       objects: {
         async read({ metadata }: Parameters<Clients["objects"]["read"]>[0]) {
@@ -640,8 +645,10 @@ export async function checkEmbeddedGatewayRetirement() {
 
   assert.equal(podObservations, 2);
   const claimName = driver["gatewayPrivateStateClaimName"](revision.agentId);
-  const podWait = deletions.findIndex(({ kind }) => kind === "PodList");
-  assert.ok(podWait > deletions.findIndex(({ kind }) => kind === "Deployment"));
+  const retiredKinds = deletions.map(({ kind }) => kind);
+  const gatewayDeletion = retiredKinds.indexOf("Deployment");
+  assert.ok(gatewayDeletion >= 0, "retirement must delete the running Gateway");
+  assert.ok(gatewayDeletion < retiredKinds.indexOf("PodList"));
   assert.equal(
     resources.has(key("PersistentVolumeClaim", claimName)),
     true,
@@ -662,8 +669,9 @@ export async function checkEmbeddedGatewayRetirement() {
       status: "deleting",
     },
   });
+  const finalKinds = deletions.map(({ kind }) => kind);
   assert.ok(
-    podWait < deletions.findIndex(({ kind }) => kind === "PersistentVolumeClaim"),
+    finalKinds.lastIndexOf("PodList") < finalKinds.indexOf("PersistentVolumeClaim"),
     "Agent storage cleanup must follow terminated gateway Pods",
   );
   const expectedRemovals: [string, string][] = [

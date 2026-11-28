@@ -80,6 +80,7 @@
     "conformance/kubernetes-provider-observation-cases.ts",
     "conformance/kubernetes-resource-storage-cases.ts",
     "conformance/kubernetes-revision-stop-cases.ts",
+    "conformance/kubernetes-staged-inputs.ts",
     "conformance/kubernetes-workload-pending-cases.ts",
     "conformance/kubernetes-workload-program-cases.ts",
     "conformance/kubernetes-workspace-delivery-cases.ts",

@@ -5,6 +5,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
+import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -236,6 +237,109 @@ export async function checkGatewayCredentialAggregateLimit() {
     false,
     "oversized credential material must not reach a Kubernetes Secret write",
   );
+}
+
+export async function checkGatewayStartupAuthorizationBeforePatch() {
+  const authorizedPatch = ["resolved", "authorize", "authorized", "Gateway patch"];
+  for (const [outcome, expectedEvents] of [
+    ["revoked", ["resolved", "authorize", "refused"]],
+    ["allowed", authorizedPatch],
+    ["patch unavailable", authorizedPatch],
+    ["credential-free", ["Gateway patch"]],
+  ] as const) {
+    const {
+      driver,
+      revision: fixtureRevision,
+      namespace,
+      objects,
+      clients,
+    } = workspaceSetupFixture(false);
+    const events: string[] = [];
+    const refusal = new CredentialSourceRevisionError(
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+      "Gateway startup credential authorization was revoked.",
+    );
+    const patchFailure = Object.assign(new Error("Gateway patch unavailable"), { statusCode: 503 });
+    const hasCredential = outcome !== "credential-free";
+    const revision: AgentRevision = hasCredential
+      ? {
+          ...fixtureRevision,
+          gatewayTokenServiceInstanceId: randomUUID(),
+          secretBindings: {
+            GW_TOKEN: {
+              source: {
+                kind: "credential_source",
+                namespaceId: fixtureRevision.namespaceId,
+                id: `cs_${randomUUID()}`,
+              },
+            },
+          },
+        }
+      : fixtureRevision;
+    const gatewayName = `gateway-${digest(revision.agentId)}`;
+    const stagedName = `gateway-secrets-${digest(revision.agentId)}-${digest(revision.id)}`;
+    const delivery: NonNullable<ComputeRevisionContext["gatewayStartupCredentials"]> = {
+      async resolve() {
+        events.push("resolved");
+        return { GW_TOKEN: { value: "fixture-gateway-credential", sourceVersion: "v1" } };
+      },
+      async authorize(signal) {
+        events.push("authorize");
+        assert.ok(objects.has(`Secret:${namespace}:${stagedName}`), "authorize after staging");
+        assert.ok(signal, "authorize with a signal");
+        assert.equal(signal, currentComputeAbortSignal(), "authorize with the active signal");
+        assert.equal(signal.aborted, false);
+        // Leave authorization unsettled for a microtask so the patch must await it.
+        await Promise.resolve();
+        if (outcome === "revoked") {
+          events.push("refused");
+          throw refusal;
+        }
+        events.push("authorized");
+      },
+    };
+    const context: ComputeRevisionContext = {
+      ...authContext(fixtureRevision),
+      secretEnvironment: [],
+      ...(hasCredential ? { gatewayStartupCredentials: delivery } : {}),
+    };
+
+    const patchDeployment = clients.apps.patchNamespacedDeployment;
+    clients.apps.patchNamespacedDeployment = async (request) => {
+      const { metadata, spec } = request.body;
+      if (metadata.name === gatewayName && metadata.namespace === namespace) {
+        events.push("Gateway patch");
+        const address = asRecord(request);
+        assert.deepEqual([address?.namespace, address?.name], [namespace, gatewayName]);
+        const pod = (spec as Deployment["spec"])?.template?.spec;
+        const gateway = pod?.containers.find(({ name }) => name === "gateway");
+        const token = gateway?.env?.find(({ name }) => name === "GW_TOKEN");
+        assert.equal(token?.valueFrom?.secretKeyRef?.name, hasCredential ? stagedName : undefined);
+        if (outcome === "patch unavailable") {
+          throw patchFailure;
+        }
+      }
+      return patchDeployment(request);
+    };
+
+    const preparation = driver.prepareRevision(revision, context);
+    if (outcome === "revoked" || outcome === "patch unavailable") {
+      await assert.rejects(preparation, (error: unknown) => {
+        const expected =
+          outcome === "revoked"
+            ? error === refusal
+            : error instanceof Error && error.cause === patchFailure;
+        if (!expected) {
+          throw error;
+        }
+        assert.equal(driver.describePrepareRevisionFailure(error).stage, "gateway_deployment");
+        return true;
+      });
+    } else {
+      await preparation;
+    }
+    assert.deepEqual(events, expectedEvents, `${outcome} Gateway patch and authorization attempts`);
+  }
 }
 
 export async function checkPodModelCredentialPlacement(embedded: boolean) {

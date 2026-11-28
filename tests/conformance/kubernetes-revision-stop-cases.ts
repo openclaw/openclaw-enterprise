@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mock } from "node:test";
+import { mock, type TestContext } from "node:test";
 
 import {
   KubernetesComputeDriver,
@@ -15,7 +15,10 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import type { SandboxDriver } from "../../packages/contracts/src/index.ts";
-import { SandboxGatewayUnavailableError } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  SandboxGatewayUnavailableError,
+} from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   apiKeyAuth,
@@ -29,6 +32,7 @@ import {
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { openShellDriver } from "../integration/sandbox-driver-openshell-fixture.ts";
+import { twoClusterOptions } from "./kubernetes-gateway-routing-cases.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type AppsApi = InstanceType<KubernetesSdk["AppsV1Api"]>;
@@ -93,6 +97,117 @@ const absentStopResourceReads = {
   readNamespacedServiceAccount: readAbsentStopResource,
 };
 
+export async function checkRevisionStopNamespaceOwnership(t: TestContext) {
+  for (const operation of ["stopRevision", "retireRevision"] as const) {
+    for (const [foreign, refusal] of [
+      [undefined, undefined],
+      ["gateway", /Refusing an unowned control-plane Gateway namespace/u],
+      ["workload", /Refusing an unowned Kubernetes namespace for tenant/u],
+    ] as const) {
+      const driver = new KubernetesComputeDriver(twoClusterOptions());
+      const revision = routedRevision(driver);
+      const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+      const gateway = driver["gatewayNamespaceManifest"]({ namespaceId: revision.namespaceId });
+      if (foreign === "gateway") {
+        assert.ok(gateway.metadata.annotations);
+        gateway.metadata.annotations["openclaw.dev/namespace-id"] = "ns_other";
+      }
+      const name = `gateway-${digest(revision.agentId)}`;
+      const namespace = gateway.metadata.name;
+      const deployment = driver["manifest"]("apps/v1", "Deployment", name, ownership, {
+        name: namespace,
+        plane: "control",
+      });
+      assert.ok(deployment.metadata.annotations);
+      deployment.metadata.annotations["openclaw.dev/agent-revision-id"] = revision.id;
+      deployment.metadata.uid = "gateway-uid";
+      deployment.metadata.resourceVersion = "1";
+      const beforeStop = t.mock.method(driver["lifecycle"], "beforeWorkloadStop");
+      const deletions: DeleteDeployment[] = [];
+      const absent = {
+        networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
+        objects: { read: readAbsentStopResource },
+      };
+      Object.assign(driver, {
+        apiClients: Promise.resolve({
+          ...absent,
+          core: {
+            ...absentStopResourceReads,
+            readNamespace: async () => gateway,
+            listNamespacedPod: async () => ({ items: [] }),
+          },
+          apps: {
+            readNamespacedDeployment: async () => deployment,
+            async deleteNamespacedDeployment(request: DeleteDeployment) {
+              deletions.push(request);
+              assert.equal(beforeStop.mock.callCount(), 1);
+            },
+          },
+        }),
+        executionApiClients: Promise.resolve({
+          ...absent,
+          core: {
+            ...absentStopResourceReads,
+            // A foreign namespace at the canonical name is invisible to tenant discovery.
+            listNamespace: async () => ({ items: [] }),
+            async readNamespace({ name }: ReadNamespace) {
+              assert.equal(name, kubernetesNamespaceName(revision.namespaceId));
+              if (foreign === "workload") {
+                return driver["manifest"]("v1", "Namespace", name, { namespaceId: "ns_other" });
+              }
+              throw stopResourceNotFound();
+            },
+          },
+          apps: { readNamespacedDeployment: readAbsentStopResource },
+        }),
+      });
+
+      const result = driver[operation](revision);
+      if (refusal) {
+        await assert.rejects(result, refusal, operation);
+        assert.equal(beforeStop.mock.callCount(), 0);
+        assert.deepEqual(deletions, []);
+      } else {
+        await result;
+        assert.equal(beforeStop.mock.callCount(), 1);
+        const preconditions =
+          operation === "stopRevision"
+            ? { uid: "gateway-uid", resourceVersion: "1" }
+            : { uid: "gateway-uid" };
+        assert.deepEqual(deletions, [{ name, namespace, body: { preconditions } }]);
+      }
+    }
+  }
+}
+
+function workloadFixture(
+  driver: KubernetesComputeDriver,
+  revision: ReturnType<typeof routedRevision>,
+  uid: string,
+) {
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
+  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: revision.servicePrincipalId,
+      revisionId: revision.id,
+    },
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
+  deployment.metadata.uid = uid;
+  return { namespace, namespaceReads, deploymentName, deployment };
+}
+
 export async function checkContainmentRetirementRetry() {
   const cleanupCalls: Parameters<SandboxCleanup>[0][] = [];
   const deletionCalls: DeleteDeployment[] = [];
@@ -116,26 +231,11 @@ export async function checkContainmentRetirementRetry() {
     id: "revision-containment-retirement",
     sandboxDriverId: sandboxDriver.id,
   });
-  const namespace = kubernetesNamespaceName(revision.namespaceId);
-  const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
-  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"]({
-    name: deploymentName,
-    ownership: {
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      servicePrincipalId: revision.servicePrincipalId,
-      revisionId: revision.id,
-    },
-    namespace: { name: namespace, plane: "execution" },
-    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
-    serviceAccountName: `agent-${digest(revision.agentId)}`,
-    role: "agent",
-    environment: {},
-    loggingLevel: "info",
-    harnessAuth: preparedAuth(driver, namespace, false),
-  });
-  deployment.metadata.uid = "containment-workload-uid";
+  const { namespace, namespaceReads, deploymentName, deployment } = workloadFixture(
+    driver,
+    revision,
+    "containment-workload-uid",
+  );
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   let gatewayReads = 0;
 
@@ -202,6 +302,11 @@ export async function checkContainmentRetirementRetry() {
 }
 
 export async function checkStopRetainsAgentStorage() {
+  await checkAgentStorageCleanup("stop");
+  await checkAgentStorageCleanup("retire");
+}
+
+async function checkAgentStorageCleanup(operation: "stop" | "retire") {
   const driver = createKubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -239,12 +344,16 @@ export async function checkStopRetainsAgentStorage() {
       "app.kubernetes.io/name": gatewayName,
     },
   );
-  service.metadata.uid = "service-uid";
+  service.metadata.resourceVersion = "2";
+  if (operation === "stop") {
+    service.metadata.uid = "service-uid";
+  }
   const account = driver["manifest"]("v1", "ServiceAccount", gatewayName, ownership, {
     name: namespace,
     plane: "execution",
   });
   account.metadata.uid = "account-uid";
+  account.metadata.resourceVersion = "3";
   const route = driver["gatewayRoute"](
     revision,
     ownership,
@@ -270,7 +379,7 @@ export async function checkStopRetainsAgentStorage() {
   let accountDeleted = false;
   let gatewayDeleted = false;
   let routeDeleted = false;
-  let failServiceDelete = true;
+  let failServiceDelete = operation === "stop";
   let gatewayPodObservations = 0;
   const gatewayPod = {
     apiVersion: "v1",
@@ -308,10 +417,11 @@ export async function checkStopRetainsAgentStorage() {
         async listNamespacedPod() {
           assert.equal(gatewayDeleted, true);
           gatewayPodObservations += 1;
+          const draining = operation === "stop" && gatewayPodObservations === 1;
           return {
             apiVersion: "v1",
             kind: "PodList",
-            items: gatewayPodObservations === 1 ? [structuredClone(gatewayPod)] : [],
+            items: draining ? [structuredClone(gatewayPod)] : [],
           };
         },
         async readNamespacedService({ name }: ReadDeployment) {
@@ -324,7 +434,7 @@ export async function checkStopRetainsAgentStorage() {
           deletions.push(["Service", request]);
           if (failServiceDelete) {
             failServiceDelete = false;
-            throw new Error("service delete failed");
+            throw Object.assign(new Error("service delete failed"), { code: 503 });
           }
           serviceDeleted = true;
         },
@@ -366,13 +476,42 @@ export async function checkStopRetainsAgentStorage() {
     }),
   });
 
+  const deletedKinds = () => deletions.map(([kind]) => kind);
+  const target = { name: gatewayName, namespace };
+  const uidDelete = (uid: string) => ({ ...target, body: { preconditions: { uid } } });
+  const serviceDelete = ["Service", uidDelete("service-uid")];
+  const accountDelete = ["ServiceAccount", uidDelete("account-uid")];
+
+  if (operation === "retire") {
+    // Routing closes first, but a missing Service UID must leave all three named resources intact.
+    await assert.rejects(
+      driver.retireRevision(revision),
+      /Service UID must be explicitly configured/u,
+    );
+    assert.deepEqual(deletedKinds(), ["HTTPRoute"]);
+
+    service.metadata.uid = "service-uid";
+    await driver.retireRevision(revision);
+    assert.deepEqual(deletions.slice(1), [
+      serviceDelete,
+      accountDelete,
+      ["Deployment", uidDelete("gateway-uid")],
+    ]);
+    assert.equal(privateClaimDeleted, false);
+    return;
+  }
+
   // A failed shared cleanup must retry after the exact route and Deployment are absent.
   await assert.rejects(driver.stopRevision(revision), /service delete failed/);
+  assert.deepEqual(deletedKinds(), ["HTTPRoute", "Deployment", "Service"]);
   await driver.stopRevision(revision);
-  assert.deepEqual(
-    deletions.map(([kind]) => kind),
-    ["HTTPRoute", "Deployment", "Service", "Service", "ServiceAccount"],
-  );
+  const stopped = { uid: "gateway-uid", resourceVersion: "1" };
+  assert.deepEqual(deletions.slice(1), [
+    ["Deployment", { ...target, body: { preconditions: stopped } }],
+    serviceDelete,
+    serviceDelete,
+    accountDelete,
+  ]);
   assert.equal(gatewayPodObservations, 2);
 
   // The worker stops the published revision before retiring predecessors. A missing
@@ -565,26 +704,11 @@ export async function checkContainmentStopOrder() {
     id: "revision-containment-stop",
     sandboxDriverId: sandboxDriver.id,
   });
-  const namespace = kubernetesNamespaceName(revision.namespaceId);
-  const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
-  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"]({
-    name: deploymentName,
-    ownership: {
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      servicePrincipalId: revision.servicePrincipalId,
-      revisionId: revision.id,
-    },
-    namespace: { name: namespace, plane: "execution" },
-    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
-    serviceAccountName: `agent-${digest(revision.agentId)}`,
-    role: "agent",
-    environment: {},
-    loggingLevel: "info",
-    harnessAuth: preparedAuth(driver, namespace, false),
-  });
-  deployment.metadata.uid = "containment-stop-workload-uid";
+  const { namespace, namespaceReads, deploymentName, deployment } = workloadFixture(
+    driver,
+    revision,
+    "containment-stop-workload-uid",
+  );
   const pod = {
     apiVersion: "v1",
     kind: "Pod",
@@ -658,29 +782,17 @@ export async function checkContainmentStopOrder() {
 }
 
 // A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
-function stopOrderFixture(id: string) {
+function stopOrderFixture(
+  id: string,
+  gatewayListMetadata?: { continue: string; _continue: string; remainingItemCount: number },
+) {
   const driver = new KubernetesComputeDriver(options());
   const revision = routedRevision(driver, { id });
-  const namespace = kubernetesNamespaceName(revision.namespaceId);
-  const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
-  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"]({
-    name: deploymentName,
-    ownership: {
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      servicePrincipalId: revision.servicePrincipalId,
-      revisionId: revision.id,
-    },
-    namespace: { name: namespace, plane: "execution" },
-    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
-    serviceAccountName: `agent-${digest(revision.agentId)}`,
-    role: "agent",
-    environment: {},
-    loggingLevel: "info",
-    harnessAuth: preparedAuth(driver, namespace, false),
-  });
-  deployment.metadata.uid = "refused-stop-order-agent-uid";
+  const { namespace, namespaceReads, deploymentName, deployment } = workloadFixture(
+    driver,
+    revision,
+    "refused-stop-order-agent-uid",
+  );
   const gatewayPod = {
     apiVersion: "v1",
     kind: "Pod",
@@ -699,8 +811,10 @@ function stopOrderFixture(id: string) {
   agentPod.metadata.name = "refused-stop-order-agent-pod";
   agentPod.metadata.labels["openclaw.dev/workload-role"] = "agent";
   const events: string[] = [];
+  const podLists: ListPods[] = [];
   const fixture = {
     events,
+    podLists,
     deploymentPresent: true,
     gatewayPodsLeft: 0,
     agentPodsLeft: 0,
@@ -717,6 +831,7 @@ function stopOrderFixture(id: string) {
             "openclaw.dev/workload-role"
           ];
           fixture.events.push(`list ${role} Pods`);
+          podLists.push(request);
           if (role === "gateway" && fixture.gatewayPodsLeft > 0) {
             fixture.gatewayPodsLeft -= 1;
             return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
@@ -729,7 +844,14 @@ function stopOrderFixture(id: string) {
             }
             return { apiVersion: "v1", kind: "PodList", items: [pod] };
           }
-          return { apiVersion: "v1", kind: "PodList", items: [] };
+          return {
+            apiVersion: "v1",
+            kind: "PodList",
+            items: [],
+            ...(role === "gateway" && gatewayListMetadata !== undefined
+              ? { metadata: gatewayListMetadata }
+              : {}),
+          };
         },
       },
       apps: {
@@ -770,6 +892,61 @@ export async function checkForeignWorkloadPodRefusal() {
     "delete Agent Deployment",
     "list agent Pods",
   ]);
+}
+
+function gatewayPodListControls(caller: "stop" | "images") {
+  const id = "revision-incomplete-gateway-pod-list";
+  const metadata = { continue: "", _continue: "", remainingItemCount: 0 };
+  const complete = stopOrderFixture(id, metadata);
+  const incomplete = stopOrderFixture(id, { ...metadata, _continue: "gateway-next-page" });
+  const { namespaceId, agentId } = complete.revision;
+  const prefix = caller === "stop" ? `openclaw.dev/namespace=${namespaceId},` : "";
+  const selector = `${prefix}openclaw.dev/agent=${agentId},openclaw.dev/revision=${id}`;
+  const request = (role: "gateway" | "agent") => ({
+    namespace: kubernetesNamespaceName(namespaceId),
+    labelSelector: `${selector},openclaw.dev/workload-role=${role}`,
+    timeoutSeconds: 10,
+  });
+  return { incomplete, complete, gateway: request("gateway"), agent: request("agent") };
+}
+
+function dependencyUnavailable(message: string) {
+  return (error: unknown) =>
+    error instanceof DependencyUnavailableError && error.message === message;
+}
+
+export async function checkIncompleteGatewayPodListOnStop() {
+  const { incomplete, complete, gateway, agent } = gatewayPodListControls("stop");
+  await assert.rejects(
+    incomplete.driver.stopRevision(incomplete.revision),
+    dependencyUnavailable("The Kubernetes client returned an invalid workload Pod list."),
+  );
+  assert.deepEqual(incomplete.events, ["list gateway Pods"]);
+  assert.deepEqual(incomplete.podLists, [gateway]);
+  assert.equal(incomplete.deploymentPresent, true);
+
+  await complete.driver.stopRevision(complete.revision);
+  assert.deepEqual(complete.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+  assert.deepEqual(complete.podLists, [gateway, agent]);
+  assert.equal(complete.deploymentPresent, false);
+}
+
+export async function checkIncompleteGatewayPodListOnImageRead() {
+  const { incomplete, complete, gateway, agent } = gatewayPodListControls("images");
+  await assert.rejects(
+    incomplete.driver.getRuntimeImages(incomplete.revision),
+    dependencyUnavailable("The Kubernetes client returned an invalid Pod list."),
+  );
+  assert.deepEqual(incomplete.events, ["list gateway Pods"]);
+  assert.deepEqual(incomplete.podLists, [gateway]);
+
+  assert.deepEqual(await complete.driver.getRuntimeImages(complete.revision), []);
+  assert.deepEqual(complete.events, ["list gateway Pods", "list agent Pods"]);
+  assert.deepEqual(complete.podLists, [gateway, agent]);
 }
 
 export async function checkRefusedCandidateStopOrder() {
@@ -878,6 +1055,88 @@ export async function checkGatewayDrainYield() {
     yielded,
   );
   assert.deepEqual(fixture.events, ["delete Agent Deployment", "list agent Pods"]);
+}
+
+export async function checkCredentialSourceCleanupOrder() {
+  const events: string[] = [];
+  let rejectCleanup = true;
+  const forbidden = (message: string): never => {
+    events.push(message);
+    assert.fail(message);
+  };
+  const sandboxDriver: SandboxDriver = {
+    id: "sandbox-credential-stop",
+    implementation: "test/provider-owned",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      return forbidden("stop and retirement must not provision a Harness workload");
+    },
+    async cleanup({ revision }) {
+      if (rejectCleanup) {
+        rejectCleanup = false;
+        events.push(`cleanup rejected: ${revision?.id}`);
+        throw new Error("sandbox cleanup failed");
+      }
+      events.push(`cleanup succeeded: ${revision?.id}`);
+    },
+  };
+  const unexpected = (method: string) => async () =>
+    forbidden(`stop and retirement must not call Credential Gateway ${method}`);
+  const credentialGatewayDriver = {
+    id: "credential-gateway-stop",
+    implementation: "test/credential-gateway",
+    capability: "credential_gateway",
+    attachForRevision: unexpected("attachForRevision"),
+    attachmentStatus: unexpected("attachmentStatus"),
+    withdraw: unexpected("withdraw"),
+    removeSource: unexpected("removeSource"),
+  };
+  // Compute selects only the Sandbox. Keep the legacy decoy to catch any accidental direct call.
+  const selection = { sandboxDriver, credentialGatewayDriver };
+  const driver = new KubernetesComputeDriver(options(), selection);
+  const harnessAuth = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000146",
+    credentialGatewayId: credentialGatewayDriver.id,
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const revision = routedRevision(driver, {
+    id: "revision-credential-stop",
+    sandboxDriverId: sandboxDriver.id,
+    harnessAuth,
+  });
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  Object.assign(driver, {
+    apiClients: Promise.resolve({
+      core: {
+        ...absentStopResourceReads,
+        ...lifecycleNamespaceReads(driver, namespace, revision.namespaceId),
+        readNamespacedPersistentVolumeClaim: readAbsentStopResource,
+        async listNamespacedPod({ labelSelector }: ListPods) {
+          assert.ok(labelSelector);
+          if (labelSelectorLabels(labelSelector)["openclaw.dev/workload-role"] === "agent") {
+            events.push("list agent Pods");
+          }
+          return { apiVersion: "v1", kind: "PodList", items: [] };
+        },
+      },
+      apps: { readNamespacedDeployment: readAbsentStopResource },
+      networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
+      objects: { read: readAbsentStopResource },
+    }),
+  });
+
+  await assert.rejects(driver.stopRevision(revision), /sandbox cleanup failed/);
+  assert.deepEqual(events.splice(0), [`cleanup rejected: ${revision.id}`]);
+
+  const completed = [`cleanup succeeded: ${revision.id}`, "list agent Pods"];
+  await driver.stopRevision(revision);
+  assert.deepEqual(events.splice(0), completed);
+  await driver.retireRevision(revision);
+  assert.deepEqual(events, completed);
 }
 
 export async function checkProviderStopTermination() {

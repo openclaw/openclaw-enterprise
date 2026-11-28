@@ -79,7 +79,6 @@ import {
   routedOptions,
   routedRevision,
   admitRevisionHarness,
-  labelSelectorLabels,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
@@ -115,6 +114,7 @@ import {
 import {
   checkEmbeddedGatewayRetirement,
   checkGatewayRetirement,
+  retirementArtifactFixture,
 } from "./kubernetes-gateway-retirement-case.ts";
 import {
   checkStartupPluginInitialization,
@@ -135,11 +135,18 @@ import {
   checkActivationWithoutStatusProxy,
 } from "./kubernetes-workspace-node-activation-cases.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
+import {
+  stagedCredentialDeployment,
+  stagedCredentialOwner,
+  stagedOpenAiModel,
+  stagedSandboxPolicy,
+} from "./kubernetes-staged-inputs.ts";
 import { checkManagedReleaseDelivery } from "./kubernetes-managed-release-cases.ts";
 import { checkChannelPolicyDiagnostic } from "./kubernetes-channel-policy-diagnostic-case.ts";
 import {
   checkCanonicalGatewayChannelSecret,
   checkGatewayCredentialAggregateLimit,
+  checkGatewayStartupAuthorizationBeforePatch,
   checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
   checkPodModelCredentialPlacement,
@@ -286,13 +293,17 @@ import {
 import {
   checkContainmentRetirementRetry,
   checkContainmentStopOrder,
+  checkCredentialSourceCleanupOrder,
   checkFailedHarnessStopEndsWait,
   checkForeignWorkloadPodRefusal,
   checkGatewayDrainYield,
+  checkIncompleteGatewayPodListOnImageRead,
+  checkIncompleteGatewayPodListOnStop,
   checkNativeHarnessStopsAtOnce,
   checkOtherHarnessStopsDoNotWait,
   checkProviderStopTermination,
   checkRefusedCandidateStopOrder,
+  checkRevisionStopNamespaceOwnership,
   checkServingHarnessStopsAtOnce,
   checkStartingHarnessStopBound,
   checkStartingHarnessStopWaitsForServing,
@@ -300,7 +311,6 @@ import {
   checkStopPreservesReplacement,
   checkStopRetainsAgentStorage,
   checkUnreadHarnessStopsAtOnce,
-  lifecycleNamespaceReads,
 } from "./kubernetes-revision-stop-cases.ts";
 import {
   assertExecStringsWithinBudget,
@@ -804,16 +814,7 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
     },
     async removeDeployment() {},
   };
-  const owner = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
+  const owner = stagedCredentialOwner(sandbox, proxy);
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver: sandbox,
     credentialDeliveryRegistration: owner,
@@ -841,23 +842,15 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
           tokenServiceInstanceId: auth.tokenServiceInstanceId,
         },
       ],
-      sandboxPolicy: {
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        version: 1,
-        defaults: {},
-        additions: grants,
-      },
+      sandboxPolicy: stagedSandboxPolicy(sandbox, grants),
       executionAdmission: { version: 8, mode: "standalone" },
-      credentialDeployment: {
-        proxyDriverId: proxy.id,
-        driver: owner.ref,
+      credentialDeployment: stagedCredentialDeployment(proxy.id, owner.ref, {
         networkAccessPolicy: {
           allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
         },
         bindings: [binding],
         injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: requests }],
-      },
+      }),
     },
   });
   assert.equal((await fixture.prepare()).ready, false);
@@ -979,16 +972,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         },
         async removeDeployment() {},
       };
-      const registration = {
-        ref: {
-          id: sandbox.id,
-          implementation: sandbox.implementation,
-          configurationId: "a".repeat(64),
-        },
-        require(capability) {
-          return capability === "sandbox" ? sandbox : proxy;
-        },
-      };
+      const registration = stagedCredentialOwner(sandbox, proxy);
       const auth = {
         method: "credential_source",
         sourceId: "cs_model",
@@ -1084,23 +1068,17 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
               })),
             },
             sandboxPolicy: {
-              driverId: sandbox.id,
-              implementation: sandbox.implementation,
-              version: 1,
-              defaults: {},
-              additions: [],
+              ...stagedSandboxPolicy(sandbox, []),
               repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
             },
-            credentialDeployment: {
-              proxyDriverId: proxy.id,
-              driver: registration.ref,
+            credentialDeployment: stagedCredentialDeployment(proxy.id, registration.ref, {
               bindings: [model, repository],
               networkAccessPolicy: { allowed: [modelRequest, ...repositoryRequests] },
               injectionPolicies: [
                 { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
                 { bindingRef: repository.bindingRef, allowedRequests: repositoryRequests },
               ],
-            },
+            }),
           },
         });
       // This controlled release selection exercises Compute; it does not qualify an actual image.
@@ -1271,28 +1249,11 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       presentation: "bearer",
     },
   };
-  const stagedAuth = {
-    method: "credential_source",
-    sourceId: "cs_staged_model",
-    tokenServiceInstanceId: "tokens",
-    sourceType: "static",
-  };
-  const modelGrant = {
-    id: "model-egress",
-    binary: "/usr/local/bin/node",
-    host: "api.openai.com",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const modelBinding = {
-    bindingRef: "model",
-    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: stagedAuth.sourceId },
-    consumer: { kind: "model", providerId: "openai" },
-    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
-  };
+  const model = stagedOpenAiModel(tenant.id);
   let target;
   let prepared;
   const removals = [];
-  const bindings = [pluginBinding, modelBinding];
+  const bindings = [pluginBinding, model.binding];
   const projections = bindings.map((binding) => ({
     bindingRef: binding.bindingRef,
     environment: binding.projection.environment,
@@ -1344,25 +1305,15 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       removals.push(removal);
     },
   };
-  const registration = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
-  const harnessAuth = stagedAuth;
+  const registration = stagedCredentialOwner(sandbox, proxy);
   const modelSource = {
     ...pluginSource,
-    id: stagedAuth.sourceId,
-    type: stagedAuth.sourceType,
+    id: model.auth.sourceId,
+    type: model.auth.sourceType,
     config: { provider_preset: "openai" },
   };
   const context = {
-    harnessAuth,
+    harnessAuth: model.auth,
     credentialSources: [pluginSource, modelSource],
     async configureCredentialDeployment(configuration) {
       assert.deepEqual(configuration.targetRef, target);
@@ -1376,7 +1327,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     revision: {
       ...nativeSandboxRevision(sandbox.id),
       agentId: "agent-mixed",
-      harnessAuth,
+      harnessAuth: model.auth,
       credentialSources: [
         {
           sourceId: pluginSource.id,
@@ -1384,7 +1335,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
           tokenServiceInstanceId: "tokens",
         },
         {
-          sourceId: stagedAuth.sourceId,
+          sourceId: model.auth.sourceId,
           sourceType: "static",
           tokenServiceInstanceId: "tokens",
         },
@@ -1401,39 +1352,16 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
           },
         },
       },
-      sandboxPolicy: {
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        version: 1,
-        defaults: {},
-        additions: [modelGrant],
-      },
+      sandboxPolicy: stagedSandboxPolicy(sandbox, [model.grant]),
       executionAdmission: { version: 8, mode: "standalone" },
-      credentialDeployment: {
-        proxyDriverId: proxy.id,
-        driver: registration.ref,
-        networkAccessPolicy: {
-          allowed: [
-            { binary: modelGrant.binary, host: modelGrant.host, ports: modelGrant.ports },
-            pluginRequest,
-          ],
-        },
+      credentialDeployment: stagedCredentialDeployment(proxy.id, registration.ref, {
+        networkAccessPolicy: { allowed: [model.network, pluginRequest] },
         bindings,
         injectionPolicies: [
           { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest] },
-          {
-            bindingRef: modelBinding.bindingRef,
-            allowedRequests: [
-              {
-                binary: modelGrant.binary,
-                host: modelGrant.host,
-                ports: modelGrant.ports,
-                requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
-              },
-            ],
-          },
+          { bindingRef: model.binding.bindingRef, allowedRequests: [model.request] },
         ],
-      },
+      }),
     },
   });
   // Plugin injection does not supply the model Secret used by separate API-key auth.
@@ -1499,30 +1427,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
   // The real Compute path uses controlled Sandbox and Proxy Drivers; these observations do not
   // establish native Provider readiness, Kubernetes behavior, or a real Harness execution.
-  const auth = {
-    method: "credential_source",
-    sourceId: "cs_staged_model",
-    tokenServiceInstanceId: "tokens",
-    sourceType: "static",
-  };
-  const grant = {
-    id: "model-egress",
-    binary: "/usr/local/bin/node",
-    host: "api.openai.com",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const request = {
-    binary: grant.binary,
-    host: grant.host,
-    ports: grant.ports,
-    requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
-  };
-  const binding = {
-    bindingRef: "model",
-    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
-    consumer: { kind: "model", providerId: "openai" },
-    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
-  };
+  const { auth, grant, network, request, binding } = stagedOpenAiModel(tenant.id);
   const projection = {
     bindingRef: binding.bindingRef,
     environment: binding.projection.environment,
@@ -1644,16 +1549,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       }
     },
   };
-  const selectedOwner = {
-    ref: {
-      id: sandboxDriver.id,
-      implementation: sandboxDriver.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandboxDriver : proxyDriver;
-    },
-  };
+  const selectedOwner = stagedCredentialOwner(sandboxDriver, proxyDriver);
   const context = {
     harnessAuth: auth,
     workspaceSetup: {
@@ -1673,23 +1569,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     ...nativeSandboxRevision(sandboxDriver.id),
     agentId: context.workspaceSetup.agentId,
     harnessAuth: auth,
-    sandboxPolicy: {
-      driverId: sandboxDriver.id,
-      implementation: sandboxDriver.implementation,
-      version: 1,
-      defaults: {},
-      additions: [grant],
-    },
+    sandboxPolicy: stagedSandboxPolicy(sandboxDriver, [grant]),
     executionAdmission: { version: 8, mode: "standalone" },
-    credentialDeployment: {
-      proxyDriverId: proxyDriver.id,
-      driver: selectedOwner.ref,
-      networkAccessPolicy: {
-        allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
-      },
+    credentialDeployment: stagedCredentialDeployment(proxyDriver.id, selectedOwner.ref, {
+      networkAccessPolicy: { allowed: [network] },
       bindings: [binding],
       injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
-    },
+    }),
   };
   const mismatched = dedicatedFirstDeployFixture({
     sandboxDriver,
@@ -6199,10 +6085,12 @@ test("provider Harness public trust rejects invalid material and composes with e
     const writes = [];
     driver.apiClients = Promise.resolve({
       core: {
-        async readNamespacedConfigMap() {
+        async readNamespacedConfigMap({ namespace }) {
+          assert.equal(namespace, target.name);
           throw Object.assign(new Error("not found"), { statusCode: 404 });
         },
-        async patchNamespacedConfigMap({ body }) {
+        async patchNamespacedConfigMap({ body, namespace }) {
+          assert.equal(namespace, target.name);
           writes.push(body);
         },
       },
@@ -6895,6 +6783,11 @@ for (const cutover of ["already deployed", "during Deployment deletion", "during
 }
 
 test(
+  "stop and retirement check both namespaces before cleaning up a separate Gateway",
+  checkRevisionStopNamespaceOwnership,
+);
+
+test(
   "stopping a containment-only Kubernetes revision removes its workload before Sandbox cleanup",
   checkContainmentStopOrder,
 );
@@ -6905,6 +6798,16 @@ test(
 test(
   "a workload termination wait refuses a Pod of another revision",
   checkForeignWorkloadPodRefusal,
+);
+
+test(
+  "an ordinary stop leaves the Agent Deployment intact on an incomplete empty Gateway Pod list",
+  checkIncompleteGatewayPodListOnStop,
+);
+
+test(
+  "a runtime image read refuses an incomplete empty Gateway Pod list before listing Agent Pods",
+  checkIncompleteGatewayPodListOnImageRead,
 );
 
 test(
@@ -6962,118 +6865,10 @@ test(
   checkNativeHarnessStopsAtOnce,
 );
 
-test("stop and retirement end credential-source access through Sandbox cleanup", async () => {
-  // Salvaged from #146: stop and retirement must still shut the workload down when credential
-  // cleanup is uncertain, and must not report completion until it is confirmed. On main the
-  // Credential Gateway attachment lives only in the paired Sandbox, so Sandbox cleanup is the
-  // withdrawal; OCC has no withdraw caller, and a failed cleanup must keep the work retryable.
-  const cleanupCalls = [];
-  let failCleanup = true;
-  let podObservations = 0;
-  const sandboxDriver = {
-    id: "sandbox-credential-stop",
-    implementation: "test/provider-owned",
-    capability: "sandbox",
-    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-    facets: ["networking", "filesystem", "process"],
-    async provisionHarness() {
-      assert.fail("stop and retirement must not provision a Harness workload");
-    },
-    async cleanup(context) {
-      cleanupCalls.push(context.revision?.id);
-      if (failCleanup) {
-        failCleanup = false;
-        throw new Error("sandbox cleanup failed");
-      }
-    },
-  };
-  const unexpected = (method) => async () => {
-    assert.fail(`stop and retirement must not call Credential Gateway ${method}`);
-  };
-  const credentialGatewayDriver = {
-    id: "credential-gateway-stop",
-    implementation: "test/credential-gateway",
-    capability: "credential_gateway",
-    attachForRevision: unexpected("attachForRevision"),
-    attachmentStatus: unexpected("attachmentStatus"),
-    withdraw: unexpected("withdraw"),
-    removeSource: unexpected("removeSource"),
-  };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
-  const harnessAuth = {
-    method: "credential_source",
-    sourceId: "cs_00000000-0000-4000-8000-000000000146",
-    credentialGatewayId: credentialGatewayDriver.id,
-    sourceType: "openai",
-    loginMode: "api_key",
-  };
-  const revision = routedRevision(driver, {
-    id: "revision-credential-stop",
-    sandboxDriverId: sandboxDriver.id,
-    harnessAuth,
-  });
-  const namespace = kubernetesNamespaceName(revision.namespaceId);
-  const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespacedSecret() {
-        throw notFound();
-      },
-      async readNamespacedService() {
-        throw notFound();
-      },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
-      async readNamespacedPersistentVolumeClaim() {
-        throw notFound();
-      },
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      ...namespaceReads,
-      async listNamespacedPod(request) {
-        const selected = labelSelectorLabels(request.labelSelector);
-        if (selected["openclaw.dev/workload-role"] === "agent") {
-          // The Harness is only observed as gone after its Sandbox cleanup succeeded.
-          assert.equal(failCleanup, false);
-          podObservations += 1;
-        }
-        return { apiVersion: "v1", kind: "PodList", items: [] };
-      },
-    },
-    apps: {
-      async readNamespacedDeployment() {
-        throw notFound();
-      },
-    },
-    networking: {
-      async readNamespacedNetworkPolicy() {
-        throw notFound();
-      },
-    },
-    objects: {
-      async read() {
-        throw notFound();
-      },
-    },
-  });
-
-  // An uncertain cleanup fails the stop, so the worker keeps the stop pending and retries.
-  await assert.rejects(driver.stopRevision(revision), /sandbox cleanup failed/);
-  assert.deepEqual(cleanupCalls, [revision.id]);
-  assert.equal(podObservations, 0);
-
-  await driver.stopRevision(revision);
-  assert.deepEqual(cleanupCalls, [revision.id, revision.id]);
-  assert.equal(podObservations, 1);
-
-  // Retirement of the same revision repeats the idempotent cleanup instead of skipping it.
-  await driver.retireRevision(revision);
-  assert.deepEqual(cleanupCalls, [revision.id, revision.id, revision.id]);
-  assert.equal(podObservations, 2);
-});
+test(
+  "stop and retirement end credential-source access through Sandbox cleanup",
+  checkCredentialSourceCleanupOrder,
+);
 
 test(
   "retiring a running embedded revision waits for gateway Pods and removes owned artifacts",
@@ -7108,17 +6903,13 @@ for (const stopped of [false, true]) {
     const target = { name: namespace, plane: "execution" };
     const gatewayName = `gateway-${digest(revision.agentId)}`;
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    const key = (kind, name) => `${kind}:${name}`;
-    const objects = new Map();
-    const save = (object) => {
-      assert.equal(object.metadata.namespace ?? namespace, namespace);
-      object.metadata.uid ??= `${object.metadata.name}-uid`;
-      objects.set(key(object.kind, object.metadata.name), structuredClone(object));
-    };
-    save({
+    const { clients, resources, key, save, read, removeArtifact, deletions } =
+      retirementArtifactFixture(namespace);
+    const activeNamespace = {
       ...driver.manifest("v1", "Namespace", namespace, { namespaceId: revision.namespaceId }),
       status: { phase: "Active" },
-    });
+    };
+    save(activeNamespace);
     // Stop already removed the Gateway Deployment; Agent deletion then retires the revision.
     if (!stopped) {
       const gateway = driver.manifest("apps/v1", "Deployment", gatewayName, ownership, target);
@@ -7140,6 +6931,7 @@ for (const stopped of [false, true]) {
     ];
     const policyNames = policies.map(({ metadata }) => metadata.name);
     assert.ok(policyNames.includes(`allow-gateway-workspace-node-${digest(revision.agentId)}`));
+    assert.ok(policyNames.includes(`allow-workspace-node-gateway-${digest(revision.agentId)}`));
     for (const policy of policies) {
       save(policy);
     }
@@ -7154,102 +6946,53 @@ for (const stopped of [false, true]) {
     save(sibling);
 
     const trustName = `harness-trust-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-    const trust = {
-      ...driver.manifest(
-        "v1",
-        "ConfigMap",
-        trustName,
-        { ...ownership, servicePrincipalId: revision.servicePrincipalId, revisionId: revision.id },
-        target,
-      ),
+    const publicTrust = (name, owner) => ({
+      ...driver.manifest("v1", "ConfigMap", name, { ...owner, revisionId: revision.id }, target),
       immutable: true,
       data: { "ca-bundle.pem": tls.caBundle },
-    };
-    save(trust);
-    const siblingTrust = {
-      ...driver.manifest(
-        "v1",
-        "ConfigMap",
-        `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
-        { ...ownership, agentId: "agent-sibling", revisionId: revision.id },
-        target,
-      ),
-      immutable: true,
-      data: { "ca-bundle.pem": tls.caBundle },
-    };
+    });
+    save(publicTrust(trustName, { ...ownership, servicePrincipalId: revision.servicePrincipalId }));
+    const siblingTrust = publicTrust(
+      `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
+      { ...ownership, agentId: "agent-sibling" },
+    );
     save(siblingTrust);
 
-    const deleted = [];
-    const missing = (kind, name) =>
-      Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
-    const read = (kind) => async (request) => {
-      const name = request.name ?? request.metadata?.name;
-      const value = objects.get(key(kind, name));
-      if (value === undefined) {
-        throw missing(kind, name);
-      }
-      return structuredClone(value);
-    };
-    const remove = (kind) => async (request) => {
-      const current = await read(kind)(request);
-      assert.equal(request.namespace, namespace);
-      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
-      deleted.push(`${kind}/${request.name}`);
-      objects.delete(key(kind, request.name));
-      return {};
-    };
-    const core = {
-      async listNamespace() {
-        return { apiVersion: "v1", kind: "NamespaceList", items: [] };
-      },
-      readNamespace: read("Namespace"),
-      async listNamespacedPod() {
-        return { apiVersion: "v1", kind: "PodList", items: [] };
-      },
-    };
-    for (const kind of [
-      "ConfigMap",
-      "Secret",
-      "Service",
-      "ServiceAccount",
-      "PersistentVolumeClaim",
-    ]) {
-      core[`readNamespaced${kind}`] = read(kind);
-      core[`deleteNamespaced${kind}`] = remove(kind);
-    }
     driver.apiClients = Promise.resolve({
-      core,
-      apps: {
-        readNamespacedDeployment: read("Deployment"),
-        deleteNamespacedDeployment: remove("Deployment"),
-      },
-      networking: {
-        readNamespacedNetworkPolicy: read("NetworkPolicy"),
-        deleteNamespacedNetworkPolicy: remove("NetworkPolicy"),
+      ...clients,
+      core: {
+        ...clients.core,
+        deleteNamespacedSecret: removeArtifact("Secret"),
+        async listNamespacedPod() {
+          return { apiVersion: "v1", kind: "PodList", items: [] };
+        },
       },
       objects: {
-        read: async (object) => read(object.kind)(object),
+        read: async ({ kind, name, metadata }) => read(kind, namespace, name ?? metadata?.name),
       },
     });
 
+    const expectedDeletions = [
+      ...(stopped ? [] : [key("Deployment", gatewayName)]),
+      key("ConfigMap", trustName),
+      ...policyNames.map((name) => key("NetworkPolicy", name)),
+    ].sort();
+    const survivors = new Map([
+      [key("Namespace", namespace), activeNamespace],
+      [key("NetworkPolicy", sibling.metadata.name), sibling],
+      [key("ConfigMap", siblingTrust.metadata.name), siblingTrust],
+    ]);
+
     await driver.retireRevision(revision);
     assert.deepEqual(cleanupCalls, [revision.id]);
-    assert.equal(
-      objects.has(key("ConfigMap", trustName)),
-      false,
-      "retirement removes exact public trust",
-    );
-    assert.deepEqual(objects.get(key("ConfigMap", siblingTrust.metadata.name)), siblingTrust);
-    assert.equal(objects.has(key("Deployment", gatewayName)), false);
-    for (const name of policyNames) {
-      assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);
-    }
-    assert.deepEqual(objects.get(key("NetworkPolicy", sibling.metadata.name)), sibling);
+    assert.deepEqual(deletions.map(({ kind, name }) => key(kind, name)).sort(), expectedDeletions);
+    assert.deepEqual(resources, survivors);
 
     // A retried retirement finds nothing left to delete.
-    const deletedOnce = deleted.length;
     await driver.retireRevision(revision);
-    assert.equal(deleted.length, deletedOnce);
+    assert.equal(deletions.length, expectedDeletions.length);
+    assert.deepEqual(resources, survivors);
+    assert.deepEqual(cleanupCalls, [revision.id, revision.id]);
   });
 }
 
@@ -7523,6 +7266,10 @@ test(
   checkGatewayCredentialAggregateLimit,
 );
 
+test(
+  "dedicated Gateway preparation authorizes startup credentials before patching the Deployment",
+  checkGatewayStartupAuthorizationBeforePatch,
+);
 test(
   "shared tenant preparation waits for missing infrastructure and rejects a foreign owner",
   checkSharedTenantPreparationOwnership,
