@@ -47,7 +47,9 @@ interface DeploymentRequestDependencies {
     ReturnType<typeof createConfigurationOperations>,
     "configurationIdentity"
   >;
-  readonly admitDeployment: ReturnType<typeof createAgentDeploymentAdmission>;
+  readonly admitDeployment: ReturnType<
+    typeof createAgentDeploymentAdmission
+  >["admitAgentDeployment"];
 }
 
 function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
@@ -291,15 +293,19 @@ export function createAgentDeploymentOperations(
   installationId: string,
   dependencies: AgentDeploymentDependencies,
 ) {
-  const admitDeployment = createAgentDeploymentAdmission(dependencies);
+  const { admitAgentDeployment, validateProvisioningModel } =
+    createAgentDeploymentAdmission(dependencies);
   const { authority, channels, configuration, selectedCompute, transactions } = dependencies;
-  return createDeploymentRequests({
-    installationId,
-    authority,
-    transactions,
-    channels,
-    selectedCompute,
-    configuration,
-    admitDeployment,
-  });
+  return {
+    ...createDeploymentRequests({
+      installationId,
+      authority,
+      transactions,
+      channels,
+      selectedCompute,
+      configuration,
+      admitDeployment: admitAgentDeployment,
+    }),
+    validateProvisioningModel,
+  };
 }

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-26
-last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
+last_updated_session: authoring-run/f45ede94-8b6c-4c71-86c4-3cf15cd0540c
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -275,28 +275,24 @@ For coordinated channel replacement, stop the Agent and wait for shutdown before
 updating each Secret. A partial update leaves it stopped until repaired; there is
 no multi-Secret transaction or rollback of stored bytes.
 
-For model-key replacement, update the OCC Secret and explicitly deploy each
-consuming Agent through OCE. The new Agent revision's preparation calls
-`KubernetesComputeDriver.deliverHarnessAuth`, which reads the current canonical source
-and writes the DP Secret for that Agent revision before the Harness starts. Wait for
-activation and verify a real model request before revoking the old key upstream.
-A Harness Pod recreation reads its existing DP projection; it does not deliver
-current source values. This remains true when the Configuration and Secret reference
-are unchanged.
+To replace a model key, update the OCC Secret and deploy each consuming Agent.
+`KubernetesComputeDriver.deliverHarnessAuth` stages the current value for the new
+revision before the Harness starts. After activation, verify a model request before
+revoking the old key at its issuer. Pod restarts reuse the existing projection.
+Revoking `operate` blocks new OCC admission. Existing Pods retain their credential.
 
-Gateway Pod restarts reuse that copy. Revoking `operate`
-blocks new OCC admission, not kubelet process starts or already delivered bytes.
+[deleteSecret](../../packages/occ/src/secret-operations.ts) refuses Secrets referenced by
+Configuration, Agent drafts, selected revisions, or pending work. The `409` response and
+`readSecret` show up to 50 references, ordered by kind and ID. OCC names references the
+caller can read and counts the rest.
 
-[deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
-Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization
-boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
-`secretConsumers` checks `read` on each referencing resource, names the readable ones in
-the `409`, and counts the rest. `readSecret` returns the same result as `consumers`.
-Once unreferenced, it deletes only the exact Namespace-owned backend and metadata.
-A partial delete can retry; missing or foreign objects cannot be
-adopted or recreated. Gateway replacement does not garbage-collect
-Secrets, so immediate revocation requires stopping workloads or revoking the
-credential at its issuer.
+The Kubernetes Secret Driver checks ownership and sends DELETE with the stored UID and
+current resource version. OCC removes the PostgreSQL record after the Driver confirms
+absence. A finalizer returns `503` and keeps the record. Retry after it clears. An object
+with different ownership also leaves the record in place.
+
+Gateway replacement leaves the Namespace Secret in storage. To revoke its use immediately,
+stop the workloads or revoke the credential at its issuer.
 
 ## Debugging and Verification
 
@@ -335,6 +331,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-26 17:37: Confirm Kubernetes Secret absence before removing its OCC record. (authoring-run/f45ede94-8b6c-4c71-86c4-3cf15cd0540c - 972a23356848ff30bc40eaa375536eb1424eddca)
 - 2026-11-26 10:21: Describe Slack Source delivery separately from remaining Namespace Secret bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 3733308f3a1a47555563c351f97f5113c8993091)
 - 2026-11-21 16:05: Allow simple formatting in assistant nonce proof. (authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f - ff770f5bef21b30cc12018e776add31a606d6f0d)
 

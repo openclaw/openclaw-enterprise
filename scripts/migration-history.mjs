@@ -177,6 +177,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 99 && completedCount > 99) {
     return "preNativeGitHubPullRequestPublication";
   }
+  if (count === 100 && completedCount > 100) {
+    return "preUpstreamProxyCredentialSources";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -368,6 +371,40 @@ export async function migrateWithHistory(
           ),
           { code: "MIGRATION_REGISTRATION_PENDING" },
         );
+      }
+    }
+    // Match 0101's guard before the upgrader stops Agents or writers. The
+    // migration repeats the check under table locks before changing the schema.
+    if (checkOnly && history !== "empty" && history !== "completed") {
+      const {
+        rows: [schema],
+      } = await client.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_catalog.pg_attribute
+           WHERE attrelid = 'occ.agents'::regclass
+             AND attname = 'network_proxy_secret_id' AND NOT attisdropped
+         ) AS legacy_proxy_column`,
+      );
+      if (schema?.legacy_proxy_column === true) {
+        const {
+          rows: [state],
+        } = await client.query(
+          `SELECT EXISTS (SELECT 1 FROM occ.agents WHERE network_proxy_secret_id IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM occ.agent_revisions WHERE network_proxy_secret_id IS NOT NULL)
+             OR EXISTS (
+               SELECT 1 FROM occ.agent_provisioning_work
+               WHERE status IN ('queued', 'running') AND (plan->'networkProxy') ? 'credentialSecretId'
+             ) AS legacy_proxy_references`,
+        );
+        if (state?.legacy_proxy_references === true) {
+          throw Object.assign(
+            new Error(
+              "Migration 0101 is blocked by legacy authenticated Network proxy selections. " +
+                "Delete affected Agents and settle their outstanding provisioning work on the current controller before retrying the upgrade.",
+            ),
+            { code: "MIGRATION_LEGACY_PROXY_REFERENCES" },
+          );
+        }
       }
     }
     if (!checkOnly) {

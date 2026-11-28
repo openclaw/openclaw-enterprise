@@ -548,6 +548,60 @@ test(
       "the real worker must recover explicit namespace selection from PostgreSQL",
     );
 
+    // A real Kubernetes finalizer can hold an accepted delete. OCC must retain the immutable
+    // backend identity through the failure so an authorized retry can still settle its row.
+    const cleanupCollection = `/namespaces/${primaryNamespaceId}/secrets`;
+    const cleanupFixture = await request<SecretResponse>("POST", cleanupCollection, {
+      name: "held-delete-fixture",
+      value: `fixture-only-${randomUUID()}`,
+    });
+    assert.equal(cleanupFixture.status, 201, JSON.stringify(cleanupFixture.error));
+    assert.ok(cleanupFixture.data);
+    const cleanupId = cleanupFixture.data.id;
+    const cleanupPath = `${cleanupCollection}/${cleanupId}`;
+    const readCleanupRecord = () =>
+      state.read((view) => view.secrets.findSecret(primaryNamespaceId, cleanupId));
+    const cleanupRecord = await readCleanupRecord();
+    assert.ok(cleanupRecord);
+    const cleanupBackend = cleanupRecord.backendRef;
+    const deleteCleanupFixture = () =>
+      app.inject({
+        method: "DELETE",
+        url: cleanupPath,
+        headers: {
+          ...authenticatedHeaders(session),
+          origin: authBaseURL,
+          host: new URL(authBaseURL).host,
+        },
+      });
+    const patchCleanupFinalizers = (finalizers: readonly string[]) =>
+      kubectl(
+        "patch",
+        "secret",
+        cleanupBackend.name,
+        "--namespace",
+        cleanupBackend.namespaceName,
+        "--type=merge",
+        "-p",
+        JSON.stringify({ metadata: { finalizers } }),
+      );
+    await patchCleanupFinalizers(["openclaw.dev/test-hold-secret-deletion"]);
+    try {
+      const refused = await deleteCleanupFixture();
+      assert.equal(refused.statusCode, 503);
+      const held = await resource("secret", cleanupBackend.name, cleanupBackend.namespaceName);
+      assert.equal(held.metadata.uid, cleanupBackend.uid);
+      assert.ok(held.metadata.deletionTimestamp, "Kubernetes accepted the exact DELETE");
+      assert.deepEqual(await readCleanupRecord(), cleanupRecord);
+    } finally {
+      await patchCleanupFinalizers([]);
+    }
+    await waitFor("held test Secret to disappear", () =>
+      missing("secret", cleanupBackend.name, cleanupBackend.namespaceName),
+    );
+    assert.equal((await deleteCleanupFixture()).statusCode, 204);
+    assert.equal(await readCleanupRecord(), undefined);
+
     // The caller can operate each Agent's Secrets, so its deploy gives the Agent's
     // ServicePrincipal operate on exactly those Secrets (RFC-0026). A deploy by a caller who
     // cannot operate a source writes no grant and is refused; postgres-default-users.test.ts

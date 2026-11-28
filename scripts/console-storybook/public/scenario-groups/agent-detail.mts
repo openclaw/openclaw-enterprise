@@ -4,6 +4,7 @@ import type {
   AgentDeploymentStatusWire,
   AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
+  CredentialSourceResponse,
   OpenClawConfigurationDocument,
   PluginApprovers,
   PluginDesiredState,
@@ -18,6 +19,7 @@ import type { StoryAction } from "../../story-action.mts";
 import type { createFixtureFetch } from "../preview-rules.mts";
 import type { servePluginDiscovery } from "../plugin-discovery-fixture.mts";
 import { click } from "../create-agent-form-data.mts";
+import { previewChannelProxyCredential } from "./credential-sources.mts";
 import {
   pluginCapabilities,
   pluginDiscovery,
@@ -50,7 +52,7 @@ type AgentDetailScenario = {
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
   agentNetworkProxy?: AgentNetworkProxy;
-  extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
+  initialCredentialSources?: readonly CredentialSourceResponse["data"][];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   oauthCatalog?: string;
@@ -513,13 +515,14 @@ export function createAgentDetailScenarios({
         name: "Gateway channel proxy empty",
         path: draft,
         deployed: true,
+        initialCredentialSources: [previewChannelProxyCredential],
         description:
           "The draft has no upstream proxy. The editor labels its Gateway-channel-only scope and the next-deployment lifecycle.",
         steps: [
-          "Enter an HTTP or HTTPS endpoint and optionally select a proxy credential Secret.",
+          "Enter an HTTP or HTTPS endpoint and select a ready static Credential Source if the proxy requires authentication.",
           "Save the setting, then inspect the current version to confirm its snapshot did not change.",
         ],
-        gap: "Simulated UI proof; no proxy, Secret backend, or Gateway runs.",
+        gap: "The preview simulates the draft save. It does not contact a proxy or Gateway.",
       },
       networkProxySaved: {
         group: "Pages/Agent detail",
@@ -528,13 +531,11 @@ export function createAgentDetailScenarios({
         deployed: true,
         agentNetworkProxy: {
           url: "https://proxy.example:8443",
-          credentialSecretId: "sec_00000000-0000-4000-8000-000000000010",
+          credentialSourceId: previewChannelProxyCredential.id,
         },
-        extraSecrets: [
-          { id: "sec_00000000-0000-4000-8000-000000000010", name: "Proxy credential (simulated)" },
-        ],
+        initialCredentialSources: [previewChannelProxyCredential],
         description:
-          "The draft shows the endpoint and a safe Secret reference. Clearing applies only to the next deployment.",
+          "The draft shows the endpoint and selected Source ID. Clear the draft selection to change the next deployment.",
         steps: ["Clear the proxy, inspect the current version, then deploy the cleared draft."],
         gap: "Simulated UI proof; revision and deployment results are fixture state.",
       },
@@ -606,25 +607,35 @@ export function createAgentDetailScenarios({
           "A viewer can inspect the saved selection but cannot edit it without exact Agent update permission.",
         gap: "Simulated permission response.",
       },
-      networkProxySecretLoading: {
+      networkProxySourceLoading: {
         group: "Pages/Agent detail",
-        name: "Gateway channel proxy Secrets loading",
+        name: "Gateway channel proxy Sources loading",
         path: draft,
         deployed: true,
-        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000 }],
+        initialCredentialSources: [previewChannelProxyCredential],
+        actions: [{ selector: "#agent-network-proxy-credential", focus: true }],
+        rules: [{ suffix: "/credential-sources", method: "GET", delayMs: 4000 }],
         description:
-          "The existing Secret selector reports loading while its Namespace list is pending.",
-        gap: "Simulated delayed Secret list.",
+          "The proxy credential selector reports loading while it reads Sources in this Namespace.",
+        gap: "Simulated delayed Credential Source list.",
       },
-      networkProxySecretError: {
+      networkProxySourceError: {
         group: "Pages/Agent detail",
-        name: "Gateway channel proxy Secrets error",
+        name: "Gateway channel proxy Sources error",
         path: draft,
         deployed: true,
-        rules: [{ suffix: "/secrets", method: "GET", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+        actions: [{ selector: "#agent-network-proxy-credential", focus: true }],
+        rules: [
+          {
+            suffix: "/credential-sources",
+            method: "GET",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
         description:
-          "The existing Secret selector reports an unavailable list without treating it as empty.",
-        gap: "Simulated Secret list failure.",
+          "The proxy credential selector reports that the Source list is unavailable and offers a retry.",
+        gap: "Simulated Credential Source list failure.",
       },
       editCurrentConfiguration: {
         group: "Pages/Agent detail",

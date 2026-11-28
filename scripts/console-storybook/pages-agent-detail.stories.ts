@@ -37,13 +37,13 @@ export const NetworkProxyPermission = {
   ...story("networkProxyPermission"),
   name: "Gateway Channel Proxy Permission",
 };
-export const NetworkProxySecretLoading = {
-  ...story("networkProxySecretLoading"),
-  name: "Gateway Channel Proxy Secrets Loading",
+export const NetworkProxySourceLoading = {
+  ...story("networkProxySourceLoading"),
+  name: "Gateway Channel Proxy Sources Loading",
 };
-export const NetworkProxySecretError = {
-  ...story("networkProxySecretError"),
-  name: "Gateway Channel Proxy Secrets Error",
+export const NetworkProxySourceError = {
+  ...story("networkProxySourceError"),
+  name: "Gateway Channel Proxy Sources Error",
 };
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");

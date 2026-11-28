@@ -1540,8 +1540,8 @@ test(
     assert.equal(enrolledNative.statusCode, 201, enrolledNative.body);
     const nativeSource = enrolledNative.json().data;
 
-    // Guided provisioning cannot supply the network grants that staged delivery requires.
-    // Exact Source authorization must still precede that refusal, and neither request may queue work or create resources.
+    // An otherwise authorized guided provisioning caller cannot use this Source
+    // without its exact operate grant. The denial must leave no work or resources.
     const guidedConfigurationDriver = createTestConfigurationDriver({
       id: "guided-source-configuration",
       exact: true,
@@ -1613,15 +1613,6 @@ test(
         nativeApp,
       );
       assert.equal(deniedGuided.statusCode, 403, deniedGuided.body);
-      const refusedGuided = await inject(
-        "POST",
-        `${base}/agents/provision`,
-        guidedRequest,
-        nativeApp,
-      );
-      assert.equal(refusedGuided.statusCode, 409, refusedGuided.body);
-      assert.equal(refusedGuided.json().error.code, "RESOURCE_CONFLICT");
-      assert.match(refusedGuided.json().error.message, /guided.*managed credential source/i);
       assert.deepEqual(await guidedEffects(), effectsBeforeGuided);
     } finally {
       nativeController.selectDriver("configuration", originalConfigurationDriver.id);

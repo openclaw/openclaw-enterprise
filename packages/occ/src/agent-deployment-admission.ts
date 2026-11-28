@@ -38,6 +38,7 @@ import {
   type ExecutionAdmission,
   type FirstDeploymentReceipt,
   type HarnessExecutionMode,
+  type HarnessAuthBinding,
   type HarnessAuthSnapshot,
   type LoggingLevel,
   type Namespace,
@@ -51,6 +52,7 @@ import {
   type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SandboxNetworkGrant,
+  type SecretBindings,
   type SourceProviderPresetId,
   type TokenServiceDriver,
   type GitHubAppInstallationCredentialSource,
@@ -59,7 +61,10 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { validExecutionMode } from "./agent-provisioning.ts";
-import { admitNetworkProxy, authorizeNetworkProxySecret } from "./agent-network-proxy.ts";
+import {
+  admitNetworkProxy,
+  type createNetworkProxySourceAuthorization,
+} from "./agent-network-proxy.ts";
 import {
   authorizeFirstDeploymentReceipt,
   type AuthorizedAgentDeployment,
@@ -172,7 +177,10 @@ export interface DeploymentAdmissionDependencies {
   >;
   readonly harnessAuth: Pick<
     ReturnType<typeof createHarnessAuthOperations>,
-    "admitHarnessAuth" | "requireCredentialSourceDrivers" | "requireModelSource"
+    | "admitHarnessAuth"
+    | "credentialSourceHarnessAuthSnapshot"
+    | "requireCredentialSourceDrivers"
+    | "requireModelSource"
   >;
   readonly repositoryPolicy: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
@@ -218,10 +226,7 @@ export interface DeploymentAdmissionDependencies {
     "grantDeployedAgentSources" | "admitCredentialSources"
   >;
   readonly secretDriver: () => SecretDriver;
-  readonly ownedSecretDriver: (
-    id: string,
-    failure: () => import("./errors.ts").SecretDriverOwnershipError,
-  ) => SecretDriver;
+  readonly authorizeNetworkProxySource: ReturnType<typeof createNetworkProxySourceAuthorization>;
   readonly validateComputeConfiguration: (values: Readonly<OpenClawConfigurationDocument>) => void;
   readonly timestamp: () => string;
   readonly nextIdentifier: (kind: ResourceKind) => string;
@@ -270,16 +275,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
 
   async function lockModelCredentialSource(
     state: PlatformUnitOfWork,
-    agent: Readonly<Agent>,
+    namespaceId: string,
     auth: HarnessAuthSnapshot,
   ): Promise<CredentialSource | undefined> {
     if (auth.method !== "credential_source" || auth.tokenServiceInstanceId === undefined) {
       return undefined;
     }
-    const source = await state.credentialSources.lockCredentialSource(
-      agent.namespaceId,
-      auth.sourceId,
-    );
+    const source = await state.credentialSources.lockCredentialSource(namespaceId, auth.sourceId);
     if (
       !isManagedTokenServiceSource(source) ||
       source.state !== "ready" ||
@@ -330,7 +332,108 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
+    let matches: boolean;
+    if (presetId === "codex-pat" || presetId === "builtin_codex") {
+      // Built-in account destinations come from the fixed server-owned preset.
+      matches = !Object.hasOwn(harness.configuration ?? {}, "modelProvider");
+    } else {
+      const resolvedProvider = asRecord(harness.configuration?.modelProvider);
+      try {
+        matches =
+          preset.provider !== undefined &&
+          resolvedProvider?.protocol === preset.provider.protocol &&
+          typeof resolvedProvider.baseUrl === "string" &&
+          isDeepStrictEqual(
+            inferenceKeyDestination(resolvedProvider.baseUrl, preset.provider.protocol),
+            inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol),
+          );
+      } catch {
+        matches = false;
+      }
+    }
+    if (!matches) {
+      throw new ResourceStateConflictError(
+        "The frozen Harness model route does not match the admitted source preset.",
+      );
+    }
     return { source, preset, ...delivery };
+  }
+
+  function prepareHarnessDeployment(
+    compute: ComputeDriver,
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+    sandbox: SandboxDriver | undefined,
+    modelSource: CredentialSource | undefined,
+  ) {
+    const presetId = modelSource && permittedModelCredentialPresetId(modelSource);
+    const revisionHarness = immutableCopy({
+      ...harness,
+      overrides: harness.overrides ?? {},
+      configuration:
+        compute.resolveHarnessConfiguration?.(
+          harness,
+          auth,
+          configuration,
+          presetId === "builtin_codex" ? undefined : presetId,
+        ) ?? {},
+    });
+    return {
+      revisionHarness,
+      stagedModel: prepareModelCredentialDeployment(
+        modelSource,
+        presetId,
+        revisionHarness,
+        configuration,
+        sandbox,
+      ),
+    };
+  }
+
+  async function validateProvisioningModel(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
+    compute: ComputeDriver,
+    harness: RevisionHarnessDescriptor,
+    values: OpenClawConfigurationDocument,
+    secretBindings: SecretBindings | undefined,
+  ): Promise<void> {
+    const auth = await dependencies.harnessAuth.credentialSourceHarnessAuthSnapshot(
+      state,
+      namespaceId,
+      binding,
+    );
+    const source = await lockModelCredentialSource(state, namespaceId, auth);
+    const sandbox = dependencies.sandboxDriver();
+    const { revisionHarness, stagedModel } = prepareHarnessDeployment(
+      compute,
+      harness,
+      auth,
+      values,
+      sandbox,
+      source,
+    );
+    if (!stagedModel) {
+      throw new ResourceStateConflictError(
+        "Guided provisioning requires an approved model Source.",
+      );
+    }
+    validateAgentHarnessAuth(
+      compute,
+      revisionHarness,
+      auth,
+      agentRuntimeConfiguration(
+        values,
+        revisionHarness,
+        compute,
+        sandbox,
+        dependencies.loggingLevel,
+      ),
+      secretBindings,
+    );
+    admitCredentialPolicy(stagedModel, stagedModel, new Map(), new Map(), []);
   }
 
   function admitModelCredentialBinding(
@@ -605,18 +708,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (bound.gatewayTokenServiceInstanceId !== undefined) {
       requireGatewaySourceDelivery(compute, bound.gatewayTokenServiceInstanceId);
     }
-    const proxySecret = await authorizeNetworkProxySecret(
-      state,
-      dependencies.authority,
-      dependencies.ownedSecretDriver,
-      principalId,
-      agent.namespaceId,
-      agent.networkProxy,
-    );
-    const sources = [...bound.secrets];
-    if (proxySecret && !sources.some((secret) => secret.id === proxySecret.id)) {
-      sources.push(proxySecret);
-    }
+    const sources = bound.secrets;
     const secretDriver = sources.length === 0 ? undefined : dependencies.secretDriver();
     for (const secret of sources) {
       await dependencies.authority.authorizeAgentPrincipal(principalId, agent, "operate", {
@@ -1132,69 +1224,25 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "Replacing an active Agent revision with a staged managed credential is not supported.",
         );
       }
-      const modelSource = await lockModelCredentialSource(state, lockedAgent, harnessAuth);
-      const presetId = modelSource && permittedModelCredentialPresetId(modelSource);
-      const modelPreset = presetId === "builtin_codex" ? undefined : presetId;
-      const fixedPat = modelPreset === "codex-pat";
-      const revisionHarness = immutableCopy({
-        ...requestedHarness,
-        configuration:
-          compute.resolveHarnessConfiguration?.(
-            requestedHarness,
-            harnessAuth,
-            configuration.values,
-            modelPreset,
-          ) ?? {},
-      });
+      const modelSource = await lockModelCredentialSource(
+        state,
+        lockedAgent.namespaceId,
+        harnessAuth,
+      );
+      const { revisionHarness, stagedModel } = prepareHarnessDeployment(
+        compute,
+        requestedHarness,
+        harnessAuth,
+        configuration.values,
+        sandbox,
+        modelSource,
+      );
       dependencies.harnessAuth.requireModelSource(
         compute,
         revisionHarness,
         harnessAuth,
         configuration.values,
       );
-      const stagedModel = prepareModelCredentialDeployment(
-        modelSource,
-        presetId,
-        revisionHarness,
-        configuration.values,
-        sandbox,
-      );
-      if (stagedModel !== undefined) {
-        let matches: boolean;
-        if (
-          fixedPat ||
-          (stagedModel.source.type === "oauth2-refresh-token" &&
-            stagedModel.source.consent.kind === "builtin_codex")
-        ) {
-          // Built-in account destinations come from the fixed server-owned preset.
-          matches = !Object.hasOwn(revisionHarness.configuration ?? {}, "modelProvider");
-        } else {
-          const resolvedProvider = asRecord(revisionHarness.configuration?.modelProvider);
-          try {
-            matches =
-              stagedModel.preset.provider !== undefined &&
-              resolvedProvider?.protocol === stagedModel.preset.provider.protocol &&
-              typeof resolvedProvider.baseUrl === "string" &&
-              isDeepStrictEqual(
-                inferenceKeyDestination(
-                  resolvedProvider.baseUrl,
-                  stagedModel.preset.provider.protocol,
-                ),
-                inferenceKeyDestination(
-                  stagedModel.preset.provider.baseUrl,
-                  stagedModel.preset.provider.protocol,
-                ),
-              );
-          } catch {
-            matches = false;
-          }
-        }
-        if (!matches) {
-          throw new ResourceStateConflictError(
-            "The frozen Harness model route does not match the admitted source preset.",
-          );
-        }
-      }
       dependencies.harnessAuth.requireCredentialSourceDrivers(harnessAuth, sandbox);
       const admittedSources = await dependencies.credentialAccess.admitCredentialSources(
         state,
@@ -1506,6 +1554,20 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         lockedAgent.executionMode,
         configuration.values,
       );
+      const proxySource = await dependencies.authorizeNetworkProxySource(
+        principalId,
+        namespace.id,
+        lockedAgent.networkProxy,
+        (id) => state.credentialSources.lockCredentialSource(namespace.id, id),
+      );
+      if (proxySource) {
+        await dependencies.authority.authorizeAgentPrincipal(
+          principalId,
+          lockedAgent,
+          "operate",
+          proxySource.sourceRef,
+        );
+      }
       const revisionDraft: AgentRevision = {
         id: revisionId,
         ...execution,
@@ -1525,6 +1587,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         ...(lockedAgent.networkProxy === undefined
           ? {}
           : { networkProxy: lockedAgent.networkProxy }),
+        ...(proxySource === undefined
+          ? {}
+          : { networkProxyTokenServiceInstanceId: proxySource.tokenServiceInstanceId }),
         harness: revisionHarness,
         compute: {
           id: compute.id,
@@ -1733,5 +1798,5 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     }
   }
 
-  return admitAgentDeployment;
+  return { admitAgentDeployment, validateProvisioningModel };
 }

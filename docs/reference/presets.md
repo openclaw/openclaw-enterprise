@@ -286,21 +286,20 @@ appear only as a whole token in `agent.harnessAuth.secret`, with method
 ```
 
 A method-only `agent.harnessAuth`, such as `{ "method": "codex_pat" }`,
-preselects authentication without supplying credentials. The creation form still
-requires a Secret selection; a concrete Agent requires a complete credential binding.
+preselects authentication. Supply a credential in the form before saving the Agent.
 
-For an authentication password variable, the Console offers **Create new Secret**
-or **Use existing Secret**. Existing mode lists readable Namespace Secret metadata
-and uses the selected reference without fetching its value. Switching modes clears
-the entered token; the saved Preset remains unchanged.
+For a [model profile that supports Credential Sources](credential-sources/managed-static.md),
+set `agent.harnessAuth` to `{ "method": "credential_source", "sourceId": "..." }`.
+Use an existing Source ID in the Agent's Namespace or a whole string variable
+such as `"{{ vars.modelSourceId }}"`. The Console saves the reference on the
+Agent draft. The caller needs `credential_source:operate` on that Source.
 
-In new mode, **Use Preset** carries the value into the masked credential input, and
-**Create Agent** creates a Namespace Secret. Both modes then grant the Agent exact
-access through the ordinary creation flow. The value never belongs in Preset
-storage, Agent JSON, or Configuration JSON. API clients must create a Secret and
-replace `secret` with `source: <SecretRef>` before submitting an ordinary Agent
-request; rendering alone creates no resources. Partial saves follow normal
-recovery; retrying credential access does not recreate the Agent.
+For a password variable, **Use existing Secret** selects readable Namespace
+Secret metadata. **Create new Secret** takes a masked value and creates the
+Secret when you save the Agent. Switching modes clears the typed value. Both
+modes grant the Agent access to the selected Secret. API clients replace
+`secret` with `source: <SecretRef>` before Agent creation. Rendering alone
+creates no resources, and retrying credential access does not recreate the Agent.
 
 String variables can still supply existing credential reference IDs.
 [SecretRefs](configuration/secrets.md) remain structured, unresolved references;

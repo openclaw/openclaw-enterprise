@@ -134,6 +134,7 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
+        "guided provisioning admits a dedicated model Source through the Worker handoff",
         "Slack Sources validate app and bot and bind Gateway-only fields during provisioning and deployment",
         "Slack Source provisioning refuses unsupported Harness topology and delivery before custody",
         "Slack Source provisioning rechecks exact grants after custody",
@@ -149,6 +150,8 @@
         "the Worker rechecks the exact Source grant after OCC TokenService reads custody and before Gateway launch",
         "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
         "the Worker reports a withdrawn Gateway Source before resolving or staging credentials",
+        "the Worker refuses Gateway launch when the Envoy Source is withdrawn after preparation",
+        "a proxy Source withdrawn from a revision without enabled channels does not require Stop",
         "the Worker retains failed-preparation cleanup while an abandoned Gateway Source revision cannot be read"
       ]
     },

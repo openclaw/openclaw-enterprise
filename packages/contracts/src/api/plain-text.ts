@@ -2,6 +2,9 @@
 // (scripts/render-installation-profile.ts) loads it straight from a checkout, before
 // `pnpm install` has run. `api/common.ts` re-exports it for everything else.
 
+export const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+export const CREDENTIAL_SOURCE_ID_PATTERN = `^cs_${UUID_V4}$`;
+
 /**
  * The text rule shared by Names and Backend IDs: no leading or trailing whitespace, and no
  * control character (C0, DEL or C1) and no line or paragraph separator (U+2028, U+2029)

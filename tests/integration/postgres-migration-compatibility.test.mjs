@@ -824,6 +824,12 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }
+    if (code === 1 && output.includes('"code":"MIGRATION_LEGACY_PROXY_REFERENCES"')) {
+      if (refusal !== undefined) {
+        assert.match(output, refusal);
+      }
+      return { ok: false, code: "MIGRATION_LEGACY_PROXY_REFERENCES" };
+    }
     if (code === 1 && output.includes('"code":"MIGRATION_REGISTRATION_PENDING"')) {
       assert.ok(stdout === "", "A blocked registration must not report migration success.");
       if (refusal !== undefined) {
@@ -1313,27 +1319,32 @@ function upgradedCanonicalData(data) {
         ...value,
         predecessor_replacement: value.predecessor_replacement ?? null,
         network_proxy_url: value.network_proxy_url ?? null,
-        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
+        network_proxy_credential_source_id: value.network_proxy_credential_source_id ?? null,
       };
       delete current.restart_generation;
       delete current.restart_domain;
+      delete current.network_proxy_secret_id;
       return { value: current };
     }),
-    agent_revisions: data.agent_revisions.map(({ value }) => ({
-      value: {
-        ...value,
-        network_proxy_url: value.network_proxy_url ?? null,
-        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
-        network_proxy_admission: value.network_proxy_admission ?? null,
-        first_deployment_digest: null,
-        admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
-          ? value.admitted_spec
-          : {
-              ...value.admitted_spec,
-              execution_admission: legacyExecutionAdmission,
-            },
-      },
-    })),
+    agent_revisions: data.agent_revisions.map(
+      ({ value: { network_proxy_secret_id: _old, ...value } }) => ({
+        value: {
+          ...value,
+          network_proxy_url: value.network_proxy_url ?? null,
+          network_proxy_credential_source_id: value.network_proxy_credential_source_id ?? null,
+          network_proxy_admission: value.network_proxy_admission ?? null,
+          network_proxy_token_service_instance_id:
+            value.network_proxy_token_service_instance_id ?? null,
+          first_deployment_digest: null,
+          admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
+            ? value.admitted_spec
+            : {
+                ...value.admitted_spec,
+                execution_admission: legacyExecutionAdmission,
+              },
+        },
+      }),
+    ),
   };
 }
 
@@ -1577,6 +1588,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -1759,6 +1771,75 @@ registerPostgresMigrationTransactionCommandCases({
   historySnapshot,
   assertCompletedHistory,
 });
+
+test(
+  "Upstream proxy Source migration refuses a legacy authenticated selection without changing it",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "upstream_proxy_source", { prefix: 100 });
+    const namespaceId = `ns_${randomUUID()}`;
+    const { agent } = await seedCanonicalAgent(db, namespaceId, {
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    // Use the old application role's writable draft fields, exactly as the saved selection used them.
+    const proxyUrl = "https://proxy.example:8443";
+    const secretId = `sec_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.secrets
+        (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Upstream proxy token','secrets','fixture','proxy-token','value',$3,now())`,
+      [secretId, namespaceId, randomUUID()],
+    );
+    await db.app.query(
+      "UPDATE occ.agents SET network_proxy_url=$2, network_proxy_secret_id=$3 WHERE id=$1",
+      [agent, proxyUrl, secretId],
+    );
+    const before = await canonicalData(db);
+    const receipts = await historyReceipts(db.migrator);
+    // The upgrade's read-only check must catch this blocker before any Agent Stops.
+    assert.deepEqual(
+      await runHistoryCommand(
+        db,
+        "production",
+        "--check",
+        /Delete affected Agents and settle their outstanding provisioning work/,
+      ),
+      { ok: false, code: "MIGRATION_LEGACY_PROXY_REFERENCES" },
+    );
+    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(await historyReceipts(db.migrator), receipts);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        const cause = error?.cause ?? error;
+        assert.match(
+          cause?.message ?? "",
+          /Legacy authenticated Network proxy selections require retirement/,
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(await historyReceipts(db.migrator), receipts);
+
+    // A deliberately saved unauthenticated selection still carries its configured upstream URL.
+    await db.app.query("UPDATE occ.agents SET network_proxy_secret_id=NULL WHERE id=$1", [agent]);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preUpstreamProxyCredentialSources",
+    });
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT network_proxy_url, network_proxy_credential_source_id FROM occ.agents WHERE id=$1",
+          [agent],
+        )
+      ).rows,
+      [{ network_proxy_url: proxyUrl, network_proxy_credential_source_id: null }],
+    );
+  },
+);
 
 test(
   "Canonical repository policy migration preserves stock TokenService metadata and revision egress",
@@ -2019,6 +2100,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3251,6 +3333,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3393,6 +3476,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3568,6 +3652,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3596,6 +3681,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [100, "ALTER TABLE"],
                 [95, "CREATE FUNCTION"],
                 [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],
@@ -3635,6 +3721,12 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 100) {
+          // Abort after 0101 renames the Agent draft column.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_attribute WHERE attrelid='occ.agents'::regclass
+              AND attname='network_proxy_credential_source_id' AND NOT attisdropped
+          ) THEN RETURN; END IF;`;
         } else if (prefix === 95) {
           // The Source guard follows the Client constraint change in 0096.
           failAt = "";

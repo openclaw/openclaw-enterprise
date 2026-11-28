@@ -246,8 +246,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
       return bindings;
     }
     if (
-      (Object.values(bindings.bindings).some(({ source }) => source.kind === "secret") ||
-        revision.networkProxy?.credentialSecretId !== undefined) &&
+      Object.values(bindings.bindings).some(({ source }) => source.kind === "secret") &&
       (typeof secretDriverId !== "string" || revision.secretDriverId !== secretDriverId)
     ) {
       return refuseRevisionInputs("SECRET_DRIVER_MISMATCH");
@@ -306,27 +305,6 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
 
     if ("result" in resolved) {
       return resolved;
-    }
-
-    let networkProxyCredential: ComputeRevisionContext["networkProxyCredential"];
-    const networkProxySecretId = revision.networkProxy?.credentialSecretId;
-    if (networkProxySecretId !== undefined) {
-      const secret = await state.read((view) =>
-        view.secrets.findSecret(revision.namespaceId, networkProxySecretId),
-      );
-      if (
-        secret === undefined ||
-        secret.driverId !== secretDriverId ||
-        !projectableSecretBackend(secret.backendRef)
-      ) {
-        return refuseRevisionInputs("NETWORK_PROXY_SECRET_UNAVAILABLE");
-      }
-      networkProxyCredential = {
-        secretId: secret.id,
-        namespaceId: secret.namespaceId,
-        agentId: revision.agentId,
-        backendRef: secret.backendRef,
-      };
     }
 
     const model = await resolveRevisionHarnessAuth(revision, dependencies);
@@ -407,7 +385,6 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
       context: {
         ...(revision.egressPlan === undefined ? {} : revisionEgressReceipts(state, revision)),
         secretEnvironment: Object.freeze(resolved.projections),
-        ...(networkProxyCredential === undefined ? {} : { networkProxyCredential }),
         harnessAuth: model.harnessAuth,
         ...(credentialSources.length === 0
           ? {}

@@ -1,7 +1,11 @@
+import { CREDENTIAL_SOURCE_ID_PATTERN } from "./api/plain-text.ts";
+
+const credentialSourceIdPattern = new RegExp(CREDENTIAL_SOURCE_ID_PATTERN, "u");
+
 /** An Agent's Gateway-channel-only upstream proxy selection. */
 export interface AgentNetworkProxy {
   readonly url: string;
-  readonly credentialSecretId?: string;
+  readonly credentialSourceId?: string;
 }
 
 function hasControlCharacter(value: string, includeSpace = false): boolean {
@@ -34,6 +38,9 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
     throw new Error("Invalid Network proxy selection.");
   }
   const selection = value as Record<string, unknown>;
+  if (Object.keys(selection).some((key) => key !== "url" && key !== "credentialSourceId")) {
+    throw new Error("Invalid Network proxy selection.");
+  }
   const input = selection.url;
   if (
     typeof input !== "string" ||
@@ -68,15 +75,16 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
     );
   }
   if (
-    selection.credentialSecretId !== undefined &&
-    (typeof selection.credentialSecretId !== "string" || !selection.credentialSecretId)
+    selection.credentialSourceId !== undefined &&
+    (typeof selection.credentialSourceId !== "string" ||
+      !credentialSourceIdPattern.test(selection.credentialSourceId))
   ) {
-    throw new Error("Invalid Network proxy credential Secret reference.");
+    throw new Error("Invalid Network proxy Credential Source reference.");
   }
   return Object.freeze({
     url: parsed.origin,
-    ...(selection.credentialSecretId === undefined
+    ...(selection.credentialSourceId === undefined
       ? {}
-      : { credentialSecretId: selection.credentialSecretId }),
+      : { credentialSourceId: selection.credentialSourceId }),
   });
 }

@@ -1012,6 +1012,15 @@ function renderAgentForm(
     }
   } else if (method === "runtime") {
     binding = { method };
+  } else if (method === "credential_source") {
+    if (
+      typeof auth.sourceId !== "string" ||
+      !auth.sourceId ||
+      Object.keys(auth).some((key) => key !== "method" && key !== "sourceId")
+    ) {
+      throw new Error("Rendered Preset contains an invalid model Credential Source.");
+    }
+    binding = { method, sourceId: auth.sourceId };
   } else if (!authDefault && agent.harnessAuth != null) {
     const { kind, id, namespaceId: sourceNamespace } = responseFields(auth.source);
     if (sourceNamespace === namespaceId && typeof id === "string" && id && keyMethod) {
@@ -1027,7 +1036,12 @@ function renderAgentForm(
       );
     }
   }
-  const boundSource = binding && "source" in binding ? binding.source : undefined;
+  const presetModelSource =
+    binding?.method === "credential_source"
+      ? { kind: "credential_source" as const, namespaceId, id: binding.sourceId }
+      : undefined;
+  const boundSource =
+    presetModelSource ?? (binding && "source" in binding ? binding.source : undefined);
   const hasBoundModelCredential = boundSource !== undefined;
   const presetModelSecret = presetOptions.modelSecret;
   const presetExistingSecret =
@@ -1157,6 +1171,9 @@ function renderAgentForm(
     oauthOption,
   );
   authMethod.value = keyMethod ?? binding?.method ?? "api_key";
+  const usesCodexLogin = () =>
+    (binding?.method ?? authMethod.value) === "codex_pat" ||
+    (!binding && authMethod.value === "credential_source");
   if (passwordAuth && typeof auth.secret === "string") {
     apiKey.value = auth.secret;
     delete auth.secret;
@@ -1468,7 +1485,7 @@ function renderAgentForm(
   harness.value =
     configuredHarnessId(rendered.configuration?.values) ??
     (mode.value === "dedicated" ? "codex" : "openclaw");
-  if (["codex_pat", "credential_source"].includes(authMethod.value)) {
+  if (usesCodexLogin()) {
     nativeProvider.value = "openai";
     harness.value = "codex";
     mode.value = "dedicated";
@@ -2494,10 +2511,8 @@ function renderAgentForm(
   let credentialBindingFieldsGeneration = 0;
   const networkProxyFields = createNetworkProxyFields({
     context,
-    namespaceId,
     id: "create-network-proxy",
     ...(draft.networkProxy === undefined ? {} : { initial: draft.networkProxy }),
-    agentName: () => name.value.trim(),
     onChange() {
       edited = true;
       updateControls();
@@ -3242,12 +3257,12 @@ function renderAgentForm(
     proxyFieldsForControls?.setDisabled(planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
-    const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
-    if (usesOAuth && !binding && modelSourcePicker.creating) {
+    const usesOAuth = !binding && authMethod.value === "credential_source";
+    if (usesOAuth && modelSourcePicker.creating) {
       modelCredentialSource = oauthLogin.source;
       modelCredentialSecret = oauthLogin.source;
     }
-    oauthLogin.setActive(usesOAuth && !binding && modelSourcePicker.creating);
+    oauthLogin.setActive(usesOAuth && modelSourcePicker.creating);
     oauthLogin.setDisabled(planLocked || saved);
     // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
     // natively disabled. The Codex harness lock is applied below, once its hint is set.
@@ -3362,7 +3377,7 @@ function renderAgentForm(
           ? notReady
             ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
             : "Dedicated Agents are provisioned and deployed when created."
-          : usesManagedStatic() || usesExistingModelSource()
+          : presetModelSource || usesManagedStatic() || usesExistingModelSource()
             ? "This Agent will be saved as a draft with its Credential Source. Deploy it from the Agent page after creation."
             : capabilitiesUnreadable
               ? // Without the Installation's capabilities, deploying may need an administrator.
@@ -4248,7 +4263,7 @@ function renderAgentForm(
       return;
     }
     if (
-      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
+      usesCodexLogin() &&
       (nativeProvider.value !== "openai" || harness.value !== "codex" || mode.value !== "dedicated")
     ) {
       feedback.textContent =
@@ -4288,7 +4303,7 @@ function renderAgentForm(
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
-    const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
+    const usesOAuth = !binding && authMethod.value === "credential_source";
     if (
       !binding &&
       !savedCredentialSource &&

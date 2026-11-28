@@ -19,7 +19,7 @@ import {
   protectedText,
   protectedModelApiKey,
   registerQaSecret,
-  grantQaSecret,
+  grantQaCredential,
   redactedQaTail,
 } from "./qa-secrets.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
@@ -702,7 +702,7 @@ export async function createQaAgent(
       { values: nativeValues },
     );
   }
-  await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+  await grantQaCredential(f, agent, { kind: "secret", id: secret.id }, `${agent.name}-model`);
   await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
   await f.deployAndWait(agent);
   agent.native = createNativePluginAssertions({

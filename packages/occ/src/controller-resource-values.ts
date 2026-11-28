@@ -1,4 +1,7 @@
-import type { ResourceKind } from "@openclaw-enterprise/contracts";
+import {
+  DEVICE_AUTHORIZATION_SESSION_ID_PREFIX,
+  type ResourceKind,
+} from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import { ScopeViolationError } from "./errors.ts";
@@ -29,8 +32,7 @@ export function createControllerResourceValues(
   }
 
   function nextDeviceAuthorizationSessionId(): string {
-    // The existing ID override receives the secret kind for device-login handles.
-    return createId ? nextIdentifier("secret") : `sec_${crypto.randomUUID()}`;
+    return `${DEVICE_AUTHORIZATION_SESSION_ID_PREFIX}${crypto.randomUUID()}`;
   }
 
   function timestamp(): string {

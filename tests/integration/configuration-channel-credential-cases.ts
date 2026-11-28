@@ -566,6 +566,24 @@ export function registerConfigurationChannelCredentialCases(
       oldPolicyRefusal,
       { label: "Secret-backed Slack policy ID" },
     );
+    // A partial Preset or Agent validation cannot accept an active policy rejected on save.
+    assertRefused(
+      await context.request("POST", `/namespaces/${context.namespace.id}/agents/validate`, {
+        name: "Old Slack policy",
+        executionMode: "dedicated",
+        configuration: { kind: "agent", values: oldPolicy },
+      }),
+      oldPolicyRefusal,
+      { label: "Agent validation without bindings" },
+    );
+    assertRefused(
+      await context.request("POST", `/namespaces/${context.namespace.id}/presets`, {
+        name: "Old Slack policy",
+        template: { configuration: { values: oldPolicy } },
+      }),
+      oldPolicyRefusal,
+      { label: "Preset with a stored policy reference" },
+    );
     const literalPolicy = slackWith({
       dmPolicy: "allowlist",
       allowFrom: ["U0123456789"],
@@ -660,8 +678,10 @@ export function registerConfigurationChannelCredentialCases(
       unsubstitutedReferenceRefusal("channels.slack.botToken", "${constructor}"),
       { label: "lowercase name" },
     );
+    // An older draft can disable Slack even when its dormant policy contains a reference.
+    await writePastOcc(configurationDriver, configurationId, oldPolicy);
     const disabled = await context.request("PATCH", item, {
-      values: slackWith({ enabled: false }),
+      values: slackWith({ enabled: false, allowFrom: ["${SLACK_ALLOWED_USER}"] }),
       secretBindings: {},
     });
     assert.equal(disabled.status, 200, JSON.stringify(disabled.body));

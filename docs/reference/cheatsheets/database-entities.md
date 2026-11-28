@@ -46,7 +46,7 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `execution_mode`
 - `gateway_managed_mode`
 - `network_proxy_url`
-- `network_proxy_secret_id`
+- `network_proxy_credential_source_id`
 - `plugins`
 - `plugin_driver` (registered ID and implementation that admitted the saved selections)
 - `plugin_approvers`
@@ -91,7 +91,7 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `backend_id`
 - `gateway_managed_mode`
 - `network_proxy_url`
-- `network_proxy_secret_id`
+- `network_proxy_credential_source_id`, `network_proxy_token_service_instance_id`
 - `network_proxy_admission`: immutable Compute admission for the selected endpoint.
 - `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
   binds the Installation, actor, Namespace, Agent, key, reviewed Configuration tuple, and normalized Harness overrides.
@@ -154,7 +154,7 @@ Stores OCC's transient [browser OAuth connection attempts](../../flows/connectio
 
 - Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
 - `oauth_connection`: `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scopes, redirect, and issuer data. The immutable Template version identifies the OAuth client. No Source exists yet.
-- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, source, Driver, and polling-interval data
+- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, Driver, and polling-interval data. A completed login references its Credential Source separately.
 
 OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
 

@@ -34,6 +34,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import type { KubernetesChannelEgress } from "../../apps/controller/src/drivers/compute/kubernetes/channel-egress.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -48,6 +49,7 @@ import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-s
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
+import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -64,6 +66,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
+import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 import {
   createCredentialSourceRevisionCases,
   removeSourceGrant,
@@ -182,7 +185,7 @@ async function gatewaySourceWorkerFixture(
   );
 
   const beforeEnrollment = new Set(core.secrets.keys());
-  const enroll = (secret: string = randomUUID()) =>
+  const enroll = (secret: string = randomUUID(), providerPreset: "openai" | null = "openai") =>
     controller.createManagedCredentialSource(
       fixture.actor.id,
       namespaceId,
@@ -190,7 +193,7 @@ async function gatewaySourceWorkerFixture(
         type: "static",
         name: `Gateway startup ${randomUUID()}`,
         lifecycleConfig: { settings: {} },
-        providerPreset: "openai",
+        ...(providerPreset === null ? {} : { providerPreset }),
         secret,
       },
       (ref, phase) => ({
@@ -220,8 +223,8 @@ async function gatewaySourceWorkerFixture(
 }
 
 async function slackChannelSourceFixture(fixture: RevisionFixture, context: TestContext) {
-  const { controller, compute, core, enroll, namespaceId, beforeEnrollment } =
-    await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+  const worker = await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+  const { controller, core, enroll, namespaceId, beforeEnrollment } = worker;
   const configurationDriver = createTestConfigurationDriver({
     id: `slack-configuration-${randomUUID()}`,
     exact: true,
@@ -238,8 +241,8 @@ async function slackChannelSourceFixture(fixture: RevisionFixture, context: Test
   controller.registerDriver(channel);
   controller.selectDriver("channel", channel.id);
 
-  const bot = await enroll(`xoxb-${randomUUID()}`);
-  const app = await enroll(`xapp-${randomUUID()}`);
+  const bot = await enroll(`xoxb-${randomUUID()}`, null);
+  const app = await enroll(`xapp-${randomUUID()}`, null);
   const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
   assert.equal(custodyKeys.length, 2);
   const model = await controller.createSecret(fixture.actor.id, {
@@ -343,9 +346,7 @@ async function slackChannelSourceFixture(fixture: RevisionFixture, context: Test
     },
   );
   return {
-    controller,
-    compute,
-    namespaceId,
+    ...worker,
     bot,
     model,
     configuration,
@@ -455,14 +456,7 @@ cases.revisionTest(
       headers,
     } = await authenticatedSourceOperator(fixture, controller);
     try {
-      await fixture.observerPool.query(
-        `INSERT INTO occ.iam_access_bindings
-           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
-                resource_kind, resource_id
-         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
-        [apiCallerId, fixture.actor.id],
-      );
+      await copyProvisioningActorBindings(fixture, apiCallerId);
       // Old public Secret bindings must fail at provisioning admission before custody or Slack.
       const legacyBinding = await api.inject({
         method: "POST",
@@ -504,7 +498,7 @@ cases.revisionTest(
       assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
       assert.equal(
         refused.json().error.message,
-        "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
+        "The Harness credential source has no permitted model provider preset.",
       );
       assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
       // Dedicated OpenClaw without a provisioning Sandbox is already known to be impossible.
@@ -1199,6 +1193,167 @@ cases.revisionTest(
 );
 
 test(
+  "the Worker refuses Gateway launch when the Envoy Source is withdrawn after preparation",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 1 });
+    const {
+      compute,
+      controller,
+      core,
+      runtime,
+      transport,
+      configurationDriver,
+      configuration,
+      harnessAuth,
+      enroll,
+      namespace,
+      namespaceId,
+      placeholder,
+    } = await slackChannelSourceFixture(fixture, context);
+    const basic = `Basic ${Buffer.from(`fixture:${randomUUID()}`).toString("base64")}`;
+    const source = await enroll(basic, null);
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const egress = Reflect.get(compute, "channelEgress") as KubernetesChannelEgress;
+    assert.ok(egress);
+    // Control Envoy and workload readiness. OCC and Kubernetes Compute still own
+    // admission, Source resolution, withdrawal, and the Gateway Deployment request.
+    context.mock.method(egress, "available", async () => true);
+    context.mock.method(egress, "admitProxy", async () => "approved-proxy-fixture");
+    context.mock.method(egress, "retire", async () => {});
+    const saved = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      ...configuration,
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Withdrawn upstream credential ${randomUUID()}`,
+        configurationId: saved.id,
+        executionMode: "dedicated",
+        harnessAuth,
+        networkProxy: { url: "https://proxy.example:8443", credentialSourceId: source.id },
+      },
+      resolveApprovedHarness,
+    );
+    const prior = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = prior.id;
+    let preparationCompleted = false;
+    context.mock.method(egress, "prepare", (async (
+      preparedRevision,
+      gatewayNamespace,
+      routing,
+      revisionContext,
+      signal,
+    ) => {
+      const credential = revisionContext?.networkProxyCredential;
+      assert.ok(credential);
+      assert.equal((await credential.resolve(signal)).value, basic);
+      await credential.authorize(signal);
+      const { serviceName, envoyNamespace, listenerPortStart } = channelEgressOptions;
+      routing.proxyUrl = `http://${serviceName}.${envoyNamespace}.svc:${listenerPortStart}`;
+      routing.binding = {
+        id: "fixture-channel-egress",
+        namespaceId,
+        namespace: gatewayNamespace,
+        agentId: agent.id,
+        revisionId: preparedRevision.id,
+        policyHash: "prepared-fixture",
+        port: listenerPortStart,
+        state: "active",
+      };
+      if (preparedRevision.id !== prior.id) {
+        // Withdraw from the serving revision while the successor is between Envoy
+        // preparation and Gateway creation. OCC also withdraws the admitted successor.
+        const withdrawal = await controller.withdrawAgentCredentialSource(fixture.actor.id, {
+          namespaceId,
+          agentId: agent.id,
+          credentialSourceId: source.id,
+        });
+        assert.equal(withdrawal.revisionId, prior.id);
+        assert.equal(withdrawal.state, "pending");
+        assert.equal(
+          (
+            await fixture.state.read((view) =>
+              view.credentialSources.findCredentialWithdrawal(
+                namespaceId,
+                preparedRevision.id,
+                source.id,
+              ),
+            )
+          )?.state,
+          "pending",
+        );
+        preparationCompleted = true;
+      }
+    }) satisfies KubernetesChannelEgress["prepare"]);
+    const prepare = compute.prepareRevision.bind(compute);
+    const priorReadiness = context.mock.method(compute, "prepareRevision", (async (
+      revision,
+      revisionContext,
+    ) => {
+      const observed = await prepare(revision, revisionContext);
+      assert.equal(revision.id, prior.id);
+      assert.ok(transport.templates.some(({ name }) => name.startsWith("gateway-")));
+      return { ...observed, ready: true };
+    }) satisfies ComputeDriver["prepareRevision"]);
+    const priorActivation = context.mock.method(compute, "activateRevision", async () => {});
+    const events: Readonly<Record<string, unknown>>[] = [];
+    await fixture.start(compute, {
+      transformDrivers: () => ({ ...runtime, configurationDriver }),
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+    await fixture.work(
+      { id: prior.id, idempotencyKey: `agent_revision:${prior.id}:reconcile` },
+      "succeeded",
+    );
+    assert.equal((await fixture.currentAgent(agent))?.activeRevisionId, prior.id);
+    priorReadiness.mock.restore();
+    priorActivation.mock.restore();
+    // A lost Gateway is recreated during successor preparation. Keep the active
+    // OCC revision and remove only the fixture Deployment before admitting again.
+    const gatewayName = transport.templates.find(({ name }) => name.startsWith("gateway-"))?.name;
+    assert.ok(gatewayName);
+    await transport.clients.apps.deleteNamespacedDeployment!({ name: gatewayName, namespace });
+    const priorLaunches = transport.templates.filter(({ name }) => name === gatewayName).length;
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = revision.id;
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    const launchRequested = () =>
+      transport.templates.filter(({ name }) => name === gatewayName).length > priorLaunches;
+    await waitFor("a Gateway Deployment request or Worker refusal", async () => {
+      if (launchRequested()) {
+        return true;
+      }
+      return (await fixture.workResult(work)).rows[0]?.reason_code ?? undefined;
+    });
+    assert.equal(
+      preparationCompleted,
+      true,
+      `the withdrawal must follow successful authorization in Envoy preparation: ${JSON.stringify(events.slice(-3))}`,
+    );
+    assert.equal(launchRequested(), false, "a withdrawn Envoy Source must block the Gateway write");
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "DEPENDENCY_UNAVAILABLE");
+  },
+);
+
+test(
   "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
   requiresPostgres,
   async (context) => {
@@ -1621,19 +1776,36 @@ async function stagedCredentialScenario(
   fixture: RevisionFixture,
   context: TestContext,
   extendCompute: (compute: ComputeDriver) => ComputeDriver,
-  credential: "static" | "builtin_codex" = "static",
+  credential: "static" | "builtin_codex" | "codex-pat" = "static",
 ) {
+  const provisioning = credential === "codex-pat";
   const grant = {
     id: "model-egress",
-    binary: credential === "builtin_codex" ? OPEN_SHELL_CODEX_BINARIES[0] : "/app/bin/model-client",
-    host: credential === "builtin_codex" ? "chatgpt.com" : "api.openai.com",
+    binary: credential === "static" ? "/app/bin/model-client" : OPEN_SHELL_CODEX_BINARIES[0],
+    host: credential === "static" ? "api.openai.com" : "chatgpt.com",
     ports: [{ from: 443, to: 443 }],
   };
+  const networkCeiling = provisioning
+    ? [grant, { ...grant, id: "account-egress", host: "auth.openai.com" }]
+    : [grant];
   const installation = buildSandboxInstallation();
   Reflect.deleteProperty(installation.drivers, "credential_gateway");
   Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
   Object.assign(installation.drivers, { token_service: { id: "occ", configuration: {} } });
   installation.drivers.compute.id = fixture.compute.id;
+  if (provisioning) {
+    const configuration = installation.drivers.compute.configuration;
+    Reflect.deleteProperty(configuration.network, "gatewayClients");
+    Object.assign(configuration, {
+      gatewayRouting: {
+        hostname: "agents.example.test",
+        gatewayName: "gateways",
+        gatewayNamespace: "occ-system",
+        envoyNamespace: "envoy",
+      },
+    });
+    Object.assign(configuration.runtime, { channelEgress: channelEgressOptions });
+  }
   const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
   baseline.name = "baseline";
   baseline.endpoints[0]!.host = "baseline.example.test";
@@ -1680,47 +1852,76 @@ async function stagedCredentialScenario(
     };
   };
   const placedName = `placed-${randomUUID().slice(0, 8)}`;
-  const compute = extendCompute({
-    ...fixture.compute,
+  const controlledCompute = {
     resolveHarnessConfiguration: () =>
-      credential === "builtin_codex"
+      credential !== "static"
         ? {}
         : { modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
     validateExecutionAdmission() {},
-    async resolveSandboxNamespace(namespace) {
+    async resolveSandboxNamespace(namespace: Readonly<Namespace>) {
       return { ...namespace, name: placedName };
     },
-    async prepareRevision(revision) {
+    async prepareRevision(revision: Readonly<AgentRevision>) {
       return {
         ...(await fixture.compute.prepareRevision(revision)),
         ready: false,
-        pendingReason: "CREDENTIAL_ACTIVATION_PENDING",
-        preparedForCredentialActivation: true,
+        pendingReason: "CREDENTIAL_ACTIVATION_PENDING" as const,
+        ...(!provisioning && { preparedForCredentialActivation: true as const }),
       };
     },
-  });
+  };
+  const runtimeCredentials = createRuntimeComputeDriver();
+  const compute = extendCompute(
+    provisioning
+      ? Object.assign(runtime.computeDriver, {
+          // Keep Kubernetes admission and snapshots in use. Control only prerequisite I/O
+          // and readiness because this test ends at the persisted revision handoff.
+          preflight: async () => ({ warnings: [] }),
+          resolveSandboxNamespace: controlledCompute.resolveSandboxNamespace,
+          prepareRevision: controlledCompute.prepareRevision,
+          getAgentRuntimeCredentialStatus: runtimeCredentials.getAgentRuntimeCredentialStatus,
+          provisionAgentRuntimeCredentials: runtimeCredentials.provisionAgentRuntimeCredentials,
+        })
+      : { ...fixture.compute, ...controlledCompute },
+  );
+  let slackCalls = 0;
+  const channel = new SlackChannelDriver((async (url) => {
+    assert.equal(String(url), "https://slack.com/api/auth.test");
+    slackCalls += 1;
+    return Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" });
+  }) satisfies typeof fetch);
   const controller = new OpenClawController(fixture.installation, {
     state: fixture.state,
     ...installationControllerOptions(runtime.installation),
+    ...(provisioning && { gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(runtime) }),
     nativeWorkerSupport: "custom-image",
-    sandboxNetworkPolicyCeiling: [grant],
+    sandboxNetworkPolicyCeiling: networkCeiling,
     namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
     backends: runtime.installation.backend,
     recordOperations: true,
   });
-  for (const capability of ["iam", "configuration"] as const) {
-    const selected = fixture.controller.selectedDriver(capability);
+  const iam = fixture.controller.selectedDriver("iam");
+  const savedConfiguration = fixture.controller.selectedDriver("configuration");
+  const configurationDriver = provisioning
+    ? createTestConfigurationDriver({ id: savedConfiguration.id, exact: true })
+    : savedConfiguration;
+  for (const selected of [iam, configurationDriver]) {
     controller.registerDriver(selected);
-    controller.selectDriver(capability, selected.id);
+    controller.selectDriver(selected.capability, selected.id);
   }
   controller.registerDriver(compute);
   controller.selectDriver("compute", compute.id);
+  if (provisioning) {
+    controller.registerDriver(channel);
+    controller.selectDriver("channel", channel.id);
+  }
   installSelectedSandboxDrivers(controller, runtime);
   const { core, driver: secretDriver } = useInstallationSecretDriver(controller);
   await installTokenServiceDriver(controller, { ...runtime, secretDriver }, fixture.state);
   const namespaceId = fixture.namespace.id;
   const actorId = fixture.actor.id;
   const enrolledCredential = randomUUID();
+  const beforeModelEnrollment = new Set(core.secrets.keys());
   const source =
     credential === "builtin_codex"
       ? await (async () => {
@@ -1756,7 +1957,7 @@ async function stagedCredentialScenario(
             name: `Activation source ${randomUUID()}`,
             lifecycleConfig: { settings: {} },
             secret: enrolledCredential,
-            providerPreset: "openai",
+            providerPreset: credential === "codex-pat" ? "codex-pat" : "openai",
           },
           (ref, phase) => ({
             ...auditEvent(
@@ -1771,13 +1972,13 @@ async function stagedCredentialScenario(
             ...(phase ? { details: { phase } } : {}),
           }),
         );
+  const modelCustodyKeys = [...core.secrets.keys()].filter(
+    (key) => !beforeModelEnrollment.has(key),
+  );
   const configuration = await controller.createConfiguration(actorId, {
     namespaceId,
     kind: "agent",
-    values: createHarnessConfiguration(
-      credential === "builtin_codex" ? "codex" : "openclaw",
-      "gpt-4.1",
-    ),
+    values: createHarnessConfiguration(credential === "static" ? "openclaw" : "codex", "gpt-4.1"),
   });
   const owner = await controller.createAgent(
     actorId,
@@ -1807,12 +2008,15 @@ async function stagedCredentialScenario(
       ...drivers,
       installation: {
         ...runtime.installation,
+        ...(provisioning ? { sandboxNetworkPolicyCeiling: networkCeiling } : {}),
         drivers: {
           ...runtime.installation.drivers,
           secret: { ...runtime.installation.drivers.secret, id: secretDriver.id },
         },
       },
       secretDriver,
+      ...(provisioning ? { configurationDriver } : {}),
+      ...(provisioning ? { channelDrivers: [{ provider: "slack", driver: channel }] } : {}),
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
       credentialDeliveryRegistration: registration,
       sandboxDriver: sandbox,
@@ -1831,6 +2035,8 @@ async function stagedCredentialScenario(
     gatewayTransport,
     secretDriver,
     core,
+    modelCustodyKeys,
+    slackCalls: () => slackCalls,
     configureCalls: () => configureCalls,
     currentAgent: () => fixture.currentAgent(owner),
   };
@@ -1944,6 +2150,126 @@ async function grantOperator(
     resourceId,
   });
 }
+
+async function copyProvisioningActorBindings(fixture: RevisionFixture, principalId: string) {
+  await fixture.observerPool.query(
+    `INSERT INTO occ.iam_access_bindings
+       (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+     SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
+            resource_kind, resource_id FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+    [principalId, fixture.actor.id],
+  );
+}
+
+cases.revisionTest(
+  "guided provisioning admits a dedicated model Source through the Worker handoff",
+  async (fixture, context) => {
+    const { controller, namespaceId, source, actorId, core, modelCustodyKeys, slackCalls } =
+      await stagedCredentialScenario(fixture, context, (compute) => compute, "codex-pat");
+    const { app, headers, principalId } = await authenticatedSourceOperator(fixture, controller);
+    context.after(() => app.close());
+    const enrollSlack = (name: string, secret: string) =>
+      controller.createManagedCredentialSource(
+        actorId,
+        namespaceId,
+        {
+          type: "static",
+          name,
+          lifecycleConfig: { settings: {} },
+          secret,
+        },
+        (ref) =>
+          auditEvent(
+            fixture.installation.id,
+            namespaceId,
+            actorId,
+            "openclaw.credential_sources.create",
+            ref,
+          ),
+      );
+    const bot = await enrollSlack("Slack bot", `xoxb-${randomUUID()}`);
+    const slackApp = await enrollSlack("Slack app", `xapp-${randomUUID()}`);
+    await copyProvisioningActorBindings(fixture, principalId);
+    assert.equal(modelCustodyKeys.length, 1);
+    let modelCustodyReads = 0;
+    const readCustody = core.readNamespacedSecret.bind(core);
+    context.mock.method(
+      core,
+      "readNamespacedSecret",
+      (input: { namespace: string; name: string }) => {
+        if (modelCustodyKeys[0] === `${input.namespace}/${input.name}`) {
+          modelCustodyReads += 1;
+        }
+        return readCustody(input);
+      },
+    );
+    const harnessAuth = { method: "credential_source", sourceId: source.id };
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/namespaces/${namespaceId}/agents/provision`,
+      headers,
+      payload: {
+        requestId: `req_${randomUUID()}`,
+        name: `Guided model Source ${randomUUID()}`,
+        executionMode: "dedicated",
+        harnessAuth,
+        configuration: {
+          kind: "agent",
+          values: {
+            ...createHarnessConfiguration("codex", "gpt-4.1"),
+            channels: {
+              slack: {
+                enabled: true,
+                botToken: "${SLACK_BOT_TOKEN}",
+                appToken: "${SLACK_APP_TOKEN}",
+              },
+            },
+          },
+          secretBindings: {
+            SLACK_BOT_TOKEN: { source: bot.ref },
+            SLACK_APP_TOKEN: { source: slackApp.ref },
+          },
+        },
+      },
+    });
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    const { workId } = accepted.json().data.provisioning;
+    assert.ok(workId);
+
+    // The regular Worker must use ordinary deployment admission to save the first revision.
+    const revision = await waitFor("guided Source deployment admission", () =>
+      fixture.state.read(async (view) => {
+        const record = await view.provisioning.findByWorkId(workId);
+        assert.notEqual(record?.status, "failed", JSON.stringify(record?.progress));
+        return record?.agentId && record.revisionId
+          ? view.revisions.findRevision(namespaceId, record.agentId, record.revisionId)
+          : undefined;
+      }),
+    );
+    assert.deepEqual(revision.executionAdmission, { mode: "standalone", version: 8 });
+    assert.deepEqual(revision.credentialDeployment?.bindings, [
+      {
+        bindingRef: "model",
+        sourceRef: source.ref,
+        consumer: { kind: "model", providerId: "codex" },
+        projection: { environment: "CODEX_ACCESS_TOKEN", presentation: "bearer" },
+      },
+    ]);
+    assert.deepEqual(revision.harnessAuth, {
+      ...harnessAuth,
+      sourceType: "static",
+      tokenServiceInstanceId: controller.currentTokenServiceInstanceId(),
+    });
+    assert.deepEqual(revision.secretBindings?.SLACK_BOT_TOKEN?.source, bot.ref);
+    assert.deepEqual(revision.secretBindings?.SLACK_APP_TOKEN?.source, slackApp.ref);
+    assert.ok(slackCalls() > 0, "the approved Slack bot reaches controlled auth.test");
+    assert.equal(
+      modelCustodyReads,
+      0,
+      "provisioning and revision admission use only model Source metadata",
+    );
+  },
+);
 
 cases.revisionTest(
   "the Worker activates an eligible OAuth grant but refuses expired custody without renewing it",
@@ -2809,5 +3135,124 @@ cases.revisionTest(
         },
       },
     ]);
+  },
+);
+
+cases.revisionTest(
+  "a proxy Source withdrawn from a revision without enabled channels does not require Stop",
+  async (fixture, context) => {
+    const scenario = await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+    const { compute, controller, core, runtime, transport, namespace, namespaceId, enroll } =
+      scenario;
+    const egress = Reflect.get(compute, "channelEgress") as KubernetesChannelEgress;
+    context.mock.method(egress, "available", async () => true);
+    // The Installation accepts this endpoint. With no enabled channels, Compute never stages it.
+    context.mock.method(egress, "admitProxy", async () => "approved-proxy-fixture");
+    const prepare = context.mock.method(egress, "prepare");
+    const actorId = fixture.actor.id;
+    const source = await enroll(randomUUID(), null);
+    const model = await controller.createSecret(actorId, {
+      namespaceId,
+      name: `Harness PAT ${randomUUID()}`,
+      value: randomUUID(),
+    });
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const configuration = await controller.createConfiguration(actorId, {
+      namespaceId,
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-5"),
+    });
+    const agent = await controller.createAgent(
+      actorId,
+      {
+        namespaceId,
+        name: `Dormant channel proxy ${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "codex_pat", source: model.ref },
+        networkProxy: { url: "https://proxy.example:8443", credentialSourceId: source.id },
+      },
+      resolveApprovedHarness,
+    );
+    const { app, headers, principalId } = await authenticatedSourceOperator(fixture, controller);
+    context.after(() => app.close());
+    const role = await controller.createIAMRole(actorId, {
+      namespaceId,
+      permissions: [
+        { action: "read", resourceKind: "agent" },
+        { action: "operate", resourceKind: "agent" },
+        { action: "deploy", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "operate", resourceKind: "secret" },
+        { action: "operate", resourceKind: "credential_source" },
+      ],
+    });
+    const grant = (
+      resourceKind: "agent" | "configuration" | "secret" | "credential_source",
+      resourceId: string,
+    ) =>
+      controller.createIAMAccessBinding(actorId, {
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: principalId,
+        roleId: role.id,
+        resourceKind,
+        resourceId,
+      });
+    await grant("agent", agent.id);
+    await grant("configuration", configuration.id);
+    await grant("secret", model.id);
+    const sourceGrant = await grant("credential_source", source.id);
+    const deploy = () =>
+      app.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/${agent.id}/deploy`,
+        headers,
+        payload: {},
+      });
+    // The persisted draft still selects the Source after the deploy caller loses its exact grant.
+    await controller.deleteIAMAccessBinding(actorId, namespaceId, sourceGrant.id);
+    const denied = await deploy();
+    assert.equal(denied.statusCode, 403, denied.body);
+    assert.deepEqual(
+      await fixture.state.read((view) => view.revisions.listRevisions(namespaceId, agent.id)),
+      [],
+    );
+    await grant("credential_source", source.id);
+    const accepted = await deploy();
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    const revision = accepted.json<{ data: AgentRevision }>().data;
+    assert.equal(revision.networkProxy?.credentialSourceId, source.id);
+    scenario.placeholder.id = revision.id;
+    const prepareRevision = compute.prepareRevision.bind(compute);
+    // Prepare the actual Gateway spec, then control readiness for the unlaunched Pods.
+    context.mock.method(compute, "prepareRevision", (async (candidate, candidateContext) => {
+      const observed = await prepareRevision(candidate, candidateContext);
+      assert.ok(transport.templates.some(({ name }) => name.startsWith("gateway-")));
+      return { ...observed, ready: true };
+    }) satisfies ComputeDriver["prepareRevision"]);
+    context.mock.method(compute, "activateRevision", async () => {});
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    await fixture.work(
+      { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` },
+      "succeeded",
+    );
+    assert.equal(prepare.mock.callCount(), 0, "the active revision must have no Envoy route");
+
+    const target = { namespaceId, agentId: agent.id, credentialSourceId: source.id };
+    await controller.withdrawAgentCredentialSource(actorId, target);
+    const status = await waitFor("proxy Source withdrawal to settle", async () => {
+      const result = await controller.readAgentCredentialWithdrawal(actorId, target);
+      return result.withdrawalInProgress ? undefined : result;
+    });
+    assert.equal(status.state, "revoked", status.lastReason ?? "withdrawal did not finish");
+    assert.equal(
+      (await controller.getAgent(actorId, namespaceId, agent.id)).activeRevisionId,
+      revision.id,
+    );
   },
 );

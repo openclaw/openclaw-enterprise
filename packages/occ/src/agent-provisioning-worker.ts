@@ -1401,8 +1401,8 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     if (isSecretHarnessAuth(input.harnessAuth)) {
       ids.add(input.harnessAuth.source.id);
     }
-    if (input.networkProxy?.credentialSecretId !== undefined) {
-      ids.add(input.networkProxy.credentialSecretId);
+    if (input.networkProxy?.credentialSourceId !== undefined) {
+      sourceIds.add(input.networkProxy.credentialSourceId);
     }
     const sources: (SecretReference | CredentialSourceReference)[] = [];
     for (const id of ids) {

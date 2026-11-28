@@ -58,6 +58,8 @@ export function createCredentialSourcePicker<Criteria>(
     initial?: CredentialSourceReference | null;
     currentId?: string;
     criteria?: Criteria;
+    loadOnFocus?: boolean;
+    listLabel?: string;
     eligible(source: CredentialSourceSummary, criteria: Criteria | undefined): boolean;
     listStatus(hasEligible: boolean, criteria: Criteria | undefined): string;
     listFailure(cause: unknown): string;
@@ -67,6 +69,7 @@ export function createCredentialSourcePicker<Criteria>(
 ) {
   const addNewValue = "new";
   let selected = options.initial ?? null;
+  let currentId = options.currentId;
   let selectionBeforeCreate: CredentialSourceReference | null = null;
   let confirmedCreated: CredentialSourceSummary | null = null;
   let creating = Boolean(options.addNew?.initial && !selected);
@@ -83,7 +86,8 @@ export function createCredentialSourcePicker<Criteria>(
   let required = true;
   const select = element("select", { id: options.id });
   const hint = element("p", { className: "hint", role: "status" });
-  const retry = button("Retry Source list", () => void load(true), { tone: "ghost", size: "sm" });
+  const listLabel = options.listLabel ?? "Source list";
+  const retry = button(`Retry ${listLabel}`, () => void load(true), { tone: "ghost", size: "sm" });
   retry.hidden = true;
   const field = element(
     "div",
@@ -95,7 +99,7 @@ export function createCredentialSourcePicker<Criteria>(
   );
   const eligibleSource = (source: CredentialSourceSummary) => options.eligible(source, criteria);
   const knownSelection = () =>
-    selected && (selected.id === options.currentId || selected.id === confirmedCreated?.id);
+    selected && (selected.id === currentId || selected.id === confirmedCreated?.id);
   const availableSources = () => {
     const eligible = sources.filter(eligibleSource);
     const created = confirmedCreated;
@@ -129,7 +133,7 @@ export function createCredentialSourcePicker<Criteria>(
     ];
     if (
       selected &&
-      selected.id === options.currentId &&
+      selected.id === currentId &&
       !eligible.some((source) => source.id === selected!.id)
     ) {
       choices.push(
@@ -158,7 +162,7 @@ export function createCredentialSourcePicker<Criteria>(
     loading = true;
     const wasLoaded = loaded;
     if (force) {
-      retry.textContent = "Refreshing Source list…";
+      retry.textContent = `Refreshing ${listLabel}…`;
       retry.setAttribute("aria-busy", "true");
     }
     hint.textContent = "Loading readable Credential Sources…";
@@ -184,7 +188,7 @@ export function createCredentialSourcePicker<Criteria>(
         }
       }
       showListStatus();
-      retry.textContent = "Refresh Source list";
+      retry.textContent = `Refresh ${listLabel}`;
       retry.hidden = false;
     } catch (error) {
       if (!context.isCurrent()) {
@@ -203,7 +207,7 @@ export function createCredentialSourcePicker<Criteria>(
           options.onChange(null);
         }
       }
-      retry.textContent = "Retry Source list";
+      retry.textContent = `Retry ${listLabel}`;
       retry.hidden = false;
       hint.textContent = options.listFailure(error);
     } finally {
@@ -213,6 +217,13 @@ export function createCredentialSourcePicker<Criteria>(
         renderOptions();
       }
     }
+  }
+  if (options.loadOnFocus) {
+    select.addEventListener("focus", () => {
+      if (active && !disabled) {
+        void load();
+      }
+    });
   }
   select.addEventListener("change", () => {
     const previousSelection = selected ?? selectionBeforeCreate;
@@ -251,7 +262,7 @@ export function createCredentialSourcePicker<Criteria>(
         }
       }
       renderOptions();
-      if (value) {
+      if (value && !options.loadOnFocus) {
         void load();
       }
     },
@@ -264,6 +275,14 @@ export function createCredentialSourcePicker<Criteria>(
     setRequired(value: boolean) {
       required = value;
       renderOptions();
+    },
+    setCurrent(source: CredentialSourceReference | null) {
+      currentId = source?.id;
+      selected = source;
+      selectionBeforeCreate = null;
+      creating = false;
+      renderOptions();
+      options.onChange(selected);
     },
     reset() {
       selected = null;
@@ -312,13 +331,15 @@ export function createCredentialSourcePicker<Criteria>(
 /** Select or enroll a ready static Source without coupling enrollment to its consumer. */
 export function createInlineStaticCredentialSourcePicker(
   context: PickerContext & { drafts?: ReturnType<ReturnType<typeof createDraftStore>["scope"]> },
-  body: HTMLFormElement,
+  body: HTMLElement,
   options: {
     id: string;
     label: string;
     initial: CredentialSourceReference | null;
     inputClassName: string;
     deliveryHint: string;
+    loadOnFocus?: boolean;
+    listLabel?: string;
     onChange(source: CredentialSourceReference | null): void;
     onPending(pending: boolean): void;
   },
@@ -337,6 +358,8 @@ export function createInlineStaticCredentialSourcePicker(
     label,
     addNew: { label: "Add new credential…" },
     initial,
+    loadOnFocus: options.loadOnFocus ?? false,
+    ...(options.listLabel === undefined ? {} : { listLabel: options.listLabel }),
     ...(initial ? { currentId: initial.id } : {}),
     onChange: (source) => {
       options.onChange(source);

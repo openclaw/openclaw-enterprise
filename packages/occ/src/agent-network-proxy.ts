@@ -1,31 +1,28 @@
 import {
   normalizeAgentNetworkProxy,
-  validNetworkProxyAuthorization,
   type AgentNetworkProxy,
   type ComputeDriver,
+  type CredentialSourceReference,
   type HarnessExecutionMode,
   type OpenClawConfigurationDocument,
-  type Secret,
-  type SecretDriver,
+  type StoredCredentialSource,
+  type TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { enabledChannelEntries } from "./channel-secret-bindings.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import {
   ConfigurationHarnessError,
-  DependencyUnavailableError,
-  NetworkProxySecretDriverError,
   NetworkProxyValidationError,
   NetworkProxyEnforcementUnavailableError,
+  ResourceStateConflictError,
   ScopeViolationError,
-  type SecretDriverOwnershipError,
 } from "./errors.ts";
-import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 export function requestNetworkProxy(value: unknown): Readonly<AgentNetworkProxy> {
   try {
     return normalizeAgentNetworkProxy(value);
   } catch {
-    throw new NetworkProxyValidationError("selection");
+    throw new NetworkProxyValidationError();
   }
 }
 
@@ -60,46 +57,50 @@ export async function admitNetworkProxy(
   }
 }
 
-export async function authorizeNetworkProxySecret(
-  state: PlatformUnitOfWork,
-  authority: Pick<ControllerAuthority, "authorize">,
-  ownedSecretDriver: (id: string, failure: () => SecretDriverOwnershipError) => SecretDriver,
-  principalId: string,
-  namespaceId: string,
-  selection: Readonly<AgentNetworkProxy> | undefined,
-): Promise<Readonly<Secret> | undefined> {
-  const id = selection?.credentialSecretId;
-  if (id === undefined) {
-    return undefined;
-  }
-  await authority.authorize(principalId, "operate", { kind: "secret", namespaceId, id });
-  const secret = await state.secrets.lockSecret(namespaceId, id);
-  if (secret === undefined) {
-    throw new ScopeViolationError(
-      "The Network proxy Secret does not belong to the exact Namespace.",
-    );
-  }
-  const driver = ownedSecretDriver(secret.driverId, () => new NetworkProxySecretDriverError());
-  await validateNetworkProxyCredential(driver, secret);
-  return secret;
-}
-
-export async function validateNetworkProxyCredential(
-  driver: SecretDriver,
-  secret: Readonly<Secret>,
-): Promise<void> {
-  if (!driver.withValue) {
-    throw new DependencyUnavailableError(
-      "The selected Secret Driver cannot validate Network proxy credentials.",
-    );
-  }
-  let valid: boolean;
-  try {
-    valid = await driver.withValue(secret, async (value) => validNetworkProxyAuthorization(value));
-  } catch {
-    throw new DependencyUnavailableError("The Network proxy credential Secret is unavailable.");
-  }
-  if (!valid) {
-    throw new NetworkProxyValidationError("credential");
-  }
+export function createNetworkProxySourceAuthorization(dependencies: {
+  readonly authority: Pick<ControllerAuthority, "authorize">;
+  readonly selectedCompute: () => ComputeDriver | undefined;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly qualifiesDelivery:
+    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
+}) {
+  return async function authorizeNetworkProxySource(
+    principalId: string,
+    namespaceId: string,
+    selection: Readonly<AgentNetworkProxy> | undefined,
+    findSource: (id: string) => Promise<Readonly<StoredCredentialSource> | undefined>,
+  ): Promise<{ sourceRef: CredentialSourceReference; tokenServiceInstanceId: string } | undefined> {
+    const id = selection?.credentialSourceId;
+    if (id === undefined) {
+      return undefined;
+    }
+    const sourceRef = { kind: "credential_source", namespaceId, id } as const;
+    await dependencies.authority.authorize(principalId, "operate", sourceRef);
+    const source = await findSource(id);
+    if (!source || source.namespaceId !== namespaceId) {
+      throw new ScopeViolationError(
+        "The Network proxy Credential Source does not belong to the exact Namespace.",
+      );
+    }
+    if (
+      source.ownerCapability !== "token_service" ||
+      source.type !== "static" ||
+      source.state !== "ready"
+    ) {
+      throw new ResourceStateConflictError(
+        "Network proxy credentials require a ready static TokenService Credential Source.",
+      );
+    }
+    const compute = dependencies.selectedCompute();
+    const owner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+    if (
+      !compute?.admitGatewayChannelProxy ||
+      dependencies.qualifiesDelivery?.(compute, owner) !== true
+    ) {
+      throw new ResourceStateConflictError(
+        "The selected Compute and TokenService do not support Network proxy Source delivery.",
+      );
+    }
+    return { sourceRef, tokenServiceInstanceId: source.tokenServiceInstanceId };
+  };
 }

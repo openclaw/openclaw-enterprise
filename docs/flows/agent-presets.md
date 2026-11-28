@@ -237,6 +237,9 @@ without binding a Secret. The shared Secret picker requires a same-Namespace
 selection. **Create new Secret...** saves immediately and stages the reference;
 the browser never reads existing Secret bytes. Final Agent admission still
 requires a complete authentication binding.
+A Preset can also supply a model Credential Source ID. The Console keeps the
+Preset's Harness, sends the Source ID to ordinary Agent validation, and saves
+the same ID in the draft's Harness auth and Credential Source bindings.
 Rendered `agent.pluginApprovers` remains ordinary Agent draft data. Omission
 inherits the form default, an empty array keeps the explicit no-approver default,
 and selected channel identities are submitted through the normal Agent create

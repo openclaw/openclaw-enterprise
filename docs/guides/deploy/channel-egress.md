@@ -105,15 +105,16 @@ do not widen global egress to make deployment pass.
 ## Select an Agent proxy
 
 1. Open the Agent's **Configuration** draft. You need exact Agent update
-   permission and `operate` on any proxy credential Secret.
+   permission and `credential_source:operate` on any proxy credential you select.
 2. Under **Gateway channel proxy**, enter **Network proxy URL** without URL
    credentials. If the proxy requires Basic authentication, select an existing
-   same-Namespace Secret containing `Basic <base64(username:password)>`.
+   same-Namespace static Credential Source containing
+   `Basic <base64(username:password)>`, or create it with **Add new credential…**.
 3. Select **Save Network proxy for next deployment**, then **Deploy new version**.
    Inspect the new revision summary. The serving revision keeps its prior
    selection until the deployment replaces it.
 4. To remove the route, select **Clear proxy for next deployment** and deploy
-   again. After rotating the credential Secret, deploy a new revision. A retry
+   again. After rotating the Credential Source, deploy a new revision. A retry
    cannot change an existing binding's credential version.
 
 Proxy outage, certificate failure, or authentication refusal has no direct

@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { waitFor } from "./qa-wait.ts";
-import { protectedText, grantQaSecret } from "./qa-secrets.ts";
+import { protectedText, grantQaCredential } from "./qa-secrets.ts";
 import { slackApi } from "./slack-web-api.ts";
 import {
   allMessages,
@@ -42,6 +42,7 @@ export async function prepareQaSlack(f, proxy) {
       f.kubectl("apply", "-f", await f.write("channel-egress-resources.json", manifest)),
   });
   configuration.runtime.channelEgress = channelEgress;
+  f.configuration.drivers.token_service = { id: "occ", configuration: {} };
   values.channelEgress = { ...channelEgress, enabled: true };
   await writeFile(path, JSON.stringify(values), { mode: 0o600 });
   await f.saveInstallation(f.configuration);
@@ -82,13 +83,14 @@ export async function verifyQaSlack(f, agent) {
     ["SLACK_APP_TOKEN", slack.appToken],
     ["SLACK_BOT_TOKEN", slack.botToken],
   ]) {
-    const secret = await f.api("POST", `${base}/secrets`, {
+    const source = await f.api("POST", `${base}/credential-sources`, {
       name: `${agent.name}-${name.toLowerCase()}`,
-      value,
+      type: "static",
+      secret: value,
     });
-    await grantQaSecret(f, agent, secret.id, `${agent.name}-${name.toLowerCase()}`);
+    await grantQaCredential(f, agent, source.ref, `${agent.name}-${name.toLowerCase()}`);
     bindings[name] = {
-      source: { kind: "secret", namespaceId: agent.namespaceId, id: secret.id },
+      source: source.ref,
       delivery: { type: "env" },
     };
   }
@@ -117,13 +119,14 @@ export async function verifyQaSlack(f, agent) {
     values,
     secretBindings: bindings,
   });
-  const proxySecret = await f.api("POST", `${base}/secrets`, {
+  const proxySource = await f.api("POST", `${base}/credential-sources`, {
     name: `${agent.name} Gateway proxy credential`,
-    value: proxy.authorization,
+    type: "static",
+    secret: proxy.authorization,
   });
-  await grantQaSecret(f, agent, proxySecret.id, `${agent.name}-gateway-proxy`);
+  await grantQaCredential(f, agent, proxySource.ref, `${agent.name}-gateway-proxy`);
   await f.api("PATCH", `${base}/agents/${agent.id}`, {
-    networkProxy: { url: proxy.url, credentialSecretId: proxySecret.id },
+    networkProxy: { url: proxy.url, credentialSourceId: proxySource.id },
   });
   await f.deployAndWait(agent);
   const gateway = await f.pod(agent, "gateway");
@@ -142,7 +145,7 @@ export async function verifyQaSlack(f, agent) {
   await f.record("Codex-channel-upstream-proxy", {
     agentId: agent.id,
     revisionId: agent.revision.id,
-    credentialSecretId: proxySecret.id,
+    credentialSourceId: proxySource.id,
     authorities: [...new Set(proxy.observations.map((item) => item.authority))],
     authenticatedConnections: proxy.observations.filter((item) => item.connected).length,
   });

@@ -1095,14 +1095,19 @@ test(
       "The initial direct channel route must not use the upstream proxy.",
     );
 
-    const secret = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
-      name: "Gateway upstream proxy credential",
-      value: proxy.authorization,
-    });
-    assert.equal(secret.status, 201);
+    const proxySource = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/credential-sources`,
+      {
+        name: "Gateway upstream proxy credential",
+        type: "static",
+        secret: proxy.authorization,
+      },
+    );
+    assert.equal(proxySource.status, 201);
     const role = await topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/roles`, {
       name: "Gateway upstream proxy operator",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
     });
     assert.equal(role.status, 201);
     const grant = await topology.adminRequest(
@@ -1112,8 +1117,8 @@ test(
         subjectKind: "identity",
         subjectId: topology.secretApi.assignmentPrincipalId,
         roleId: role.data.id,
-        resourceKind: "secret",
-        resourceId: secret.data.id,
+        resourceKind: "credential_source",
+        resourceId: proxySource.data.id,
       },
     );
     assert.equal(grant.status, 201);
@@ -1136,7 +1141,7 @@ test(
       },
     );
     assert.equal(auditGrant.status, 201);
-    const selection = { url: proxy.url, credentialSecretId: secret.data.id };
+    const selection = { url: proxy.url, credentialSourceId: proxySource.data.id };
     const saved = await topology.request("PATCH", path, { networkProxy: selection });
     assert.equal(saved.status, 200);
     const direct = await topology.request("GET", `${path}/revisions/${directRevisionId}`);
@@ -1586,11 +1591,16 @@ test(
       { kind: "agent", values: source.values, secretBindings: source.secretBindings },
     );
     assert.equal(peerConfiguration.status, 201);
-    const peerSecret = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
-      name: "Peer Gateway upstream proxy credential",
-      value: peerProxy.authorization,
-    });
-    assert.equal(peerSecret.status, 201);
+    const peerSource = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/credential-sources`,
+      {
+        name: "Peer Gateway upstream proxy credential",
+        type: "static",
+        secret: peerProxy.authorization,
+      },
+    );
+    assert.equal(peerSource.status, 201);
     const peer = await topology.adminRequest("POST", `/namespaces/${namespaceId}/agents`, {
       name: `proxy-peer-${randomUUID()}`,
       configurationId: peerConfiguration.data.id,
@@ -1599,7 +1609,7 @@ test(
       ...(typeof agent.gatewayManagedMode === "boolean"
         ? { gatewayManagedMode: agent.gatewayManagedMode }
         : {}),
-      networkProxy: { url: peerProxy.url, credentialSecretId: peerSecret.data.id },
+      networkProxy: { url: peerProxy.url, credentialSourceId: peerSource.data.id },
     });
     assert.equal(peer.status, 201);
     const peerId = text(peer.data.id);
@@ -1915,24 +1925,29 @@ test(
     });
     // A configured HTTPS endpoint with the wrong hostname or an untrusted CA must fail
     // before Envoy can send its credential-bearing CONNECT, with no direct fallback.
-    const badSecret = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
-      name: "Bad-certificate proxy credential",
-      value: badProxy.authorization,
-    });
-    assert.equal(badSecret.status, 201);
+    const badSource = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/credential-sources`,
+      {
+        name: "Bad-certificate proxy credential",
+        type: "static",
+        secret: badProxy.authorization,
+      },
+    );
+    assert.equal(badSource.status, 201);
     assert.equal(
       (
         await topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
           subjectKind: "identity",
           subjectId: topology.secretApi.assignmentPrincipalId,
           roleId: role.data.id,
-          resourceKind: "secret",
-          resourceId: badSecret.data.id,
+          resourceKind: "credential_source",
+          resourceId: badSource.data.id,
         })
       ).status,
       201,
     );
-    const badSelection = { url: badProxy.url, credentialSecretId: badSecret.data.id };
+    const badSelection = { url: badProxy.url, credentialSourceId: badSource.data.id };
     assert.equal(
       (await topology.request("PATCH", path, { networkProxy: badSelection })).status,
       200,
@@ -1989,6 +2004,19 @@ test(
       (await topology.request("GET", `${path}/revisions/${badDeploy.data.id}`)).data.networkProxy,
       badSelection,
     );
+    // An explicit withdrawal leaves the exact running revision until managed retirement.
+    // The non-proxy successor then drains and clears that credential's Envoy slot.
+    const withdrawal = `${path}/credential-sources/${badSource.data.id}`;
+    assert.equal((await topology.adminRequest("POST", `${withdrawal}/withdraw`)).status, 202);
+    await waitFor("Proxy Source withdrawal waits for managed retirement", async () => {
+      const current = await topology.adminRequest("GET", `${withdrawal}/withdrawal`);
+      assert.equal(current.status, 200);
+      return (
+        current.data.state === "pending" &&
+        current.data.reason === "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT"
+      );
+    });
+    assert.equal((await topology.request("GET", path)).data.activeRevisionId, badDeploy.data.id);
     const cleared = await topology.request("PATCH", path, { networkProxy: null });
     assert.equal(cleared.status, 200);
     const retained = await topology.request("GET", `${path}/revisions/${deployed.data.id}`);
@@ -1998,6 +2026,35 @@ test(
     await waitForDeployment(topology.request, path, recovery.data.id);
     const recovered = await topology.request("GET", `${path}/revisions/${recovery.data.id}`);
     assert.equal(recovered.data.networkProxy, undefined);
+    // Draft admission sees metadata only. Compute refuses an otherwise valid static Source
+    // with malformed Basic material before it can reserve or fill a credential slot.
+    const invalidValue = `not-basic-${randomUUID()}`;
+    const invalidSource = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/credential-sources`,
+      { name: "Malformed upstream proxy credential", type: "static", secret: invalidValue },
+    );
+    assert.equal(invalidSource.status, 201);
+    assert.equal(
+      (
+        await topology.adminRequest("PATCH", path, {
+          networkProxy: { url: badProxy.url, credentialSourceId: invalidSource.data.id },
+        })
+      ).status,
+      200,
+    );
+    const refused = await topology.adminRequest("POST", `${path}/deploy`);
+    assert.equal(refused.status, 202);
+    await waitFor("Compute to refuse malformed Basic material", async () => {
+      const deployment = await topology.adminRequest(
+        "GET",
+        `${path}/deployments/${refused.data.id}`,
+      );
+      assert.equal(deployment.status, 200);
+      assert.equal(JSON.stringify(deployment).includes(invalidValue), false);
+      return deployment.data.status === "failed";
+    });
+    assert.equal((await topology.request("GET", path)).data.activeRevisionId, recovery.data.id);
     const slots = rows(
       record(
         JSON.parse(

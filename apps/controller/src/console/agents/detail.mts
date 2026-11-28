@@ -3831,16 +3831,14 @@ export async function renderAgentDetail(
     let proxyUnknown = false;
     const proxyValue = document.createTextNode(agent.networkProxy?.url ?? "None");
     const proxyCredential = document.createTextNode(
-      agent.networkProxy?.credentialSecretId ?? "None",
+      agent.networkProxy?.credentialSourceId ?? "None",
     );
     const proxyFeedback = element("p", { className: "hint", role: "status" });
     const proxyPermission = element("p", { className: "hint" });
     const proxyFields = createNetworkProxyFields({
       context,
-      namespaceId,
       id: "agent-network-proxy",
       ...(agent.networkProxy === undefined ? {} : { initial: agent.networkProxy }),
-      agentName: () => agent.name,
       onChange: syncProxyEdit,
     });
     const proxyReload = button("Reload draft", () => void reloadDraftInPlace(context, {}), {
@@ -3875,13 +3873,13 @@ export async function renderAgentDetail(
       const draft = proxyFields.draft();
       proxyDirty =
         proxyFields.input.value !== (agent.networkProxy?.url ?? "") ||
-        draft.credentialSecretId !== agent.networkProxy?.credentialSecretId;
+        draft.credentialSourceId !== agent.networkProxy?.credentialSourceId;
       if (proxyUnknown) {
         networkProxyNavigationBlock =
           "Reload the draft before changing or deploying the Network proxy.";
       } else if (networkProxySaving) {
         networkProxyNavigationBlock = "Wait for the Network proxy save to finish.";
-      } else if (proxyDirty) {
+      } else if (proxyFields.selectingCredential || proxyDirty) {
         networkProxyNavigationBlock = "Save or cancel Network proxy edits before leaving this tab.";
       } else {
         networkProxyNavigationBlock = null;
@@ -3912,7 +3910,7 @@ export async function renderAgentDetail(
         if (context.isCurrent()) {
           agent = saved;
           proxyValue.textContent = agent.networkProxy?.url ?? "None";
-          proxyCredential.textContent = agent.networkProxy?.credentialSecretId ?? "None";
+          proxyCredential.textContent = agent.networkProxy?.credentialSourceId ?? "None";
           proxyUnknown = false;
           proxyFields.reset(agent.networkProxy);
           proxyFeedback.textContent = "Network proxy saved. Deploy a new version to apply it.";
@@ -4114,10 +4112,6 @@ export async function renderAgentDetail(
         }
       }
       const configurationIds = new Set(bound.keys());
-      if (agent.networkProxy?.credentialSecretId !== undefined) {
-        const id = agent.networkProxy.credentialSecretId;
-        bound.set(id, { kind: "secret", namespaceId, id });
-      }
       const harness = harnessCredential(agent.harnessAuth, namespaceId);
       if (harness?.kind === "secret") {
         bound.set(harness.id, harness);
@@ -4395,6 +4389,7 @@ export async function renderAgentDetail(
           Boolean(deployReloadMessage) ||
           Boolean(draftEditorNavigationBlock) ||
           proxyDirty ||
+          proxyFields.selectingCredential ||
           networkProxySaving ||
           Boolean(credentials?.mutationPending());
       }
@@ -4406,10 +4401,14 @@ export async function renderAgentDetail(
         Boolean(deployReloadMessage) ||
         Boolean(credentials?.mutationPending());
       proxyFields.setDisabled(proxyUnavailable);
-      proxySave.disabled = proxyUnavailable || !proxyDirty;
-      proxyCancel.disabled = networkProxySaving || proxyUnknown || !proxyDirty;
+      proxySave.disabled = proxyUnavailable || proxyFields.selectingCredential || !proxyDirty;
+      proxyCancel.disabled =
+        networkProxySaving ||
+        proxyUnknown ||
+        proxyFields.enrollmentPending ||
+        (!proxyDirty && !proxyFields.selectingCredential);
       proxyClear.hidden = agent.networkProxy === undefined;
-      proxyClear.disabled = proxyUnavailable;
+      proxyClear.disabled = proxyUnavailable || proxyFields.enrollmentPending;
       proxyReload.disabled = networkProxySaving;
       if (callerPermissions?.update === true) {
         proxyPermission.textContent = "";
@@ -6999,10 +6998,10 @@ export async function renderAgentDetail(
                 draft ? data.networkProxy.value : (snapshot.networkProxy?.url ?? "None"),
               ],
               [
-                "Proxy credential Secret",
+                "Proxy Credential Source",
                 draft
                   ? data.networkProxy.credential
-                  : (snapshot.networkProxy?.credentialSecretId ?? "None"),
+                  : (snapshot.networkProxy?.credentialSourceId ?? "None"),
               ],
             ],
             false,

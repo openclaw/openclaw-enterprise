@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
@@ -1583,9 +1584,24 @@ describe("Presets", { concurrency: 2 }, () => {
 
   test("Installation YAML seeds authorized default Presets for new and existing Namespaces without replacing copies", async (t) => {
     const customPreset = await shippedPreset("swe-preset.json");
+    const sourcePreset = {
+      name: "Team model Source",
+      template: {
+        variables: { modelSource: { type: "string" } },
+        agent: {
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: "{{ vars.modelSource }}" },
+        },
+      },
+    } satisfies PresetDraftDefinition;
+    const sourceFile = join(await temporaryDirectory(t, "occ-source-preset-"), "team.json");
+    await writeFile(sourceFile, JSON.stringify(sourcePreset));
     const runtime = await bundledRuntime(t, {
       includeDefaults: true,
-      files: [fileURLToPath(new URL("../../deploy/presets/swe-preset.json", import.meta.url))],
+      files: [
+        fileURLToPath(new URL("../../deploy/presets/swe-preset.json", import.meta.url)),
+        sourceFile,
+      ],
     });
     const fixture = await createFixture(t, { defaultPresets: runtime.defaultPresets });
     const principal = fixture.admin;
@@ -1600,6 +1616,7 @@ describe("Presets", { concurrency: 2 }, () => {
     ).data;
     const defaultNames = [
       customPreset.name,
+      sourcePreset.name,
       "default-codex",
       "Standard Codex",
       "Standard OpenClaw",
@@ -1607,6 +1624,8 @@ describe("Presets", { concurrency: 2 }, () => {
     assert.deepEqual(listedPresets.map((preset) => preset.name).sort(), defaultNames);
     const documents = await listPresetDocuments(fixture, namespace.id);
     const named = (name: string) => documents.find((preset) => preset.name === name);
+    // Seeding occurs before credentials exist. The saved Preset keeps the unresolved Source ID.
+    assert.deepEqual(required(named(sourcePreset.name)).template, sourcePreset.template);
     assert.equal(
       field(required(named("Standard Codex")).template, "variables", "modelSecret", "type"),
       "password",

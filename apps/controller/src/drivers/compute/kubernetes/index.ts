@@ -675,6 +675,7 @@ interface ManagedKubernetesObject<Kind extends ReadableResourceKind = ManagedRes
 interface ReconcilePrecondition {
   readonly serviceSelector?: Readonly<Record<string, string>>;
   readonly gatewayStartupCredentials?: ComputeRevisionContext["gatewayStartupCredentials"];
+  readonly networkProxyCredential?: ComputeRevisionContext["networkProxyCredential"];
 }
 
 interface Ownership {
@@ -7609,7 +7610,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
             }),
             gatewayOwnership,
             gatewayNamespace,
-            { gatewayStartupCredentials: context?.gatewayStartupCredentials },
+            {
+              gatewayStartupCredentials: context?.gatewayStartupCredentials,
+              networkProxyCredential: channels && context?.networkProxyCredential,
+            },
           ),
         );
       };
@@ -8695,7 +8699,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
             }),
             gatewayOwnership,
             namespace,
-            { gatewayStartupCredentials: context?.gatewayStartupCredentials },
+            {
+              gatewayStartupCredentials: context?.gatewayStartupCredentials,
+              networkProxyCredential: channels && context?.networkProxyCredential,
+            },
           );
         } catch (error) {
           throw await failureAfterCleanup(
@@ -8959,7 +8966,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }),
       gatewayOwnership,
       gatewayNamespace,
-      { gatewayStartupCredentials: context?.gatewayStartupCredentials },
+      {
+        gatewayStartupCredentials: context?.gatewayStartupCredentials,
+        networkProxyCredential: channels && context?.networkProxyCredential,
+      },
     );
     await this.reconcile(
       this.service(
@@ -16657,7 +16667,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!this.channelEgress) {
       throw new ConfigurationFailure("Managed channel egress is unavailable.");
     }
-    await this.channelEgress.prepare(revision, namespace.name, routing, context);
+    await this.channelEgress.prepare(
+      revision,
+      namespace.name,
+      routing,
+      context,
+      this.operationSignal(),
+    );
   }
 
   /** Only preparation passes `preparation`, while a Gateway of another revision
@@ -18876,7 +18892,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const existing = await this.getOwned(desired.kind, desired.metadata.name, namespace, ownership);
     if (
       (precondition?.serviceSelector !== undefined && desired.kind !== "Service") ||
-      (precondition?.gatewayStartupCredentials !== undefined && desired.kind !== "Deployment")
+      ((precondition?.gatewayStartupCredentials !== undefined ||
+        precondition?.networkProxyCredential !== undefined) &&
+        desired.kind !== "Deployment")
     ) {
       throw new ConfigurationFailure(
         `Unsupported Kubernetes reconcile precondition for ${desired.kind}.`,
@@ -18975,6 +18993,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             return;
           case "Deployment":
             await precondition?.gatewayStartupCredentials?.authorize(this.operationSignal());
+            await precondition?.networkProxyCredential?.authorize(this.operationSignal());
             await clients.apps.patchNamespacedDeployment(
               { ...request, namespace: required(namespace.name, "Deployment namespace") },
               this.patchOptions,

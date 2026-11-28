@@ -82,6 +82,7 @@ function revisionHoldsCredentialSource(
   credentialSourceId: string,
 ): boolean {
   return (
+    revision.networkProxy?.credentialSourceId === credentialSourceId ||
     (revision.harnessAuth.method === "credential_source" &&
       revision.harnessAuth.sourceId === credentialSourceId) ||
     (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId) ||
