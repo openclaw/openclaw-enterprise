@@ -359,26 +359,26 @@ credential rules, and authorization before saving. Deployment rechecks admission
 Console checks do not replace server validation. Audit records omit templates and
 variable values.
 
-Invalid inputs return `400`; denied access returns `403`; a missing exact target
-returns `404`; duplicate names or lifecycle conflicts return `409`; unavailable
-IAM, persistence, or required Driver capability returns `503`. Delete Presets
-before deleting their Namespace. Deleting one removes its resource-scoped IAM
-bindings, but keeps copied Agents, Configurations, and credential sources.
+DELETE removes the Preset and its exact AccessBindings. Agents, Configurations
+and credential sources remain intact. With Native IAM on PostgreSQL, if
+removing a binding withdraws `preset:delete` first, DELETE returns `403`
+and preserves the Preset and remaining bindings. A session-authenticated DELETE
+holds the admitted session until the transaction ends. This ordering does not
+cover every session invalidation path, API-key revocation, grant expiry, or
+external IAM changes.
+
+Invalid inputs return `400`, denied access `403`, missing targets `404`, and
+duplicate names or lifecycle conflicts `409`. Unavailable IAM, persistence,
+or required Driver capabilities return `503`.
 
 ## Limits and recovery
 
-Create and update Presets through the HTTP API; `occ preset list`, `get`, and
-`delete` cover the rest ([CLI reference](cli.md#resource-commands)). The console
-only selects and applies them. There is no inheritance, version history, or Agent
-metadata recording which Preset was used. Creation still saves a Configuration
-and an Agent separately. Follow [partial-save recovery](console/create-and-deploy.md#create-an-agent)
-if the second save fails or a response is lost.
+Create and update Presets via HTTP; list, read and delete them with the
+[CLI](cli.md#resource-commands). The Console selects and applies them. Presets
+lack inheritance, version history and Agent attribution. Configuration and Agent
+saves are separate; follow [partial-save recovery](console/create-and-deploy.md#create-an-agent)
+after a failure or lost response.
 
-A Preset is read once when selected. **Use Preset** renders its variables and
-opens an ordinary editable Agent form; changing the draft does not update or
-reread the Preset. **Start over** discards the unsaved draft
-and returns to the chooser, but is disabled once a Configuration has saved or a
-save outcome is uncertain.
-
-A valid Preset is not necessarily a valid Agent configuration. Later deployments
-read the Agent's own draft.
+The Console reads each Preset once; **Use Preset** creates an independent draft
+requiring Agent validation. **Start over** discards it and reopens the chooser
+unless a Configuration was saved or a save is uncertain.

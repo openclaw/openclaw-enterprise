@@ -66,19 +66,22 @@ export const presetHandlers = {
     reply.send({ data: preset, meta: { requestId: request.id } });
   },
   async deletePreset({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
-      const removed = await controller.deletePreset(
-        context.actorId,
-        namespaceId,
-        params.presetId as string,
-      );
-      await unit.audit.append(
-        mutationEvent(
-          { kind: "preset", id: params.presetId as string, namespaceId },
-          removedAccessBindingDetails(removed),
-        ),
-      );
-    });
+    await controller.transact(
+      async (unit) => {
+        const removed = await controller.deletePreset(
+          context.actorId,
+          namespaceId,
+          params.presetId as string,
+        );
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "preset", id: params.presetId as string, namespaceId },
+            removedAccessBindingDetails(removed),
+          ),
+        );
+      },
+      { readCommitted: true },
+    );
     reply.status(204).send();
   },
 } satisfies ResourceHandlers;

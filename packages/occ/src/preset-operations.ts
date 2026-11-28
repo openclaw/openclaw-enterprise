@@ -487,17 +487,21 @@ export function createPresetOperations(options: PresetDefaults, dependencies: Pr
     presetId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
     namespaceIdentity(namespaceId);
-    return transact(async (state) => {
-      // Authorize before any lookup to conceal target existence. Check again under the
-      // Namespace lock to catch concurrent revocation.
-      await authorize(principalId, "delete", {
-        kind: "preset",
-        id: presetId,
-        namespaceId,
-      });
-      const namespace = await lockNamespace(state, namespaceId);
-      return deletePresetInState(state, principalId, namespace.id, presetId);
-    });
+    return transact(
+      async (state) => {
+        await holdAuthority(state);
+        // Authorize before lookup to conceal target existence.
+        await authorize(principalId, "delete", {
+          kind: "preset",
+          id: presetId,
+          namespaceId,
+        });
+        const namespace = await lockNamespace(state, namespaceId);
+        // Recheck against AccessBinding deletions committed during the Namespace lock wait.
+        return deletePresetInState(state, principalId, namespace.id, presetId);
+      },
+      { readCommitted: true },
+    );
   }
 
   async function deletePresetInState(
