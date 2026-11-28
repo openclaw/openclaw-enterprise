@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+import { promisify } from "node:util";
 
 // OpenClaw intentionally gives its workspace node a reduced environment. Carry
 // only provider routing into that child; model credentials stay excluded.
@@ -37,21 +38,34 @@ for (const module of [http, https]) {
     return request.apply(this, args);
   };
 }
-for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) {
-  const original = childProcess[name];
-  childProcess[name] = function (file, args, options, ...rest) {
+function withProxyRouting(launch) {
+  return function (...args) {
+    const index = Array.isArray(args[1]) || args[1] == null ? 2 : 1;
+    const options = args[index];
     // Native Codex probes also receive a reduced environment. Keep provider
     // routing there; NODE_OPTIONS covers Node shebang launchers such as codex
     // and is ignored by native binaries. Never copy model credentials.
-    if (Array.isArray(args) && options && typeof options === "object") {
+    if (options && typeof options === "object") {
       const env = { ...(options.env ?? process.env), ...routing };
       const preload = "--jitless --import=/opt/oce/strands-box/proxy-preload.mjs";
       if (!(env.NODE_OPTIONS ?? "").includes(preload)) {
         env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ""} ${preload}`.trim();
       }
-      options = { ...options, env };
+      args[index] = { ...options, env };
     }
-    return original.call(this, file, args, options, ...rest);
+    return launch.apply(this, args);
   };
+}
+for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) {
+  const original = childProcess[name];
+  const wrapped = withProxyRouting(original);
+  // Node's promise implementation calls its original execFile directly.
+  // Route that call too, keeping its child handle and both output streams.
+  if (name === "execFile") {
+    Object.defineProperty(wrapped, promisify.custom, {
+      value: withProxyRouting(original[promisify.custom]),
+    });
+  }
+  childProcess[name] = wrapped;
 }
 syncBuiltinESMExports();
