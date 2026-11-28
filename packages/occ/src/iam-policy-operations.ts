@@ -352,23 +352,27 @@ export function createIAMPolicyOperations({
     const namespace = await admitIAMPolicyOperation(principalId, namespaceId);
     const reader = iamPolicyDriver("getNamespaceRole");
     const driver = iamPolicyDriver("deleteNamespaceRole");
-    const deleted = await transactions.transact(async (state) => {
-      await holdIAMPolicyAuthority(state, principalId, namespace.id);
-      return iamPolicyOperation(async () => {
-        const role = await reader.getNamespaceRole!(
-          { policy: state.iamPolicy },
-          namespace.id,
-          roleId,
-        );
-        if (
-          role === undefined ||
-          !(await driver.deleteNamespaceRole!({ policy: state.iamPolicy }, namespace.id, roleId))
-        ) {
-          return undefined;
-        }
-        return role;
-      });
-    });
+    // The authority check after the Namespace lock must see revocations committed during the wait.
+    const deleted = await transactions.transact(
+      async (state) => {
+        await holdIAMPolicyAuthority(state, principalId, namespace.id);
+        return iamPolicyOperation(async () => {
+          const role = await reader.getNamespaceRole!(
+            { policy: state.iamPolicy },
+            namespace.id,
+            roleId,
+          );
+          if (
+            role === undefined ||
+            !(await driver.deleteNamespaceRole!({ policy: state.iamPolicy }, namespace.id, roleId))
+          ) {
+            return undefined;
+          }
+          return role;
+        });
+      },
+      { readCommitted: true },
+    );
     if (deleted === undefined) {
       throw new ScopeViolationError("The IAM Role does not belong to the exact Namespace.");
     }

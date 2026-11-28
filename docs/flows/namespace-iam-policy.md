@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/fda3d531-de1b-4732-984e-f4c3f1c19868"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/971c2c17-b3d7-42ba-a709-6fcd04817610"
 ---
 
 # Namespace IAM Policy Flow
@@ -56,43 +56,41 @@ graph TD
 
 ### 1. Route admission and permission selection
 
-`apps/controller/src/index.ts` admits the caller. The selected IAM Driver checks
-Installation `administer` and exact Namespace `read`. Delegation requires both
-grants even when the caller can access the target.
-`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents these grants.
+`apps/controller/src/index.ts` admits the caller. Even with target access,
+delegation requires the selected IAM Driver to allow Installation `administer`
+and exact Namespace `read` (`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata`).
 
 ### 2. Role and AccessBinding commands reach the controller
 
 `apps/controller/src/http/iam.ts:iamHandlers`
 
-List and read call `OpenClawController` IAM methods and return policy metadata.
-Create and delete use `transactIAM` and return after policy and attributable audit
-commit. Authentication wraps `controller.transact` for human sessions. It holds the
-session before the command and checks expiry after the command and audit append.
-For guarded profiles,
-`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`
-validates the bound account and sign-in method through the actor guard.
-PostgreSQL locks the user in shared mode before locking the session. OCC then
-takes the shared IAM configuration lock before Namespace and account locks.
-Session holds preserve policy transaction timeouts. Account-management operations
-keep exclusive locks, a five-second lock limit, and a ten-second statement limit.
-Independent sessions can write different Namespaces concurrently. Logout and
-account or method revocation wait for protected writes, and a revocation that
-finishes first prevents the write. Expiry during the write or at server-side
-COMMIT validation rolls back policy and its success audit. The memory adapter serializes writes
-with local logout and rechecks the session inside the transaction. Non-session
-credentials use their usual admission path.
+Reads return policy metadata. `transactIAM` commits writes with their audit.
+For session and service-key Role deletes it selects PostgreSQL Read Committed.
+`packages/occ/src/iam-policy-operations.ts:deleteIAMRole` requires the same
+isolation for outer transactions. Its check under the Namespace lock sees
+revocations committed during the wait, including loss of Namespace `read`.
 
-Mutation events record Installation `administer` in `authorization`. Role
-events name the Namespace and include `roleId` and `permissions`. AccessBinding
-events name the bound target, including the Namespace for a Namespace binding,
-and include `bindingId`, `subjectKind`,
-`subjectId`, and `roleId`. Deletion reads the removed row in the same
-transaction for audit. ServicePrincipal creation takes an empty body and
-audits the Namespace and `servicePrincipalId`. The non-Agent identity belongs
-to and appears only in its Namespace, starts without grants, and gains access
-through an AccessBinding. The [service key flow](service-api-keys.md) issues and
-revokes its keys. The identity has no delete route.
+OCC holds human sessions during writes and checks expiry after the audit append.
+For guarded profiles, the actor guard in
+`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`
+checks the account and sign-in method. Lock order is user (shared), session,
+IAM configuration (shared), Namespace, then account. Session holds preserve
+policy timeouts. Account management uses exclusive locks, a five-second lock
+limit and a ten-second statement limit. Independent sessions can write different
+Namespaces concurrently. Logout and account or method revocation wait for
+protected writes. Earlier revocation blocks the write. Expiry through commit
+rolls back the write and success audit. The memory adapter serializes writes
+with local logout and rechecks the session. Other credentials retain their
+admission path.
+
+Mutation audits record Installation `administer` in `authorization`. Role events
+identify the Namespace, `roleId` and `permissions`. AccessBinding events identify
+the target (including the Namespace for Namespace bindings), `bindingId`,
+`subjectKind`, `subjectId` and `roleId`. Deletes read the removed row in the
+audit transaction. ServicePrincipal creation accepts an empty body and records
+the Namespace and `servicePrincipalId`. This non-Agent identity belongs only to
+its Namespace, needs an AccessBinding for access, and has no delete route.
+See [service key issuance and revocation](service-api-keys.md).
 
 ### 3. OCC validates policy ownership
 
@@ -264,6 +262,8 @@ behavior.
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.ts` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
+  With Repeatable Read as the connection default, both direct and HTTP Role
+  deletion must observe a Namespace grant revoked during the lock wait.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.ts`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
@@ -295,6 +295,8 @@ behavior.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 22:17: Trace Role deletion after revocation. (authoring-run/971c2c17-b3d7-42ba-a709-6fcd04817610 - 5bedeb756f91663e60fd8171ac8cacc44704f3a7)
 
 - 2026-11-20 17:01: Point to deployment grant creation in the Agent credential access module. (authoring-run/fda3d531-de1b-4732-984e-f4c3f1c19868 - 91d5a4bc0ddd450d83d4ec939dd9c377cc145f8e)
 

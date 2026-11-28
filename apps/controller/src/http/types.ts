@@ -10,7 +10,6 @@ import type {
   HarnessResolver,
   OpenClawController,
   RemovedAccessBinding,
-  PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
@@ -46,7 +45,7 @@ export type ResourceHandler = (input: {
   // Whether the caller may take `action` on `resource` now. Nothing is audited: advisory answers
   // only, which the operation's own authorization still decides.
   readonly callerMay: (action: PermissionAction, resource: ResourceRef) => Promise<boolean>;
-  readonly transactIAM: <T>(work: (unit: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
+  readonly transactIAM: OpenClawController["transact"];
   // Build the event inside the handler's transaction, alongside the mutation.
   // `details` records what changed (identifiers only, never secret values).
   readonly mutationEvent: (

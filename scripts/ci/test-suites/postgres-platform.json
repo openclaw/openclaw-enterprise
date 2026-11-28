@@ -255,6 +255,8 @@
         "PostgreSQL native IAM creates exact AgentRevision bindings with limited app privileges",
         "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets",
         "PostgreSQL IAM policy writes keep the actor's authority current through COMMIT",
+        "PostgreSQL Role deletion observes Namespace read revoked during the lock wait",
+        "HTTP Role deletion denies and audits a revoked Namespace read under Repeatable Read defaults",
         "native IAM reads the policy once per unit of work and never across units",
         "listing 2000 Agents reads the policy once for the whole list"
       ]

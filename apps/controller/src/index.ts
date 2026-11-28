@@ -2069,13 +2069,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         setAuditReadTarget: (resource) => setAuditReadTarget(request, resource),
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
-        transactIAM: async (work) => {
+        transactIAM: async (work, transactionOptions) => {
           const admitted = admissions.get(request);
           if (admitted === undefined) {
             throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
           }
           if (admitted.method !== "session") {
-            return controller!.transact(work);
+            return controller!.transact(work, transactionOptions);
           }
           return options.auth.withSessionAuthority(admitted.session, () =>
             controller!.transact(async (unit) => {
@@ -2084,7 +2084,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               // Recheck the session after the protected policy and audit work.
               await options.auth.holdSession(unit, admitted.session, request);
               return result;
-            }),
+            }, transactionOptions),
           );
         },
         mutationEvent: (resource, details, authorization, failure) => {

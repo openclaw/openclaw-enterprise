@@ -187,46 +187,43 @@ a Namespace-scoped Group cannot grant access in another Namespace.
 
 ## Manage Namespace policy
 
-Namespace policy writes require an IAM Driver that declares
-`namespacePolicyTransaction: "platform-unit-of-work"`. Otherwise OCC rejects the
-write before calling the Driver, so a later denial cannot leave an external grant.
+Without `namespacePolicyTransaction: "platform-unit-of-work"`, OCC rejects
+writes before calling the IAM Driver. This prevents an external grant from
+surviving a denial. OCC holds the assigning human session through the transaction.
+Revocation that finishes first blocks the write. A protected write can finish
+before logout. If the session expires by COMMIT, PostgreSQL rolls back policy
+and its success audit. See the [Namespace IAM flow](../flows/namespace-iam-policy.md).
 
-Human-session policy mutations retain the assigning session through the transaction.
-Completed revocation prevents a pending write. PostgreSQL validates session expiry
-during COMMIT and rolls back policy and its success audit if the session expired.
-A protected write may finish before logout completes.
-See the [Namespace IAM flow](../flows/namespace-iam-policy.md) for the implementation.
+Every operation requires Installation `administer` and exact Namespace `read`.
+The selected IAM Driver applies Restrictions. Role deletion rechecks both
+permissions under the Namespace lock. Losing either leaves the Role intact
+(`403`). Creating a binding also requires `read` on its exact target.
 
 Use `/namespaces/:namespaceId/iam/roles`,
 `/namespaces/:namespaceId/iam/access-bindings`, and
-`/namespaces/:namespaceId/iam/service-principals`. Collection `GET` lists policy in
-that Namespace (`200`) and `POST` creates a server-identified resource (`201`).
-Item `GET` reads one (`200`); item `DELETE` removes only that Role or AccessBinding
-(`204`). Missing resources return `404`. A ServicePrincipal created here is a
-non-Agent identity fixed to the Namespace with no grant; bind it like any
-subject and issue its [service key](authentication/service-api-keys.md). The API
-cannot delete one yet: revoke its keys and AccessBindings to remove its access.
-Deleting the Namespace does not revoke them, so revoke its keys first.
-Lists exclude Installation bootstrap policy but include existing broad and
-Group bindings in the Namespace, which deletion can revoke by exact ID. The
-narrower subject and target requirements below apply to creation.
+`/namespaces/:namespaceId/iam/service-principals`. Collection `GET` lists
+Namespace policy (`200`). `POST` creates a resource with a server-assigned ID
+(`201`). Item `GET` reads one resource (`200`). Item `DELETE` removes that Role
+or AccessBinding (`204`). Missing resources return `404`. Lists exclude
+Installation bootstrap policy but include existing broad and Group bindings.
+Delete those by exact ID. New bindings have stricter scope.
 
-Every operation requires Installation `administer` and exact Namespace `read`,
-evaluated by the selected IAM Driver and applicable Restrictions. Creating a
-binding also requires `read` on its exact target.
+New ServicePrincipals belong to this Namespace, have no grants and represent
+no Agent. Assign an AccessBinding and issue a [service key](authentication/service-api-keys.md).
+The API cannot delete ServicePrincipals. Revoke their keys and AccessBindings
+to remove access. Revoke keys first because Namespace deletion leaves them valid.
 
-`create` is checked against the Namespace rather than an existing resource,
-so this API cannot grant it. Binding creation returns `400 INVALID_REQUEST`
-(detail path `/roleId`) naming the Permissions when the Role has none for the
-target's kind, or holds `create` (a Role stored before Role creation refused
-it). One Role may still name several kinds and be bound to a target of each.
-Ordinary resource access does not authorize delegation. Drivers without policy
-management return `503 DEPENDENCY_UNAVAILABLE`; OCC never substitutes native IAM.
+This API binds existing resources. It cannot grant `create`, which OCC checks
+on the Namespace. A Role can cover several kinds, with a binding for each.
+If it lacks a Permission for the target kind or contains a previously accepted
+`create`, binding creation names the Permissions at `/roleId`
+(`400 INVALID_REQUEST`). Resource access alone does not authorize delegation.
+Drivers without policy management return `503 DEPENDENCY_UNAVAILABLE`.
+OCC never substitutes native IAM.
 
-These interfaces summarize the [HTTP creation bodies](../../packages/contracts/src/api/common.ts).
-All binding fields are required, including `resourceId`; Role `name` is optional.
-OCC generates `id` and supplies `namespaceId` from the URL. Neither belongs in
-these request bodies; extra fields are rejected.
+The [HTTP creation bodies](../../packages/contracts/src/api/common.ts) require
+all binding fields, including `resourceId`. Role `name` is optional. OCC rejects
+extra fields, including `id` (generated) and `namespaceId` (from the URL).
 
 ```ts
 import type { ManagedIAMResourceKind, PermissionAction } from "@openclaw-enterprise/contracts";

@@ -91,10 +91,12 @@ disposal hook.
 
 ### Native IAM behavior
 
-The native Driver reads controller-owned IAM state once per PostgreSQL State unit
-of work, such as one list request, and validates and indexes it once there; a
-lookup or decision outside a unit opens its own. A later unit reads the policy
-again, so a revocation applies to the next request. The Driver accepts only an
+The native Driver reads one policy snapshot for a read-only PostgreSQL State
+transaction, such as a list request. In a write transaction, it reads the policy
+again after an intervening statement. The transaction's isolation level
+determines which committed changes it can see. A lookup or decision outside a
+transaction opens its own. See the [Namespace IAM policy flow](../../flows/namespace-iam-policy.md)
+for the check after the Namespace lock. The Driver accepts only an
 empty startup configuration. Lookup returns no identity for
 an absent or ambiguous match, invalid scope, or invalid policy. Authorization
 denies invalid requests or policy, unknown identities, cross-Namespace identity

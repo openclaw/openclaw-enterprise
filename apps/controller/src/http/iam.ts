@@ -99,19 +99,22 @@ export const iamHandlers = {
     mutationEvent,
     transactIAM,
   }) {
-    await transactIAM(async (unit) => {
-      const deleted = await controller.deleteIAMRole(
-        context.actorId,
-        namespaceId,
-        params.roleId as string,
-      );
-      await unit.audit.append(
-        mutationEvent(
-          { kind: "namespace", id: namespaceId, namespaceId },
-          roleAuditDetails(deleted),
-        ),
-      );
-    });
+    await transactIAM(
+      async (unit) => {
+        const deleted = await controller.deleteIAMRole(
+          context.actorId,
+          namespaceId,
+          params.roleId as string,
+        );
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "namespace", id: namespaceId, namespaceId },
+            roleAuditDetails(deleted),
+          ),
+        );
+      },
+      { readCommitted: true },
+    );
     reply.status(204).send();
   },
   async listIAMAccessBindings({ controller, context, request, reply, namespaceId }) {
