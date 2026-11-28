@@ -26,3 +26,38 @@ you [apply the release](upgrade-checklist.md#apply-the-release-in-dependency-ord
 | PostgreSQL, workspace, gateway, and repository volumes | Preserve                                            | These survive only while their external database, PVCs, k3d volumes, or Compose volumes remain. Images do not recreate them.                                                                                                                                                                                                   | Keep the existing resources and reclaim policies. Do not delete these to force an upgrade through.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Native-admin pod-local edits and broker sessions       | Recreate or discard                                 | Pod-local changes and in-memory sessions disappear when the owning Pod restarts. Managed Configurations and PVC data persist.                                                                                                                                                                                                  | Move intended configuration into a managed resource before rollout. Worker maintenance replaces a broker session that the service recorded as disposed, which recreates the dedicated Codex Pod; inspect other lost sessions and retained cleanup obligations.                                                                                                                                                                                                                                                                                                                                               |
 | Long-lived local profile state                         | Preserve and reconcile manually                     | Compose files, bind mounts, kubeconfig, cluster name, image tags, private state files, and named volumes sit outside the release image.                                                                                                                                                                                        | Update every image consumer, retain PostgreSQL and k3d volumes, add new mounted files explicitly, and verify rendered Compose and Helm configuration before recreating only affected services. A custom retained topology needs its own procedure.                                                                                                                                                                                                                                                                                                                                                           |
+
+## Compare Gateway schema versions
+
+Before scheduling downtime, [select matching image pairs](published-images.md#pull-a-matching-pair)
+for the target architecture. Save the recovery runtime digest in
+`RECOVERY_RUNTIME_IMAGE` and the candidate runtime digest in `RUNTIME_IMAGE`.
+With both images local, run this Bash check with Docker and jq.
+
+```bash
+(
+  schemas() {
+    [[ $1 =~ ^([a-z0-9][a-z0-9./:_-]*@)?sha256:[a-f0-9]{64}$ ]] ||
+      { echo "Select a verified runtime digest." >&2; return 1; }
+    docker run --rm --pull=never --network none --read-only --entrypoint node "$1" \
+      -p 'JSON.stringify(require("/app/node_modules/openclaw/package.json").openclaw.schemaVersions)'
+  }
+  candidate=$(schemas "${RUNTIME_IMAGE:?}") || exit 1
+  recovery=$(schemas "${RECOVERY_RUNTIME_IMAGE:?}") || exit 1
+  jq -en --argjson c "$candidate" --argjson r "$recovery" '
+    def valid: type == "number" and . > 0 and . <= 9007199254740991 and . == floor;
+    all("state", "agent"; . as $key |
+      ($c[$key] | valid) and ($r[$key] | valid) and $r[$key] >= $c[$key])
+  ' >/dev/null || { echo "Hold the upgrade. Check both schemas and choose a compatible recovery pair." >&2; exit 1; }
+  printf 'Candidate %s %s\nRecovery %s %s\n' \
+    "$RUNTIME_IMAGE" "$candidate" "$RECOVERY_RUNTIME_IMAGE" "$recovery"
+)
+```
+
+A failed read, a missing version or a lower recovery version for either database
+stops the check. Resolve the read failure or select another recovery pair.
+
+Exit 0 means both declared versions meet the minimum. Record the output, check
+PostgreSQL compatibility separately and rehearse a return on isolated data.
+Verify that the recovery runtime reads a reply written by the candidate and
+can continue the same conversation.
