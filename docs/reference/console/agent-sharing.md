@@ -17,18 +17,55 @@ request; the API validates subjects and targets, and an unknown Principal ID is
 reported as such. Sharing does not provision or search for accounts.
 
 The acknowledgment covers full native administration of the shared Agent,
-including its conversations, settings, tools and accessible credentials. This is
-not restricted chat or automatic personal identity for each chat. Sharing does
-not grant OCE Configuration, deployment, Secret or Agent stop permissions. The
-[native launcher](../agent-native-admin.md) still requires its Installation setup and a supported runtime.
+including its conversations, settings, tools and accessible credentials. This
+is not the restricted chat access granted by `agent:operate`. Sharing does not
+grant OCE Configuration, deployment, Secret or Agent stop permissions.
+
+Sharing grants access to an existing OCC Principal. It does not create an OCC
+account or a Gateway profile. When an eligible signed-in person successfully
+connects through OCC's **Open Agent UI** or **Open chat**, the supported Gateway
+creates a native profile for that Principal if needed. It reuses the profile
+while native storage is retained. This happens during browser admission, not
+for each conversation. The [native profile](../agent-native-admin.md#native-authority-and-drift)
+identifies the Principal but does not isolate tools, credentials, files, or
+execution.
 
 ## Direct grants and removal
 
-**Direct Agent grants** lists explicit bindings to this Agent and their Role
-permissions. It is not an effective-access report. **Remove binding** deletes
-only that binding and preserves Namespace discovery. Other grants, groups and
-Installation administration can still provide access; accounts, Roles and
-Agents are retained.
+**Direct Agent grants** groups explicit bindings to this Agent by subject. The
+console shows the OpenClaw Control Plane (OCC) human account display name when
+available, or the full Principal ID otherwise. Two Principals can have the same
+display name and still have separate rows. Expand a row to see the full,
+selectable subject ID and each binding's Role, permissions, and ID. Service
+Principals, groups, and other identities appear separately.
+
+The optional name read requires a current human Installation administrator,
+the trusted Console origin, and read access to the exact Namespace and Agent.
+With guarded human authentication, it returns only stored names for accounts
+whose Principal has a direct binding to this Agent. A name equal to the account
+email is not shown. The Console does not search for people or list accounts.
+A denied or failed name read does not change the grants or the available actions.
+
+For a Principal, **Open Agent UI · administer** means a listed Role grants
+exact-Agent `administer`. Otherwise **Chat access · operate** means a listed
+Role grants exact-Agent `operate`. The badge is not a launch link; **Open chat**
+remains in the Agent header when available to the signed-in user. These labels
+are not an effective-access report and do not confirm that the Agent UI is
+available.
+
+Each binding shows its Role name and the capabilities from that Role. For a
+human Principal, a Role with both `agent:read` and `agent:operate` shows
+**View Agent in OCC**, **Chat access**, and **Stop Agent**. The **View Agent in
+OCC** label requires explicit Agent read. Listing the Agent also requires
+Namespace read access. **Technical details** shows the raw permissions and
+the Role and binding IDs. **Other permissions** means the Role lists
+permissions beyond those summarized here. If a Role is missing from the
+policy list, its binding and both IDs remain visible without guessing what
+the Role grants.
+
+**Remove binding** deletes only the selected binding and preserves Namespace
+discovery. Other grants, groups, and Installation administration can still
+provide access; accounts, Roles, and Agents are retained.
 
 ## Failures and uncertain outcomes
 

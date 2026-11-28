@@ -17,9 +17,10 @@ While the share runs, the page stays open until it finishes, usually within
 seconds and at most about 75 s; tabs still switch. Reloading or closing the tab
 asks first. Signing out or an expired session still leaves.
 
-The person gains Namespace discovery and access to this Agent's native
-conversations, settings, tools and accessible credentials. They do not
-automatically receive separate personal chat identity.
+**Share Agent** grants Namespace discovery and full native administration of
+this Agent. It does not create an OCC account or a Gateway profile. When the
+person successfully connects through **Open Agent UI**, the Gateway creates or
+reuses the [native profile for their Principal](../../reference/agent-native-admin.md#native-authority-and-drift).
 
 ## Recover from a failed or uncertain share
 
@@ -30,8 +31,10 @@ happened to an earlier unanswered request.
 
 ## Remove a direct grant
 
-To withdraw one explicit Agent grant, find it under **Direct Agent grants** and
-select **Remove binding**. Namespace discovery remains, and other grants, groups
+Under **Direct Agent grants**, find the person's account name or Principal ID.
+Expand the row to verify the full Principal ID and see its bindings. Find the
+applicable Role and select **Remove binding** next to it.
+Namespace discovery remains, and other grants, groups
 or Installation administration may still provide access. The console does not
 delete the person, Agent or Roles. People without Installation administration
 do not see the **Access** tab. If a sharing policy read is denied, the tab is

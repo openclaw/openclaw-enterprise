@@ -1,4 +1,8 @@
-import { ErrorDetail as ErrorDetailSchema } from "@openclaw-enterprise/contracts";
+import {
+  AgentParams,
+  EmptyQuery,
+  ErrorDetail as ErrorDetailSchema,
+} from "@openclaw-enterprise/contracts";
 import { SERVICE_KEY_NAME_MAX_LENGTH } from "../auth/index.ts";
 import type { RequestOperation } from "./types.ts";
 
@@ -174,6 +178,32 @@ export function createAuthRouteSchemas() {
     };
   }
 
+  function readAgentAccountNames(operation: AuthOperation) {
+    return {
+      ...installationAdminMetadata(
+        operation,
+        "Requires a current human Installation administrator, the trusted Console origin, and read access to the exact Namespace and Agent. Returns only stored display names keyed by Principal ID for human accounts with direct bindings to that Agent. Names are available with guarded human authentication; missing names are omitted.",
+      ),
+      "x-openclaw-permissions": [
+        { action: "administer", resourceKind: "installation", scope: "requested" },
+        { action: "read", resourceKind: "namespace", scope: "requested" },
+        { action: "read", resourceKind: "agent", scope: "requested" },
+      ],
+      params: AgentParams,
+      querystring: EmptyQuery,
+      response: {
+        ...responses({
+          type: "array",
+          items: closedObject(["principalId", "displayName"], {
+            principalId: { type: "string" },
+            displayName: { type: "string" },
+          }),
+        }),
+        ...resourceErrors(),
+      },
+    };
+  }
+
   function readAccount(operation: AuthOperation) {
     return {
       ...installationAdminMetadata(
@@ -312,6 +342,7 @@ export function createAuthRouteSchemas() {
     serviceKey,
     createAccount,
     readAccount,
+    readAgentAccountNames,
     changeAccount,
     readRecovery,
     replaceRecovery,

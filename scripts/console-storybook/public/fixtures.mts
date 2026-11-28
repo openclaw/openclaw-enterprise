@@ -11,6 +11,8 @@ import type {
   AgentRuntimeHarnessStatus,
   AgentRuntimeEvent,
   HarnessAuthBinding,
+  IAMAccessBindingSchema,
+  IAMRoleSchema,
   OpenClawConfigurationDocument,
   RepositoryOptionListResponse,
   SecretReference,
@@ -95,6 +97,11 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
       truncated: boolean;
     };
     rules?: Parameters<typeof createFixtureFetch>[0];
+    accessPolicy?: {
+      roles: readonly Static<typeof IAMRoleSchema>[];
+      bindings: readonly Static<typeof IAMAccessBindingSchema>[];
+      displayNames?: readonly { principalId: string; displayName: string }[];
+    };
     signedOut?: boolean;
     pendingOidcAttempt?: boolean;
     expiredSession?: boolean;
@@ -245,8 +252,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const cancelledDeviceLogins = new Set<string>();
   let deniedDeviceSourceCreate = false;
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
-  const roles: StoredIdentity[] = [];
-  const bindings: StoredIdentity[] = [];
+  const roles: StoredIdentity[] = scenario.accessPolicy?.roles.map(storedIdentity) ?? [];
+  const bindings: StoredIdentity[] = scenario.accessPolicy?.bindings.map(storedIdentity) ?? [];
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -916,6 +923,25 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         const saved = lifecycle.lookupAgent(id);
         if (!saved) {
           return error(404);
+        }
+        if (suffix === "/access-display-names" && method === "GET") {
+          return response(
+            (scenario.accessPolicy?.displayNames ?? []).filter(({ principalId }) =>
+              bindings.some(({ response: policy }) => {
+                if (!("subjectKind" in policy) || policy.subjectKind !== "identity") {
+                  return false;
+                }
+                return (
+                  "subjectId" in policy &&
+                  policy.subjectId === principalId &&
+                  "resourceKind" in policy &&
+                  policy.resourceKind === "agent" &&
+                  "resourceId" in policy &&
+                  policy.resourceId === id
+                );
+              }),
+            ),
+          );
         }
         const policyReply = networkPolicy.serve(id, suffix, method, body, url);
         if (policyReply !== undefined) {

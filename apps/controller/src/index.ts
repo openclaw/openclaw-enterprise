@@ -2810,6 +2810,52 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     );
 
+    const agentAccountNamesOperation = installationAuthOperation({
+      operationId: "listAgentAccountDisplayNames",
+      method: "GET",
+      path: "/namespaces/:namespaceId/agents/:agentId/access-display-names",
+      action: "openclaw.auth.accounts.agent_display_names.read",
+      summary: "Read human account display names for direct bindings to one Agent",
+    });
+    routes.get<{ Params: { namespaceId: string; agentId: string } }>(
+      agentAccountNamesOperation.path,
+      {
+        schema: authSchemas.readAgentAccountNames(agentAccountNamesOperation),
+        ...accountAdmission(agentAccountNamesOperation),
+      },
+      async (request, reply) => {
+        const context = contexts.get(request);
+        if (!context) {
+          throw dependencyUnavailable();
+        }
+        const actor = await humanAccountActor(request, agentAccountNamesOperation, context);
+        const { namespaceId, agentId } = request.params;
+        const activeController = controller;
+        if (!activeController) {
+          throw dependencyUnavailable();
+        }
+        const requireExactRead = async () => {
+          await activeController.getNamespace(context.actorId, namespaceId);
+          await activeController.getAgent(context.actorId, namespaceId, agentId);
+        };
+        if (!options.auth.readAgentAccountNames) {
+          await requireExactRead();
+        }
+        const data = options.auth.readAgentAccountNames
+          ? await options.auth.readAgentAccountNames(namespaceId, agentId, {
+              ...actor,
+              authorize: async (scope) => {
+                await actor.authorize(scope);
+                // The concrete account owner holds current IAM policy and the actor's session
+                // while these exact resource reads and the name projection complete.
+                await requireExactRead();
+              },
+            })
+          : [];
+        reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+      },
+    );
+
     const accountOperations = [
       {
         operationName: "google",

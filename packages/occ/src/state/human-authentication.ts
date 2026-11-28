@@ -1357,6 +1357,41 @@ export class PostgresHumanAuthentication {
     });
   }
 
+  /** Read only projected names for enrolled people bound directly to this exact Agent. */
+  async readAgentAccountNames(
+    namespaceId: string,
+    agentId: string,
+    actor: HumanAuthenticationActor,
+  ): Promise<readonly { principalId: string; displayName: string }[]> {
+    return this.state.transactReadCommitted(async (unit) => {
+      await this.guardActor(unit, actor, []);
+      await this.guardAuthority(unit, actor);
+      // Account creation and external enrollment can store the email as a missing name.
+      // Never send that fallback. The join is on the enrolled immutable Principal, not name.
+      const names = await this.query(
+        unit,
+        `SELECT h.principal_id, btrim(u.name) AS display_name
+         FROM occ.human_authentication_accounts h
+         JOIN occ."user" u ON u.id = h.user_id
+         JOIN occ.iam_identities p ON p.id = h.principal_id AND p.kind = 'principal'
+           AND p.issuer = $2 AND p.subject = h.user_id
+         WHERE h.installation_id = $1 AND btrim(u.name) <> ''
+           AND lower(btrim(u.name)) <> lower(btrim(u.email))
+           AND EXISTS (
+             SELECT 1 FROM occ.iam_access_bindings b
+             WHERE b.namespace_id = $3 AND b.resource_kind = 'agent' AND b.resource_id = $4
+               AND b.identity_subject_id = h.principal_id
+           )
+         ORDER BY h.principal_id`,
+        [this.installationId, this.issuer, namespaceId, agentId],
+      );
+      return names.map(({ principal_id, display_name }) => ({
+        principalId: principal_id as string,
+        displayName: display_name as string,
+      }));
+    });
+  }
+
   async attachExternal(
     userId: string,
     providerId: string,

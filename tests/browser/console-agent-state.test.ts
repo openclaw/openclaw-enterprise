@@ -2008,6 +2008,133 @@ test("Reads waiting behind a pending administration read end with their page", a
   }
 });
 
+test("Access groups exact Agent grants and removes only the selected binding", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["roster-user", "roster-reader"],
+  });
+  await fixture.bootstrap();
+  const [person, reader] = fixture.provisionedAccounts;
+  assert.ok(person && reader);
+  const namespace = await fixture.createNamespace("Grant roster", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Roster Agent", nativeValues("roster"));
+  const sibling = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("sibling"));
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  async function grant(
+    subjectId: string,
+    name: string,
+    permission: Permission,
+    resourceId: string,
+  ) {
+    const role = await fixture.request("POST", `${policyPath}/roles`, {
+      body: { name, permissions: [permission] },
+    });
+    assert.equal(role.status, 201);
+    const { id: roleId } = identifiedResource(role.data);
+    const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId,
+        roleId,
+        resourceKind: permission.resourceKind,
+        resourceId,
+      },
+    });
+    assert.equal(binding.status, 201);
+    return { roleId, bindingId: identifiedResource(binding.data).id };
+  }
+  const admin = await grant(
+    person.principal.id,
+    "Runtime administration",
+    { action: "administer", resourceKind: "agent" },
+    agent.id,
+  );
+  const chat = await grant(
+    person.principal.id,
+    "Research chat",
+    { action: "operate", resourceKind: "agent" },
+    agent.id,
+  );
+  // A familiar role name and an operate grant on another Agent do not authorize native chat here.
+  await grant(
+    reader.principal.id,
+    "Open chat",
+    { action: "read", resourceKind: "agent" },
+    agent.id,
+  );
+  await grant(
+    reader.principal.id,
+    "Other Agent chat",
+    { action: "operate", resourceKind: "agent" },
+    sibling.id,
+  );
+  await grant(
+    person.principal.id,
+    "Discovery",
+    { action: "read", resourceKind: "namespace" },
+    namespace.id,
+  );
+  const service = await fixture.request("POST", `${policyPath}/service-principals`, { body: {} });
+  assert.equal(service.status, 201);
+  const serviceId = identifiedResource(service.data).id;
+  await grant(serviceId, "Automation", { action: "operate", resourceKind: "agent" }, agent.id);
+
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  const principals = panel.getByRole("list", { name: "Principal grants", exact: true });
+  assert.equal(await principals.locator(":scope > li").count(), 2, "one row per Principal");
+  const summary = principals.locator("summary").filter({ hasText: "Open Agent UI · administer" });
+  assert.equal(await summary.count(), 1);
+  await principals.locator("summary").filter({ hasText: "View Agent in OCC" }).waitFor();
+  const otherSubjects = panel.getByRole("list", { name: "Other binding subjects", exact: true });
+  const serviceRow = otherSubjects.locator("summary").filter({ hasText: "Service Principal" });
+  await serviceRow.waitFor();
+  assert.doesNotMatch(await serviceRow.innerText(), /Open chat|Open Agent UI/);
+  await serviceRow.click();
+  await otherSubjects.getByText("Operate Agent", { exact: true }).waitFor();
+
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  const row = principals.locator(":scope > li > details[open]");
+  await row
+    .locator(".agent-access-subject-id code")
+    .getByText(person.principal.id, { exact: true })
+    .waitFor();
+  const bindingRows = row.getByRole("list", { name: "Direct bindings", exact: true });
+  assert.equal(
+    await bindingRows.getByRole("listitem").count(),
+    2,
+    "Namespace discovery is not an Agent binding",
+  );
+  const administration = bindingRows
+    .getByRole("listitem")
+    .filter({ hasText: "Runtime administration" });
+  const researchChat = bindingRows.getByRole("listitem").filter({ hasText: "Research chat" });
+  await administration.getByText("Administer Agent", { exact: true }).waitFor();
+  await researchChat.getByText("Chat access · Stop Agent", { exact: true }).waitFor();
+  assert.equal(await bindingRows.getByText("View Agent in OCC", { exact: true }).count(), 0);
+  await administration.getByText("Technical details", { exact: true }).click();
+  await researchChat.getByText("Technical details", { exact: true }).click();
+  await administration.getByText(admin.roleId, { exact: true }).waitFor();
+  await administration.getByText(admin.bindingId, { exact: true }).waitFor();
+  await administration.getByText("agent: administer", { exact: true }).waitFor();
+
+  const deleted = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `${policyPath}/access-bindings/${admin.bindingId}` &&
+      response.request().method() === "DELETE",
+  );
+  await administration.getByRole("button", { name: "Remove binding", exact: true }).click();
+  assert.equal((await deleted).status(), 204);
+  await panel.getByText("Binding removed.", { exact: false }).waitFor();
+  const summaryLabel = row.locator(":scope > summary");
+  await summaryLabel.getByText("Chat access · operate", { exact: true }).waitFor();
+  assert.equal(await summaryLabel.getByRole("link").count(), 0);
+  await researchChat.getByText(chat.bindingId, { exact: true }).waitFor();
+  assert.equal(await administration.count(), 0);
+});
+
 // Finding D790. The Access tab's panel is built once per page. An administrator who opened it,
 // lost administration with the page open and came back to the tab found the panel read before:
 // "Current policy loaded." and an enabled Remove binding, while nothing said the policy reads were
@@ -2048,6 +2175,10 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   const remove = page.getByRole("button", { name: "Remove binding", exact: true });
   await accessTab.click();
   await loaded.waitFor();
+  await page
+    .getByRole("list", { name: "Principal grants" })
+    .locator(":scope > li > details > summary")
+    .click();
   await waitForEnabled(remove.first());
   await configurationTab.click();
   await waitForIdleFetches(page);
@@ -2111,6 +2242,11 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await accessTab.click();
   await loaded.waitFor();
+  await panel
+    .getByRole("list", { name: "Principal grants" })
+    .locator(":scope > li > details > summary")
+    .first()
+    .click();
   await waitForEnabled(remove.first());
   assert.equal(iamDenials().length, 1);
 });

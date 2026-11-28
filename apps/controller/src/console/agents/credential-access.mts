@@ -90,13 +90,14 @@ export function policyList<T>(value: unknown, read: (item: unknown) => T): T[] {
 }
 
 export function policyRole(value: unknown) {
-  const { id, namespaceId, permissions } = responseFields(value);
+  const { id, namespaceId, name, permissions } = responseFields(value);
   if (typeof id !== "string" || typeof namespaceId !== "string") {
     throw new Error("Invalid IAM role");
   }
   return {
     id,
     namespaceId,
+    name: typeof name === "string" && name.trim() ? name : undefined,
     permissions: policyList(permissions, (item) => {
       const { action, resourceKind } = responseFields(item);
       if (typeof action !== "string" || typeof resourceKind !== "string") {

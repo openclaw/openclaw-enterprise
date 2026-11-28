@@ -850,6 +850,9 @@ export const responseExamples = {
     principalId: authAccount.principalId,
   },
   getAuthAccount: authAccount,
+  listAgentAccountDisplayNames: [
+    { principalId: authAccount.principalId, displayName: "Morgan Chen" },
+  ],
   disableAuthAccount: { userId },
   enableAuthAccount: { userId },
   detachAuthMethod: { userId },

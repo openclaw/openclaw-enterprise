@@ -109,6 +109,20 @@ Stories reach error states through real controls after loading fixture data.
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
 
+In **Pages → Agent detail → Direct Agent grant roster**, expand **Morgan Chen**
+to see the full Principal ID and a single **Research chat** binding. It shows
+**View Agent in OCC**, **Chat access**, and **Stop Agent**. Open **Technical
+details** to see `agent:read`, `agent:operate`, and the IDs. Expand **Avery Patel**
+to compare the administration binding. Expand the separate read-only Principal to see
+the **Research support** binding. The read-only Principal
+uses the ID because no name is available. The Service Principal is listed
+separately. **Direct Agent grant names unavailable** shows
+the ID fallback when the optional name read is refused. **Share an Agent**
+starts with no direct grants, and **Sharing administration denied** hides the
+Access tab after a policy refusal. **Direct Agent grant with an unavailable
+Role** keeps the binding visible while the Role is missing. These stories use
+simulated policy state.
+
 In **Pages → Create Agent → Repository-only Credential Proxy**, check that the
 model-only Dedicated OpenClaw form permits creation without a repository selection. Choose Codex, select the repository, and turn off issue
 management under **Customize access** to use its approved access level.
