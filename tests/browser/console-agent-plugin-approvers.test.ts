@@ -2675,17 +2675,19 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   const add = card.getByRole("button", { name: "Add Alpha", exact: true });
   await add.waitFor();
 
+  const draft = '{“alpha":{"enabled":true}}';
   const invalid =
-    "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.";
-  await page.evaluate(() => globalThis.showPluginPage2("["));
-  await dialog.getByText(invalid, { exact: true }).waitFor();
+    'Invalid JSON at line 1, column 2: replace the curly quote “ there with a straight quote ("). Your JSON has been kept.';
+  const alert = dialog.getByRole("alert");
+  await page.evaluate((raw) => globalThis.showPluginPage2(raw), draft);
+  assert.equal(await alert.textContent(), invalid);
   assert.deepEqual(await liveWrites(), [invalid]);
-  assert.deepEqual(await statusTone(dialog.getByText(invalid, { exact: true })), {
+  assert.deepEqual(await statusTone(alert), {
     className: "status",
     tone: "danger",
     role: "alert",
   });
-  await page.evaluate(() => globalThis.showPluginPage2("["));
+  await page.evaluate((raw) => globalThis.showPluginPage2(raw), draft);
   assert.deepEqual(await liveWrites(), []);
 
   // Alpha can still be browsed, but neither view knows whether it is selected.
@@ -2722,7 +2724,7 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   assert.equal(await betaCard.locator(".plugin-detail-header .badge").textContent(), "Unavailable");
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   const input = page.locator("#plugin-live-selections");
-  assert.equal(await input.inputValue(), "[");
+  assert.equal(await input.inputValue(), draft);
 
   // A typo should neither insert nor remove the setup reminder above the editor.
   const reminder = page.locator(".plugin-setup-reminder");
@@ -3882,6 +3884,7 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
   const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
   const done = dialog.getByRole("button", { name: "Done", exact: true });
   const configured = dialog.getByRole("button", { name: "Configured plugins", exact: true });
+  const alert = dialog.getByRole("alert");
   const status = dialog.locator(".plugin-browser-status [role=status]");
   const counts = page.locator(".plugin-fields > p.hint");
   const empty = dialog.getByText("No plugins configured. Choose Available plugins to add one.");
@@ -3894,6 +3897,7 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
   assert.equal(await status.textContent(), "0 configured plugins");
   await done.click();
 
+  const beforePicker = agentRequests().length;
   await input.fill(bad);
   assert.equal(
     await counts.textContent(),
@@ -3901,17 +3905,26 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
   );
   await configure.click();
   await configured.click();
-  await dialog
-    .getByText(
-      "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.",
-      { exact: true },
-    )
-    .waitFor();
+  assert.equal(await alert.textContent(), `${numberError} Your JSON has been kept.`);
   assert.equal(await input.inputValue(), bad);
   assert.equal(await dialog.evaluate((node) => node.contains(document.activeElement)), true);
   assert.doesNotMatch((await status.textContent()) ?? "", /\b\d+ configured plugins?\b/);
   assert.equal(await empty.count(), 0);
   await done.click();
+
+  // A well-formed draft with an unsupported tool policy still needs policy guidance.
+  const unsupported = JSON.stringify({
+    [id]: { ...valid[id], toolDefaults: { ...sibling, approval: "unsupported" } },
+  });
+  await input.fill(unsupported);
+  await configure.click();
+  assert.equal(
+    await alert.textContent(),
+    "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.",
+  );
+  await done.click();
+  assert.equal(await input.inputValue(), unsupported);
+  assert.equal(agentRequests().length, beforePicker);
 
   // Repair to a disabled selection: disabled is still configured.
   await input.fill(JSON.stringify({ [id]: { enabled: false } }));
