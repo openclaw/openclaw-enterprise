@@ -447,6 +447,37 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
+  // Both getter results are valid; registration must check one value, not combine two reads.
+  let reads = 0;
+  const alternating = {
+    ...createSandboxDriver({ id: "alternating-labels" }),
+    get workspaceNodePeerLabels() {
+      return ++reads % 2 === 1 ? () => ({}) : undefined;
+    },
+  };
+  controller.registerDriver(alternating);
+  assert.equal(reads, 1);
+
+  // Every optional provider-owned Harness member is refused at registration when malformed.
+  for (const member of [
+    "harnessEndpoint",
+    "harnessStatus",
+    "enrollHarness",
+    "withdrawHarnessExposure",
+    "harnessResource",
+    "workspaceNodePeerLabels",
+    "observeHeldRepositoryGitPreview",
+  ]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: `invalid-${member}` }),
+          [member]: "invalid",
+        }),
+      DriverSelectionError,
+      member,
+    );
+  }
   for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
