@@ -64,6 +64,7 @@ interface WorkspaceContext {
 interface WorkspaceDraft {
   text: string;
   editBaseline: string | undefined;
+  hadFile: boolean;
   outcomeUnknown: boolean;
 }
 
@@ -388,7 +389,12 @@ export function renderWorkspaceFiles(
       // A reopened editor must check a previous version's comparison again.
       const needsCheck = outcomeUnknown || writing || checkedDraft;
       return needsCheck || hasEdits()
-        ? { text: editor.value, editBaseline, outcomeUnknown: needsCheck }
+        ? {
+            text: editor.value,
+            editBaseline,
+            hadFile: baseline !== undefined,
+            outcomeUnknown: needsCheck,
+          }
         : undefined;
     });
     // A secondary button: the view's one primary action is the draft's Deploy new version or
@@ -591,17 +597,25 @@ export function renderWorkspaceFiles(
           context.onExpired();
           return;
         }
-        if (confirmsMissingFile(cause)) {
+        const missing = confirmsMissingFile(cause);
+        // A file that was present can be temporarily missing during an uncertain save's readback.
+        // Preserve the prior baseline until a check reads the file or the user chooses Reload.
+        const inconclusiveMissing =
+          missing &&
+          mode !== "reload" &&
+          outcomeUnknown &&
+          (initialized ? baseline !== undefined : retained?.hadFile === true);
+        if (missing && !inconclusiveMissing) {
           receive(undefined);
         } else {
-          const readUnavailable = unanswered(cause.status);
+          const readUnavailable = inconclusiveMissing || unanswered(cause.status);
           // A failed comparison can leave an already accessible draft selectable for copying.
           copyableDraft =
             mode === "check" && outcomeUnknown && readUnavailable && (loaded || copyableDraft);
           loaded = false;
           status.textContent = "";
           errorNotice.textContent =
-            mode === "check" && readUnavailable
+            inconclusiveMissing || (mode === "check" && readUnavailable)
               ? withRequestId(
                   `Could not confirm the current contents of ${name}. Use Check save again.`,
                   cause.requestId,

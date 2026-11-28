@@ -1,7 +1,7 @@
 ---
 created: 2026-10-25
-updated: 2026-11-27
-last_updated_session: authoring-run/efaedf81-9bec-4ebe-b1a3-7f1985d3232e
+updated: 2026-11-28
+last_updated_session: authoring-run/e4a7d654-bfe1-4090-96c4-2d9beca49b8b
 ---
 
 # Console Agent workspace files
@@ -20,12 +20,16 @@ Agent's workspace. See the [parent flow](../platform-console.md) and
 
 ## Flow
 
+This diagram follows one file opened without a retained draft. It assumes the
+user can read and edit the file. The execution trace covers leaving the editor
+and returning to a draft.
+
 ```mermaid
 graph TD
   A["Open Workspace tab. Files stay unavailable without a selected version."]
   A -->|selected version| R["GET requested workspace files"]
   R -->|contents| E["Editor with baseline"]
-  R -->|exact missing-file 404| M["Empty editor; Save creates it"]
+  R -->|File missing on a fresh open| M["Save creates the file"]
   R -->|denied or generic 404| D["Editor and Save disabled; reason under the file"]
   R -->|no answer| N["Editor and Save disabled; reason under the file"]
   E -->|text differs| S["PUT file content"]
@@ -38,8 +42,8 @@ graph TD
   L -->|Check save| C
   C -->|matches| Y["Current file matches the draft"]
   C -->|differs| B["Keep draft for review"]
-  C -->|exact missing-file 404| K["Keep draft until user chooses Save to create"]
-  C -->|read fails| Q["Keep draft and offer Check save or Reload"]
+  C -->|still absent| K["Offer Save to create the file"]
+  C -->|cannot confirm contents| Q["Keep draft and offer Check save or Reload"]
 ```
 
 ## Execution Trace
@@ -75,9 +79,17 @@ makes them read-only with the explanation and keeps unsaved text. A failed permi
 read keeps the previous answer. The controller still authorizes every write. Stop and
 each version's **Run diagnostics** follow the same answer.
 
-On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
-and message `The requested workspace file was not found.` confirms the file is
-missing. The operator can then choose **Save** to create it, even as an empty file.
+The editor recognizes a missing file only from a `404` with code `NOT_FOUND`
+and message `The requested workspace file was not found.` On a fresh open,
+an authorized user can create the file, even with empty contents. On return, a file-specific
+`404` has these effects for a user who can read and edit the file.
+
+| Retained draft                             | What the editor shows                                   | Next action                                             |
+| ------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------- |
+| Unsaved edits with no check pending        | The draft                                               | **Save** can create the file.                           |
+| Needs a check, file last known absent      | The draft, with **Save** disabled                       | Choose **Check save**.                                  |
+| Needs a check, file last read successfully | An empty, disabled editor. The draft is still retained. | Choose **Check save** again when the file is available. |
+
 A generic resource `404` or a denial keeps the editor and **Save** disabled and
 shows the reason under that file. **Reload** checks again without writing.
 
@@ -103,15 +115,21 @@ success if the text matches and keeps the draft if it differs. If this read
 fails or the write outcome is unknown, the editor keeps the draft and disables
 **Save** until the user checks the file or reloads it.
 
-**Check save** reads that file once. If its text matches the draft, there is
-nothing to save. If another writer changed the file, the editor shows their
-text below the draft. A user with permission can combine the edits and save,
-or create the file if the controller confirms it is missing. A failed check
-keeps **Save** disabled. If the API or gateway is unavailable, you can still
-select and copy a draft that was visible when you checked. Use **Check save**
-again when the connection recovers. A read shows the file at that moment and
-cannot identify which write produced it. Only the user can send another write.
-**Reload** discards the draft when it loads the file or confirms its absence.
+**Check save** reads the file once. If the text matches the draft, there is
+nothing to save. If it differs, the editor shows both versions. An authorized
+user can combine the edits and save. A read shows the file at that moment
+and cannot identify which write produced it.
+
+For a file-specific `404` during a save check, use the most recent file state.
+
+- If the editor had a copy of the file, even an empty one, keep **Save**
+  disabled and offer **Check save** again.
+- If the last known file state was absent, the user can choose
+  **Save** to create it.
+
+A failed check never resends a write. A draft already visible stays available
+to copy when the workspace is unavailable. An explicit **Reload** discards
+the draft when it reads the file or confirms absence.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
@@ -123,11 +141,13 @@ deployment.
 
 ## Debugging and Verification
 
-- A missing file is confirmed only by the exact `404` described above; any other
-  failure keeps **Save** disabled.
+- Compare a fresh open with a return to a draft that needs **Check save**
+  for a file the editor last read successfully. The same missing-file `404`
+  enables creation on the fresh open and leaves **Save** disabled on return.
 - After an unknown write outcome, choose **Check save**. The `GET` keeps the edits
-  and compares them with the current file. Choose **Save** again only after reviewing
-  a difference or confirmed absence. **Reload** discards the edits.
+  and compares them with the current file. If a previously existing file is reported
+  missing, check again. To recreate it deliberately, copy the edits, use **Reload**,
+  and review the missing-file result before choosing **Save**. **Reload** discards the edits.
 
 ## Related docs
 
@@ -139,6 +159,8 @@ deployment.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-28 12:53: Explain Check save when a previously existing file is reported missing. Accompanying uncommitted changes. (authoring-run/e4a7d654-bfe1-4090-96c4-2d9beca49b8b - de04ef93d97e0cf3b7253cc3f70209c6a647bb93)
 
 - 2026-11-27 08:30: Explain how the editor checks a pending save across a version change. Accompanying uncommitted changes. (authoring-run/efaedf81-9bec-4ebe-b1a3-7f1985d3232e - d3de1af54d06c6f49527560486571ff3e2c4c5ab)
 
