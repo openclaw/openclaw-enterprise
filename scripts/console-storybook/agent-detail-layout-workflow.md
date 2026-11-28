@@ -116,13 +116,14 @@ Check v7’s failed record, pending cleanup and v6 selection. One check changes
 Cleanup triggers no more checks. Refocus **View deployment**. After cleanup,
 Enter opens v7.
 
-On a disposable Controller, scroll v1’s **Configuration**. Hover near **Deployment**’s
-top edge until simulated activation selects v2. Click without moving. v1’s
-**Deployment** opens. Repeat over **Draft credentials**.
+Both “A parked click” tests in `tests/browser/console-agent-overview.test.ts`
+scroll v1’s **Configuration**. When the fixture activates v2, click near
+**Deployment**’s top edge without moving. v1’s tab opens. Repeat over
+**Draft credentials**.
 
-Copy v1’s **Draft credentials** link. Open it signed out, sign in, reselect v1
-and press Enter on the link. On slow reads, v1 and “Still checking…” stay visible
-until **Credentials** opens. Repeat signed in.
+On a disposable Controller, copy v1’s **Draft credentials** link. Open signed out,
+sign in, reselect v1 and press Enter. Slow reads keep v1 and “Still checking…”
+visible until **Credentials** opens. Repeat signed in.
 
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).
