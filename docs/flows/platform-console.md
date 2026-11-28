@@ -149,11 +149,11 @@ for a successful foreground check.
 details…** and **Back to Agents**. Back cancels once. Refocus waits. Other Agent routes delay loading
 400 ms, other visits and Refresh 250 ms. Loading stays visible at least 300 ms.
 
-Within a Namespace, return and refocus keep views inert. **Still checking…**
-appears after one second. Up to 16 views retain drafts and disclosures by
-route, Namespace and session. Changed reads, newly readable Namespaces and
-Refresh rebuild. Cancelled returns preserve views. Cancelled Refresh
-discards them. Discovery, passwords, mutations and pending or failed
+Retained views stay inert during rechecks. **Still checking…** appears after
+one second. Up to 16 views retain drafts and disclosures by route, Namespace
+and session. Changed reads, newly readable Namespaces and Refresh rebuild.
+Cancelled returns preserve views. Cancelled Refresh discards them.
+Discovery, passwords, mutations and pending or failed
 reads prevent reuse. Read-only POSTs permit it.
 
 In unchanged drafts, Back and Forward can refocus **Configuration**,
@@ -187,8 +187,9 @@ Changed users or session keys clear private state. Missing sessions
 Unreadable IDs stay unavailable. Unscoped Agent URLs require matching requested
 Agent and selected or probed Namespace IDs plus a nonempty Configuration ID.
 Malformed replies cannot establish absence. Back restarts interrupted lookups.
-`shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
-closes the drawer without focusing its toggle. An open drawer blocks scrolling.
+`shell.mts:namespaceSelector` hides choices while `loadPage` checks access.
+Widening past 760 px closes the drawer without focusing its toggle. An open
+drawer blocks scrolling.
 `createShell` preserves navigation presses across renders. Switching Namespaces
 from Agent details or creation opens **Agents**. Agent details disappear
 immediately. Visible rows retain their Namespace label.

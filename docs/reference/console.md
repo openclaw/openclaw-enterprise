@@ -82,9 +82,9 @@ status replaces empty-list messages. Submitted requests report acceptance, refus
 or unknown outcomes without Agent names, IDs or replay. Session expiry requires
 sign-in. Clearing search cannot restore rows.
 
-**Back to Agents** restores your place. On return or refocus in the same
-Namespace, the page stays visible but inactive during the check.
-**Still checking…** appears after one second.
+**Back to Agents** can restore your place. Retained views stay visible but
+inactive during rechecks. **Still checking…** appears after one second. A slow first visit
+to the list shows **Loading…**.
 **Refresh** reloads the page. Refocusing an unchanged page preserves edits,
 Slack searches, focus and the Namespace selection. On phones, focus in the
 open drawer moves to **Open navigation**. Views belong to one account, session,
@@ -104,16 +104,17 @@ trigger one automatic retry. If the read still fails, the Console shows a warnin
 **Retry** checks access after any server retry delay. A successful check can restore
 the view and your place.
 
-**Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
-**Settings** (the signed-in account, with **Sign out**) and **Sign out**.
+The Namespaces page omits the **Namespace** selector. **Sign out** is in the
+account menu and under **Settings**.
 
 Navigation, reload and Back keep `?namespace=<id>`. **Namespace unavailable**
 means the Namespace is missing or inaccessible. On Namespaces,
 **Choose a valid Namespace** updates the URL in place.
 
-Session and Namespace checks disable the selector and hide its choices.
-You can then switch while the same page loads. The selector cannot grant access.
-Agents and Namespaces explain how to get access.
+Opening a page or refocusing the Agents list disables the selector and hides
+its choices until access checks finish. Refocusing Agent details leaves it
+available. Switching cannot grant access. Agents and Namespaces explain
+how to get access.
 
 Switching Namespaces from an Agent hides its details and focuses the **Agents**
 heading. Focus can return to the row you last opened in the new Namespace,
