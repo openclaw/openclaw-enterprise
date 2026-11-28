@@ -301,6 +301,71 @@ test("a docker failure never shows a planted synthetic key", async (t) => {
   assert.match(error.stderr, /planted planted-plain-value-2184/);
 });
 
+const blockStart = "-----BEGIN PRIVATE KEY-----";
+const blockEnd = "-----END PRIVATE KEY-----";
+
+test("failureTail hides blocks and structured events without hiding nearby diagnostics", () => {
+  const body = "inert block contents";
+  const diagnosis = "output directory missing";
+  for (const end of [blockEnd, ""]) {
+    assert.equal(failureTail([blockStart, body, end].join("\n")).includes(body), false);
+  }
+  // An event inside the window must not erase its neighbours. An event longer than the
+  // window must still be recognized after its identifying prefix would have been cut.
+  const payload = "inert event note";
+  for (const padding of ["", ".".repeat(20_000)]) {
+    const tail = failureTail(`OCSF-JSON ${padding}${payload}\n${diagnosis}`, 2048);
+    assert.equal(tail.includes(payload), false);
+    assert.equal(tail.endsWith(diagnosis), true);
+  }
+});
+
+test("a docker failure masks multiline output before selecting either stream's tail", async (t) => {
+  const body = "inert block contents";
+  const filler = "item:".repeat(2000);
+  const diagnosis = "final diagnostic";
+  // Both raw windows start inside the block. Ordinary lines before it exceed even the
+  // reporter input cap; redacting only the prefix would discard the diagnostic as well.
+  const ordinary = `\n${".".repeat(99)}`.repeat(200);
+  setEnvironment(t, {
+    FAKE_DOCKER_KEY: [ordinary, blockStart, filler, body, blockEnd, diagnosis].join("\n"),
+    FAKE_DOCKER_PLAIN: "ordinary",
+  });
+  const error = await dockerFailure(t, "leak-key", ["inspect", "probe"]);
+  for (const name of ["stdout", "stderr"] as const) {
+    const field = Object.getOwnPropertyDescriptor(error, name);
+    assert.ok(field && typeof field.value === "string");
+    assert.equal(field.value.includes(body) && field.value.includes(diagnosis), true, name);
+    assert.equal(field.enumerable, false);
+  }
+  const [beforeStderr, stderr] = error.message.split("\nstderr:\n");
+  const stdout = beforeStderr?.split("\nstdout:\n")[1];
+  assert.ok(stdout && stderr);
+  for (const [name, section] of Object.entries({ stdout, stderr })) {
+    assert.equal(section.includes(body), false, name);
+    assert.equal(section.includes(filler.slice(0, 30)), false, name);
+    assert.equal(section.includes(diagnosis), true, name);
+  }
+  // Omission counts describe the safe output: each ordinary line is 100 chars. The two
+  // fixture prefixes have equal length, but stderr also has one trailing ordinary line.
+  assert.ok(stdout.startsWith("[... 16112 earlier chars omitted ...]\n"));
+  assert.ok(stderr.startsWith("[... 12012 earlier chars omitted ...]\n"));
+  assert.ok(stderr.endsWith("planted ordinary\n"));
+  assert.equal(inspect(error).includes(body), false);
+});
+
+test("a caller's multiline redaction can overlap the start of a protected block", async (t) => {
+  const outside = "inert outside line";
+  const body = "inert block contents";
+  const literal = `${outside}\n${blockStart}`;
+  // Masking just the literal would remove the opening delimiter. Masking just the block
+  // would split the literal and leave its first line visible.
+  setEnvironment(t, { FAKE_DOCKER_KEY: `${literal}\n${body}` });
+  const error = await dockerFailure(t, "leak-key", ["inspect", "probe"], { redact: [literal] });
+  assert.equal(error.message.includes(outside), false);
+  assert.equal(error.message.includes(body), false);
+});
+
 test("a docker command's stdin reaches it, and an early exit reports the exit, not the pipe", async (t) => {
   setEnvironment(t, { FAKE_DOCKER_MODE: "cat" });
   const { stdout } = await runDocker(["exec", "-i", "fake-container", "cat"], {}, "stdin text\n");
