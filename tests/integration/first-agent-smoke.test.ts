@@ -573,6 +573,28 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
     ...pod,
     metadata: { ...pod.metadata, labels: { ...labels, "openclaw.dev/agent": "another-agent" } },
   };
+  const initialRevision = "rev_00000000-0000-4000-8000-000000000002";
+  const harness = (
+    revisionId: string,
+    creationTimestamp: string,
+    lastTransitionTime: string,
+    owner = agentId,
+  ) => ({
+    metadata: {
+      name: `unlogged-harness-${revisionId}`,
+      namespace: pod.metadata.namespace,
+      labels: {
+        "openclaw.dev/agent": owner,
+        "openclaw.dev/workload-role": "agent",
+        "openclaw.dev/revision": revisionId,
+      },
+      creationTimestamp,
+    },
+    status: { phase: "Running", conditions: [{ ...ready, lastTransitionTime }] },
+  });
+  const initialHarness = harness(initialRevision, "2026-03-02T06:58:57Z", "2026-03-02T06:58:59Z");
+  const movedHarness = harness(revision, "2026-03-02T07:00:02Z", "2026-03-02T07:00:12Z");
+  const movedHarnessCreated = "revisionToHarnessPodCreationMs=3875";
   const withContainers = (...containerStatuses: unknown[]) => ({
     ...pod,
     status: { ...pod.status, containerStatuses },
@@ -581,6 +603,12 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
   const startMs = "scheduledToGatewayStartMs=12000";
   const readyMs = "gatewayStartToLatestPodReadyMs=22000";
   const submitted = { id: revision, createdAt: "2026-03-02T06:59:58.125Z" };
+  const movedGatewayTiming = {
+    context,
+    fields: [scheduledMs, startMs, readyMs],
+    submitted,
+    creationMs: 1875,
+  };
   const observations: {
     label: string;
     items: unknown[];
@@ -588,11 +616,12 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
     fields: string[];
     submitted?: { id: string; createdAt: unknown };
     creationMs?: number;
+    harnessFields?: string[];
     podName?: string;
   }[] = [
     {
-      label: "initial revision",
-      items: [pod, oldPod],
+      label: "initial Harness is Ready before Gateway creation",
+      items: [pod, oldPod, initialHarness],
       context: "channel-proxy-initial-deploy-a",
       fields: [
         "createdToScheduledMs=1000",
@@ -600,21 +629,69 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
         "gatewayStartToLatestPodReadyMs=3000",
       ],
       submitted: {
-        id: "rev_00000000-0000-4000-8000-000000000002",
+        id: initialRevision,
         createdAt: "2026-03-02T06:58:55.210Z",
       },
       creationMs: 4790,
+      harnessFields: [
+        "revisionToHarnessPodCreationMs=1790",
+        "revisionToHarnessPodLatestReadyMs=3790",
+      ],
       podName: "unlogged-old-pod",
     },
     {
-      label: "moved revision alongside the Ready predecessor",
-      items: [oldPod, pod],
-      context,
-      fields: [scheduledMs, startMs, readyMs],
-      submitted,
-      creationMs: 1875,
+      ...movedGatewayTiming,
+      label: "Gateway precedes replacement Harness creation alongside the Ready predecessor",
+      items: [oldPod, initialHarness, pod, movedHarness],
+      harnessFields: [movedHarnessCreated, "revisionToHarnessPodLatestReadyMs=13875"],
     },
-    { label: "unrelated call", items: [pod], context: undefined, fields: [], submitted },
+    {
+      ...movedGatewayTiming,
+      label: "Harness belongs to a different revision or Agent",
+      items: [
+        pod,
+        // A replaced predecessor can also have timestamps after revision creation.
+        harness(initialRevision, "2026-03-02T07:00:03Z", "2026-03-02T07:00:13Z"),
+        harness(revision, "2026-03-02T07:00:02Z", "2026-03-02T07:00:12Z", "another-agent"),
+      ],
+    },
+    {
+      ...movedGatewayTiming,
+      label: "two live Harness Pods match the same revision",
+      items: [
+        pod,
+        movedHarness,
+        {
+          metadata: { ...movedHarness.metadata, name: "unlogged-pending-harness" },
+          status: { phase: "Pending" },
+        },
+      ],
+    },
+    ...[
+      { label: "Harness Ready is False", conditions: [{ ...ready, status: "False" }] },
+      { label: "Harness Ready is ambiguous", conditions: [ready, ready] },
+      {
+        label: "Harness Ready precedes creation",
+        conditions: [{ ...ready, lastTransitionTime: "2026-03-02T07:00:01Z" }],
+      },
+      { label: "Harness conditions are malformed", conditions: ready },
+      {
+        label: "Harness Ready offset exceeds bound",
+        conditions: [{ ...ready, lastTransitionTime: "2026-03-02T08:00:00Z" }],
+      },
+    ].map(({ label, conditions }) => ({
+      ...movedGatewayTiming,
+      label,
+      items: [pod, { ...movedHarness, status: { ...movedHarness.status, conditions } }],
+      harnessFields: [movedHarnessCreated],
+    })),
+    {
+      label: "unrelated call",
+      items: [pod, movedHarness],
+      context: undefined,
+      fields: [],
+      submitted,
+    },
     {
       label: "mismatched Agent label",
       items: [otherAgent],
@@ -641,7 +718,12 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
       context,
       fields: [scheduledMs],
     },
-    { label: "sidecar only", items: [withContainers(sidecar)], context, fields: [scheduledMs] },
+    {
+      label: "sidecar only with no revision timestamp",
+      items: [withContainers(sidecar), movedHarness],
+      context,
+      fields: [scheduledMs],
+    },
     {
       label: "ambiguous gateway status",
       items: [withContainers(gateway, gateway)],
@@ -728,6 +810,11 @@ test("channel proxy gateway timings report bounded intervals from the exact Read
           }
           if (observation.creationMs !== undefined) {
             expected.push(`${prefix} revisionToPodCreationMs=${observation.creationMs}\n`);
+          }
+          if (observation.harnessFields !== undefined) {
+            expected.push(
+              `${prefix} sampled harness Pod offsets ${observation.harnessFields.join(" ")}\n`,
+            );
           }
           assert.deepEqual(lines.splice(0), expected, observation.label);
         }

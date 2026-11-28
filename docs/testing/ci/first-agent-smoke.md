@@ -114,14 +114,25 @@ intervals it cannot measure. A failed deployment can have no sample. The
 intervals exclude work before Pod creation and can extend past the deployment
 wait if readiness changed again.
 
-Search for `revisionToPodCreationMs` under the
-same deployment label. It estimates the time from creation of the Agent revision
-in PostgreSQL to creation of the sampled Gateway Pod. This excludes request
-processing before the revision was recorded. The Pod can be a replacement, and
-its timestamp has whole-second precision. The two clocks can also differ.
-You cannot use this interval alone to measure queue time or downtime.
-The test omits the line if either timestamp is missing or invalid, or if the
-difference is negative or longer than 60 minutes.
+To see where the time before Gateway creation went, compare three log fields
+for the same deployment. Each measures milliseconds since PostgreSQL recorded
+the Agent revision.
+
+| Field                               | Event                                                    |
+| ----------------------------------- | -------------------------------------------------------- |
+| `revisionToHarnessPodCreationMs`    | Kubernetes created the sampled Harness Pod.              |
+| `revisionToHarnessPodLatestReadyMs` | The Harness Pod last became Ready, if it is still Ready. |
+| `revisionToPodCreationMs`           | Kubernetes created the sampled Gateway Pod.              |
+
+For example, if the Harness Pod appeared at 2 seconds, became Ready at 18 seconds,
+and the Gateway Pod appeared at 20 seconds, look first at Harness startup. The
+Gateway can also appear first. The test reports Harness timings only when one
+live Harness Pod matches the Agent and revision in the same Pod list.
+
+Either Pod can be a replacement. Timestamps come from different clocks, and
+Pod timestamps have whole-second precision. These samples cannot establish
+which component waited for another or how long users lost access. The test omits
+missing or invalid values and offsets outside 0–60 minutes.
 
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.
