@@ -116,22 +116,23 @@ Check v7’s failed record, pending cleanup and unchanged v6 selection. One chec
 changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
 Cleanup triggers no further checks.
 
-Reopen the story. Focus **View deployment**. After cleanup, Enter opens v7.
+Reopen and focus **View deployment**. After cleanup, Enter opens v7.
 
-In the signed-in test, scroll down in v1’s **Configuration**. Point near the top
-of **Deployment**. After the simulated worker reports success and v2 is selected
-for service, click without moving. **Deployment** should open for v1.
+In signed-in tests, scroll down v1’s **Configuration**. Point near the top
+of **Deployment**. After the simulated worker finishes, check **Selected for
+service** shows v2. Click without moving. **Deployment** opens for v1. Repeat
+over **Draft credentials** to open the draft’s **Credentials** tab.
 
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).
-   At both widths, check the H1 shows a legible Agent name. The summary
+   Check the H1’s Agent name is legible at both widths. The summary
    distinguishes Selected for service, Latest visible deployment and
    Live serving. Changing **Viewing version** leaves the service target unchanged.
    At both widths, choose **Open draft**. The new-version notice has an even,
    neutral border without a blue stripe. It stays visible after **Edit Configuration**.
-   Choose **Open preview in its own tab**. Set the viewport to
-   390 px wide and zoom to 200% (195 CSS px). Tab to **Viewing version**. Its label
-   should wrap above the picker. Use Home to view **Draft**, then Tab back and
+   Choose **Open preview in its own tab**. At 390 px wide, zoom to 200%
+   (195 CSS px). Tab to **Viewing version**. Its label should wrap above the
+   picker. Use Home to view **Draft**, then Tab back and
    select a numbered version. Check both remain readable without horizontal
    scrolling and leave the service target unchanged.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
