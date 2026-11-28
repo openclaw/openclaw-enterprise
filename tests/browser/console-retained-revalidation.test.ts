@@ -432,6 +432,13 @@ test("Back after switching Namespace keeps the shown page until the return is ad
   assert.equal(await visibleView.getByText(secondRow, { exact: true }).count(), 0);
 });
 
+async function shiftTabToNavigation(page: Page, toggle: Locator) {
+  for (let step = 0; step < 4 && !(await hasFocus(toggle)); step++) {
+    await page.keyboard.press("Shift+Tab");
+  }
+  assert.ok(await hasFocus(toggle), "Shift+Tab reached the closed navigation toggle");
+}
+
 for (const [mode, title] of Object.entries({
   tab: "Switching Namespace from Agent details keeps the destination header and keyboard focus",
   stay: "Switching Namespace from Agent details restores the remembered row without a Tab",
@@ -440,11 +447,17 @@ for (const [mode, title] of Object.entries({
   back: "Interrupting Back across Namespaces hides the previous Agent and restores the remembered row",
   foreground:
     "Returning to the tab during Back across Namespaces keeps focus on the reopened Agent",
+  foregroundPhone:
+    "Returning to the tab during Back across Namespaces keeps focus on Open navigation at phone width",
 })) {
   test(title, async (t) => {
     const { page, fixture } = await signedOutPage(t);
-    if (mode === "phone") {
+    const foregroundPhone = mode === "foregroundPhone";
+    const foreground = mode === "foreground" || foregroundPhone;
+    if (mode === "phone" || foregroundPhone) {
       await page.setViewportSize({ width: 390, height: 844 });
+    }
+    if (mode === "phone") {
       await page.clock.install();
     }
     const createScope = async (name: string) => {
@@ -461,6 +474,7 @@ for (const [mode, title] of Object.entries({
     const requests = apiRequests(page, fixture.origin);
     const main = page.getByRole("main");
     const picker = main.getByRole("combobox", { name: "Namespace", exact: true });
+    const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
     const view = page.locator(settledView);
     const row = (agent: Agent) => view.getByRole("link", { name: agent.name, exact: true });
     const agentsHeading = main.getByRole("heading", { name: "Agents", level: 1, exact: true });
@@ -490,7 +504,7 @@ for (const [mode, title] of Object.entries({
     }
     const options = { once: true, method: "GET", afterServer: true };
     const session = await holdRequests(t, page, SESSION, options);
-    const returnsToDetail = mode === "back" || mode === "foreground";
+    const returnsToDetail = mode === "back" || foreground;
     if (returnsToDetail) {
       await page.evaluate(() => globalThis.history.go(-2));
       await page.waitForURL(detailUrl(fixture, west.id, west.agent.id).href);
@@ -509,12 +523,24 @@ for (const [mode, title] of Object.entries({
       );
       assert.equal(await eastTitle.isVisible(), false);
     }
-    if (mode === "foreground") {
+    if (foreground) {
       assert.ok(await hasFocus(agentsHeading), "Back focuses the pending heading");
       // A visibility gain starts a fresh admission while Back's successful reply is held.
-      const resumed = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+      const resumed = await holdRequests(t, page, SESSION, options);
       await page.evaluate(() => globalThis.document.dispatchEvent(new Event("visibilitychange")));
-      assert.equal((await resumed).status(), 200);
+      assert.equal((await resumed.requested)?.status(), 200);
+      const focusedClosedToggle = toggle.and(page.locator('[aria-expanded="false"]:focus-visible'));
+      if (foregroundPhone) {
+        assert.ok(await hasFocus(agentsHeading), "The recheck keeps focus on the pending heading");
+        await shiftTabToNavigation(page, toggle);
+        assert.ok(
+          await focusedClosedToggle.isVisible(),
+          "The closed toggle has visible focus while held",
+        );
+      }
+      const delivered = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+      resumed.release();
+      assert.equal((await delivered).status(), 200);
 
       const header = main.locator(".page-header");
       const westTitle = header.getByRole("heading", {
@@ -527,10 +553,23 @@ for (const [mode, title] of Object.entries({
       assert.equal(await picker.inputValue(), west.id);
       assert.equal(await eastTitle.isVisible(), false);
       assert.equal(await main.getByText(east.agent.id, { exact: true }).isVisible(), false);
-      assert.ok(await hasFocus(westTitle), "The settled West Agent heading keeps focus");
-      await page.keyboard.press("Tab");
-      const refresh = header.getByRole("button", { name: "Refresh", exact: true });
-      assert.ok(await hasFocus(refresh), "The first Tab reaches the West Agent's Refresh button");
+      if (foregroundPhone) {
+        assert.ok(
+          await focusedClosedToggle.isVisible(),
+          "The closed navigation toggle keeps visible focus after West settles",
+        );
+        await page.keyboard.press("Tab");
+        const avatar = page.getByRole("button", {
+          name: `Account: ${fixture.credentials.name}`,
+          exact: true,
+        });
+        assert.ok(await hasFocus(avatar), "The next Tab reaches the account avatar");
+      } else {
+        assert.ok(await hasFocus(westTitle), "The settled West Agent heading keeps focus");
+        await page.keyboard.press("Tab");
+        const refresh = header.getByRole("button", { name: "Refresh", exact: true });
+        assert.ok(await hasFocus(refresh), "The first Tab reaches the West Agent's Refresh button");
+      }
       assert.deepEqual(
         requests.filter(({ method }) => method !== "GET" && method !== "HEAD"),
         [],
@@ -586,11 +625,7 @@ for (const [mode, title] of Object.entries({
       assert.ok(await hasFocus(picker), "Tab moved focus to the admitted picker");
       expectedFocus = picker;
     } else if (mode === "phone") {
-      const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
-      for (let i = 0; i < 4 && !(await hasFocus(toggle)); i++) {
-        await page.keyboard.press("Shift+Tab");
-      }
-      assert.ok(await hasFocus(toggle), "Shift+Tab reached the closed navigation toggle");
+      await shiftTabToNavigation(page, toggle);
       await page.clock.runFor(1000);
       assert.equal(await main.getByText("Loading…", { exact: true }).isVisible(), true);
       assert.ok(await hasFocus(toggle), "Showing the loading message kept focus on the toggle");

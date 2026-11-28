@@ -60,7 +60,7 @@ deployment or clipboard permissions in a real browser profile.
 4. Repeat the slow return and press Tab until **Namespace** has focus while the list read is pending. Let the unchanged list load. Namespace must remain focused and visible, and the next Tab must continue from it. Repeat with browser Back and **← Agents** at desktop and phone widths.
 5. In **Pages / Agent detail / Page header with a long name**, use the keyboard to switch from Engineering to Research. Check that the Research Agents list opens.
 6. On a signed-in Controller, open an Agent from the West list. Switch to East and open an Agent there. Slow the West list read and switch back to West. The Agents heading takes focus immediately. East’s name, ID and copy button disappear. If the read takes long enough, **Loading…** appears. When the list returns, the West row should be focused and visible. Repeat and Tab to **Namespace** while waiting. On a phone, try Shift+Tab to **Open navigation** instead. Focus should stay where you moved it.
-7. On the signed-in Controller, repeat the West-to-East route. Slow the session check. In the browser’s Back history menu, choose the West Agent, skipping the East list. While the check is pending, switch to another browser tab and return. When the West Agent appears, its heading should have focus, and the first Tab should reach **Refresh**. Repeat and move focus to the **Agents** link in the sidebar while waiting. Focus should stay on that link.
+7. On the signed-in Controller, repeat the West-to-East route. Slow the session check. In the browser’s Back history menu, choose the West Agent, skipping the East list. While the check is pending, switch to another browser tab and return. When the West Agent appears, its heading should have focus, and the first Tab should reach **Refresh**. Repeat and move focus to the **Agents** link in the sidebar while waiting. Focus should stay on that link. At 390 × 844, repeat and press Shift+Tab to focus the closed **Open navigation** button after returning to the browser tab, while the West Agent is still loading. When loading finishes, focus should stay on **Open navigation**, and the next Tab should reach the account button.
 
 The stock Row navigation story has two rows and no built-in return delay. To check the slow return in the standalone story, supply extra rows and a delayed successful reply.
 
@@ -68,5 +68,5 @@ The signed-in browser tests hold successful responses automatically. Install the
 
 ```sh
 node --test --test-name-pattern="Back keeps the keyboard-focused Agent in view when the filtered list changes" tests/browser/console-refocus-focus.test.ts
-node --test --test-name-pattern="Switching Namespace|Interrupting Back across Namespaces|Returning to the tab during Back across Namespaces" tests/browser/console-retained-revalidation.test.ts
+node --test --test-name-pattern="Switching Namespace|Back across Namespaces" tests/browser/console-retained-revalidation.test.ts
 ```

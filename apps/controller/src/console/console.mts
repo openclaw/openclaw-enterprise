@@ -2072,12 +2072,6 @@ async function loadPage({
     !openingAgent &&
     shownAgentScope !== undefined &&
     shownAgentScope !== current.namespace;
-  // The shell keeps the picker and sidebar focused. The closed phone drawer's toggle
-  // sits outside both. Leave the heading to the existing return-to-row handoff.
-  const scopeControl = () =>
-    changingAgentScope && document.activeElement?.matches(".mobile-toggle")
-      ? focusInShownView()
-      : null;
   let shell: LoadingShell | null = null;
   if (changingAgentScope) {
     // Show the destination without the previous Agent's ID, actions or data.
@@ -2715,16 +2709,17 @@ async function loadPage({
       if (returningToDraft && heldHeading?.isConnected && document.activeElement !== heldHeading) {
         returnFocusMoved = true;
       }
-      const headerFocus = scopeControl() ?? versionHeaderFocus();
+      const headerFocus = versionHeaderFocus();
       if (resumingAgentHeading && heldHeadingHasFocus()) {
         focusAgentResult = true;
       }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
-      // The shell already restores Namespace focus. Keep that control in view too.
+      // Keep the focused shell control in view when remounting the retained page.
       const keptNamespaceFocus =
         (switchingVersion || (fromNavigation && listRoute !== null)) &&
         restoredShell.scopeSelector?.contains(document.activeElement);
-      if (!headerFocus && !keptNamespaceFocus) {
+      const keptMobileToggleFocus = document.activeElement?.matches(".mobile-toggle");
+      if (!headerFocus && !keptNamespaceFocus && !keptMobileToggleFocus) {
         window.scrollTo({ top: retainedView.scrollY, left: 0 });
       }
       shell = restoredShell;
@@ -2790,13 +2785,11 @@ async function loadPage({
     } else {
       // A Namespace the reader cannot read hides its Agent too: the panel takes the Agents list's
       // header, not the Agent page's ID, copy button and ← Agents link (finding 2400).
-      const scopeFocus = scopeControl();
       shell = renderShell(
         privatePage,
         false,
         scopedNamespaceUnavailable ? { page: null } : undefined,
       );
-      scopeFocus?.restore(shell.view);
     }
     const viewState: MountedView = {
       active,
@@ -3188,7 +3181,7 @@ async function loadPage({
             document.activeElement === pendingAgentHeading ||
             heldHeadingHasFocus() ||
             shownNow.view.contains(document.activeElement);
-          const headerFocus = scopeControl() ?? versionHeaderFocus();
+          const headerFocus = versionHeaderFocus();
           const detailShell = renderShell(privatePage, false);
           shell = detailShell;
           detailShell.view.replaceWith(detailView);
@@ -3479,9 +3472,7 @@ async function loadPage({
       // stored answer, asks it too. Neither is audited.
       settleNotAdministrator();
     }
-    const scopeFocus = scopeControl();
     shell = renderShell(privatePage);
-    scopeFocus?.restore(shell.view);
     if (current.agentId && status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in
       // the default selection. Agent IDs are unique: look in the others.

@@ -171,6 +171,7 @@ export function createShell({
   let drawerControls: {
     shell: HTMLElement;
     sidebar: HTMLElement;
+    toggle: HTMLButtonElement;
     close(focus?: boolean): void;
   } | null = null;
   let namespaceSelect: HTMLSelectElement | null = null;
@@ -607,6 +608,8 @@ export function createShell({
       Boolean(drawerControls?.shell.classList.contains("drawer-open"));
     const drawerFocus =
       drawerOpen && !menuFocus && drawerControls?.sidebar.contains(focused) ? focused : null;
+    // The closed drawer's toggle is outside the sidebar but belongs to the same load.
+    const drawerToggleFocused = !drawerOpen && focused === drawerControls?.toggle;
     // Focus the person moved to a sidebar control during a load stays on it through the load's
     // later renders (loading, then the page). reset() runs as each load starts, so the first
     // render keeps none.
@@ -890,7 +893,7 @@ export function createShell({
         tabindex: "-1",
       }),
     );
-    drawerControls = { shell, sidebar, close: closeDrawer };
+    drawerControls = { shell, sidebar, toggle: mobileToggle, close: closeDrawer };
     app.replaceChildren(shell);
     if (drawerOpen) {
       // Focus moves to the same control in the new drawer; close if it has none.
@@ -905,6 +908,16 @@ export function createShell({
     }
     if (sidebarFocus) {
       sameControl(sidebarFocus, sidebar)?.focus({ preventScroll: true });
+    }
+    if (
+      drawerToggleFocused &&
+      session &&
+      mobileLayout.matches &&
+      !document.hidden &&
+      document.hasFocus() &&
+      document.activeElement === document.body
+    ) {
+      mobileToggle.focus({ preventScroll: true });
     }
     if (menuFocus) {
       menuFocus.focus({ preventScroll: true });
