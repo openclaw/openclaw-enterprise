@@ -24,13 +24,7 @@
 {{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/(?:0|[1-9]|[12][0-9]|3[0-2])$" $value -}}
 {{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/(?:0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
 {{- $addr := first (splitList "/" $value) -}}
-{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
-{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
-{{- if gt (int $octet) 255 -}}{{- fail (printf "%s contains an invalid IPv6 address" $.name) -}}{{- end -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
-{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
-{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail (printf "%s contains an invalid IPv6 address" .name) -}}{{- end -}}
+{{- include "openclaw.requireIpv6Address" (dict "address" $addr "label" .name) -}}
 {{- else -}}
 {{- fail (printf "%s requires an IPv4 or IPv6 CIDR" .name) -}}
 {{- end -}}
@@ -43,27 +37,7 @@
 {{- $addr := first $parts -}}
 {{- $bits := "" -}}
 {{- if contains ":" $addr -}}
-{{- $nibbles := dict "0" "0000" "1" "0001" "2" "0010" "3" "0011" "4" "0100" "5" "0101" "6" "0110" "7" "0111" "8" "1000" "9" "1001" "a" "1010" "b" "1011" "c" "1100" "d" "1101" "e" "1110" "f" "1111" -}}
-{{- /* An embedded IPv4 tail stands in for the last two groups. */ -}}
-{{- $tail := regexFind "[0-9]+(?:\\.[0-9]+){3}$" $addr -}}
-{{- $tailBits := "" -}}
-{{- range $octet := ternary (splitList "." $tail) (list) (ne $tail "") -}}
-{{- $tailBits = printf "%s%08b" $tailBits (int $octet) -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") | lower -}}
-{{- $halves := splitList "::" $hex -}}
-{{- $left := list -}}
-{{- if ne (first $halves) "" -}}{{- $left = splitList ":" (first $halves) -}}{{- end -}}
-{{- $right := list -}}
-{{- if and (eq (len $halves) 2) (ne (last $halves) "") -}}{{- $right = splitList ":" (last $halves) -}}{{- end -}}
-{{- $groups := $left -}}
-{{- range until (int (sub 8 (add (len $left) (len $right)))) -}}{{- $groups = append $groups "0" -}}{{- end -}}
-{{- range $group := concat $groups $right -}}
-{{- range $nibble := splitList "" (printf "%s%s" (repeat (int (sub 4 (len $group))) "0") $group) -}}
-{{- $bits = printf "%s%s" $bits (get $nibbles $nibble) -}}
-{{- end -}}
-{{- end -}}
-{{- if $tailBits -}}{{- $bits = printf "%s%s" (substr 0 96 $bits) $tailBits -}}{{- end -}}
+{{- $bits = include "openclaw.ipv6Bits" (dict "address" $addr "label" .name) -}}
 {{- else -}}
 {{- range $octet := splitList "." $addr -}}
 {{- $bits = printf "%s%08b" $bits (int $octet) -}}
