@@ -1511,7 +1511,11 @@ function renderAgentForm(
     targetHarness = harness.value,
   ): Record<string, unknown> | "invalid-json" | "number-range" | "invalid-allow" {
     const diagnostic = jsonObjectDiagnostic(configuration.value);
-    const values = parseObject(configuration, diagnostic.kind === "number-range", diagnostic);
+    const values = parseObject(
+      configuration,
+      diagnostic.kind === "number-range" ? configurationError : undefined,
+      diagnostic,
+    );
     // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
       return diagnostic.kind === "number-range" ? "number-range" : "invalid-json";
@@ -1950,6 +1954,8 @@ function renderAgentForm(
 
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
+  const pluginsError = fieldError(plugins);
+  plugins.addEventListener("input", pluginsError.clear);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
   let catalogUnavailable = false;
   let pluginSlots: readonly AgentPluginCredentialSlot[] = [];
@@ -2087,6 +2093,7 @@ function renderAgentForm(
       }),
   });
   const pluginFields = pluginDiscovery.fields;
+  plugins.after(pluginsError.node);
   function applyPluginCapabilities() {
     const capabilities = installationCapabilities;
     const catalog = capabilities?.pluginCatalogs?.find(
@@ -2111,6 +2118,7 @@ function renderAgentForm(
     if (pluginHarness !== harness.value) {
       pluginHarness = harness.value;
       plugins.value = "{}";
+      pluginsError.clear();
       pluginSlots = [];
       pluginConnectionNotice = undefined;
       applyPluginCapabilities();
@@ -2703,54 +2711,53 @@ function renderAgentForm(
   }
   function parseObject(
     input: HTMLTextAreaElement,
-    reportInvalid = false,
+    error?: ReturnType<typeof fieldError>,
     diagnostic = jsonObjectDiagnostic(input.value),
   ): Record<string, unknown> | undefined {
     if (diagnostic.kind === "valid") {
       return diagnostic.value;
     }
-    if (reportInvalid && input === configuration) {
-      configurationError.show(diagnostic.message);
-      focusConfiguration(diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined);
-      followEditorError(configuration, {
+    if (error) {
+      error.show(diagnostic.message);
+      focusJsonEditor(
+        input,
+        error.node,
+        diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined,
+      );
+      followEditorError(input, {
         actions,
         beforeResize: () => {
-          configuration.style.setProperty(
-            "--create-editor-actions-height",
-            `${Math.ceil(actions.getBoundingClientRect().height)}px`,
-          );
+          if (input === configuration) {
+            sizeConfigurationEditor();
+          }
         },
         isCurrent: () => context.isCurrent(),
       });
-    } else if (reportInvalid) {
-      const details = input.closest("details");
-      if (details) {
-        details.open = true;
-      }
-      input.setCustomValidity("Enter a valid JSON object.");
-      validateFields([input]);
     }
     return undefined;
   }
   // Size the editor before the user selects text. Shrinking it when the error appears
   // can hide the selection at the bottom of a long draft.
-  configuration.addEventListener("focus", () => {
+  function sizeConfigurationEditor() {
     configuration.style.setProperty(
       "--create-editor-actions-height",
       `${Math.ceil(actions.getBoundingClientRect().height)}px`,
     );
-  });
+  }
+  configuration.addEventListener("focus", sizeConfigurationEditor);
+  function focusConfiguration() {
+    focusJsonEditor(configuration, configurationError.node);
+  }
   // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
-  function focusConfiguration(offset?: number) {
-    const details = configuration.closest("details");
+  function focusJsonEditor(input: HTMLTextAreaElement, error: HTMLElement, offset?: number) {
+    const details = input.closest("details");
     if (details) {
       details.open = true;
     }
     if (offset !== undefined) {
-      configuration.setSelectionRange(offset, offset);
+      input.setSelectionRange(offset, offset);
     }
-    configuration.focus();
-    const error = configurationError.node;
+    input.focus();
     if (error.hidden) {
       return;
     }
@@ -2760,7 +2767,7 @@ function renderAgentForm(
       actions.getBoundingClientRect().top,
     );
     const shift = Math.ceil(error.getBoundingClientRect().bottom - limit);
-    if (shift > 0 && shift <= configuration.getBoundingClientRect().top) {
+    if (shift > 0 && shift <= input.getBoundingClientRect().top) {
       window.scrollBy(0, shift);
     }
   }
@@ -4190,16 +4197,16 @@ function renderAgentForm(
     ) {
       return;
     }
-    const values = parseObject(configuration, true);
-    // Stop at the Configuration JSON message so the plugin field's bubble cannot take its focus.
+    const values = parseObject(configuration, configurationError);
+    // Report Configuration first when both JSON drafts are invalid.
     if (values === undefined) {
       return;
     }
-    const desiredPlugins = parseObject(plugins, true);
-    const bindings = configurationSecretBindings;
-    if (values === undefined || desiredPlugins === undefined) {
+    const desiredPlugins = parseObject(plugins, pluginsError);
+    if (desiredPlugins === undefined) {
       return;
     }
+    const bindings = configurationSecretBindings;
     if (!savedAgent && !repositories.validate({ required: requiresRepositories() })) {
       return;
     }

@@ -66,6 +66,15 @@ each story at 1440 and at 390.
     file, with focus.
 12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.
+13. Open **Pages / Create Agent / Edit existing plugin policies**. Choose
+    **Done**, enter an Agent name, select **Demo model API key (simulated)**
+    as the **API key Secret**, and enter model `gpt-5.6-sol` using
+    **Enter model ID manually** if needed. Keep Configuration valid. Replace
+    **Plugin selections JSON** with `{"sample":{“enabled":false}}`, close
+    the editor, then focus **Create Agent** and press Enter. The editor opens
+    with the caret before the curly quote. The message gives its line and
+    column and suggests a straight double quote. Press Shift+Right and type
+    `"`. The error clears and the rest of the draft stays intact.
 
 ## Stored Preset refusal
 
