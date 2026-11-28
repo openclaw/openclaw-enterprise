@@ -1678,6 +1678,14 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  private requireTransactionContext(unit: PlatformUnitOfWork): TransactionContext {
+    const context = this.contexts.get(unit);
+    if (context === undefined) {
+      throw new DependencyUnavailableError("The platform transaction is unavailable.");
+    }
+    return context;
+  }
+
   /**
    * Read all six policy collections on the original unit in one statement.
    * This snapshot is not an authority fence; the caller must order all
@@ -1687,10 +1695,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     unit: PlatformUnitOfWork,
     installationId?: string,
   ): Promise<PersistedNativeIAMState> {
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     return context.lifetime.run(() => this.readNativeIAMState(context, installationId));
   }
 
@@ -1846,10 +1851,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   async seedNativeIAM(state: PersistedNativeIAMState): Promise<void> {
     return this.transact(async (unit) => {
-      const context = this.contexts.get(unit);
-      if (context === undefined) {
-        throw new DependencyUnavailableError("The platform transaction is unavailable.");
-      }
+      const context = this.requireTransactionContext(unit);
       const installation = await this.currentInstallation(context);
       if (installation === undefined) {
         throw new ScopeViolationError("IAM state requires an initialized Installation.");
@@ -1877,10 +1879,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     unit: PlatformUnitOfWork,
     seed: PersistedNativeIAMPrincipalSeed,
   ): Promise<string> {
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     const installation = await this.currentInstallation(context);
     if (installation === undefined) {
       throw new ScopeViolationError("IAM state requires an initialized Installation.");
@@ -2070,10 +2069,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     statement: string,
     parameters?: readonly unknown[],
   ): Promise<{ rows: unknown[]; rowCount: number | null }> {
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
@@ -2153,10 +2149,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) {
       throw new ScopeViolationError("The native IAM policy barrier request is invalid.");
     }
-    const context = this.contexts.get(unit);
-    if (context === undefined) {
-      throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    }
+    const context = this.requireTransactionContext(unit);
     await context.lifetime.run(async () => {
       await context.client.query("SELECT occ.native_iam_policy_barrier($1, $2)", [
         installationId,
@@ -2196,10 +2189,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const queueOptions = { ...this.queueOptions, ...options };
     return this.transactWithNativeIAMAuthority(installationId, "write", async (state) => {
       await this.guardNativeIAMPolicyInTransaction(state, installationId, "write");
-      const context = this.contexts.get(state);
-      if (context === undefined) {
-        throw new DependencyUnavailableError("The platform transaction is unavailable.");
-      }
+      const context = this.requireTransactionContext(state);
       return work(state, this.bindQueue(context, queueOptions));
     });
   }

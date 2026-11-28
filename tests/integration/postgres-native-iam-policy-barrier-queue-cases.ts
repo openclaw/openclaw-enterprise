@@ -50,6 +50,11 @@ export async function runBarrierQueueCases(
     waitForAdvisoryLock,
     releaseContender,
   } = await createBarrierLockHarness(context, fixture, appUrl, key);
+  async function readUnitSettings(unit: PlatformUnitOfWork) {
+    const result = await boundedState.queryInTransaction(unit, settingsSQL);
+    return readBackendSettings(result.rows[0]);
+  }
+
   try {
     await context.test("policy queue binds one transaction after both write barriers", async () => {
       const baseline = await configureTimeout("1min");
@@ -66,10 +71,7 @@ export async function runBarrierQueueCases(
           assert.deepEqual(await policyLocks(baseline.pid), expectedLocks("write"));
           assert.equal(await authorityAvailable(), false);
           assert.deepEqual(await resourceLocks(baseline.pid), []);
-          assert.deepEqual(
-            readBackendSettings((await boundedState.queryInTransaction(unit, settingsSQL)).rows[0]),
-            baseline,
-          );
+          assert.deepEqual(await readUnitSettings(unit), baseline);
           const [isolation] = (
             await boundedState.queryInTransaction(unit, "SHOW transaction_isolation")
           ).rows;
@@ -136,11 +138,39 @@ export async function runBarrierQueueCases(
         closedUnit.namespaces.findNamespace(input.namespace.id),
         /transaction is closed/,
       );
-      assert.throws(() => boundedState.queryInTransaction(closedUnit, "SELECT 1"), /unavailable/);
+      const unavailable = {
+        name: "DependencyUnavailableError",
+        message: "The platform transaction is unavailable.",
+      };
+      async function assertUnavailable(unit: PlatformUnitOfWork) {
+        assert.throws(() => boundedState.queryInTransaction(unit, "SELECT 1"), unavailable);
+        await assert.rejects(boundedState.loadNativeIAMStateInTransaction(unit), unavailable);
+        await assert.rejects(
+          boundedState.guardNativeIAMPolicyInTransaction(unit, installation.id, "write"),
+          unavailable,
+        );
+      }
+      await assertUnavailable(closedUnit);
       await assert.rejects(
-        boundedState.guardNativeIAMPolicyInTransaction(closedUnit, installation.id, "write"),
-        /unavailable/,
+        boundedState.guardNativeIAMPolicyInTransaction(closedUnit, "", "write"),
+        {
+          name: "ScopeViolationError",
+          message: "The native IAM policy barrier request is invalid.",
+        },
       );
+
+      // An active owner must never lend its ambient transaction to another unit.
+      await fixture.state.transact(async (foreignUnit) => {
+        const probe = await fixture.state.queryInTransaction(foreignUnit, "SELECT 1 AS alive");
+        assert.deepEqual(probe.rows, [{ alive: 1 }]);
+        await boundedState.transactWithNativeIAMAuthority(installation.id, "write", async (own) => {
+          await boundedState.guardNativeIAMPolicyInTransaction(own, installation.id, "write");
+          assert.deepEqual(await readUnitSettings(own), baseline);
+          await assertUnavailable(foreignUnit);
+          await assertUnavailable(closedUnit);
+          assert.deepEqual(await readUnitSettings(own), baseline);
+        });
+      });
     });
 
     await context.test("policy queue rolls back resource, Work and audit together", async () => {
@@ -388,12 +418,7 @@ export async function runBarrierQueueCases(
             intent,
             async (unit) => {
               await boundedState.guardNativeIAMPolicyInTransaction(unit, installation.id, intent);
-              assert.deepEqual(
-                readBackendSettings(
-                  (await boundedState.queryInTransaction(unit, settingsSQL)).rows[0],
-                ),
-                baseline,
-              );
+              assert.deepEqual(await readUnitSettings(unit), baseline);
               assert.deepEqual(await policyLocks(baseline.pid), expectedLocks(intent));
               assert.equal(await authorityAvailable(), false);
               if (lockTimeout === "0") {
@@ -526,12 +551,7 @@ export async function runBarrierQueueCases(
                   false,
                   "the original authority predates the savepoint",
                 );
-                assert.deepEqual(
-                  readBackendSettings(
-                    (await boundedState.queryInTransaction(unit, settingsSQL)).rows[0],
-                  ),
-                  localSettings,
-                );
+                assert.deepEqual(await readUnitSettings(unit), localSettings);
                 await boundedState.queryInTransaction(unit, "RELEASE SAVEPOINT policy_guard");
               },
             );
@@ -566,12 +586,7 @@ export async function runBarrierQueueCases(
               assertRejectedWithCode(outcomes[0], "55P03");
               assertRejectedWithCode(outcomes[1], "25P02");
               await boundedState.queryInTransaction(unit, "ROLLBACK TO SAVEPOINT policy_guard");
-              assert.deepEqual(
-                readBackendSettings(
-                  (await boundedState.queryInTransaction(unit, settingsSQL)).rows[0],
-                ),
-                localSettings,
-              );
+              assert.deepEqual(await readUnitSettings(unit), localSettings);
               assert.deepEqual(await policyLocks(baseline.pid), []);
               assert.equal(await authorityAvailable(), false);
               await boundedState.queryInTransaction(unit, "RELEASE SAVEPOINT policy_guard");
@@ -593,12 +608,7 @@ export async function runBarrierQueueCases(
                 END;
               $caller$`,
               );
-              assert.deepEqual(
-                readBackendSettings(
-                  (await boundedState.queryInTransaction(unit, settingsSQL)).rows[0],
-                ),
-                localSettings,
-              );
+              assert.deepEqual(await readUnitSettings(unit), localSettings);
               assert.deepEqual(await policyLocks(baseline.pid), []);
               assert.equal(await authorityAvailable(), false);
             },
@@ -625,12 +635,7 @@ export async function runBarrierQueueCases(
               { code: "25001" },
             );
             await boundedState.queryInTransaction(unit, "ROLLBACK TO SAVEPOINT refused_upgrade");
-            assert.deepEqual(
-              readBackendSettings(
-                (await boundedState.queryInTransaction(unit, settingsSQL)).rows[0],
-              ),
-              baseline,
-            );
+            assert.deepEqual(await readUnitSettings(unit), baseline);
             assert.deepEqual(await policyLocks(baseline.pid), expectedLocks("read"));
             assert.equal(await authorityAvailable(), false);
             throw abort;
