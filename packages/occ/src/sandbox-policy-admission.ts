@@ -79,6 +79,7 @@ export function checkedSandboxPolicySnapshot(
       snapshot.defaults === null ||
       typeof snapshot.defaults !== "object" ||
       Array.isArray(snapshot.defaults) ||
+      Object.hasOwn(snapshot, "repositoryNetworkPolicy") ||
       !isDeepStrictEqual(snapshot.additions, additions)
     ) {
       throw sandboxPolicyRefused();
