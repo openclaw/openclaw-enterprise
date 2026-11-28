@@ -14398,6 +14398,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     } else if (
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
+      !this.preparedRepositoryIngress &&
       revision.repositoryCredentials !== undefined &&
       revision.repositoryCredentials.authorization === undefined
     ) {
