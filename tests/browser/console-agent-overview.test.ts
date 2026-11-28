@@ -3391,6 +3391,11 @@ for (const c of [
             assert.equal(await inViewport(account), true);
             assert.equal(returned.focused, false);
             assert.deepEqual(returned.selection, before.selection);
+            assert.equal(
+              returned.scrollTop,
+              before.scrollTop,
+              "Forward preserves the editor scroll when focus moves to Account",
+            );
           } else {
             assert.equal(returned.focused, true, "Forward restores focus to the draft editor");
             assert.deepEqual(returned, before);

@@ -1044,9 +1044,21 @@ function rememberAgentControl(view: HTMLElement, control: HTMLElement) {
   if (!usable() || !inViewport()) {
     return null;
   }
-  const { scrollTop, scrollLeft } = control;
+  const { clientHeight, clientWidth, scrollHeight, scrollWidth, scrollTop, scrollLeft } = control;
   return {
     element: control,
+    restoreEditorScroll() {
+      if (
+        control instanceof HTMLTextAreaElement &&
+        usable() &&
+        control.clientHeight === clientHeight &&
+        control.clientWidth === clientWidth &&
+        control.scrollHeight === scrollHeight &&
+        control.scrollWidth === scrollWidth
+      ) {
+        control.scrollTo(scrollLeft, scrollTop);
+      }
+    },
     restore() {
       if (!usable()) {
         return;
@@ -2788,11 +2800,13 @@ async function loadPage({
       markMountedRoute(current);
       restoreRefocus = () => {
         (restoreFocus ?? namespaceShellFocus ?? headerFocus)?.restore(restoredShell.view);
+        const control = retainedView.agentReturnControl;
         if (returningToDraft && !returnFocusMoved && document.activeElement === document.body) {
-          const control = retainedView.agentReturnControl;
           if (mayReturnFocus()) {
             control?.restore();
-          } else if (control?.element instanceof HTMLTextAreaElement) {
+            return;
+          }
+          if (control?.element instanceof HTMLTextAreaElement) {
             // A draft admitted while hidden must pass the foreground recheck before taking focus.
             retainedState.deferredConfigurationFocus = {
               editor: control.element,
@@ -2801,6 +2815,8 @@ async function loadPage({
             };
           }
         }
+        // Keep the editor's reading position even if the reader chose another control.
+        control?.restoreEditorScroll();
       };
       return;
     }
