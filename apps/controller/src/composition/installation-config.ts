@@ -741,6 +741,9 @@ function githubRepositoryAuthorityIdentity(
     .digest("hex");
 }
 
+const RETIRED_CREDENTIAL_DRIVERS_ADVICE =
+  "Select TokenService and Credential Proxy in the Installation configuration. See docs/guides/deploy/production-upgrade-credentials.md.";
+
 function backendConfiguration(
   value: unknown,
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
@@ -761,7 +764,7 @@ function backendConfiguration(
         backend.drivers.credential_refresh !== undefined
       ) {
         throw new Error(
-          `backend[${backend.id}] selects retired credential Drivers. Select TokenService and Credential Proxy in the Installation configuration.`,
+          `backend[${backend.id}] selects retired credential Drivers. ${RETIRED_CREDENTIAL_DRIVERS_ADVICE}`,
         );
       }
       if (backend.drivers.credential_proxy !== credentialProxyId) {
@@ -989,6 +992,11 @@ async function composeInstallationConfiguration(
   const drivers = object(configuration.drivers, "drivers");
   if (Object.hasOwn(drivers, "conduit")) {
     throw new Error("drivers.conduit is retired; use drivers.credential_proxy instead.");
+  }
+  for (const retired of ["credential_gateway", "credential_refresh"]) {
+    if (Object.hasOwn(drivers, retired)) {
+      throw new Error(`drivers.${retired} is retired. ${RETIRED_CREDENTIAL_DRIVERS_ADVICE}`);
+    }
   }
   closed(
     drivers,
