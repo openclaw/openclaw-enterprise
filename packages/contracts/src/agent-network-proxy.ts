@@ -28,10 +28,13 @@ export function validNetworkProxyAuthorization(value: string): boolean {
   );
 }
 
+/** A sanitized refusal from normalizeAgentNetworkProxy. */
+export class AgentNetworkProxyValidationError extends Error {}
+
 /** Parse without retaining URL parser errors, which can contain credentials. */
 export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetworkProxy> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Invalid Network proxy selection.");
+    throw new AgentNetworkProxyValidationError("Invalid Network proxy selection.");
   }
   const selection = value as Record<string, unknown>;
   const input = selection.url;
@@ -42,7 +45,7 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
     !/^https?:\/\//iu.test(input) ||
     /^https?:\/\/[^/]*@/iu.test(input)
   ) {
-    throw new Error(
+    throw new AgentNetworkProxyValidationError(
       "Invalid Network proxy URL. Use an HTTP or HTTPS endpoint without credentials.",
     );
   }
@@ -50,7 +53,7 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
   try {
     parsed = new URL(input);
   } catch {
-    throw new Error(
+    throw new AgentNetworkProxyValidationError(
       "Invalid Network proxy URL. Use an HTTP or HTTPS endpoint without credentials.",
     );
   }
@@ -63,7 +66,7 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
     parsed.search ||
     parsed.hash
   ) {
-    throw new Error(
+    throw new AgentNetworkProxyValidationError(
       "Invalid Network proxy URL. Use an HTTP or HTTPS endpoint without credentials.",
     );
   }
@@ -71,7 +74,9 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
     selection.credentialSecretId !== undefined &&
     (typeof selection.credentialSecretId !== "string" || !selection.credentialSecretId)
   ) {
-    throw new Error("Invalid Network proxy credential Secret reference.");
+    throw new AgentNetworkProxyValidationError(
+      "Invalid Network proxy credential Secret reference.",
+    );
   }
   return Object.freeze({
     url: parsed.origin,

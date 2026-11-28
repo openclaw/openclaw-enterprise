@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { promisify } from "node:util";
+import type { Pool } from "pg";
 import type { Static } from "typebox";
 
 import type { ControllerAuth } from "../../apps/controller/src/auth/index.ts";
@@ -12,8 +13,10 @@ import type {
   AgentCallerPermissionsResponse,
   AgentListResponse,
   AgentReadWire,
+  AgentResponse,
   AgentRevision,
   AgentRevisionListResponse,
+  AgentRevisionRead,
   AgentRevisionReadWire,
   AgentRevisionSummaryWire,
   AgentRevisionWire,
@@ -34,6 +37,66 @@ import {
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
+const plugins: PluginDesiredState = {
+  "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+};
+
+// A previously accepted approval enum that the current contract no longer decodes.
+const malformedPlugins = {
+  "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
+};
+
+async function createAgentWithLegacyAuth(
+  pool: Pool,
+  api: Awaited<ReturnType<typeof startController>>,
+  namespaceId: string,
+  name: string,
+) {
+  const { agent, configuration } = await createConfiguredAgent(api, namespaceId, name);
+  assert.deepEqual(configuration.values, defaultAgentConfigurationValues);
+  assert.equal(agent.namespaceId, namespaceId);
+  assert.equal(agent.configurationId, configuration.id);
+  // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
+  // it as an older release did, to match the revisions seeded below.
+  const update = await pool.query(
+    "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+    [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
+  );
+  assert.equal(update.rowCount, 1);
+  return { agent, configuration };
+}
+
+function admittedRevision(agent: AgentResponse["data"], revision: number): AgentRevision {
+  return {
+    id: `rev_${randomUUID()}`,
+    namespaceId: agent.namespaceId,
+    agentId: agent.id,
+    revision,
+    backendId: null,
+    gatewayManagedMode: agent.gatewayManagedMode,
+    configurationId: agent.configurationId,
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: defaultAgentConfigurationValues,
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
+    compute: {
+      id: "compute-local-development",
+      implementation: "deterministic-local-development",
+    },
+    executionAdmission: { version: 2, mode: "unprotected" },
+    harnessAuth: { method: "runtime" },
+    servicePrincipalId: agent.servicePrincipalId,
+    plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export async function browseUnreadableState(context: TestContext): Promise<void> {
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString: databaseUrl });
@@ -45,62 +108,48 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
   });
   assert.equal(namespace.status, 201);
   const namespaceId = namespace.data.id;
-  const plugins: PluginDesiredState = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
-  };
-  const configurationValues = defaultAgentConfigurationValues;
-  const { agent, configuration } = await createConfiguredAgent(
+  const { agent, configuration } = await createAgentWithLegacyAuth(
+    pool,
     api,
     namespaceId,
     "Unreadable saved configuration",
-    configurationValues,
-  );
-  assert.deepEqual(configuration.values, configurationValues);
-  // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
-  // it as an older release did, to match the revisions seeded below.
-  await pool.query(
-    "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
-    [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
   );
   const { agent: healthyAgent } = await createConfiguredAgent(
     api,
     namespaceId,
     "Healthy saved configuration",
   );
-  const agentPath = `/namespaces/${namespaceId}/agents/${agent.id}`;
+  const agentsPath = `/namespaces/${namespaceId}/agents`;
+  const agentPath = `${agentsPath}/${agent.id}`;
   const revisionPath = `${agentPath}/revisions`;
+  const assertAgentMutationRefused = async () => {
+    const readMutationState = () =>
+      pool.query(
+        `SELECT plugins, network_proxy_url,
+                (SELECT count(*)::integer FROM occ.agent_revisions
+                 WHERE agent_id = $1) AS revisions,
+                (SELECT count(*)::integer FROM occ.controller_work WHERE agent_id = $1) AS work
+         FROM occ.agents WHERE id = $1`,
+        [agent.id],
+      );
+    const beforeMutation = await readMutationState();
+    assert.equal(beforeMutation.rows.length, 1);
+    for (const [method, path, body] of [
+      ["PATCH", agentPath, { configurationId: configuration.id }],
+      ["POST", `${agentPath}/deploy`, undefined],
+    ] as const) {
+      const rejected = await request(api, method, path, body);
+      assert.equal(rejected.status, 503);
+      assert.equal(rejected.error?.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(rejected.data, undefined);
+    }
+    assert.deepEqual((await readMutationState()).rows, beforeMutation.rows);
+  };
 
   // Seed an admitted snapshot through its persistence owner. This test proves
   // browsing saved state, not Compute execution or runtime readiness.
   const revision = await state.transact((unit) =>
-    unit.revisions.createRevision({
-      id: `rev_${randomUUID()}`,
-      namespaceId,
-      agentId: agent.id,
-      revision: 1,
-      backendId: null,
-      gatewayManagedMode: agent.gatewayManagedMode,
-      configurationId: configuration.id,
-      configurationKind: "agent",
-      configurationGeneration: 1,
-      configuration: configurationValues,
-      harness: {
-        id: "openclaw",
-        version: "1.0.0",
-        mode: "embedded",
-        overrides: {},
-        configuration: {},
-      },
-      compute: {
-        id: "compute-local-development",
-        implementation: "deterministic-local-development",
-      },
-      executionAdmission: { version: 2, mode: "unprotected" },
-      harnessAuth: { method: "runtime" },
-      servicePrincipalId: agent.servicePrincipalId,
-      plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
-      createdAt: new Date().toISOString(),
-    }),
+    unit.revisions.createRevision(admittedRevision(agent, 1)),
   );
   // Preserve a normal queued deployment record for the healthy snapshot, so
   // CLI status enrichment remains observable without executing a workload.
@@ -124,13 +173,159 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
   );
   assert.equal(healthyRevision.status, 200);
   assert.ok(!("configurationReadError" in healthyRevision.data));
+  assert.ok(!("networkProxy" in healthyRevision.data));
   assert.ok(revision.plugins);
+
+  // Simulate persisted selections that satisfy the SQL constraints. One normalizes to a
+  // different origin and the other is rejected by the normalizer itself.
+  const proxyDomain = "example.invalid";
+  const proxyOrigin = `https://proxy.${proxyDomain}`;
+  const invalidProxySelections = [
+    ["noncanonical origin", `https://Proxy.${proxyDomain}`],
+    ["unexpected query", `${proxyOrigin}?unexpected=1`],
+  ] as const;
+  const proxyReadError = { code: "SAVED_CONFIGURATION_UNREADABLE", field: "networkProxy" } as const;
+  const { plugins: _plugins, harnessAuth: _harnessAuth, ...agentMetadata } = agent;
+  const degradedProxyAgent = {
+    ...agentMetadata,
+    configurationReadError: proxyReadError,
+  } satisfies AgentReadWire;
+  const strictAgentReads: readonly ((view: PlatformReadView) => Promise<unknown>)[] = [
+    (view) => view.agents.findAgent(namespaceId, agent.id),
+    (view) => view.agents.listAgents(namespaceId),
+  ];
+  const getAgent = () => request<AgentReadWire>(api, "GET", agentPath);
+  const assertAgentBrowsing = async (expected: AgentReadWire, fault: string) => {
+    const list = await request<AgentListResponse["data"]>(api, "GET", agentsPath);
+    assert.equal(list.status, 200, fault);
+    assert.equal(list.data.length, 2, fault);
+    assert.deepEqual(
+      list.data.find(({ id }) => id === agent.id),
+      expected,
+      fault,
+    );
+    assert.deepEqual(
+      list.data.find(({ id }) => id === healthyAgent.id),
+      healthyAgent,
+      fault,
+    );
+    const detail = await getAgent();
+    assert.equal(detail.status, 200, fault);
+    assert.deepEqual(detail.data, expected, fault);
+  };
+  const absentProxy = await getAgent();
+  assert.equal(absentProxy.status, 200);
+  assert.ok(!("networkProxy" in absentProxy.data));
+  assert.ok(!("configurationReadError" in absentProxy.data));
+  const setAgentProxy = async (url: string | null) => {
+    const update = await pool.query(
+      "UPDATE occ.agents SET network_proxy_url = $3 WHERE namespace_id = $1 AND id = $2",
+      [namespaceId, agent.id, url],
+    );
+    assert.equal(update.rowCount, 1);
+  };
+  try {
+    await setAgentProxy(proxyOrigin);
+    const canonicalProxy = await getAgent();
+    assert.equal(canonicalProxy.status, 200);
+    assert.deepEqual(canonicalProxy.data, {
+      ...absentProxy.data,
+      networkProxy: { url: proxyOrigin },
+    });
+    for (const [fault, url] of invalidProxySelections) {
+      await setAgentProxy(url);
+      await assertAgentBrowsing(degradedProxyAgent, fault);
+      for (const read of strictAgentReads) {
+        await assert.rejects(state.read(read), { name: "DependencyUnavailableError" }, fault);
+      }
+      await assertAgentMutationRefused();
+    }
+  } finally {
+    await setAgentProxy(null);
+  }
+  const restored = await getAgent();
+  assert.equal(restored.status, 200);
+  assert.deepEqual(restored.data, absentProxy.data);
+
+  // Keep the original revision history intact. Copy its complete admitted snapshot into
+  // the sibling's history, binding it to the sibling's matching configuration.
+  const proxyAdmission = "fixture admission";
+  const insertProxyRevision = async (id: string, revisionNumber: number, url: string) => {
+    const insert = await pool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec,
+          gateway_managed_mode, admitted_at, network_proxy_url, network_proxy_admission)
+       SELECT $1, namespace_id, $2, $3, backend_id,
+              jsonb_set(admitted_spec, '{configuration_id}', to_jsonb($4::text), false),
+              $5, admitted_at, $6, $7
+       FROM occ.agent_revisions WHERE id = $8`,
+      [
+        id,
+        healthyAgent.id,
+        revisionNumber,
+        healthyAgent.configurationId,
+        healthyAgent.gatewayManagedMode,
+        url,
+        proxyAdmission,
+        revision.id,
+      ],
+    );
+    assert.equal(insert.rowCount, 1);
+  };
+  const canonicalSnapshot = admittedRevision(healthyAgent, 1);
+  await insertProxyRevision(canonicalSnapshot.id, canonicalSnapshot.revision, proxyOrigin);
+  const expectedCanonical: AgentRevision = {
+    ...canonicalSnapshot,
+    createdAt: revision.createdAt,
+    networkProxy: { url: proxyOrigin },
+    compute: { ...canonicalSnapshot.compute, networkProxyAdmission: proxyAdmission },
+  };
+  const canonicalRevision = await state.read((view) =>
+    view.revisions.findRevision(namespaceId, healthyAgent.id, canonicalSnapshot.id),
+  );
+  assert.ok(canonicalRevision);
+  assert.deepEqual(canonicalRevision.networkProxy, { url: proxyOrigin });
+  assert.equal(canonicalRevision.compute.networkProxyAdmission, proxyAdmission);
+  assert.deepEqual(canonicalRevision, expectedCanonical);
+  const proxyRevisionPath = `${agentsPath}/${healthyAgent.id}/revisions`;
+  const proxyRevisionList: AgentRevisionRead[] = [expectedCanonical];
+  for (const [index, [fault, url]] of invalidProxySelections.entries()) {
+    const revisionNumber = index + 2;
+    const id = `rev_${randomUUID()}`;
+    await insertProxyRevision(id, revisionNumber, url);
+    const expected: AgentRevisionRead = {
+      id,
+      namespaceId,
+      agentId: healthyAgent.id,
+      revision: revisionNumber,
+      backendId: null,
+      createdAt: healthyRevision.data.createdAt,
+      configurationReadError: proxyReadError,
+    } satisfies AgentRevisionReadWire;
+    const detail = await request<AgentRevisionReadWire>(api, "GET", `${proxyRevisionPath}/${id}`);
+    assert.equal(detail.status, 200, fault);
+    assert.deepEqual(detail.data, expected, fault);
+    proxyRevisionList.push(expected);
+    assert.deepEqual(
+      await state.read((view) =>
+        view.revisions.listRevisionsForBrowsing(namespaceId, healthyAgent.id),
+      ),
+      proxyRevisionList,
+      fault,
+    );
+    await assert.rejects(
+      state.read((view) => view.revisions.findRevision(namespaceId, healthyAgent.id, id)),
+      { name: "DependencyUnavailableError" },
+      fault,
+    );
+  }
+  await assert.rejects(
+    state.read((view) => view.revisions.listRevisions(namespaceId, healthyAgent.id)),
+    { name: "DependencyUnavailableError" },
+  );
 
   // A previously accepted approval enum survives in PostgreSQL after the
   // application contract changes. Preserve the valid immutable snapshot.
-  const malformedPlugins = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
-  };
   await pool.query(
     "UPDATE occ.agents SET plugins = $2::jsonb, plugin_driver = $3::jsonb WHERE id = $1",
     [agent.id, JSON.stringify(malformedPlugins), JSON.stringify(revision.plugins.driver)],
@@ -145,7 +340,6 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
     [malformedRevisionId, JSON.stringify(malformedPlugins), revision.id],
   );
   const readError = { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" } as const;
-  const { plugins: _plugins, harnessAuth: _harnessAuth, ...agentMetadata } = agent;
   const degradedAgent = {
     ...agentMetadata,
     configurationReadError: readError,
@@ -160,24 +354,7 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
     configurationReadError: readError,
   } satisfies AgentRevisionReadWire;
 
-  const listed = await request<AgentListResponse["data"]>(
-    api,
-    "GET",
-    `/namespaces/${namespaceId}/agents`,
-  );
-  assert.equal(listed.status, 200);
-  assert.equal(listed.data.length, 2);
-  assert.deepEqual(
-    listed.data.find(({ id }) => id === agent.id),
-    degradedAgent,
-  );
-  assert.deepEqual(
-    listed.data.find(({ id }) => id === healthyAgent.id),
-    healthyAgent,
-  );
-  const detail = await request(api, "GET", agentPath);
-  assert.equal(detail.status, 200);
-  assert.deepEqual(detail.data, degradedAgent);
+  await assertAgentBrowsing(degradedAgent, "retired approval setting");
   // An Agent update checks the sources its saved settings bind, which this Agent's unreadable
   // settings do not show: the sources answer stays false, even for a caller with every grant.
   const permissions = await request<Static<typeof AgentCallerPermissionsResponse>["data"]>(
@@ -335,38 +512,14 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
   // Browsing must not admit partially decoded records to mutation or runtime
   // paths, and a failed edit must not turn unreadable plugin state into {}.
   const strictReads: readonly ((view: PlatformReadView) => Promise<unknown>)[] = [
-    (view) => view.agents.findAgent(namespaceId, agent.id),
-    (view) => view.agents.listAgents(namespaceId),
+    ...strictAgentReads,
     (view) => view.revisions.findRevision(namespaceId, agent.id, malformedRevisionId),
     (view) => view.revisions.listRevisions(namespaceId, agent.id),
   ];
   for (const read of strictReads) {
     await assert.rejects(state.read(read), { name: "DependencyUnavailableError" });
   }
-  const beforeMutation = await pool.query(
-    `SELECT plugins,
-            (SELECT count(*)::integer FROM occ.agent_revisions WHERE agent_id = $1) AS revisions,
-            (SELECT count(*)::integer FROM occ.controller_work WHERE agent_id = $1) AS work
-     FROM occ.agents WHERE id = $1`,
-    [agent.id],
-  );
-  for (const [method, path, body] of [
-    ["PATCH", agentPath, { configurationId: configuration.id }],
-    ["POST", `${agentPath}/deploy`, undefined],
-  ] as const) {
-    const rejected = await request(api, method, path, body);
-    assert.equal(rejected.status, 503);
-    assert.equal(rejected.error?.code, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(rejected.data, undefined);
-  }
-  const afterMutation = await pool.query(
-    `SELECT plugins,
-            (SELECT count(*)::integer FROM occ.agent_revisions WHERE agent_id = $1) AS revisions,
-            (SELECT count(*)::integer FROM occ.controller_work WHERE agent_id = $1) AS work
-     FROM occ.agents WHERE id = $1`,
-    [agent.id],
-  );
-  assert.deepEqual(afterMutation.rows, beforeMutation.rows);
+  await assertAgentMutationRefused();
 
   // The degraded response has the same exact-resource IAM boundary as a
   // healthy response; neither metadata nor decode errors may leak on denial.
@@ -379,7 +532,7 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
       `${revisionPath}/${malformedRevisionId}`,
       [revisionSummary(healthyRevision.data, "queued")],
     ],
-    ["agent", "Agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
+    ["agent", "Agent", agent.id, agentsPath, agentPath, [healthyAgent]],
   ] as const) {
     await pool.query(
       `INSERT INTO occ.iam_restrictions
@@ -422,58 +575,14 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
   });
   assert.equal(namespace.status, 201);
   const namespaceId = namespace.data.id;
-  const configurationValues = defaultAgentConfigurationValues;
-  const { agent, configuration } = await createConfiguredAgent(
+  const { agent } = await createAgentWithLegacyAuth(
+    pool,
     api,
     namespaceId,
     "Native admin successor",
-    configurationValues,
   );
-  assert.deepEqual(configuration.values, configurationValues);
-  // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
-  // it as an older release did, to match the revisions seeded below.
-  await pool.query(
-    "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
-    [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
-  );
-  const plugins: PluginDesiredState = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
-  };
-  // A previously accepted approval enum that the current contract no longer decodes.
-  const malformedPlugins = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
-  };
   const createRevision = (revision: number) =>
-    state.transact((unit) =>
-      unit.revisions.createRevision({
-        id: `rev_${randomUUID()}`,
-        namespaceId,
-        agentId: agent.id,
-        revision,
-        backendId: null,
-        gatewayManagedMode: agent.gatewayManagedMode,
-        configurationId: configuration.id,
-        configurationKind: "agent",
-        configurationGeneration: 1,
-        configuration: configurationValues,
-        harness: {
-          id: "openclaw",
-          version: "1.0.0",
-          mode: "embedded",
-          overrides: {},
-          configuration: {},
-        },
-        compute: {
-          id: "compute-local-development",
-          implementation: "deterministic-local-development",
-        },
-        executionAdmission: { version: 2, mode: "unprotected" },
-        harnessAuth: { method: "runtime" },
-        servicePrincipalId: agent.servicePrincipalId,
-        plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
-        createdAt: new Date().toISOString(),
-      }),
-    );
+    state.transact((unit) => unit.revisions.createRevision(admittedRevision(agent, revision)));
   // Revisions are immutable to the application role, so seed unreadable rows as copies.
   const insertUnreadable = async (template: Pick<AgentRevision, "id">, revision: number) => {
     const id = `rev_${randomUUID()}`;

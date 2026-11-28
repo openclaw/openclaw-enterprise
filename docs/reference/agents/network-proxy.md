@@ -12,6 +12,12 @@ the draft selection. Set it to `null` to clear the selection for a future
 deployment. A revision retains the selection admitted for that deployment;
 editing or clearing the draft does not change a serving revision.
 
+If saved Network Proxy settings in PostgreSQL are malformed or noncanonical and
+cannot be read, authorized Agent list, Agent detail, and revision detail reads
+return the affected record's metadata with `configurationReadError`
+(`field: "networkProxy"`). Healthy Agents remain readable. An unreadable Agent
+draft cannot be edited or deployed.
+
 The URL must identify an Installation-configured HTTP or HTTPS endpoint. Do not
 include URL user information, a path other than `/`, a query, or a fragment.
 For Basic authentication, select an existing Secret in the Agent's Namespace.
