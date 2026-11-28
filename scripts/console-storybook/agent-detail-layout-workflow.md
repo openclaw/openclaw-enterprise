@@ -87,6 +87,22 @@ unavailable** (`revisionError`) preview still simulates HTTP 403. This null
 rejection is simulated UI proof, not a normal browser network failure or proof of
 backend persistence or deployment.
 
+At desktop and 390 px, open **Pages / Agent detail / Revision history
+recovers on return** (`revisionHistoryRecovery`) in its own tab. With the draft
+clean and **Deployment** selected, confirm **Version history is unavailable.**
+before switching browser tabs. Return; the warning disappears, the same view and
+tab remain, history is empty, and **Deploy new version** stays disabled with its
+reload instruction. Confirm no Deploy POST. Use Console **Refresh** and record
+its result separately; browser reload resets the simulation.
+
+In a separate pass, open **Configuration** and change **Configuration JSON** in
+**Edit Configuration**. Leave the change unsaved. Switch browser tabs and return.
+Confirm **Configuration** stays selected, the edit remains, and **Deploy new version**
+stays disabled with **Save or cancel Configuration edits before deploying.**
+Confirm no Deploy POST. Check Console **Refresh** separately. The
+[Controller browser test](../../tests/browser/console-agent-detail.test.ts)
+uses a clean draft and browser reload. It covers neither Console Refresh nor dirty edits.
+
 Open **Pages / Agent detail / Runtime Logs Source Switch After Rate Limit**
 (`pages-agent-detail--runtime-logs-source-switch-after-rate-limit`). Wait for
 Gateway output, select **Agent (Harness)** under **Source**, then choose **Refresh
@@ -135,94 +151,82 @@ over **Draft credentials** to open the draft’s **Credentials** tab.
    picker. Use Home to view **Draft**, then Tab back and
    select a numbered version. Check both remain readable without horizontal
    scrolling and leave the service target unchanged.
-2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
-   record, and run diagnostics. Switch to Configuration and back: the record and
-   results remain. **Logs** still opens the viewed version's output.
-   Check **Pages / Agent detail / Deployment snapshot unavailable**. The viewed
-   version's error and **Retry** appear inside Deployment. Retry restores its
-   record and diagnostics without changing the viewed version or tab.
-   In **Repository Access Redeploy Required**, choose **Refresh
-   record**: both Completed outcomes remain and the repository guidance appears.
-   View v6 and open Deployment: its record has no notice, while activity still
-   identifies v7. Return to v7 and use **Refresh deployment**. No browsing or
-   refresh action sends a deployment request. Repeat at phone width. This is
-   simulated presentation proof; no notice does not establish healthy Git access.
+2. In **Deployment**, expand **Deployment details**, read the viewed version's
+   record and run diagnostics. Configuration and back preserves record and results;
+   **Logs** opens that version's output. **Pages / Agent detail / Deployment
+   snapshot unavailable** shows error and **Retry** inside Deployment; Retry
+   restores record and diagnostics without changing version or tab. In **Repository
+   Access Redeploy Required**, **Refresh record** preserves both Completed outcomes
+   and shows repository guidance. v6's record has no notice; activity identifies
+   v7. Return to v7 and **Refresh deployment**. Browsing and refreshing send no
+   deployment request. Repeat on phone. Simulated presentation; no notice does
+   not prove healthy Git access.
+
 3. Open **Pages / Agent detail / Long version history**. Load older pages. The
    viewed version stays selected; the last page returns focus to its picker.
-4. Open **Components / Native admin / Available**. **Open Agent UI** opens the
-   selected version's interface directly in a new tab. Review the target and
-   Gateway managed-mode warning. Check stopped, unsupported, denied, and failed
-   status stories: no enabled launch link appears without available access.
-   In **Browser chat off**, the panel says browser chat is off and offers
-   **Open draft** and **Browser chat settings**. In **Browser chat off,
-   read-only caller**, it asks you to ask someone who can edit the
-   Configuration and offers no settings link.
-5. Open **Components / Workspace / Workspace Navigation** (Keep unsaved files).
-   Clear User context.
-   Switch files and check their role descriptions and Unsaved indicators.
-   Check that selection survives switching Agent tabs. Select Instructions,
-   open Namespaces and go Back. The draft survives and warns that AGENTS.md
-   changed. Enter `Previous guidance` and repeat that round trip. The warning
-   stays visible and Save stays enabled. Enter `Updated guidance` to match
-   the simulated file. The warning clears and Save is disabled. Edit and save
-   AGENTS.md, then reload USER.md. Each action affects only its file.
-6. Repeat file selection on a phone using **Workspace file**. Check the editor
-   fits the screen. Check Missing file, Save needs Agent operate, Write outcome
-   unknown, and Reread keeps a focused editor's caret. A deployment poll must
-   preserve the selected file, caret, and unsaved content.
-   Check **Components / Workspace / Reread after a version change**: a confirmed
-   missing file shows **Missing** in the tabs and phone picker. The browser
-   regression also checks that a later missing-file response clears a previous
-   **Needs attention** indicator.
-   Check **Components / Workspace / Gateway unreachable**: one notice above the
-   files names the four files, each file shows the reason under its editor, and
-   no file shows **Needs attention**. Choose **Retry**; the notice goes and the
-   four files load.
-7. Open **Pages / Agent detail / New version in progress, then current**. Follow
-   its reset steps to check **Refresh deployment** with a stationary pointer
-   through completion and the delayed overview reread. Repeat with a click during
-   that reread: busy feedback is immediate and only one user refresh follows.
-   Reset again. Tab to **v7** under **Latest visible deployment** before
-   completion. When the badge reads **Completed**, check that focus stays visible.
-   Press Enter to open **Deployment** for v7.
+4. Open **Components / Native admin / Available**. **Open Agent UI** launches
+   the selected version's interface directly in a new tab; review its target and
+   Gateway managed-mode warning. Stopped, unsupported, denied, and failed stories
+   have no enabled launch link without available access. **Browser chat off**
+   says chat is off and offers **Open draft** and **Browser chat settings**; **Browser chat off,
+   read-only caller** asks for someone who can edit Configuration and has no
+   settings link.
+5. In **Components / Workspace / Workspace Navigation** (Keep unsaved files),
+   clear User context. Switch files; check role descriptions, Unsaved indicators
+   and selection across Agent tabs. Select Instructions, open Namespaces, go Back:
+   the draft survives and warns AGENTS.md changed. Enter `Previous guidance`;
+   repeat: warning and enabled Save persist. `Updated guidance` matches the
+   simulated file, clearing the warning and disabling Save. Edit/save AGENTS.md,
+   then reload USER.md; each affects only its file.
+6. On phone, select through **Workspace file**; the editor fits. Check Missing
+   file, Save needs Agent operate, Write outcome unknown, and Reread keeps a
+   focused editor's caret. Deployment polls preserve selection, caret and unsaved
+   content. **Components / Workspace / Reread after a version change** shows
+   confirmed absence as **Missing** in tabs and phone picker; the browser
+   regression checks later absence clears **Needs attention**. **Components /
+   Workspace / Gateway unreachable** names all four files in one notice above
+   them; each shows the reason below its editor; none shows **Needs attention**. **Retry**
+   clears the notice and loads all four.
 
-8. In **New version queued**, check the picker's keyboard round trip. Fold
-   **Deployment details** and Tab to **Run diagnostics for this version**.
-   Polls keep the fold, focus and button position. Repeat expanded at both widths.
-   In **Deployment activity loading**, Configuration shows **Deploying version**
-   on reply. **Deployment activity unavailable** stays neutral.
-   In **New version in progress, one status read fails**, open Deployment before
-   the failed poll. The fold stays as chosen through the transient error; the
-   selected record shows the error outside it, with one visible alert. Completion
-   is a terminal result and can expand the details. In **Deployment activity
-   unavailable**, fold the error and press **Refresh deployment**: the repeated
-   error is revealed again.
-   In **Diagnostics focus when deployment completes**, open the preview in its
-   own tab. Fold **Deployment details** and Tab to **Run diagnostics for this
-   version**. Scroll up until the focused button sits fully inside the lower
-   edge of the viewport. After the delayed poll reports **Completed**, the
-   details open and the same button stays visible and focused. Check desktop and
-   phone widths. At phone width, reload and repeat. This time, scroll to the top
-   after tabbing to the button. The details still open and the reader stays at
-   the top.
-   In **Refresh deployment focus when a newer version appears**, open the preview
-   in its own tab, fold **Deployment details**, and Tab to **Refresh deployment**.
-   About five seconds after queued v7 appears, its quiet poll starts and the
-   button stays enabled. Press Enter during the next six seconds. The button
-   becomes busy immediately and keeps focus as the panel switches to v8.
-   When the simulated record read fails, v8 shows a retry notice and the
-   button is enabled and still focused. Reset and repeat the refresh. While
-   it is pending, press Shift+Tab to move focus to **Deployment details**.
-   When v8 shows the retry notice, focus stays on the summary. Press Enter to
-   fold the details and Space to reopen them. The real Controller regression
-   for this replacement is in
+7. Open **Pages / Agent detail / New version in progress, then current**. Reset
+   as instructed; check stationary-pointer **Refresh deployment** through completion
+   and the delayed overview reread. Repeat, clicking during that reread: busy
+   feedback is immediate; only one user refresh follows. Reset; Tab to **v7**
+   under **Latest visible deployment** before completion. At **Completed**, focus
+   remains visible; Enter opens v7's **Deployment**.
+
+8. In **New version queued**, test the picker's keyboard round trip. Fold
+   **Deployment details**; Tab to **Run diagnostics for this version**. Polls
+   preserve fold, focus and button position; repeat expanded at both widths.
+   **Deployment activity loading** shows **Deploying version** in Configuration
+   on reply; **Deployment activity unavailable** stays neutral. In **New version
+   in progress, one status read fails**, open Deployment before the failed poll.
+   The fold persists; the selected record shows one visible transient-error alert
+   outside it. Terminal completion can expand details. In **Deployment activity
+   unavailable**, fold the error; **Refresh deployment** reveals the repeated error.
+
+   Standalone **Diagnostics focus when deployment completes**: fold **Deployment
+   details**, Tab to **Run diagnostics for this version**, and scroll until the
+   focused button is fully inside the viewport's lower edge. The delayed
+   **Completed** poll opens details; that button remains visible and focused.
+   Check desktop and phone. On phone, reload, Tab to the button, then scroll to
+   the top: details open; the reader stays there.
+
+   Standalone **Refresh deployment focus when a newer version appears**: fold
+   **Deployment details**, Tab to **Refresh deployment**. About five seconds after
+   queued v7 appears, the quiet poll starts; the button stays enabled. Enter
+   during the next six seconds: immediate busy feedback and focus persist as the
+   panel switches to v8. The simulated record failure shows v8's retry notice;
+   the button is enabled and focused. Reset, repeat, Shift+Tab to **Deployment
+   details** during refresh. At the notice, the summary retains focus; Enter
+   folds, Space reopens. Controller replacement regression:
    `tests/browser/console-agent-detail-2.test.ts`.
-   These stories simulate responses. The real Controller browser regression in
-   `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
-   503 → queued, queued → running, terminal completion with the diagnostics
-   button focused, a final 403/404, and a delayed success delivered after refusal.
-   Run it for the actual controls and response envelopes. Storybook simulates
-   those Controller responses.
+
+   Stories simulate Controller responses.
+   `tests/browser/console-deployment-activity.test.ts` additionally checks
+   queued → 503 → queued, queued → running, terminal completion with the
+   diagnostics button focused, a final 403/404, and delayed success after refusal.
+   Run it for actual controls and response envelopes.
 
 9. Open **Rejected credential, binding editor cannot deploy**
    (`credentialRejectedBindingEditor`). Recovery must offer **Open Credentials**

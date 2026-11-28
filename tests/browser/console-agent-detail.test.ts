@@ -4180,6 +4180,93 @@ test("a null revision-history rejection preserves the readable draft Configurati
   assert.equal(await page.getByText(/No readable versions\./).count(), 0);
 });
 
+test("Agent detail clears the version-history fallback after an empty reread", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revision history recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "History recovery",
+    nativeValues("history"),
+  );
+  const agentUrl = new URL(`/namespaces/${namespace.id}/agents/${agent.id}`, fixture.origin).href;
+  const revisionsUrl = `${agentUrl}/revisions`;
+  const { page } = await newPage(t, fixture);
+
+  // Inject a transport failure for the opening list read only.
+  await page.route(revisionsUrl, (route) => route.abort(), { times: 1 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  await deployment.click();
+  const panels = page.locator(".agent-deployment-panels");
+  const unavailable = panels.getByText("Version history is unavailable.", { exact: true });
+  const empty = panels.getByText("No deployment history is visible to your account.", {
+    exact: true,
+  });
+  const actions = page.locator(".agent-draft-actions");
+  const deploy = actions.getByRole("button", { name: "Deploy new version", exact: true });
+  const requiresHistory = actions.getByText(
+    "Version history is required before deploying this new version.",
+    { exact: true },
+  );
+  const reloadDraft = actions.getByText(
+    "Version history loaded. Reload this draft before deploying.",
+    { exact: true },
+  );
+  await unavailable.waitFor();
+  await requiresHistory.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await empty.isVisible(), false);
+  await tagView(page, "history-recovery");
+
+  // The real Agent changes while the reader is away. The revision policy hides only its version.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await fixture.activateRevision(namespace.id, agent.id, revision.id);
+  restrict(fixture.policy, "read", "agent_revision", {
+    namespaceId: namespace.id,
+    resourceId: revision.id,
+  });
+
+  const [agentRead, historyRead] = await Promise.all([
+    responseTo(page, "GET", agentUrl),
+    responseTo(page, "GET", revisionsUrl),
+    refocusHeld(t, page),
+  ]);
+  assert.equal(agentRead.status(), 200);
+  assert.equal(historyRead.status(), 200);
+  const current = wireBody(fixture, AgentResponse, await agentRead.json()).data;
+  assert.equal(current.id, agent.id);
+  assert.equal(current.configurationId, agent.configurationId);
+  assert.equal(current.activeRevisionId, revision.id);
+  const history = wireBody(fixture, AgentRevisionListResponse, await historyRead.json());
+  assert.deepEqual(history.data, []);
+  assert.equal(history.meta.nextCursor, null);
+
+  await empty.waitFor();
+  assert.equal(await viewTag(page), "history-recovery");
+  assert.equal(await deployment.getAttribute("aria-selected"), "true");
+  assert.equal(await unavailable.isVisible(), false, "Recovered history still shows its failure");
+  await reloadDraft.waitFor();
+  assert.equal(await requiresHistory.isVisible(), false);
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await viewTag(page), "history-recovery");
+
+  // Reopen explicitly with the same revision-read policy and the fixture's saved credentials.
+  const [reopenedHistory] = await Promise.all([
+    responseTo(page, "GET", revisionsUrl),
+    page.reload(),
+  ]);
+  assert.equal(reopenedHistory.status(), 200);
+  const reopened = wireBody(fixture, AgentRevisionListResponse, await reopenedHistory.json());
+  assert.deepEqual(reopened.data, []);
+  assert.equal(reopened.meta.nextCursor, null);
+  await empty.waitFor();
+  await waitForEnabled(deploy);
+  assert.equal(await unavailable.isVisible(), false);
+  assert.equal(await requiresHistory.isVisible(), false);
+  assert.equal(await reloadDraft.isVisible(), false);
+});
+
 // A `null` passed to replaceChildren is painted as the text "null" (finding 1567).
 test("the draft Configuration card paints no stray text beside its controls", async (t) => {
   const fixture = await createConsoleAppFixture(t);

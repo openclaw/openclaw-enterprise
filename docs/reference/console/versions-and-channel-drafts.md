@@ -36,6 +36,9 @@ OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected for service** shows `activeRevisionId`, a selected pointer, not serving health.
 **Viewing version** chooses the draft or a saved version without deploying it.
 **Load older versions** adds the next page and keeps the viewed version.
+If a history reread succeeds, the warning clears and edits remain. If the
+Console asks you to reload this draft, save your edits and reopen it before
+deploying. History alone does not enable deployment.
 **Deployment** contains the newest readable deployment activity, the viewed
 version's record, and diagnostics. These panels keep polling across tabs.
 Pending work, startup warnings, and incomplete cleanup also show an attention

@@ -3507,12 +3507,7 @@ export async function renderAgentDetail(
         nextActivity ??
         element(
           "section",
-          // With no versions the card would repeat the facts' "No readable deployments", so it
-          // stays out of the way of the draft's next step (UX spec 3.7).
-          {
-            className: "agent-card deployment-status",
-            hidden: revisionResult.status !== "rejected",
-          },
+          { className: "agent-card deployment-status" },
           element("h2", {}, "Deployment activity"),
           element(
             "p",
@@ -3535,6 +3530,10 @@ export async function renderAgentDetail(
         true,
       );
       versionRecord?.render();
+    }
+    // A settled read can change the fallback while there is still no visible activity revision.
+    if (!mostRecent) {
+      setHidden(activityPanel, revisionResult.status !== "rejected");
     }
     renderLatestDeployment();
     refreshDeployControls();
@@ -4514,7 +4513,9 @@ export async function renderAgentDetail(
           // A check that settles within 250 ms never shows this text, as for credential access.
           setDelayedText(deployStatus, "", CHECKING_COMPUTE_CONFIGURATION);
         } else if (revisionResult.status !== "fulfilled") {
-          deployMessage = "Version history is required before deploying this new version.";
+          deployMessage = visibleRevisionsLoaded
+            ? "Version history loaded. Reload this draft before deploying."
+            : "Version history is required before deploying this new version.";
         } else if (!agent.harnessAuth) {
           deployMessage =
             "Select a harness authentication source in Credentials before deployment.";

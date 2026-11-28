@@ -59,6 +59,7 @@ type AgentDetailScenario = {
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  revisionHistoryRecoversOnReread?: true;
   unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
@@ -3845,6 +3846,30 @@ export function createAgentDetailScenarios({
           "Confirm Deploy new version stays unavailable and explains that version history is required before deploying.",
         ],
         gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
+      },
+      revisionHistoryRecovery: {
+        group: "Pages/Agent detail",
+        name: "Revision history recovers on return",
+        path: `${draft}&tab=deployment`,
+        deployed: true,
+        revisionHistoryRecoversOnReread: true,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions",
+            lostAnswer: true,
+            once: true,
+          },
+        ],
+        description:
+          "The opening version-history request loses its reply. On tab return, the Agent read finds a newly selected version that the history list cannot show.",
+        steps: [
+          "Open the preview in its own tab. On Deployment, confirm the activity warning is visible and Deploy new version is unavailable because version history is required.",
+          "Switch to another browser tab and return. Confirm Deployment stays selected on the same draft. The activity warning clears and the version chooser reports No readable versions.",
+          "Confirm Deploy new version is still unavailable and the Console says Version history loaded. Reload this draft before deploying.",
+          "Use the Console’s Refresh in this preview to reopen the draft. Confirm the empty history and that the reload guidance clears. A browser reload resets the story and repeats the opening failure.",
+        ],
+        gap: "Simulated API responses demonstrate the draft and deployment controls.",
       },
       deployDenied: {
         group: "Pages/Agent detail",

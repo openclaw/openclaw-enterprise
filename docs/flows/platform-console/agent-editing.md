@@ -59,7 +59,10 @@ graph TD
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 After the Agent read, `loadDetails` settles history/snapshot independently.
-History errors warn beside readable drafts, blocking Deploy.
+History errors warn beside readable drafts, blocking Deploy. If a history reread
+succeeds, the warning clears and edits remain. If the Console asks you to
+reload this draft, save your edits and reopen it before deploying. History alone
+does not enable Deploy.
 `snapshotErrorPanel` explains Configuration refusal and hides drafts. `401` returns to sign-in.
 
 Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
