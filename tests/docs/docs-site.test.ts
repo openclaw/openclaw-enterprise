@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, open, readFile, readdir, symlink, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { cp, mkdir, open, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import { renderMatrixMarkdown, type DriverMatrix } from "../../scripts/generate-compute-matrix.ts";
@@ -317,10 +317,33 @@ test("docs validation rejects broken links, anchors and navigation through the C
   const validate = () => buildDocs(fixture, "--check");
   await writeFile(
     join(fixture, "docs/README.md"),
-    "# Home\n\n[Example](example.md#local-heading)\n",
+    "# Home\n\n[Example](example.md#local-heading)\n\n" +
+      "[Short](/example?q=1#local-heading)\n\n[Full](/example/?q=2#local-heading)\n",
   );
-  let result = validate();
+  const redirect = { from: "/old/", to: "/example/#local-heading" };
+  const withRedirect = { ...config, redirects: [redirect] };
+  await writeDocsConfig(fixture, withRedirect);
+  let result = buildDocs(fixture);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  const home = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.ok(home.includes('href="/example/?q=1#local-heading"'));
+  assert.ok(home.includes('href="/example/?q=2#local-heading"'));
+
+  // Redirects require the exact published route and cannot replace a page.
+  for (const to of ["/example#local-heading", "/example/#missing"]) {
+    redirect.to = to;
+    await writeDocsConfig(fixture, withRedirect);
+    result = validate();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Missing redirect page or heading/);
+  }
+  redirect.from = "/example/";
+  redirect.to = "/";
+  await writeDocsConfig(fixture, withRedirect);
+  result = validate();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Invalid or duplicate redirect route/);
+  await writeDocsConfig(fixture, config);
 
   // Duplicate headings: the site ID counts from -2, its GitHub alias from -1.
   // Links outside docs/ resolve against GitHub's heading slugs and HTML anchors.
@@ -347,6 +370,7 @@ test("docs validation rejects broken links, anchors and navigation through the C
   for (const target of [
     "missing.md",
     "example.md#missing-heading",
+    "/example#nonexistent",
     "example.md#setup-3",
     "../CONTRIBUTING.md#pnpm-checks-2",
   ]) {
@@ -419,6 +443,153 @@ test("docs validation rejects broken links, anchors and navigation through the C
   result = validate();
   assert.notEqual(result.status, 0, "Build accepted a page outside navigation");
   assert.match(result.stderr + result.stdout, /Page missing from navigation: orphan\.md/);
+});
+
+test("docs reject unsafe and duplicate page routes before touching output", async (t) => {
+  const pages = ["README", "example"];
+  const { directory: fixture, config } = await createDocsFixture(t, "enterprise-docs-routes-", {
+    pages,
+    logo: true,
+  });
+  const docs = join(fixture, "docs");
+  await writeFile(join(docs, "README.md"), "# Home\n");
+  await writeFile(join(docs, "example.md"), "# Flat page\n");
+  const output = join(fixture, "dist/docs");
+  await mkdir(output, { recursive: true });
+  const parent = join(fixture, "dist/index.html");
+  const home = join(output, "index.html");
+  await writeFile(parent, "sibling");
+  await writeFile(home, "previous build");
+
+  const routeConfig = { ...config, redirects: [{ from: "/old/", to: "/" }] };
+  const previewParent = join(fixture, "dist/.docs-preview-ABC123");
+  await mkdir(previewParent);
+  async function assertRefused(owner: string, diagnostic: string, preview = false) {
+    const invocations = [["--check"], []];
+    if (preview) {
+      invocations.push(["--output", join(previewParent, "1")]);
+    }
+    for (const args of invocations) {
+      const result = buildDocs(fixture, ...args);
+      assert.equal(result.status, 1, owner);
+      assert.ok(result.stderr.includes(diagnostic), result.stderr);
+      assert.ok(result.stderr.includes(owner), result.stderr);
+      if (owner === "example/README.md") {
+        assert.ok(result.stderr.includes("example.md"), result.stderr);
+      }
+      assert.equal(await readFile(parent, "utf8"), "sibling");
+      assert.equal(await readFile(home, "utf8"), "previous build");
+      assert.deepEqual(await readdir(previewParent), []);
+    }
+  }
+
+  await mkdir(join(docs, "snippets/tutorial"), { recursive: true });
+  await writeFile(join(docs, "snippets/tutorial/index.html"), "copied example");
+  const fontName = "JetBrainsMono-Regular.ttf";
+  const fontOutput = "assets/fonts/" + fontName;
+  for (const [slug, diagnostic] of [
+    ["...md/README", "Invalid page route /../"],
+    ["chapter/...md/README", "Invalid page route /chapter/../"],
+    ["..md/README", "Invalid page route /./"],
+    ["chapter/.md/README", "Invalid page route /chapter//"],
+    ["example/README", "Duplicate page route /example/"],
+    ["example/index.html/README", "Output collision at /example/index.html"],
+    ["old/index.html/child/README", "Output collision at /old/index.html"],
+    ["manifest.json", "Output collision at /manifest.json:"],
+    ["manifest.json/child", "Output collision at /manifest.json:"],
+    [
+      "pagefind/pagefind.js",
+      "Output collision at /pagefind/: Pagefind generates the search bundle",
+    ],
+    ["assets/site.css", "Output collision at /assets/site.css:"],
+    [fontOutput, "Output collision at /" + fontOutput + ":"],
+    ["snippets/tutorial", "Output collision at /snippets/tutorial/index.html:"],
+  ] as const) {
+    const source = slug + ".md";
+    await mkdir(dirname(join(docs, source)), { recursive: true });
+    await writeFile(join(docs, source), "# Folder index\n");
+    pages.push(slug);
+    await writeDocsConfig(fixture, routeConfig);
+    await assertRefused(
+      source,
+      diagnostic,
+      slug === "manifest.json/child" || slug === "pagefind/pagefind.js",
+    );
+    pages.pop();
+    await writeFile(join(docs, source), "---\npublished: false\n---\n# Folder index\n");
+  }
+
+  await writeFile(join(docs, "assets/manual"), "manual download");
+  await mkdir(join(docs, "assets/examples/index.html"), { recursive: true });
+  const link = join(docs, "assets/linked");
+  await symlink(previewParent, link, "dir");
+  for (const [from, collision] of [
+    ["/assets/manual/intro/", "/assets/manual"],
+    ["/assets/examples/", "/assets/examples/index.html"],
+    ["/assets/linked/child/", "/assets/linked"],
+    ["/pagefind/", "/pagefind/"],
+    ["/pagefind/chunks/legacy/", "/pagefind/"],
+  ] as const) {
+    const withRedirect = {
+      ...routeConfig,
+      redirects: [...routeConfig.redirects, { from, to: "/" }],
+    };
+    await writeDocsConfig(fixture, withRedirect);
+    await assertRefused("redirect from " + from, "Output collision at " + collision + ":");
+  }
+  await unlink(link);
+
+  // The same route is available when the explorer (and hence its bundle) is absent.
+  pages.push("assets/scalar.js", "reference/api-explorer");
+  await mkdir(join(docs, "reference"), { recursive: true });
+  const explorer = join(docs, "reference/api-explorer.md");
+  await writeFile(explorer, "# Explorer\n");
+  await writeFile(join(docs, "assets/scalar.js.md"), "# Custom scalar page\n");
+  await writeDocsConfig(fixture, routeConfig);
+  await assertRefused("assets/scalar.js.md", "Output collision at /assets/scalar.js:");
+  pages.pop();
+  await writeFile(explorer, "---\npublished: false\n---\n# Explorer\n");
+
+  // Unclaimed directories stay usable, including beside the copied font.
+  const validDirectories = [
+    "example/index.htm",
+    "other/index.html",
+    "other/manifest.json",
+    "assets/fonts/guide",
+    "pagefind-guide",
+  ];
+  for (const directory of validDirectories) {
+    await mkdir(join(docs, directory), { recursive: true });
+    await writeFile(join(docs, directory, "README.md"), "# Nested page\n");
+    pages.push(directory + "/README");
+  }
+  // Unpublished indexes do not own routes or displace the flat page.
+  await writeDocsConfig(fixture, routeConfig);
+  const result = buildDocs(fixture);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(
+    await readFile(join(output, fontOutput)),
+    await readFile(join(root, "scripts/docs-site/fonts", fontName)),
+  );
+  assert.match(
+    await readFile(join(output, "assets/scalar.js/index.html"), "utf8"),
+    /id="custom-scalar-page"/,
+  );
+  assert.equal(
+    await readFile(join(output, "snippets/tutorial/index.html"), "utf8"),
+    "copied example",
+  );
+  const manifest: { source: string; route: string }[] = JSON.parse(
+    await readFile(join(output, "manifest.json"), "utf8"),
+  );
+  for (const directory of validDirectories) {
+    assert.match(await readFile(join(output, directory, "index.html"), "utf8"), /id="nested-page"/);
+  }
+  assert.ok(!existsSync(join(output, "pagefind")));
+  const examples = manifest.filter((page) => page.route === "/example/");
+  assert.equal(examples.length, 1);
+  assert.equal(examples[0]?.source, "example.md");
+  assert.match(await readFile(join(output, "example/index.html"), "utf8"), /id="flat-page"/);
 });
 
 test("docs validation checks Markdown links in deploy example YAML comments", async (t) => {

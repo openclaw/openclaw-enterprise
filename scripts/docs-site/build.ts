@@ -136,15 +136,25 @@ const config: DocsConfig = JSON.parse(fs.readFileSync(path.join(docs, "docs.json
 const md = createMarkdownRenderer();
 const githubAnchors = createGithubAnchorReader(md);
 const pages = new Map<string, Page>();
+const pagesByRoute = new Map<string, Page>();
 const unpublished = new Set<string>();
 const escape = (value: unknown) => md.utils.escapeHtml(String(value));
-const route = (source: string) =>
-  "/" +
-  source
-    .replace(/(?:^|\/)README\.md$/, "")
-    .replace(/\.md$/, "")
-    .replace(/\/$/, "") +
-  (source === "README.md" ? "" : "/");
+
+function pageRoute(source: string) {
+  if (source === "README.md") {
+    return "/";
+  }
+  const route = "/" + source.replace(/\/README\.md$/, "").replace(/\.md$/, "") + "/";
+  // Reject empty, dot and parent segments before the filesystem can normalize them.
+  if (/\/\.{0,2}\//.test(route) || route.includes("\\")) {
+    throw new Error("Invalid page route " + route + " for " + source);
+  }
+  return route;
+}
+
+function routeIndex(route: string) {
+  return route.slice(1) + "index.html";
+}
 
 // GitHub's heading slug is the canonical heading ID, so permalinks, the table of
 // contents, and source links agree. The renderer's own ID stays as an alias.
@@ -263,12 +273,17 @@ for (const file of walk(docs)) {
     (token) => token.type === "heading_open" && token.tag === "h1",
   );
   const title = frontmatter?.title ?? parsed.tokens[firstHeading + 1]?.content ?? source;
-  pages.set(source, {
+  const route = pageRoute(source);
+  const existing = pagesByRoute.get(route);
+  if (existing) {
+    throw new Error("Duplicate page route " + route + ": " + existing.source + " and " + source);
+  }
+  const page: Page = {
     source,
     file,
     text,
     title,
-    route: route(source),
+    route,
     searchable: frontmatter?.searchable !== false,
     humanVerified,
     lastVerified,
@@ -276,7 +291,9 @@ for (const file of walk(docs)) {
     headingIds,
     parsed,
     html: "",
-  });
+  };
+  pages.set(source, page);
+  pagesByRoute.set(route, page);
 }
 // Former published routes remain usable without retaining duplicate source pages.
 const redirects = config.redirects ?? [];
@@ -289,7 +306,7 @@ function checkRedirectTarget(target: unknown) {
     throw new Error("Invalid redirect target: " + target);
   }
   const url = new URL(target, "https://local.invalid");
-  const page = [...pages.values()].find((candidate) => candidate.route === url.pathname);
+  const page = pagesByRoute.get(url.pathname);
   if (
     url.origin !== "https://local.invalid" ||
     !page ||
@@ -305,7 +322,7 @@ for (const redirect of redirects) {
     typeof redirect.from !== "string" ||
     !/^\/(?:[a-z0-9-]+\/)+$/.test(redirect.from) ||
     redirectSources.has(redirect.from) ||
-    [...pages.values()].some((page) => page.route === redirect.from)
+    pagesByRoute.has(redirect.from)
   ) {
     throw new Error("Invalid or duplicate redirect route: " + redirect?.from);
   }
@@ -320,6 +337,104 @@ for (const redirect of redirects) {
   for (const target of Object.values(redirect.anchors ?? {})) {
     checkRedirectTarget(target);
   }
+}
+const manifestFile = "manifest.json";
+const stylesheetFile = "assets/site.css";
+const apiExplorer = pages.get("reference/api-explorer.md");
+const scalarFile = "assets/scalar.js";
+const openApiFile = "assets/occ-api.openapi.json";
+const browserModules = ["site", "compute-matrix-browser"];
+if (apiExplorer) {
+  browserModules.push("api-explorer");
+}
+const browserModuleFile = (name: string) => "assets/" + name + ".mjs";
+const hasQuickstart = fs.existsSync(path.join(docs, quickstartDirectory));
+const outputFiles = new Set([
+  manifestFile,
+  stylesheetFile,
+  ...browserModules.map(browserModuleFile),
+  ...(apiExplorer ? [scalarFile, openApiFile] : []),
+  ...(hasQuickstart ? quickstartDownloads.values() : []),
+]);
+for (const route of [...pagesByRoute.keys(), ...redirectSources]) {
+  outputFiles.add(routeIndex(route));
+}
+
+interface AssetCopy {
+  destination: string;
+  source: string;
+  filter?: (source: string) => boolean;
+}
+
+const includeDocsEntry = (source: string) =>
+  !quickstartDownloads.has(path.relative(docs, source).split(path.sep).join("/"));
+const docsCopies = ["assets", "snippets"]
+  .map((destination) => ({
+    destination,
+    source: path.join(docs, destination),
+    filter: includeDocsEntry,
+  }))
+  .filter(({ source }) => fs.existsSync(source));
+const fonts: AssetCopy = { destination: "assets/fonts", source: path.join(assets, "fonts") };
+const mermaid: AssetCopy = {
+  destination: "assets/mermaid",
+  // In check mode, only a route under this destination needs the installed package.
+  get source() {
+    return path.dirname(fileURLToPath(import.meta.resolve("mermaid")));
+  },
+  filter: (source) => !source.endsWith(".map"),
+};
+const assetCopies = [...docsCopies, fonts, mermaid];
+
+function copyAssets({ source, destination, filter }: AssetCopy) {
+  fs.cpSync(source, path.join(output, destination), { recursive: true, filter });
+}
+
+function checkRouteOutput(route: string, owner: string) {
+  if (route.startsWith("/pagefind/")) {
+    throw new Error(
+      `Output collision at /pagefind/: Pagefind generates the search bundle there after the site build. Give ${owner} a route outside /pagefind/.`,
+    );
+  }
+  const index = routeIndex(route);
+  const prefixes: string[] = [];
+  let relative = "";
+  for (const segment of index.split("/")) {
+    relative = path.posix.join(relative, segment);
+    prefixes.push(relative);
+    if (relative !== index && outputFiles.has(relative)) {
+      throw new Error("Output collision at /" + relative + ": needed as a directory by " + owner);
+    }
+  }
+
+  // Several copies can merge into one directory. Probe each independently, root first.
+  for (const copy of assetCopies) {
+    const start = prefixes.indexOf(copy.destination);
+    if (start === -1) {
+      continue;
+    }
+    const source = copy.source;
+    for (const prefix of prefixes.slice(start)) {
+      const file = path.join(source, prefix.slice(copy.destination.length + 1));
+      if (copy.filter && !copy.filter(file)) {
+        break;
+      }
+      const entry = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (!entry) {
+        break;
+      }
+      // Only descend through real directories, never through links.
+      if (prefix === index || !entry.isDirectory()) {
+        throw new Error("Output collision at /" + prefix + ": copied entry needed by " + owner);
+      }
+    }
+  }
+}
+for (const { route, source } of pages.values()) {
+  checkRouteOutput(route, source);
+}
+for (const from of redirectSources) {
+  checkRouteOutput(from, "redirect from " + from);
 }
 const configuredTabs = config.navigation.languages.find(
   (language) => language.language === "en",
@@ -422,9 +537,7 @@ function resolveLink(page: PageSource, href: string): string {
   if (href.startsWith("#") || href.startsWith("?") || href === "") {
     target = page.file;
   } else if (href.startsWith("/")) {
-    const linked = [...pages.values()].find(
-      (candidate) => candidate.route.replace(/\/$/, "") === pathname.replace(/\/$/, ""),
-    );
+    const linked = pagesByRoute.get(pathname.endsWith("/") ? pathname : pathname + "/");
     target = linked?.file ?? path.join(docs, pathname);
   } else {
     const sourcePath = href.split(/[?#]/, 1)[0]!;
@@ -539,13 +652,11 @@ for (const page of pages.values()) {
     );
   }
 }
-for (const page of pages.values()) {
-  if (page.source === "reference/api-explorer.md") {
-    page.html +=
-      '<p><a href="/assets/occ-api.openapi.json" download="occ-api.openapi.json">Download OpenAPI JSON</a></p><div id="occ-api-explorer"></div>';
-  }
+if (apiExplorer) {
+  apiExplorer.html +=
+    '<p><a href="/assets/occ-api.openapi.json" download="occ-api.openapi.json">Download OpenAPI JSON</a></p><div id="occ-api-explorer"></div>';
 }
-const quickstartScripts = fs.existsSync(path.join(docs, quickstartDirectory))
+const quickstartScripts = hasQuickstart
   ? [...quickstartDownloads].map(([source, download]) => ({
       download,
       javascript: stripTypeScriptTypes(fs.readFileSync(path.join(docs, source), "utf8")),
@@ -563,15 +674,8 @@ if (values.output === undefined) {
   fs.mkdirSync(output);
 }
 fs.mkdirSync(path.join(output, "assets"), { recursive: true });
-if (fs.existsSync(path.join(docs, "assets"))) {
-  fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
-}
-if (fs.existsSync(path.join(docs, "snippets"))) {
-  fs.cpSync(path.join(docs, "snippets"), path.join(output, "snippets"), {
-    recursive: true,
-    filter: (source) =>
-      !quickstartDownloads.has(path.relative(docs, source).split(path.sep).join("/")),
-  });
+for (const copy of docsCopies) {
+  copyAssets(copy);
 }
 // The downloadable session and Kubernetes snippets run beside the emitted JavaScript.
 if (quickstartScripts.length > 0) {
@@ -594,7 +698,7 @@ for (const { download, javascript } of quickstartScripts) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, javascript);
 }
-fs.cpSync(path.join(assets, "fonts"), path.join(output, "assets/fonts"), { recursive: true });
+copyAssets(fonts);
 const carapaceCss = [
   "tokens.css",
   "themes.css",
@@ -607,33 +711,26 @@ const carapaceCss = [
   )
   .join("\n");
 fs.writeFileSync(
-  path.join(output, "assets/site.css"),
+  path.join(output, stylesheetFile),
   carapaceCss + "\n" + fs.readFileSync(path.join(assets, "site.css"), "utf8"),
 );
 function writeBrowserModule(name: string) {
   const source = fs.readFileSync(path.join(assets, name + ".mts"), "utf8");
-  fs.writeFileSync(path.join(output, "assets", name + ".mjs"), stripTypeScriptTypes(source));
+  fs.writeFileSync(path.join(output, browserModuleFile(name)), stripTypeScriptTypes(source));
 }
 
-writeBrowserModule("site");
-writeBrowserModule("compute-matrix-browser");
-if (pages.has("reference/api-explorer.md")) {
-  writeBrowserModule("api-explorer");
+for (const name of browserModules) {
+  writeBrowserModule(name);
+}
+if (apiExplorer) {
   const scalar = path.dirname(fileURLToPath(import.meta.resolve("@scalar/api-reference")));
-  fs.copyFileSync(
-    path.join(scalar, "browser/standalone.js"),
-    path.join(output, "assets/scalar.js"),
-  );
+  fs.copyFileSync(path.join(scalar, "browser/standalone.js"), path.join(output, scalarFile));
   fs.copyFileSync(
     path.join(root, "packages/contracts/openapi/occ-api.openapi.json"),
-    path.join(output, "assets/occ-api.openapi.json"),
+    path.join(output, openApiFile),
   );
 }
-const mermaid = path.dirname(fileURLToPath(import.meta.resolve("mermaid")));
-fs.cpSync(mermaid, path.join(output, "assets/mermaid"), {
-  recursive: true,
-  filter: (source) => !source.endsWith(".map"),
-});
+copyAssets(mermaid);
 
 function renderSidebarPages(entries: (NavigationGroup | Page)[], page: Page): string {
   return (
@@ -740,7 +837,7 @@ for (const page of pages.values()) {
     '<!doctype html><html lang="en" data-theme="dark" data-oc-theme="product"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     (page.searchable ? "" : '<meta name="robots" content="noindex">') +
     themeBootstrap +
-    (page.source === "reference/api-explorer.md"
+    (page === apiExplorer
       ? '<script src="/assets/scalar.js" defer></script><script type="module" src="/assets/api-explorer.mjs"></script>'
       : "") +
     "<title>" +
@@ -774,12 +871,12 @@ for (const page of pages.values()) {
     toc +
     "</aside></div>" +
     '<dialog id="search-dialog" aria-labelledby="search-title"><div class="search-head"><strong id="search-title">Search documentation</strong><button id="search-close" type="button" aria-label="Close search">✕</button></div><div id="search"></div></dialog><dialog id="diagram-dialog" aria-label="Expanded diagram"><button id="diagram-close" type="button">Close diagram</button><div id="diagram-canvas"></div></dialog></body></html>';
-  const destination = path.join(output, page.route, "index.html");
+  const destination = path.join(output, routeIndex(page.route));
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, html);
 }
 fs.writeFileSync(
-  path.join(output, "manifest.json"),
+  path.join(output, manifestFile),
   JSON.stringify(
     [...pages.values()].map(({ source, title, route }) => ({ source, title, route })),
     null,
@@ -787,11 +884,11 @@ fs.writeFileSync(
   ) + "\n",
 );
 for (const redirect of redirects) {
-  const directory = path.join(output, redirect.from.slice(1));
-  fs.mkdirSync(directory, { recursive: true });
+  const destination = path.join(output, routeIndex(redirect.from));
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
   const settings = JSON.stringify(redirect).replaceAll("<", "\\u003c");
   fs.writeFileSync(
-    path.join(directory, "index.html"),
+    destination,
     `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex">
 <title>Page moved</title><link rel="canonical" href="${escape(redirect.to)}">
