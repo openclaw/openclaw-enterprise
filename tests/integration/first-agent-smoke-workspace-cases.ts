@@ -19,7 +19,13 @@ const key = "synthetic-api-key";
 const savedEdit = "synthetic saved workspace edit\n";
 const responseDetail = "synthetic response detail";
 
-type ReadReply = "saved" | "unconfirmed" | "mismatch";
+type ReadReply =
+  | "saved"
+  | "unconfirmed"
+  | "mismatch"
+  | "invalid-json"
+  | "null-envelope"
+  | "unconfirmed-invalid-json";
 type PlannedRead = ReadReply | (() => Promise<ReadReply>);
 
 async function workspaceFixture(
@@ -48,6 +54,10 @@ async function workspaceFixture(
             data: { name: "USER.md", content: outcome === "saved" ? savedEdit : responseDetail },
           }),
         );
+      } else if (outcome === "invalid-json" || outcome === "unconfirmed-invalid-json") {
+        response.writeHead(outcome === "invalid-json" ? 200 : 503).end(responseDetail);
+      } else if (outcome === "null-envelope") {
+        response.end("null");
       } else {
         response
           .writeHead(outcome === "unconfirmed" ? 503 : 500)
@@ -110,7 +120,7 @@ export function registerWorkspaceReadCases() {
       const uninterrupted = heldRead();
       const fixture = await workspaceFixture(t, [
         "saved",
-        "unconfirmed",
+        "unconfirmed-invalid-json",
         recovering.respond,
         "unconfirmed",
         "saved",
@@ -209,6 +219,18 @@ export function registerWorkspaceReadCases() {
       label: "a post-action read returns different content",
       overlap: "saved",
       post: ["mismatch"],
+      message: "workspace read did not match the saved edit",
+    },
+    {
+      label: "an overlapping HTTP 200 contains invalid JSON before an exact read",
+      overlap: "invalid-json",
+      post: ["saved"],
+      message: "workspace read did not match the saved edit",
+    },
+    {
+      label: "an overlapping HTTP 200 contains a null envelope before an exact read",
+      overlap: "null-envelope",
+      post: ["saved"],
       message: "workspace read did not match the saved edit",
     },
   ] as const;

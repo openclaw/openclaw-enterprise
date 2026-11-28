@@ -140,8 +140,9 @@ workspace API while A and B deploy together, then while A alone moves from an
 HTTP to an HTTPS proxy. Each phase requires a matching baseline before deployment.
 `baselineConfirmed=1` records that check. The `duringConfirmed`, `duringUnconfirmed`,
 and `duringMismatch` counts classify reads started during deployment. Confirmed
-reads match the saved edit, unconfirmed reads failed, and mismatches are responses
-whose file name or content differs. After a successful deployment, the script tries
+reads match the saved edit. A transport error or unsuccessful HTTP status leaves the
+read unconfirmed. A malformed success response or the wrong file name or content
+counts as a mismatch. After a successful deployment, the script tries
 up to three reads, retrying unconfirmed results, and reports `afterConfirmed`,
 `afterUnconfirmed`, and `afterMismatch`. Any sampled mismatch or failure to confirm
 a post-check fails the phase. A failed baseline stops the phase before its summary.

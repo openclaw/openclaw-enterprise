@@ -18,7 +18,10 @@ export function observeChannelProxyWorkspaceReads(
   { intervalMs = 2_000, report = log } = {},
 ) {
   const completed = new Set<ObservedDeployment>();
-  const read = () => readCodexWorkspaceFile(stack, agent, savedEdit);
+  const read = async () => {
+    const outcome = await readCodexWorkspaceFile(stack, agent, savedEdit);
+    return outcome === "malformed" ? "mismatch" : outcome;
+  };
   async function observe<T>(phase: ObservedDeployment, operation: () => T | PromiseLike<T>) {
     const baseline = await read();
     if (baseline !== "confirmed") {

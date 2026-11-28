@@ -23,6 +23,7 @@ import {
 } from "./process.ts";
 import {
   kubectl,
+  MalformedSuccessfulApiReplyError,
   modelEvents,
   podList,
   wireField,
@@ -440,12 +441,12 @@ export async function readCodexWorkspaceFile(
   stack: Pick<SmokeStack, "api" | "namespaceId">,
   agent: Pick<SmokeAgent, "id">,
   content: string,
-): Promise<"confirmed" | "unconfirmed" | "mismatch"> {
+): Promise<"confirmed" | "unconfirmed" | "mismatch" | "malformed"> {
   let file: unknown;
   try {
     file = await stack.api("GET", codexWorkspaceFilePath(stack.namespaceId, agent.id));
-  } catch {
-    return "unconfirmed";
+  } catch (error) {
+    return error instanceof MalformedSuccessfulApiReplyError ? "malformed" : "unconfirmed";
   }
   const matches =
     file != null &&
@@ -470,7 +471,7 @@ export async function checkCodexWorkspaceFile(
     }
   }
   const outcome = await readCodexWorkspaceFile(stack, agent, content);
-  if (outcome === "unconfirmed") {
+  if (outcome === "unconfirmed" || outcome === "malformed") {
     throw new Error("Codex workspace file read failed");
   }
   assert.ok(outcome === "confirmed", "Codex workspace file did not match the expected edit");

@@ -20,6 +20,8 @@ import {
 
 type Api = (method: string, path: string, body?: unknown) => Promise<unknown>;
 
+export class MalformedSuccessfulApiReplyError extends Error {}
+
 export function createApi(origin: string, key: string): Api {
   return async (method, path, body) => {
     const url = new URL(path, origin);
@@ -53,11 +55,17 @@ export function createApi(origin: string, key: string): Api {
     try {
       envelope = JSON.parse(text);
     } catch {
-      throw new Error(`${method} ${path}: HTTP ${response.status} without JSON`);
+      const message = `${method} ${path}: HTTP ${response.status} without JSON`;
+      throw response.ok ? new MalformedSuccessfulApiReplyError(message) : new Error(message);
     }
     if (!response.ok) {
       throw new Error(
         `${method} ${path}: HTTP ${response.status} ${JSON.stringify(wireField(envelope, "error"))}`,
+      );
+    }
+    if (envelope === null) {
+      throw new MalformedSuccessfulApiReplyError(
+        `${method} ${path}: HTTP ${response.status} without a response envelope`,
       );
     }
     return wireField(envelope, "data");
