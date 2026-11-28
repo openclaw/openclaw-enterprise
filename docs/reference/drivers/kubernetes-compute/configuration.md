@@ -77,7 +77,13 @@ for label constraints, egress rules, and source-address verification.
 | `network.pluginStatusProxySourceCidrs` | string array | Optional    | API-server Pod-proxy sources, preferably `/32` or `/128`. Omission adds no diagnostics ingress.                                            |
 | `network.repositoryCredentials`        | object       | Optional    | Broker peer plus `port` (`1`–`65535`). Omission adds no broker peer rule.                                                                  |
 | `network.publicGithubRead`             | object       | Optional    | Reader peer plus IPv4 ClusterIP `address`; single-cluster only. No reader rule by default.                                                 |
-| `network.providerHarness`              | object       | Optional    | Provider peer plus IP `address` and `port` (`1`–`65535`). No bridge by default; supported only for the documented local OpenShell profile. |
+| `network.providerHarness`              | object       | Optional    | Revision-specific `namespace` route for the same cluster, or a fixed peer with an IP address. A port is required. No route set by default. |
+
+For a same-cluster, revision-specific Harness Pod, set `mode: namespace` and
+`port` (`1`–`65535`). For a fixed peer, set `namespace`, `podLabels`, IP
+`address`, and `port`. The mode defaults to `fixed` for that peer. The ClusterIP bridge
+is limited to the documented local OpenShell profile. See
+[provider routing](networking-and-isolation.md#networking) and the [Strands Box configuration](../strands-box.md#configure-the-sandbox-without-credential-proxy).
 
 ## Workload identity
 
