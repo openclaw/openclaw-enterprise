@@ -4417,6 +4417,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: grid;
   gap: var(--space-1);
   flex: 1 1 12rem;
+}
+/* A hint below one selector should not push its neighbors down. */
+.plugin-controls:has(.hint) > .plugin-control {
   align-self: start;
 }
 .plugin-toggle {

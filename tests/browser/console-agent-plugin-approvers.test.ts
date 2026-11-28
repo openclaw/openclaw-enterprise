@@ -3529,6 +3529,7 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
     plugins: { [pluginId]: { enabled: true, tools: { [toolId]: { enabled: true } } } },
   });
   const { page } = await newPage(t, fixture, { browser });
+  await page.setViewportSize({ width: 1280, height: 900 });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   // Codex approval requests carry no plugin or tool identity, so the API refuses those
@@ -3542,6 +3543,30 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
   await toolRow.getByLabel(`${toolId} require approval for`).waitFor();
   assert.equal(await pluginDialog.getByLabel(`${pluginId} plugin approvers mode`).count(), 0);
   assert.equal(await toolRow.getByLabel(`${toolId} tool approvers mode`).count(), 0);
+
+  // The saved plugin ID wraps in two labels while the approval label fits on one line.
+  const fields = await pluginDialog
+    .getByRole("group", { name: "Plugin policies", exact: true })
+    .getByRole("combobox")
+    .evaluateAll(async (controls) => {
+      await document.fonts.ready;
+      return controls.map((control) => ({
+        labelHeight: control.closest("label")?.getBoundingClientRect().height ?? 0,
+        bottom: control.getBoundingClientRect().bottom,
+      }));
+    });
+  assert.equal(fields.length, 3);
+  const heights = fields.map((field) => field.labelHeight);
+  assert.ok(
+    Math.min(...heights) > 0 && Math.max(...heights) - Math.min(...heights) > 1,
+    "Policy labels have different heights",
+  );
+  const bottoms = fields.map((field) => field.bottom);
+  assert.equal(
+    Math.max(...bottoms) - Math.min(...bottoms) <= 1,
+    true,
+    "Plugin policy selectors align below labels that wrap",
+  );
 });
 
 test("No Slack approvers does not ask the operator to select hidden people", async (t) => {
