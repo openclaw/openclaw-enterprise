@@ -1,7 +1,33 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import test from "node:test";
+import { once } from "node:events";
+import {
+  createServer,
+  request,
+  type IncomingMessage,
+  type RequestListener,
+  type ServerResponse,
+} from "node:http";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import test, { type TestContext } from "node:test";
+import {
+  createCiLoggingCustodyRelay,
+  type RelayEvent,
+  type RelayPlan,
+  type RelayRequest,
+} from "../helpers/ci-logging-custody-relay.ts";
 import {
   ciOtelBackendResourceKind,
   cleanupLogging,
@@ -13,15 +39,306 @@ import {
 } from "../helpers/ci-logging.ts";
 
 type CommandCall = [command: string, args: string[]];
+const ownedId = "c".repeat(64);
+const engineId = "test-engine";
+const env = {
+  OCC_DOCKER_BIN: "docker",
+  OCC_TEST_LOGGING_COLLECTOR_IMAGE: collectorImage,
+  OCC_CI_OTEL_BACKEND_HOST: "host.docker.internal",
+  OCC_CI_OTEL_BACKEND_BIND_ADDRESS: "127.0.0.1",
+};
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function relayFixture(
+  t: TestContext,
+  peerHandler: RequestListener,
+  plan: (request: RelayRequest) => Promise<RelayPlan> = async () => ({}),
+  requestTimeoutMs = 2_000,
+) {
+  const root = await mkdtemp(join(tmpdir(), "ci-relay-test-"));
+  const peer = createServer(peerHandler);
+  const events: RelayEvent[] = [];
+  const transport = createCiLoggingCustodyRelay({
+    socketPath: join(root, "peer.sock"),
+    requestTimeoutMs,
+    plan,
+    record: (event) => events.push(event),
+  });
+  const server = createServer(transport.handle);
+  t.after(async () => {
+    await transport.close();
+    for (const selected of [server, peer]) {
+      selected.closeAllConnections();
+      if (selected.listening) {
+        await new Promise<void>((resolve, reject) =>
+          selected.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  for (const [selected, path] of [
+    [peer, "peer.sock"],
+    [server, "relay.sock"],
+  ] as const) {
+    await new Promise<void>((resolve, reject) => {
+      selected.once("error", reject);
+      selected.listen(join(root, path), resolve);
+    });
+  }
+  const send = (method: string, path: string, headers: Record<string, string> = {}) =>
+    new Promise<IncomingMessage>((resolve, reject) => {
+      const outgoing = request(
+        {
+          socketPath: join(root, "relay.sock"),
+          method,
+          path,
+          headers,
+          agent: false,
+          signal: AbortSignal.timeout(3_000),
+        },
+        resolve,
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+  return { root, send, events, close: transport.close };
+}
+
+async function responseBody(response: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of response) {
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks).toString();
+}
+
+test(
+  "CI OTel relay forwards wait headers and body before a separate start completes",
+  { timeout: 5_000 },
+  async (t) => {
+    let wait: ServerResponse | undefined;
+    const privateMarker = "private-transport-marker";
+    const f = await relayFixture(t, (incoming, outgoing) => {
+      if (incoming.url?.includes("/wait?")) {
+        wait = outgoing;
+        outgoing.writeHead(200, {
+          "content-type": "text/plain",
+          "x-private-marker": privateMarker,
+        });
+        outgoing.flushHeaders();
+      } else {
+        assert.ok(incoming.url?.endsWith("/start"));
+        assert.ok(wait, "wait must be subscribed before start");
+        wait.write("started:");
+        outgoing.writeHead(204);
+        outgoing.end();
+      }
+    });
+    // A client cannot issue start until its wait subscription receives headers.
+    const waiting = await f.send(
+      "POST",
+      `/v1.53/containers/${privateMarker}/wait?condition=next-exit`,
+      { "x-private-marker": privateMarker },
+    );
+    assert.equal(waiting.statusCode, 200);
+    assert.equal(waiting.headers["x-private-marker"], privateMarker);
+    const firstChunk = once(waiting, "data");
+    const started = await f.send("POST", `/v1.53/containers/${privateMarker}/start`);
+    assert.equal(started.statusCode, 204);
+    await responseBody(started);
+    assert.equal(String((await firstChunk)[0]), "started:");
+    // End is still withheld here: forwarding only the headers is insufficient.
+    const remainder = responseBody(waiting);
+    assert.ok(wait);
+    wait.end("done");
+    assert.equal(await remainder, "done");
+    assert.ok(
+      f.events.some(
+        (event) => event.path === "/containers/{id}/wait" && event.phase === "headers-forwarded",
+      ),
+    );
+    assert.equal(JSON.stringify(f.events).includes(privateMarker), false);
+    assert.equal(JSON.stringify(f.events).includes("next-exit"), false);
+  },
+);
+
+test(
+  "CI OTel relay cancels upstream on downstream disconnect and drains shutdown",
+  { timeout: 5_000 },
+  async (t) => {
+    let closed = deferred<void>();
+    const f = await relayFixture(t, (_incoming, outgoing) => {
+      const selected = closed;
+      outgoing.once("close", () => selected.resolve());
+      outgoing.writeHead(200);
+      outgoing.flushHeaders();
+    });
+    const first = await f.send("POST", `/containers/${ownedId}/wait`);
+    first.destroy();
+    await closed.promise;
+    closed = deferred<void>();
+    const second = await f.send("POST", `/containers/${ownedId}/wait`);
+    const secondClosed = assert.rejects(responseBody(second), { code: "ECONNRESET" });
+    await f.close();
+    await Promise.all([closed.promise, secondClosed]);
+    assert.ok(f.events.some((event) => event.phase === "abort"));
+    assert.equal(f.events.filter((event) => event.phase === "end").length, 2);
+  },
+);
+
+test("CI OTel relay bounds an unfinished upstream response", { timeout: 5_000 }, async (t) => {
+  const closed = deferred<void>();
+  const f = await relayFixture(
+    t,
+    (_incoming, outgoing) => {
+      outgoing.once("close", () => closed.resolve());
+      outgoing.writeHead(200);
+      outgoing.flushHeaders();
+    },
+    async () => ({}),
+    150,
+  );
+  const response = await f.send("POST", `/containers/${ownedId}/wait`);
+  const disconnected = assert.rejects(responseBody(response), { code: "ECONNRESET" });
+  await Promise.all([closed.promise, disconnected]);
+  assert.ok(f.events.some((event) => event.phase === "abort"));
+});
+
+test(
+  "CI OTel relay retains finite create and remove gates before a lost response",
+  { timeout: 5_000 },
+  async (t) => {
+    let gate = { entered: deferred<void>(), release: deferred<void>() };
+    let drop = true;
+    let receiptRoot = "";
+    const f = await relayFixture(
+      t,
+      (incoming, outgoing) => {
+        if (incoming.method === "DELETE") {
+          outgoing.writeHead(204);
+          outgoing.end();
+        } else {
+          outgoing.writeHead(201, { "content-type": "application/json" });
+          outgoing.end(JSON.stringify({ Id: ownedId }));
+        }
+      },
+      async ({ method }) => ({
+        interceptResponse: async (status, body) => {
+          const receipt =
+            method === "DELETE"
+              ? { status }
+              : { status, id: (JSON.parse(body.toString()) as { Id: string }).Id };
+          await writeFile(join(receiptRoot, "receipt.json"), JSON.stringify(receipt), {
+            mode: 0o600,
+            flush: true,
+          });
+          if (drop) {
+            const selected = gate;
+            selected.entered.resolve();
+            await selected.release.promise;
+            return "drop";
+          }
+          return "forward";
+        },
+      }),
+    );
+    receiptRoot = f.root;
+    for (const [method, path, receipt] of [
+      ["POST", "/containers/create", { status: 201, id: ownedId }],
+      ["DELETE", `/containers/${ownedId}`, { status: 204 }],
+    ] as const) {
+      gate = { entered: deferred<void>(), release: deferred<void>() };
+      let headersObserved = false;
+      const pending = f.send(method, path).then((response) => {
+        headersObserved = true;
+        return response;
+      });
+      const lost = assert.rejects(pending, { code: "ECONNRESET" });
+      await gate.entered.promise;
+      assert.deepEqual(JSON.parse(await readFile(join(f.root, "receipt.json"), "utf8")), receipt);
+      assert.equal(headersObserved, false, "a custody gate must precede downstream headers");
+      gate.release.resolve();
+      await lost;
+    }
+    drop = false;
+    const forwarded = await f.send("POST", "/containers/create");
+    assert.equal(forwarded.statusCode, 201);
+    assert.deepEqual(JSON.parse(await responseBody(forwarded)), { Id: ownedId });
+  },
+);
+
+function custodyExecutor(
+  delegate: (command: string, args: string[]) => Promise<{ stdout: string }> = async () => ({
+    stdout: "",
+  }),
+) {
+  let present = false;
+  let nonce = "";
+  return async (command: string, input: string[]) => {
+    const args = input[0] === "--context" || input[0] === "--host" ? input.slice(2) : input;
+    if (command === "docker") {
+      if (args[0] === "context" && args[1] === "show") {
+        return { stdout: "test-context\n" };
+      }
+      if (args[0] === "context" && args[1] === "inspect") {
+        return { stdout: JSON.stringify("unix:///test-docker.sock") };
+      }
+      if (args[0] === "info") {
+        return { stdout: engineId };
+      }
+      if (args[0] === "container" && args[1] === "ls") {
+        return { stdout: present ? ownedId : "" };
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        return { stdout: JSON.stringify([ownedId, collectorImage, nonce]) };
+      }
+    }
+    const result = await delegate(command, args);
+    if (command === "docker" && args[0] === "run") {
+      nonce =
+        args
+          .find((arg) => arg.startsWith("org.openclaw.enterprise.ci.otel-attempt="))
+          ?.split("=")[1] ?? "";
+      const cidIndex = args.indexOf("--cidfile");
+      if (cidIndex !== -1) {
+        await writeFile(args[cidIndex + 1]!, ownedId, { mode: 0o600, flag: "wx" });
+      }
+      present = true;
+      return { stdout: `${ownedId}\n` };
+    }
+    if (command === "docker" && args[0] === "rm") {
+      present = false;
+    }
+    return result;
+  };
+}
+
+async function prepared(root: string, execFile = custodyExecutor()) {
+  return prepareLogging({
+    directory: root,
+    env,
+    execFile,
+    waitForReady: false,
+    registerResource: async (kind, resource) => ({ id: "resource-1", kind, ...resource }),
+  });
+}
 
 test("prepareLogging registers an owned Collector backend before starting Docker", async (t) => {
   const root = await fixture(t);
   const calls: CommandCall[] = [];
   const registered: { kind: string; resource: LoggingResource }[] = [];
-  const execFile = async (command: string, args: string[]) => {
+  const execFile = custodyExecutor(async (command: string, args: string[]) => {
     calls.push([command, args]);
     return { stdout: "container-id\n", stderr: "" };
-  };
+  });
   const registerResource = async (kind: string, resource: LoggingResource) => {
     assert.equal(calls.length, 0, "resource must be persisted before Docker mutation");
     registered.push({ kind, resource });
@@ -82,7 +399,7 @@ test("prepareLogging pulls the Collector image only when the engine lacks its di
     await t.test(name, async (t) => {
       const root = await fixture(t);
       const calls: string[][] = [];
-      const execFile = async (command: string, args: string[]) => {
+      const execFile = custodyExecutor(async (command: string, args: string[]) => {
         calls.push(args);
         if (args[0] === "image" && args[1] === "inspect") {
           if (repoDigests === undefined) {
@@ -93,7 +410,7 @@ test("prepareLogging pulls the Collector image only when the engine lacks its di
           return { stdout: `${JSON.stringify(repoDigests)}\n`, stderr: "" };
         }
         return { stdout: "container-id\n", stderr: "" };
-      };
+      });
       await prepareLogging({
         laneName: "logging-collector",
         directory: root,
@@ -138,13 +455,13 @@ test("prepareLogging stops when the engine cannot answer the image inspect", asy
     await t.test(name, async (t) => {
       const root = await fixture(t);
       const calls: string[][] = [];
-      const execFile = async (command: string, args: string[]) => {
+      const execFile = custodyExecutor(async (command: string, args: string[]) => {
         calls.push(args);
         if (args[0] === "image" && args[1] === "inspect") {
           throw Object.assign(new Error(`${name} at inspect`), failure);
         }
         return { stdout: "container-id\n", stderr: "" };
-      };
+      });
       await assert.rejects(
         prepareLogging({
           laneName: "logging-collector",
@@ -181,7 +498,7 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
   await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
   const calls: CommandCall[] = [];
   const registered: { kind: string; resource: LoggingResource }[] = [];
-  const execFile = async (command: string, args: string[]) => {
+  const execFile = custodyExecutor(async (command: string, args: string[]) => {
     calls.push([command, args]);
     if (command === "docker" && args[0] === "inspect") {
       return { stdout: "172.18.0.23\n", stderr: "" };
@@ -207,7 +524,7 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
       };
     }
     return { stdout: "container-id\n", stderr: "" };
-  };
+  });
   const registerResource = async (kind: string, resource: LoggingResource) => {
     assert.equal(
       calls.length,
@@ -287,86 +604,72 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
 
 test("cleanupLogging removes the owned Collector backend and rejects foreign paths", async (t) => {
   const root = await fixture(t);
-  const containerName = "openclaw-ci-otel-docker-model-abc123def456";
-  const directory = join(root, `${containerName}-state`);
-  await mkdir(directory, { mode: 0o700 });
   const calls: CommandCall[] = [];
-  const execFile = async (command: string, args: string[]) => {
+  const execFile = custodyExecutor(async (command, args) => {
     calls.push([command, args]);
-    return { stdout: "", stderr: "" };
-  };
-
-  await cleanupLogging(
-    {
-      kind: ciOtelBackendResourceKind,
-      containerName,
-      directory,
-    },
-    { execFile, env: { OCC_DOCKER_BIN: "docker" } },
+    return { stdout: "" };
+  });
+  const result = await prepared(root, execFile);
+  const resource = result.resource!;
+  await cleanupLogging(resource, { execFile, env });
+  await cleanupLogging(resource, { execFile, env });
+  assert.deepEqual(
+    calls.filter(([, args]) => args[0] === "rm"),
+    [["docker", ["rm", "--force", ownedId]]],
   );
+  await assert.rejects(() => stat(result.artifacts.directory), { code: "ENOENT" });
 
-  assert.deepEqual(calls, [["docker", ["rm", "--force", containerName]]]);
-  await assert.rejects(() => stat(directory), { code: "ENOENT" });
-
-  // A rejected foreign path must retain its contents, even if cleanup fails after a mutation.
   const foreignDirectory = resolve(root, "foreign-state");
   const sentinelPath = join(foreignDirectory, "sentinel");
   const sentinel = Buffer.from("foreign state must remain intact\n");
   await mkdir(foreignDirectory, { mode: 0o700 });
   await writeFile(sentinelPath, sentinel);
-
   await assert.rejects(
-    () =>
-      cleanupLogging(
-        {
-          kind: ciOtelBackendResourceKind,
-          containerName,
-          directory: foreignDirectory,
-        },
-        { execFile, env: { OCC_DOCKER_BIN: "docker" } },
-      ),
+    cleanupLogging({ ...resource, directory: foreignDirectory }, { execFile, env }),
     /outside ownership/,
+  );
+  await assert.rejects(
+    cleanupLogging(
+      {
+        kind: ciOtelBackendResourceKind,
+        containerName: result.artifacts.containerName,
+        directory: result.artifacts.directory,
+      },
+      { execFile, env },
+    ),
+    /unbound custody/,
   );
   assert.deepEqual(await readFile(sentinelPath), sentinel);
 });
 
 test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned", async (t) => {
   const root = await fixture(t);
-  const clusterName = "openclaw-k8s-deadcluster";
-  const clusterDirectory = join(root, `${clusterName}-state`);
-  const kubeconfig = join(clusterDirectory, "kubeconfig");
-  await mkdir(clusterDirectory, { mode: 0o700 });
-  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
-  const containerName = "openclaw-ci-otel-k3d-otel-abc123def456";
-  const directory = join(root, `${containerName}-state`);
-  await mkdir(directory, { mode: 0o700 });
   const calls: CommandCall[] = [];
-  const execFile = async (command: string, args: string[]) => {
+  const execFile = custodyExecutor(async (command, args) => {
     calls.push([command, args]);
     if (command === "kubectl") {
       throw new Error("dead cluster");
     }
-    return { stdout: "", stderr: "" };
-  };
-
+    return { stdout: "" };
+  });
+  const result = await prepared(root, execFile);
   await cleanupLogging(
     {
-      kind: ciOtelBackendResourceKind,
-      containerName,
-      directory,
-      namespace: containerName,
-      cluster: {
-        name: clusterName,
-        directory: clusterDirectory,
-        kubeconfig,
-        context: `k3d-${clusterName}`,
-      },
+      ...result.resource,
+      namespace: result.artifacts.containerName,
+      cluster: { name: "openclaw-k8s-deadcluster" },
     },
-    { execFile, env: { OCC_DOCKER_BIN: "docker", OCC_KUBECTL_BIN: "kubectl" } },
+    { execFile, env },
   );
-
-  assert.deepEqual(calls, [["docker", ["rm", "--force", containerName]]]);
-  await assert.rejects(() => stat(directory), { code: "ENOENT" });
+  assert.deepEqual(
+    calls.filter(([, args]) => args[0] === "rm"),
+    [["docker", ["rm", "--force", ownedId]]],
+  );
+  assert.equal(
+    calls.some(([command]) => command === "kubectl"),
+    false,
+  );
+  await assert.rejects(() => stat(result.artifacts.directory), { code: "ENOENT" });
 });
 
 // The Collector's file exporter can be read mid-write; a cut line waits for its newline.
@@ -383,4 +686,305 @@ test("readJsonlPayloads ignores an unterminated last line until it is complete",
 
   await appendFile(path, `${second.slice(cut)}\n\n`);
   assert.deepEqual(await readJsonlPayloads(path), [JSON.parse(first), JSON.parse(second)]);
+});
+
+test("prepareLogging retains an unknown creation without removing a foreign name", async (t) => {
+  const root = await fixture(t);
+  let resource: unknown;
+  const removals: string[][] = [];
+  const execFile = custodyExecutor(async (_command, args) => {
+    if (args[0] === "run") {
+      throw new Error("name conflict");
+    }
+    if (args[0] === "rm") {
+      removals.push(args);
+    }
+    return { stdout: "" };
+  });
+  await assert.rejects(
+    prepareLogging({
+      directory: root,
+      env,
+      execFile,
+      waitForReady: false,
+      registerResource: async (kind, details) => {
+        const entry = { id: "resource-1", kind, ...details };
+        resource = entry;
+        return entry;
+      },
+    }),
+    /cleanup is unresolved/,
+  );
+  await assert.rejects(cleanupLogging(resource, { env, execFile }), /create outcome is unknown/);
+  assert.deepEqual(removals, []);
+});
+
+test("prepareLogging recovers a lost command result from its private container ID", async (t) => {
+  const root = await fixture(t);
+  const removals: string[][] = [];
+  const command = custodyExecutor(async (_command, args) => {
+    if (args[0] === "rm") {
+      removals.push(args);
+    }
+    return { stdout: "" };
+  });
+  const execFile = async (program: string, args: string[]) => {
+    const result = await command(program, args);
+    if (args.includes("run")) {
+      throw new Error("lost run response");
+    }
+    return result;
+  };
+  await assert.rejects(prepared(root, execFile), /lost run response/);
+  assert.deepEqual(removals, [["rm", "--force", ownedId]]);
+});
+
+test("cleanupLogging retains an uncertain removal and never replays it", async (t) => {
+  const root = await fixture(t);
+  let removes = 0;
+  const command = custodyExecutor();
+  const execFile = async (program: string, args: string[]) => {
+    if (args.includes("rm")) {
+      removes += 1;
+      throw new Error("remove transport lost before known result");
+    }
+    return command(program, args);
+  };
+  const result = await prepared(root, execFile);
+  await assert.rejects(
+    cleanupLogging(result.resource, { env, execFile }),
+    /remove outcome is unknown/,
+  );
+  await assert.rejects(
+    cleanupLogging(result.resource, { env, execFile }),
+    /remove outcome is unknown/,
+  );
+  assert.equal(removes, 1);
+  assert.ok((await stat(result.artifacts.directory)).isDirectory());
+  const custody = (result.resource as { custody: { receiptPath: string } }).custody;
+  assert.equal(JSON.parse(await readFile(custody.receiptPath, "utf8")).phase, "remove-intent");
+});
+
+test("prepareLogging rejects cluster directory aliases and pins an independent recovery root", async (t) => {
+  const root = await fixture(t);
+  const name = "openclaw-k8s-custody";
+  const directory = join(root, `${name}-state`);
+  const clusterAlias = join(root, `${name}-alias`);
+  const recoveryAlias = join(root, "recovery-alias");
+  const independent = join(root, "independent");
+  const independentAlias = join(root, "independent-alias");
+  await mkdir(directory, { mode: 0o700 });
+  await mkdir(join(directory, "nested"), { mode: 0o700 });
+  await mkdir(independent, { mode: 0o700 });
+  await symlink(directory, clusterAlias, "dir");
+  await symlink(directory, recoveryAlias, "dir");
+  await symlink(independent, independentAlias, "dir");
+  const cluster = {
+    name,
+    directory: clusterAlias,
+    kubeconfig: join(clusterAlias, "kubeconfig"),
+    context: `k3d-${name}`,
+  };
+  let commands = 0;
+  let registered = 0;
+  let receiptPath: string | undefined;
+  const stop = new Error("stop after planned registration");
+  const command = custodyExecutor();
+  const options = {
+    cluster,
+    env,
+    waitForReady: false,
+    execFile: async (program: string, args: string[]) => {
+      commands += 1;
+      return command(program, args);
+    },
+    registerResource: async (_kind: string, resource: LoggingResource) => {
+      registered += 1;
+      receiptPath = (resource as { custody: { receiptPath: string } }).custody.receiptPath;
+      throw stop;
+    },
+  };
+  for (const base of [directory, recoveryAlias, join(recoveryAlias, "nested")]) {
+    await assert.rejects(
+      prepareLogging({ ...options, directory: base }),
+      /outside the k3d resource directory/,
+    );
+  }
+  assert.equal(commands, 0);
+  assert.equal(registered, 0);
+
+  // Use the actual canonical creation path so retargeting the caller's alias
+  // cannot strand the planned receipt under the independently retired cluster.
+  await assert.rejects(
+    prepareLogging({ ...options, directory: independentAlias }),
+    (error: unknown) => error === stop,
+  );
+  assert.equal(registered, 1);
+  assert.ok(receiptPath);
+  assert.equal(dirname(receiptPath), await realpath(independent));
+  const before = await readFile(receiptPath, "utf8");
+  assert.equal(JSON.parse(before).phase, "planned");
+  await rm(independentAlias);
+  await symlink(directory, independentAlias, "dir");
+  await rm(directory, { recursive: true, force: true });
+  assert.equal(await readFile(receiptPath, "utf8"), before);
+});
+
+test("cluster-default logging custody survives retirement of its separate k3d resource", async (t) => {
+  for (const phase of ["create-intent", "remove-intent"] as const) {
+    await t.test(phase, async (t) => {
+      const root = await fixture(t);
+      const name = "openclaw-k8s-custody";
+      const directory = join(root, `${name}-state`);
+      await mkdir(directory, { mode: 0o700 });
+      const cluster = {
+        name,
+        directory,
+        kubeconfig: join(directory, "kubeconfig"),
+        context: `k3d-${name}`,
+      };
+      let resource: unknown;
+      let creates = 0;
+      let removes = 0;
+      const command = custodyExecutor();
+      const execFile = async (program: string, args: string[]) => {
+        if (program === "docker" && args.includes("run")) {
+          creates += 1;
+          if (phase === "create-intent") {
+            throw new Error("unreceived create result");
+          }
+        }
+        if (program === "docker" && args.includes("rm")) {
+          removes += 1;
+          throw new Error("unreceived remove result");
+        }
+        // The backend was received, but subsequent cluster preparation failed.
+        // Its automatic cleanup must retain an uncertain remove.
+        if (program === "kubectl") {
+          throw new Error("cluster unavailable");
+        }
+        return command(program, args);
+      };
+      await assert.rejects(
+        prepareLogging({
+          cluster,
+          env: { ...env, RUNNER_TEMP: root },
+          execFile,
+          waitForReady: false,
+          registerResource: async (kind, details) => {
+            const entry = { id: "cluster-logging", kind, ...details };
+            resource = entry;
+            return entry;
+          },
+        }),
+        /cleanup is unresolved/,
+      );
+      const custody = (resource as { custody: { receiptPath: string; cidPath: string } }).custody;
+      const before = JSON.parse(await readFile(custody.receiptPath, "utf8"));
+      assert.equal(before.phase, phase);
+      if (phase === "remove-intent") {
+        assert.equal(before.containerId, ownedId);
+      }
+
+      // The genuine lane cleanup continues to the independently owned k3d
+      // resource after an OTel error. Exercise that resource's filesystem effect.
+      await rm(directory, { recursive: true, force: true });
+      assert.deepEqual(JSON.parse(await readFile(custody.receiptPath, "utf8")), before);
+      if (phase === "remove-intent") {
+        assert.equal(await readFile(custody.cidPath, "utf8"), ownedId);
+      }
+      await assert.rejects(cleanupLogging(resource, { env, execFile }), /outcome is unknown/);
+      assert.equal(creates, 1);
+      assert.equal(removes, phase === "remove-intent" ? 1 : 0);
+    });
+  }
+});
+
+test("cleanupLogging reconciles a completed removal whose command result was lost", async (t) => {
+  const root = await fixture(t);
+  let removes = 0;
+  const command = custodyExecutor();
+  const execFile = async (program: string, args: string[]) => {
+    const result = await command(program, args);
+    if (args.includes("rm")) {
+      removes += 1;
+      throw new Error("lost remove response");
+    }
+    return result;
+  };
+  const result = await prepared(root, execFile);
+  await cleanupLogging(result.resource, { env, execFile });
+  await cleanupLogging(result.resource, { env, execFile });
+  assert.equal(removes, 1);
+  await assert.rejects(stat(result.artifacts.directory), { code: "ENOENT" });
+});
+
+test("cleanupLogging refuses a changed Docker engine before removal", async (t) => {
+  const root = await fixture(t);
+  let changed = false;
+  let removes = 0;
+  const command = custodyExecutor(async (_program, args) => {
+    if (args[0] === "rm") {
+      removes += 1;
+    }
+    return { stdout: "" };
+  });
+  const execFile = async (program: string, args: string[]) => {
+    if (changed && args.includes("info")) {
+      return { stdout: "replacement-engine" };
+    }
+    return command(program, args);
+  };
+  const result = await prepared(root, execFile);
+  changed = true;
+  await assert.rejects(cleanupLogging(result.resource, { env, execFile }), /engine changed/);
+  assert.equal(removes, 0);
+  assert.ok((await stat(result.artifacts.directory)).isDirectory());
+});
+
+test("cleanupLogging pins the recorded endpoint and refuses a retargeted context", async (t) => {
+  const root = await fixture(t);
+  let retargeted = false;
+  const removes: string[][] = [];
+  const command = custodyExecutor();
+  const execFile = async (program: string, args: string[]) => {
+    if (retargeted && args[0] === "context" && args[1] === "inspect") {
+      return { stdout: JSON.stringify("unix:///foreign-docker.sock") };
+    }
+    if (args.includes("rm")) {
+      removes.push(args);
+    }
+    return command(program, args);
+  };
+  const result = await prepared(root, execFile);
+  retargeted = true;
+  await assert.rejects(cleanupLogging(result.resource, { env, execFile }), /context changed/);
+  assert.deepEqual(removes, []);
+  retargeted = false;
+  await cleanupLogging(result.resource, {
+    env: { ...env, DOCKER_CONTEXT: "foreign-context" },
+    execFile,
+  });
+  assert.deepEqual(removes, [["--host", "unix:///test-docker.sock", "rm", "--force", ownedId]]);
+});
+
+test("cleanupLogging preserves a directory replacement after container cleanup", async (t) => {
+  const root = await fixture(t);
+  const execFile = custodyExecutor();
+  const result = await prepared(root, execFile);
+  const directory = result.artifacts.directory;
+  const original = `${directory}-renamed`;
+  await rename(directory, original);
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(join(directory, "sentinel"), "replacement");
+  await assert.rejects(
+    cleanupLogging(result.resource, { env, execFile }),
+    /directory identity changed/,
+  );
+  await assert.rejects(
+    cleanupLogging(result.resource, { env, execFile }),
+    /directory identity changed/,
+  );
+  assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "replacement");
+  assert.ok((await stat(original)).isDirectory());
 });

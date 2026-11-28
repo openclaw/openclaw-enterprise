@@ -32,6 +32,20 @@
       "expectedTests": ["prepareLogging backend receives real OTLP/HTTP logs and writes JSONL"]
     },
     {
+      "path": "tests/integration/ci-logging-custody-real.test.ts",
+      "expectedTests": [
+        "real CI OTel fixture retains the exact ID after a lost direct sentinel create result",
+        "real CI OTel cleanup preserves a foreign container that wins the planned name",
+        "real CI OTel cleanup removes only its recorded container",
+        "real CI OTel cleanup removes a renamed original and preserves its replacement",
+        "real CI OTel cleanup CLI recovers a bound journal and preserves a replacement",
+        "real CI OTel cleanup CLI refuses a journal entry without custody",
+        "real CI OTel cleanup retains an unreceived creation and preserves a replacement",
+        "real CI OTel cleanup recovers a completed create with a lost command result",
+        "real CI OTel cleanup reconciles a lost remove response without replay"
+      ]
+    },
+    {
       "path": "tests/integration/occ-metrics-monitoring.test.ts",
       "expectedTests": [
         "Prometheus remote write records real OCC traffic and Grafana provisions its dashboard"
