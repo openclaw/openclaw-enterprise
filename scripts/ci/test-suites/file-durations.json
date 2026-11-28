@@ -329,7 +329,7 @@
     "tests/integration/profile-renderer.test.ts": 5600,
     "tests/integration/protected-driver-registration.test.ts": 3400,
     "tests/integration/protected-repository-metadata-read.test.ts": 400,
-    "tests/integration/public-github-read-http.test.mjs": 6500,
+    "tests/integration/public-github-read-http.test.ts": 6500,
     "tests/integration/qa-failure-diagnostics.test.ts": 7600,
     "tests/integration/qa-fixture-inputs.test.mjs": 67900,
     "tests/integration/qa-repository-installation.test.ts": 600,

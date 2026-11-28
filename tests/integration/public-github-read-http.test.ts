@@ -1,28 +1,39 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import http from "node:http";
+import http, {
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type RequestListener,
+  type RequestOptions,
+  type ServerResponse,
+} from "node:http";
 import https from "node:https";
-import { connect as connectTcp, createServer as createTcpServer, Socket } from "node:net";
-import test from "node:test";
+import {
+  connect as connectTcp,
+  createServer as createTcpServer,
+  Socket,
+  type TcpNetConnectOpts,
+} from "node:net";
+import test, { type TestContext } from "node:test";
+import { TLSSocket } from "node:tls";
+
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
   publicGithubReadNextPage,
   runPublicGithubReadHttpWireCases,
 } from "./public-github-read-http-wire-cases.ts";
-import { runPublicGithubReadSocketCapacityCases } from "./public-github-read-socket-capacity-cases.ts";
+import {
+  type ReaderResponse,
+  runPublicGithubReadSocketCapacityCases,
+} from "./public-github-read-socket-capacity-cases.ts";
 
 // Request headers a client never finishes, so the reader holds the connection open.
 const unfinished = "GET /healthz HTTP/1.1\r\nHost: reader\r\n";
 // A GET from one caller address, read to the end: { status, headers, body (JSON) }.
-/**
- * @param {string} url
- * @param {string} [localAddress]
- * @returns {Promise<import("./public-github-read-socket-capacity-cases.ts").ReaderResponse>}
- */
-const request = (url, localAddress) =>
+const request = (url: string, localAddress?: string): Promise<ReaderResponse> =>
   new Promise((resolve, reject) => {
     http
       .get(url, { agent: false, localAddress }, async (res) => {
@@ -32,8 +43,7 @@ const request = (url, localAddress) =>
           for await (const chunk of res) {
             text += chunk;
           }
-          /** @type {unknown} */
-          const body = JSON.parse(text);
+          const body: unknown = JSON.parse(text);
           resolve({ status: res.statusCode, headers: res.headers, body });
         } catch (error) {
           reject(error);
@@ -41,13 +51,7 @@ const request = (url, localAddress) =>
       })
       .once("error", reject);
   });
-/**
- * @param {string} url
- * @param {import("node:http").RequestOptions} options
- * @param {string} body
- * @returns {Promise<import("node:http").IncomingMessage>}
- */
-function rawRequest(url, options, body) {
+function rawRequest(url: string, options: RequestOptions, body: string): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     http.request(url, options, resolve).once("error", reject).end(body);
   });
@@ -55,23 +59,19 @@ function rawRequest(url, options, body) {
 
 const json = { "content-type": "application/json" };
 // A provider answer that ends a held or ordinary read successfully.
-const ok = (res) => res.writeHead(200, json).end("{}");
+const ok = (res: ServerResponse) => res.writeHead(200, json).end("{}");
 // The only headers the reader sends GitHub: no client headers or credentials pass through.
 const githubHeaders = "accept accept-encoding connection host user-agent x-github-api-version";
 
 // Starts a reader on loopback for one test. `connect` pairs a raw client with the reader's
 // side of its connection; `hold` opens connections that never finish their request headers.
-/** @param {import("node:test").TestContext} t */
-async function startReader(t) {
+async function startReader(t: TestContext) {
   const server = createPublicGithubReadServer();
-  /** @type {Socket[]} */
-  const clients = [];
+  const clients: Socket[] = [];
   t.after(() => clients.forEach((client) => client.destroy()));
   const port = await listen(t, server);
-  /** @param {Partial<import("node:net").TcpNetConnectOpts>} [options] */
-  const connect = async (options = {}) => {
-    /** @type {Promise<unknown[]>} */
-    const accepted = once(server, "connection");
+  const connect = async (options: Partial<TcpNetConnectOpts> = {}) => {
+    const accepted: Promise<unknown[]> = once(server, "connection");
     const client = connectTcp({ port, host: "127.0.0.1", ...options });
     client.on("error", () => {});
     clients.push(client);
@@ -80,14 +80,10 @@ async function startReader(t) {
     assert.ok(socket instanceof Socket, "the reader accepted a TCP socket");
     return { client, socket };
   };
-  /**
-   * @param {number} count
-   * @param {string} [localAddress]
-   */
-  const hold = async (count, localAddress) => {
+  const hold = async (count: number, localAddress?: string) => {
     const held = [];
     for (let open = 0; open < count; open++) {
-      const connection = await connect({ localAddress });
+      const connection = await connect(localAddress === undefined ? {} : { localAddress });
       connection.client.resume().write(unfinished);
       held.push(connection);
     }
@@ -103,58 +99,60 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     commonName: name,
     subjectAltName: `DNS:${name}`,
   });
-  let reply;
+  let reply: RequestListener | undefined;
   let requests = 0;
   const provider = https.createServer({ cert, key }, (req, res) => {
     requests++;
     assert.equal(req.method, "GET");
     assert.equal(req.headers.host, name);
+    assert.ok(req.socket instanceof TLSSocket);
     assert.equal(req.socket.servername, name);
     assert.equal(Object.keys(req.headers).sort().join(" "), githubHeaders);
+    assert.ok(reply, "expected the fixture to configure a provider response");
     reply(req, res);
   });
-  await listen(t, provider);
+  const providerPort = await listen(t, provider);
 
   // Route only the provider's DNS, port and test CA to loopback. The reader
   // constructs the actual HTTPS request and uses normal hostname verification.
   const connect = https.Agent.prototype.createConnection;
-  t.mock.method(https.Agent.prototype, "createConnection", function (options, callback) {
+  const connectToFixture: typeof connect = function (this: https.Agent, options, callback) {
     assert.equal(options.host, name);
     assert.equal(options.port, 443);
     assert.notEqual(options.rejectUnauthorized, false);
     return connect.call(
       this,
-      { ...options, host: "127.0.0.1", port: provider.address().port, servername: name, ca: cert },
+      { ...options, host: "127.0.0.1", port: providerPort, servername: name, ca: cert },
       callback,
     );
-  });
+  };
+  t.mock.method(https.Agent.prototype, "createConnection", connectToFixture);
   const { base: origin } = await startReader(t);
   const repo = "/repos/example/project";
-  const get = (path = "", options) => fetch(origin + repo + path, options);
-  const query = (url) => Object.fromEntries(url.searchParams);
+  const get = (path = "", options?: RequestInit) => fetch(origin + repo + path, options);
+  const query = (url: URL) => Object.fromEntries(url.searchParams);
   // Each Agent Pod is a separate caller address; loopback aliases stand in for them.
-  const from = (address, path, base = origin) => request(base + repo + path, address);
-  /** @type {[string, string, string]} */
-  const aliases = ["127.0.0.2", "127.0.0.3", "127.0.0.4"];
+  const from = (address: string, path: string, base = origin) =>
+    request(base + repo + path, address);
+  const aliases = ["127.0.0.2", "127.0.0.3", "127.0.0.4"] as const;
   const probe = createTcpServer();
-  /** @type {boolean} */
-  const aliased = await new Promise((resolve) => {
+  const aliased = await new Promise<boolean>((resolve) => {
     probe.once("error", () => resolve(false));
-    probe.listen(0, aliases.at(-1), () => probe.close(() => resolve(true)));
+    probe.listen(0, aliases[2], () => probe.close(() => resolve(true)));
   });
   // Bound the cases that wait for held provider reads, so a regression fails instead of hanging.
   const multipleCallers = aliased
     ? { timeout: 15_000 }
     : { skip: "loopback aliases 127.0.0.2-4 are unavailable" };
-  const answer = (status, body, headers) => {
-    reply = (req, res) => res.writeHead(status, { ...json, ...headers }).end(JSON.stringify(body));
+  const answer = (status: number, body: unknown, headers?: OutgoingHttpHeaders) => {
+    reply = (_req, res) => res.writeHead(status, { ...json, ...headers }).end(JSON.stringify(body));
   };
   // GitHub denies its anonymous quota once. Every later read, from any caller, is parked with
   // the shared retry time (above `minimum` seconds) instead of spending more quota.
   const assertParked = async (
-    headers,
-    minimum,
-    reads,
+    headers: OutgoingHttpHeaders,
+    minimum: number,
+    reads: readonly (readonly [address: string, path: string, base?: string])[],
     body = { message: "API rate limit exceeded" },
   ) => {
     const quota = { "x-ratelimit-remaining": "0", ...headers };
@@ -163,7 +161,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     for (const [address, path, base] of reads) {
       const parked = await from(address, path, base);
       assert.equal(parked.status, 429);
-      assert.ok(Number(parked.headers["retry-after"]) > minimum, parked.headers["retry-after"]);
+      const retryAfter = parked.headers["retry-after"];
+      assert.ok(retryAfter, "expected a retry-after header");
+      assert.ok(Number(retryAfter) > minimum, retryAfter);
     }
     assert.equal(
       requests,
@@ -190,8 +190,14 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("cache-control"), "no-store");
       assert.equal(response.headers.get("set-cookie"), null);
-      assert.equal((await response.json())[0].number, 7);
-      assert.match(response.headers.get("link"), /^<.*>; rel="next"$/);
+      const pulls: unknown = await response.json();
+      assert.ok(Array.isArray(pulls));
+      const first: unknown = pulls[0];
+      assert.ok(first && typeof first === "object" && "number" in first);
+      assert.equal(first.number, 7);
+      const link = response.headers.get("link");
+      assert.ok(link);
+      assert.match(link, /^<.*>; rel="next"$/);
       const next = publicGithubReadNextPage(response, origin);
       assert.equal(next.origin, origin);
       assert.equal(next.pathname, repo + "/pulls");
@@ -221,10 +227,10 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     "three callers' reads can run; excess fails promptly; quota denial becomes a shared retry time",
     multipleCallers,
     async () => {
-      const opened = Promise.withResolvers();
-      const responses = [];
+      const opened = Promise.withResolvers<void>();
+      const responses: ServerResponse[] = [];
       // The provider holds every read; `opened` resolves once it holds three.
-      reply = (req, res) => responses.push(res) === 3 && opened.resolve();
+      reply = (_req, res) => responses.push(res) === 3 && opened.resolve();
       const callers = ["127.0.0.1", ...aliases.slice(0, 2)];
       const active = Promise.all(callers.map((address, id) => from(address, "/pulls/" + (id + 1))));
       await opened.promise;
@@ -248,12 +254,12 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       const [first, second, third] = aliases;
       // The provider holds pulls 1-3 until released, as a slow GitHub read would.
       // `settled` resolves once each of the three is either answered or held.
-      const held = [];
-      const answered = [];
-      const settled = Promise.withResolvers();
+      const held: ServerResponse[] = [];
+      const answered: ReaderResponse[] = [];
+      const settled = Promise.withResolvers<void>();
       const settle = () => held.length + answered.length === 3 && settled.resolve();
       reply = (req, res) => {
-        if (/^\/repos\/example\/project\/pulls\/[1-3]$/.test(req.url)) {
+        if (/^\/repos\/example\/project\/pulls\/[1-3]$/.test(req.url ?? "")) {
           held.push(res);
           settle();
           return;
@@ -263,20 +269,24 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       st.after(() => held.forEach(ok));
 
       // One caller that opens three slow reads holds one provider slot, not all three.
-      const slow = ["/pulls/1", "/pulls/2", "/pulls/3"].map((path) =>
-        from("127.0.0.1", path, base).then((response) => {
+      const slow = ["/pulls/1", "/pulls/2", "/pulls/3"].map((path) => {
+        const read = from("127.0.0.1", path, base);
+        void read.then((response) => {
           answered.push(response);
           settle();
-          return response;
-        }, settled.reject),
-      );
+        }, settled.reject);
+        return read;
+      });
       await settled.promise;
       assert.equal(held.length, 1, "one caller must not occupy every provider slot");
       assert.equal(answered.length, 2);
       for (const response of answered) {
         assert.equal(response.status, 429);
         assert.equal(response.headers["retry-after"], "2");
-        assert.match(response.body.message, /in progress/);
+        const { body } = response;
+        assert.ok(body && typeof body === "object" && "message" in body);
+        assert.ok(typeof body.message === "string");
+        assert.match(body.message, /in progress/);
       }
       // Another caller is still served while the first caller's read is slow.
       assert.equal((await from(first, "/pulls/9", base)).status, 200);
@@ -287,7 +297,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         assert.equal((await from(first, "/releases/" + read, base)).status, 200);
       }
       assert.equal((await from(second, "/releases/1", base)).status, 200);
-      ok(held.shift());
+      const response = held.shift();
+      assert.ok(response);
+      ok(response);
       assert.equal((await Promise.all(slow)).filter(({ status }) => status === 200).length, 1);
 
       // GitHub's anonymous quota belongs to the shared egress address. A primary
@@ -307,27 +319,27 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       const reader = await startReader(st);
       const [first, second] = aliases;
       // The provider holds the first read of pull 30 and answers any other at once.
-      const holding = Promise.withResolvers();
-      let held;
-      reply = (req, res) => {
+      const holding = Promise.withResolvers<ServerResponse>();
+      let held: ServerResponse | undefined;
+      reply = (_req, res) => {
         if (held) {
           ok(res);
           return;
         }
         held = res;
-        holding.resolve();
+        holding.resolve(res);
       };
       st.after(() => held?.writableEnded || (held && ok(held)));
       const before = requests;
       const reads = [from(first, "/pulls/30", reader.base)];
-      await holding.promise;
+      const heldResponse = await holding.promise;
       // The reader's own request listener is registered first and runs to `pending.get` before
       // its first await, so by this event it has either joined the read in flight or started
       // its own provider read.
       const taken = once(reader.server, "request");
       reads.push(from(second, "/pulls/30", reader.base));
       await taken;
-      held.writeHead(200, json).end(JSON.stringify({ number: 30 }));
+      heldResponse.writeHead(200, json).end(JSON.stringify({ number: 30 }));
       const responses = await Promise.all(reads);
       assert.equal(requests, before + 1, "identical reads in flight must share one provider read");
       for (const { status, body } of responses) {
