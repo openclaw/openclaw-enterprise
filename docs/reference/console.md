@@ -267,10 +267,11 @@ enable Save or rewrite it, and saving an edit writes LF.
 When you reopen a draft, the editor warns if the file changed since editing began.
 Matching the latest file contents clears the warning and disables Save.
 
-A failed write keeps the editor contents. An unknown outcome disables Save until
-Reload confirms the file or its absence. Review what loaded, or enter new content
-when the file is missing, before saving again. A denial or unavailable read leaves
-Save disabled. The editor never replays a write. Each file saves independently.
+A failed write keeps the editor contents. If the outcome is unknown, use **Check save**
+to read the current file and keep your edits. Use **Reload** only to discard them.
+Follow the [workspace file recovery steps](../guides/topics/workspace-files.md#if-files-cannot-be-loaded-or-saved).
+If the check fails, **Save** stays disabled. The editor never retries a write automatically.
+Each file saves independently.
 For an unavailable gateway, follow the
 [workspace access setup](../guides/deploy/workspace-routing.md#agent-workspace-files).
 

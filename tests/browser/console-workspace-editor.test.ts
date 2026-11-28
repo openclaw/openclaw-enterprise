@@ -29,7 +29,6 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   settlePageRequests,
-  waitForCondition,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
@@ -900,21 +899,47 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
   assert.equal((await editorState()).scrollTop, shown.scrollTop);
 });
 
-test("a Workspace version change during a Reload or Save rereads the file once it settles", async (t) => {
+test("a Workspace version change during a Reload or Save rereads the file once it settles", (t) =>
+  checkVersionChangeDuringWrite(t, "available"));
+
+test("a missing file on the new Workspace version keeps the acknowledged draft until it can be compared", (t) =>
+  checkVersionChangeDuringWrite(t, "temporarily missing"));
+
+async function checkVersionChangeDuringWrite(
+  t: TestContext,
+  successor: "available" | "temporarily missing",
+) {
   const saved = new Map<string, string>();
+  let missingIdentityRevision: string | undefined;
+  const userDraft = "# Saved during the deployment\n";
+  const identityDraft = "# Keep these identity edits\n";
   const { fixture, page, requests, filePath, form, makeCurrent, versions } =
     await openWorkspaceVersions(t, "Workspace deferred reread", {
-      async read({ revision, filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
-        const content = saved.get(filename) ?? `# ${filename} served by ${revision.id}\n`;
+      async read({ revision, filename }) {
+        if (filename === "IDENTITY.md" && revision.id === missingIdentityRevision) {
+          return { status: "missing" };
+        }
+        const content =
+          saved.get(`${revision.id}/${filename}`) ?? `# ${filename} served by ${revision.id}\n`;
         return { status: "ok", file: { name: filename, content } };
       },
-      async write({ filename, content }: Parameters<ControllerWorkspaceFilesAccess["write"]>[0]) {
-        saved.set(filename, content);
-        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
+      async write({ revision, filename, content }) {
+        saved.set(`${revision.id}/${filename}`, content);
+        return {
+          status: "ok",
+          file: { name: filename, size: Buffer.byteLength(content) },
+        };
       },
     });
   const soul = page.getByLabel("SOUL.md", { exact: true });
   const user = page.getByLabel("USER.md", { exact: true });
+  const identity = page.getByLabel("IDENTITY.md", { exact: true });
+  const [previous, next] = versions;
+  assert.ok(previous && next);
+  const previousId = previous.id;
+  if (successor === "temporarily missing") {
+    missingIdentityRevision = next.id;
+  }
   // A Reload of SOUL.md reads the first version, and its answer is held.
   const reload = await holdRequests(t, page, `${fixture.origin}${filePath("SOUL.md")}`, {
     once: true,
@@ -922,44 +947,331 @@ test("a Workspace version change during a Reload or Save rereads the file once i
   });
   await chooseWorkspaceFile(page, "SOUL.md");
   await page
-    .getByRole("button", { name: "Reload SOUL.md", exact: true, includeHidden: true })
+    .getByRole("button", {
+      name: "Reload SOUL.md",
+      exact: true,
+      includeHidden: true,
+    })
     .click();
   await reload.requested;
-  // A Save of USER.md is held before it reaches the server.
-  const save = await holdRequests(t, page, `${fixture.origin}${filePath("USER.md")}`, {
-    once: true,
-    method: "PUT",
-  });
-  await chooseWorkspaceFile(page, "USER.md");
-  await user.fill("# Saved during the deployment\n");
-  await chooseWorkspaceFile(page, "USER.md");
-  await page
-    .getByRole("button", { name: "Save USER.md", exact: true, includeHidden: true })
-    .click();
-  await save.requested;
+  // Hold one request before it reaches the server and the other after the old version writes.
+  async function holdSave(file: string, editor: Locator, draft: string, afterServer: boolean) {
+    const held = await holdRequests(t, page, `${fixture.origin}${filePath(file)}`, {
+      once: true,
+      method: "PUT",
+      afterServer,
+    });
+    await chooseWorkspaceFile(page, file);
+    await editor.fill(draft);
+    await form(file)
+      .getByRole("button", { name: `Save ${file}`, exact: true })
+      .click();
+    assert.equal((await held.requested)?.status(), afterServer ? 200 : undefined);
+    assert.equal(saved.get(`${previousId}/${file}`), afterServer ? draft : undefined);
+    return held;
+  }
+  const userSave = await holdSave("USER.md", user, userDraft, false);
+  const identitySave = await holdSave("IDENTITY.md", identity, identityDraft, true);
 
   await makeCurrent();
-  assert.ok(versions[1]);
   await waitForInputValue(
     page.getByLabel("AGENTS.md", { exact: true }),
-    `# AGENTS.md served by ${versions[1].id}\n`,
+    `# AGENTS.md served by ${next.id}\n`,
   );
   // The Reload answers with the first version; the file is then reread from the second.
   reload.release();
-  await waitForInputValue(soul, `# SOUL.md served by ${versions[1].id}\n`);
+  await waitForInputValue(soul, `# SOUL.md served by ${next.id}\n`);
   await form("SOUL.md")
     .getByText("SOUL.md reloaded with its current contents.", { exact: true })
     .waitFor({ state: "attached" });
-  // The Save lands, and the reread after it keeps the saved text.
+  // The successor has a different file, even if its first read reports it missing.
+  const successorText = `# IDENTITY.md served by ${next.id}\n<strong>Another writer's instructions</strong>\n`;
+  saved.set(`${next.id}/IDENTITY.md`, successorText);
+  const identityPath = filePath("IDENTITY.md");
+  const replaceIdentity = form("IDENTITY.md").getByRole("button", {
+    name: "Save IDENTITY.md",
+    exact: true,
+  });
+  const checkIdentity = form("IDENTITY.md").getByRole("button", {
+    name: "Check save",
+    exact: true,
+  });
+  identitySave.release();
+  await waitForSettledFetches(page, identityPath, 3);
+  assert.equal(await identity.inputValue(), identityDraft, "The draft survives the readback");
+  if (successor === "temporarily missing") {
+    await form("IDENTITY.md")
+      .getByText(/Could not confirm the current contents of IDENTITY\.md\. Use Check save again\./)
+      .waitFor();
+    assert.equal(await identity.isDisabled(), false);
+    assert.equal(await identity.isEditable(), false);
+    assert.equal(await replaceIdentity.isDisabled(), true);
+    assert.equal(pathRequests(requests, "PUT", identityPath).length, 1);
+    missingIdentityRevision = undefined;
+    await checkIdentity.click();
+  }
+  const currentIdentity = page.getByLabel("Current contents of IDENTITY.md", {
+    exact: true,
+  });
+  await currentIdentity.waitFor();
+  assert.equal(await currentIdentity.inputValue(), successorText);
+  assert.equal(
+    await form("IDENTITY.md").locator("strong").filter({ hasText: "Another writer" }).count(),
+    0,
+  );
+  assert.equal(await identity.isEditable(), true);
+  assert.equal(await replaceIdentity.isEnabled(), true);
+  assert.equal(pathRequests(requests, "PUT", identityPath).length, 1);
+
+  // A matching readback confirms a save only after the browser receives the current file.
   const userReads = () => pathRequests(requests, "GET", filePath("USER.md")).length;
   assert.equal(userReads(), 1);
-  save.release();
+  const readback = await holdRequests(t, page, `${fixture.origin}${filePath("USER.md")}`, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  userSave.release();
+  assert.equal((await readback.requested)?.status(), 200);
+  assert.notEqual(await workspaceStatus(form("USER.md")), "USER.md saved.");
+  readback.release();
   await form("USER.md").getByText("USER.md saved.", { exact: true }).waitFor({ state: "attached" });
-  await waitForCondition(() => userReads() === 2, "USER.md was not reread after its Save");
   await waitForSettledFetches(page, filePath("USER.md"), 3);
-  assert.equal(await user.inputValue(), "# Saved during the deployment\n");
+  assert.equal(saved.get(`${next.id}/USER.md`), userDraft);
+  assert.equal(userReads(), 2);
+  assert.equal(await user.inputValue(), userDraft);
   assert.equal(await workspaceStatus(form("USER.md")), "USER.md saved.");
+  assert.equal(pathRequests(requests, "PUT", filePath("USER.md")).length, 1);
+}
+
+test("Check save keeps a draft across an upgrade, compares the current file, and never resends a write", async (t) => {
+  const original = "# Original instructions\n";
+  let contents = original;
+  let unavailable = false;
+  let missing = false;
+  const { fixture, page, requests, filePath, form, makeCurrent, versions } =
+    await openWorkspaceVersions(t, "Workspace save comparison", {
+      async read({ revision, filename }) {
+        if (unavailable && filename === "AGENTS.md") {
+          return { status: "unavailable" };
+        }
+        if (missing && filename === "AGENTS.md") {
+          return { status: "missing" };
+        }
+        const content = filename === "AGENTS.md" ? contents : revision.id;
+        return { status: "ok", file: { name: filename, content } };
+      },
+      async write({ filename, content }) {
+        if (unavailable && filename === "AGENTS.md") {
+          return { status: "unavailable" };
+        }
+        contents = content;
+        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
+      },
+    });
+  const path = filePath("AGENTS.md");
+  const endpoint = fixture.origin + path;
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  const save = form("AGENTS.md").getByRole("button", { name: "Save AGENTS.md", exact: true });
+  const check = form("AGENTS.md").getByRole("button", { name: "Check save", exact: true });
+  const current = page.getByLabel("Current contents of AGENTS.md", { exact: true });
+  const writes = () => pathRequests(requests, "PUT", path).length;
+  const draft = "  Draft instructions 🐾\n\n";
+  await chooseWorkspaceFile(page, "AGENTS.md");
+  await editor.fill(draft);
+  unavailable = true;
+  const failedSave = page.waitForResponse(
+    (response) => response.url() === endpoint && response.request().method() === "PUT",
+  );
+  await save.click();
+  assert.equal((await failedSave).status(), 503);
+  await check.waitFor();
+  assert.equal(contents, original);
+  assert.equal(await save.isDisabled(), true);
+
+  // During the outage the reader can select the draft with the keyboard while Save stays blocked.
+  const failedCheck = page.waitForResponse(
+    (response) => response.url() === endpoint && response.request().method() === "GET",
+  );
+  await check.click();
+  assert.equal((await failedCheck).status(), 503);
+  await form("AGENTS.md")
+    .getByText(/Use Check save again\. Request ID: req_/)
+    .waitFor();
+  assert.equal(
+    await editor.isDisabled(),
+    false,
+    "failed comparison must leave the visible draft focusable",
+  );
+  assert.equal(await editor.isEditable(), false);
+  await check.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("ControlOrMeta+A");
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected a Workspace textarea");
+      }
+      return {
+        focused: node.ownerDocument.activeElement === node,
+        selection: [node.selectionStart, node.selectionEnd],
+      };
+    }),
+    { focused: true, selection: [0, draft.length] },
+  );
+  await page.keyboard.type("x");
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writes(), 1);
+
+  unavailable = false;
+  await check.click();
+  await form("AGENTS.md")
+    .getByText("AGENTS.md still contains the text you started with.", { exact: false })
+    .waitFor();
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await editor.isEditable(), true);
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(writes(), 1);
+  // A second explicit attempt loses its connection before the write reaches the gateway.
+  await page.route(endpoint, (route) => route.abort("failed"), { times: 1 });
+  await save.click();
+  await check.waitFor();
+
+  // The old version answered the GET before the upgrade. Its late reply cannot authorize Save.
+  const previous = await holdRequests(t, page, endpoint, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await check.click();
+  assert.equal((await previous.requested)?.status(), 200);
+  await makeCurrent();
+  assert.ok(versions[1]);
+  await waitForInputValue(page.getByLabel("SOUL.md", { exact: true }), versions[1].id);
+  previous.release();
+  await form("AGENTS.md").getByText("The Agent version changed.", { exact: false }).waitFor();
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writes(), 2);
+
+  // Confirming a different file shows its actual text while preserving the editor's draft.
+  contents = "";
+  await check.click();
+  await current.waitFor();
+  assert.equal(await current.inputValue(), contents);
+  assert.equal(await current.isEditable(), false);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(writes(), 2);
+
+  // The server saves over an existing zero-byte file, but the browser loses the PUT reply.
+  const lost = await holdRequests(t, page, endpoint, {
+    once: true,
+    method: "PUT",
+    afterServer: true,
+    loseResponse: true,
+  });
+  await save.click();
+  assert.equal((await lost.requested)?.status(), 200);
+  lost.release();
+  await check.waitFor();
+  assert.equal(contents, draft);
+  missing = true;
+  const missingCheck = page.waitForResponse(
+    (response) => response.url() === endpoint && response.request().method() === "GET",
+  );
+  await check.click();
+  const missingFile = await missingCheck;
+  assert.equal(missingFile.status(), 404);
+  const missingBody: unknown = await missingFile.json();
+  assert.ok(typeof missingBody === "object" && missingBody !== null && "error" in missingBody);
+  assert.deepEqual(missingBody.error, {
+    code: "NOT_FOUND",
+    message: "The requested workspace file was not found.",
+  });
+  await form("AGENTS.md")
+    .getByText(/Could not confirm the current contents of AGENTS\.md\. Use Check save again\./)
+    .waitFor();
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await editor.isDisabled(), false);
+  assert.equal(await editor.isEditable(), false);
+  assert.equal(await save.isDisabled(), true);
+  await expectNoText(page, "AGENTS.md is missing. Save to create it.");
+  assert.equal(writes(), 3);
+
+  // The next real read succeeds against the same saved bytes and existing permissions.
+  missing = false;
+  const restoredCheck = page.waitForResponse(
+    (response) => response.url() === endpoint && response.request().method() === "GET",
+  );
+  await check.click();
+  assert.equal((await restoredCheck).status(), 200);
+  await form("AGENTS.md").getByText("AGENTS.md matches your edits.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(await current.isVisible(), false);
+  assert.equal(writes(), 3);
 });
+
+for (const interruption of ["navigation", "a rejected save"] as const) {
+  test(`a checked Workspace draft requires a fresh comparison after ${interruption} and a version change`, async (t) => {
+    const { fixture, page, requests, filePath, form, makeCurrent, versions } =
+      await openWorkspaceVersions(t, "Workspace comparison guard", {
+        async read({ revision, filename }) {
+          return { status: "ok", file: { name: filename, content: revision.id } };
+        },
+        async write() {
+          throw new Error("The gateway must receive no writes");
+        },
+      });
+    const path = filePath("AGENTS.md");
+    const endpoint = fixture.origin + path;
+    const editor = page.getByLabel("AGENTS.md", { exact: true });
+    const save = form("AGENTS.md").getByRole("button", { name: "Save AGENTS.md", exact: true });
+    const check = form("AGENTS.md").getByRole("button", { name: "Check save", exact: true });
+    const draft = "Instructions for the new version\n";
+    await chooseWorkspaceFile(page, "AGENTS.md");
+    await editor.fill(draft);
+    await page.route(endpoint, (route) => route.abort("failed"), { times: 1 });
+    await save.click();
+    await check.click();
+    await waitForEnabled(save);
+
+    let release: (() => void) | undefined;
+    if (interruption === "navigation") {
+      await page.getByRole("link", { name: "← Agents" }).click();
+      await page.getByLabel("Search Agents").waitFor();
+      await page.goBack();
+      await waitForInputValue(editor, draft);
+    } else {
+      // The rate-limit reply arrives after the new version takes over.
+      const held = await holdRequests(t, page, endpoint, {
+        once: true,
+        method: "PUT",
+        fulfill: { ...proxyErrorResponse(429), headers: { "retry-after": "30" } },
+      });
+      await save.click();
+      await held.requested;
+      release = held.release;
+    }
+
+    await makeCurrent();
+    assert.ok(versions[1]);
+    await waitForInputValue(page.getByLabel("SOUL.md", { exact: true }), versions[1].id);
+    if (release) {
+      release();
+      await form("AGENTS.md").getByText(tooManyRequestsIn(30), { exact: false }).waitFor();
+    }
+    await waitForEnabled(editor);
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await save.isDisabled(), true, "the previous comparison cannot authorize Save");
+    await check.click();
+    await waitForInputValue(page.getByLabel("Current contents of AGENTS.md"), versions[1].id);
+    assert.equal(await save.isEnabled(), true);
+    assert.equal(pathRequests(requests, "PUT", path).length, interruption === "navigation" ? 1 : 2);
+  });
+}
 
 // Deletion replaces the page; an Agent read that answers afterwards has nothing to update.
 test("an Agent read answered after deletion was requested leaves the Workspace files alone", async (t) => {
@@ -1360,6 +1672,10 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(await editor.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
+  const check = form.getByRole("button", { name: "Check save", exact: true });
+  await check.click();
+  await form.getByText(/Use Check save again\. Request ID: req_/).waitFor();
+  assert.equal(writeRequests().length, 1);
   unavailable = false;
   // A rate limit says how long to wait instead of blaming the gateway (finding 2538).
   await page.route(
@@ -1418,12 +1734,21 @@ test("explicit missing-file readback settles an uncertain workspace create witho
       assert.equal(data.name, "USER.md");
       await route.fulfill({ response, json: { data: { ...data, name: "SOUL.md" }, meta } });
     },
-    { times: 2 },
+    { times: 3 },
   );
   await save.click();
   await form.getByText("Outcome unknown.", { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
+  await check.click();
+  await form
+    .getByText("Could not confirm the current contents of USER.md. Use Check save again.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(await editor.inputValue(), "# Deliberate replacement create\n");
+  assert.equal(writeRequests().length, 2);
   await reload.click();
   await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
@@ -1431,4 +1756,104 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   await form.getByText("USER.md loaded.", { exact: true }).waitFor({ state: "attached" });
   assert.equal(await editor.inputValue(), "# Deliberate replacement create\n");
   assert.equal(writeRequests().length, 2);
+
+  // A reentry denied before the first successful read must keep the restored draft private.
+  const draft = "  Keep these exact edits\n\n";
+  await editor.fill(draft);
+  await page.route(fixture.origin + path, (route) => route.abort("failed"), { times: 1 });
+  await save.click();
+  await check.waitFor();
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByLabel("Search Agents").waitFor();
+  administrator.permissions = permissions.filter(
+    (permission: Permission) =>
+      !(permission.action === "read" && permission.resourceKind === "agent"),
+  );
+  const denied = await fixture.request("GET", path);
+  assert.equal(denied.status, 403);
+  administrator.permissions = permissions;
+  await page.route(
+    fixture.origin + path,
+    (route) => {
+      assert.equal(route.request().method(), "GET");
+      return route.fulfill({ status: denied.status, json: denied.body });
+    },
+    { times: 1 },
+  );
+  await page.goBack();
+  await chooseWorkspaceFile(page, "USER.md");
+  await form
+    .getByText(new RegExp(`^${RegExp.escape(callerDenied("Agent read", `Agent ${agent.id}`))}`))
+    .waitFor();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await save.isDisabled(), true);
+  await answerWithMissingAgent();
+  await check.click();
+  await form.getByText("File unavailable or missing.", { exact: false }).waitFor();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 3);
+
+  // Missing-file readback cannot reveal a retained draft hidden by a failed reentry read.
+  await unlink(join(root, "USER.md"));
+  await check.click();
+  const inconclusive = () =>
+    form
+      .getByText(/Could not confirm the current contents of USER\.md\. Use Check save again\./)
+      .waitFor();
+  await inconclusive();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await save.isDisabled(), true);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByLabel("Search Agents").waitFor();
+  await page.goBack();
+  await chooseWorkspaceFile(page, "USER.md");
+  await inconclusive();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await save.isDisabled(), true);
+  await writeFile(join(root, "USER.md"), draft);
+  await check.click();
+  await form.getByText("USER.md matches your edits.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 3);
+
+  // Only an explicit Reload discards the unresolved draft and allows creating the file.
+  const discardable = "# Copy this draft before choosing Reload\n";
+  await editor.fill(discardable);
+  await page.route(fixture.origin + path, (route) => route.abort("failed"), { times: 1 });
+  await save.click();
+  await check.waitFor();
+  await unlink(join(root, "USER.md"));
+  await check.click();
+  await inconclusive();
+  assert.equal(await editor.inputValue(), discardable);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 4);
+  await reload.click();
+  await form.getByText("USER.md is missing. Save to create it.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(writeRequests().length, 4);
+
+  await editor.fill("");
+  await page.route(fixture.origin + path, (route) => route.abort("failed"), { times: 1 });
+  await save.click();
+  await check.waitFor();
+  await check.click();
+  await form.getByText("USER.md is missing. Save to create it.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await save.isEnabled(), true, "an empty draft can still create an absent file");
+  assert.equal(writeRequests().length, 5);
+  await page.route(fixture.origin + path, (route) => route.abort("failed"), { times: 1 });
+  await save.click();
+  await check.waitFor();
+  await writeFile(join(root, "USER.md"), "");
+  await check.click();
+  await form.getByText("USER.md matches your edits.", { exact: true }).waitFor();
+  assert.equal(await save.isDisabled(), true, "an existing empty file matches the empty draft");
+  assert.equal(writeRequests().length, 6);
 });

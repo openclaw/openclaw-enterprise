@@ -1866,16 +1866,29 @@ const authoredScenarios = {
     name: "Write outcome unknown",
     path: `${revision}&tab=workspace`,
     deployed: true,
-    rules: [{ suffix: "/AGENTS.md", method: "PUT", status: 503 }],
+    workspaceFiles: { "AGENTS.md": "# Release notes\nRecord the version after deployment." },
+    rules: [
+      {
+        suffix: "/workspace/files/AGENTS.md",
+        method: "GET",
+        once: true,
+        data: { name: "AGENTS.md", content: "# Release notes" },
+      },
+      { suffix: "/AGENTS.md", method: "PUT", status: 503, once: true },
+    ],
     actions: [
       {
         selector: '[id="workspace-AGENTS.md"]',
-        value: "# Updated guidance\nReview changes before applying them.",
+        matches: "# Release notes",
+        value: "# Release notes\nInclude the rollback steps.",
       },
       click("Save AGENTS.md"),
     ],
-    description:
-      "After an uncertain save, reload the same file to inspect its contents before deciding whether to save again.",
+    description: "Your save got no confirmation. Someone else edited the same file.",
+    steps: [
+      "Choose Check save. Compare your draft with the current file.",
+      "Add the instruction about recording the version to your draft. Choose Save AGENTS.md to keep both instructions.",
+    ],
   } satisfies LocalScenario,
   workspaceMissingReadback: {
     group: "Components/Workspace",
@@ -1896,8 +1909,11 @@ const authoredScenarios = {
       { selector: '[id="workspace-AGENTS.md"]', value: "# Interrupted first create" },
       click("Save AGENTS.md"),
     ],
-    description:
-      "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
+    description: "The first attempt to create AGENTS.md gets no confirmation.",
+    steps: [
+      "Choose Check save. The file is still missing and your text stays in the editor.",
+      "Compare with Reload on a fresh run. Reload discards the draft.",
+    ],
   } satisfies LocalScenario,
   workspaceVersionReread: {
     group: "Components/Workspace",

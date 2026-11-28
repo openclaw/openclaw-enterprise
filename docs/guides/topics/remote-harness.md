@@ -190,7 +190,9 @@ The console's [Workspace files](workspace-files.md) editor authorizes access
 through OCC and the Agent Gateway, then reads or writes the Harness Agent
 workspace. It exposes `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
 Completed initialization preserves later edits across restarts and redeploys.
-Live edits are last-write-wins; reload after an uncertain save.
+Live edits are last-write-wins. If a save has an unknown outcome, use **Check save**
+to keep your edits. Use **Reload** only to discard them. Follow the
+[workspace file recovery steps](workspace-files.md#if-files-cannot-be-loaded-or-saved).
 
 ### Memory
 

@@ -150,8 +150,8 @@ does not mean the file is empty. Check that the Agent is running, then select
 **Retry**.
 
 **Retry** does not read a file that has unsaved edits or an unknown save outcome.
-Select **Reload** for that file. **Reload** replaces your unsaved edits with the
-current file.
+For an unknown save, select **Check save** to read the current file and keep your
+edits. Select **Reload** only if you want to discard your edits.
 
 These are live files belonging to the Agent, even when you browse an older
 version. They are not historical copies or Configuration fields.
@@ -165,7 +165,7 @@ version. They are not historical copies or Configuration fields.
 
 Choose a file with its desktop tab or the phone **Workspace file** dropdown.
 The description explains its role. Switching files keeps unsaved text and each
-file's indicator shows Unsaved, Loading, Missing, Read-only, or Needs attention.
+file's indicator shows its state, such as **Unsaved**, **Missing** or **Check save**.
 Each editor loads independently. Its status reports loading, success, or failure.
 If the editor warns that the file changed while you were away, review your draft
 before choosing **Save** to replace the file or **Reload** to discard your edits.
@@ -174,7 +174,7 @@ Save creates or replaces only the selected file and does not deploy a version.
 Each file allows up to 16 KiB of valid UTF-8 text. Concurrent saves use the last
 writer's contents. Reading requires Agent `read`, saving requires `operate`, and
 access needs a selected version with a reachable gateway. Without `operate`, the
-files are read-only and a note above them names the grant. An uncertain save
-requires Reload to confirm contents or file absence before another save. A confirmed
-missing file opens an empty editor; read failures leave Save disabled. See
-[Workspace Files](../topics/workspace-files.md).
+files are read-only and a note above them names the grant. You can create a file
+once the editor confirms it is missing. A failed save check keeps **Save** disabled. Follow the
+[workspace file recovery steps](../topics/workspace-files.md#if-files-cannot-be-loaded-or-saved)
+if a save has an unknown outcome.

@@ -47,8 +47,8 @@ it is not available with the bundled [SSH Driver](../../reference/drivers/ssh-co
    the file's role. Switching files keeps unsaved edits. Use **Reload** before
    editing if another person might have changed the file; reloading discards
    that file's unsaved changes.
-3. Edit the text, then select **Save** for that file. Saving creates or replaces
-   only the selected file. Each file can contain up to 16 KiB of UTF-8 text.
+3. Edit the text, then select **Save** for that file. If the editor confirms the file
+   is missing, **Save** creates it. Otherwise, saving replaces only that file. Each file can contain up to 16 KiB of UTF-8 text.
 4. Reload the file to confirm the expected content was stored.
 
 There is no version check: if two people edit a file, the last write wins. Do
@@ -62,10 +62,20 @@ for credential values.
   reachable, then reload. If
   access stays unavailable, have an operator check
   [workspace routing](../deploy/workspace-routing.md#agent-workspace-files).
-- **A save has an unknown outcome:** it may have succeeded. Keep a copy of your
-  edit before you select **Reload** for the affected file. Compare the result
-  with your copy before deciding whether to save again. A failure for one file
-  does not establish what happened to the others.
+- **If you don’t know whether a save succeeded**, select **Check save**.
+  It reads the file without resending your edits. The editor also checks
+  automatically if it sees the Agent version change before a successful reply.
+  If the text matches your draft, you’re done. If it differs, compare the two
+  versions before saving.
+- **If you see “Could not confirm the current contents”**, **Save** stays
+  disabled. Keep your draft and select **Check save** again when the workspace
+  is available. If you left the editor, your draft may stay hidden until the
+  check succeeds.
+  To recreate a file you know was deleted, copy your draft first.
+  **Reload** discards your edits. If it confirms the file is missing, paste
+  your draft and save. If you cannot copy the draft, keep checking instead.
+- **If the editor offers “Save to create it”**, review your text before
+  choosing **Save**. This sends a new write.
 - **The request is rejected:** check that the file has one of the four supported
   names. For a load, check Agent `read` permission. For a save, check Agent
   `operate` permission and the text size.
