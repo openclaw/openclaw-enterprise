@@ -307,9 +307,9 @@ Development logging override variables:
 
 Both Compose files bind PostgreSQL to loopback:
 
-| Variable            | Default | Behavior                                                                                              |
-| ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
-| `OCC_POSTGRES_PORT` | `55432` | Maps `127.0.0.1:<port>` to container port `5432`. Update every PostgreSQL connection URL to match it. |
+| Variable            | Default                     | Behavior                                                                       |
+| ------------------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `OCC_POSTGRES_PORT` | `55432` when unset or empty | Maps `127.0.0.1:<port>` to `5432`. Update PostgreSQL connection URLs to match. |
 
 The fixed bridge CIDR must not overlap another local container network. For a
 second isolated Compose project, select an unused value through

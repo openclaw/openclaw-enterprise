@@ -46,11 +46,11 @@ async function exists(path: string): Promise<boolean> {
 
 // The development worker's Docker Compute Driver preflight requires its runtime images to
 // exist in the local Docker Engine. This case deploys no Agent, so it names the image of the
-// PostgreSQL server the lane already runs (compose.postgres.yaml), which is always present.
+// PostgreSQL server the lane already runs (compose.postgres.service.yaml), which is always present.
 async function localRuntimeImage(): Promise<string> {
-  const compose = await readFile(join(repository, "compose.postgres.yaml"), "utf8");
+  const compose = await readFile(join(repository, "compose.postgres.service.yaml"), "utf8");
   const image = /^\s+image:\s*(\S+)\s*$/m.exec(compose)?.[1];
-  assert.ok(image, "compose.postgres.yaml must name the PostgreSQL image");
+  assert.ok(image, "compose.postgres.service.yaml must name the PostgreSQL image");
   return image;
 }
 

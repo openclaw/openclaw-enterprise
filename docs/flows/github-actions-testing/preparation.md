@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-19 23:19"
-last_updated_session: "authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60"
+updated: "2026-11-24 23:36"
+last_updated_session: "authoring-run/2e4d0492-b360-4c65-9f72-ebb69a66d7c6"
 ---
 
 # CI resource preparation
@@ -134,23 +134,22 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals exclusive bootstrap-directory
-and SQL-copy ownership. It refuses existing paths and retires failed directory
-records. Its container-readable `migrations/init-local.sql` copy is selected by
-`OPENCLAW_CI_POSTGRES_INIT_SQL`.
+`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals bootstrap ownership,
+refuses existing paths, and retires failed directory records.
+`OPENCLAW_CI_POSTGRES_INIT_SQL` selects the staged `migrations/init-local.sql`.
 
-Docker assigns the loopback port. Preparation rejects missing, non-loopback and
-`55432` mappings before connecting. Failed discovery retains pending `0` and
-prevents database preparation. Mixed fixture lanes start PostgreSQL before k3d.
-Model lanes start k3d first and attach PostgreSQL before port discovery: Docker
-can reassign automatic ports on attachment. Tests retain that attachment;
-reverse-order cleanup removes PostgreSQL first.
+`compose.postgres.ci.yaml` ignores the developer port. `OPENCLAW_CI_POSTGRES_PORT`
+requests automatic loopback publication: `0` for Docker, empty for Podman.
+Missing, non-loopback, or `55432` bindings leave pending `0` and block database setup.
+Mixed lanes start PostgreSQL before k3d. Model lanes attach PostgreSQL before
+port discovery to avoid reassignment; cleanup removes PostgreSQL before k3d.
 
-`scripts/ci/cleanup.ts:cleanupComposePostgres` validates the directory against state.
-Unconfirmed ownership preserves contents/state. Directory confirmation alone permits
-empty-directory removal; confirmed SQL is removed after Compose teardown. Unexpected
-contents or teardown failure retain state. Subnet exhaustion preserves the original
-error and planned resource and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
+`scripts/ci/cleanup.ts:cleanupComposePostgres` uses the journaled port (automatic if
+pending), including for retained journals. Directory ownership alone permits
+empty-directory removal; owned SQL follows Compose teardown. Unconfirmed ownership,
+unexpected contents, or teardown failure retain state. See [subnet exhaustion](../../testing/postgresql.md#subnet-pool-exhaustion).
+
+The runner forwards the browser path to Keycloak OIDC and host port to QA Matrix.
 
 `scripts/ci/prepare.ts:readState` rejects malformed lane, selected-file, env, and defaults fields; owners validate resources.
 `prepareLane` atomically publishes without replacement; `prepareFile` registers fresh children. Cleanup verifies files, identity, lane, and path. Worker death remains recoverable; mismatches, symlinks, and failures preserve journals and parent references.
@@ -284,6 +283,8 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 23:36: Document CI ports and Keycloak inputs. (authoring-run/2e4d0492-b360-4c65-9f72-ebb69a66d7c6 - 479aefcd311f5f2e7c53691e6f1a19c6d370e424)
 
 - 2026-11-19 23:19: Stop queued logging pulls after failure. (authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60 - d271eef41c4169a072750dca326fd4a00d19da00)
 

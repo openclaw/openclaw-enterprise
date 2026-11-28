@@ -157,7 +157,7 @@ export function createPostgresPreparation(
   repositoryRoot: string,
   { addResource, writeState, markResourceReady }: PreparationJournal,
 ) {
-  const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
+  const composePostgresFile = join(repositoryRoot, "compose.postgres.ci.yaml");
 
   async function ensurePostgresServer(
     statePath: string,
@@ -216,7 +216,7 @@ export function createPostgresPreparation(
     const podman = basename(docker) === "podman";
     // Podman Compose uses an empty host port for engine-assigned loopback publication.
     const composeEnv = {
-      OCC_POSTGRES_PORT: podman ? "" : "0",
+      OPENCLAW_CI_POSTGRES_PORT: podman ? "" : "0",
       OPENCLAW_CI_POSTGRES_INIT_SQL: initSql,
     };
     try {

@@ -36,7 +36,7 @@ export function composePostgres(name: string, port = 45431) {
     owner: `openclaw-ci-${name}`,
     status: "ready",
     name: `openclaw_ci_pg_${name}`,
-    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    composeFile: join(repositoryRoot, "compose.postgres.ci.yaml"),
     port,
   };
 }

@@ -684,6 +684,7 @@ async function createFixture(t: TestContext, options: FixtureOptions = {}) {
     "compose.podman.yaml",
     "compose.native-admin.yaml",
     "compose.postgres.yaml",
+    "compose.postgres.service.yaml",
   ]) {
     await symlink(join(repository, source), join(fixtureRepository, source));
   }

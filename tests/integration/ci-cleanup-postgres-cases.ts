@@ -79,7 +79,7 @@ function failedDropState(port = 55434) {
     kind: "compose-postgres",
     owner: prefix,
     name: "openclaw_ci_pg_failed_drop",
-    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    composeFile: join(repositoryRoot, "compose.postgres.ci.yaml"),
     port,
   };
   const database = {
@@ -112,7 +112,7 @@ export function registerRoutingResetCase(): void {
       kind: "compose-postgres",
       owner: prefix,
       name: "openclaw_ci_pg_reset_case",
-      composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+      composeFile: join(repositoryRoot, "compose.postgres.ci.yaml"),
       port: postgres.port,
     };
     const database = {
@@ -167,14 +167,20 @@ export function registerPostgresResourceCases(): void {
   test("cleanup continues after a failed database drop and retains only the failed resource", async (t) => {
     const root = await fixture(t);
     const containerLog = join(root, "container.log");
-    const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n", {
-      log: containerLog,
-    });
     const postgres = await laneFakePostgres(t, (query) =>
       query.startsWith("DROP DATABASE ") ? { error: "deliberate drop failure" } : undefined,
     );
+    const docker = await writeCommand(
+      join(root, "bin"),
+      "docker",
+      `case "$3" in */compose.postgres.ci.yaml) ;; *) exit 98 ;; esac
+[ "$OPENCLAW_CI_POSTGRES_PORT" = "${postgres.port}" ]`,
+      { log: containerLog },
+    );
     const statePath = join(root, "state.json");
     const state = failedDropState(postgres.port);
+    // Retained journals from the shared Compose file still own the same CI project.
+    state.resources[0].composeFile = join(repositoryRoot, "compose.postgres.yaml");
     const directory = join(root, `${state.resources[0].name}-bootstrap`);
     await mkdir(directory);
     await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");

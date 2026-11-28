@@ -24,7 +24,7 @@ import {
 // fixtures exercise orchestration and SQL sequencing, not Docker port allocation.
 export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
-  "OCC_POSTGRES_PORT",
+  "OPENCLAW_CI_POSTGRES_PORT",
   "OPENCLAW_CI_POSTGRES_SOCKET_DIR",
   "CI_FIXTURE_LANE",
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -361,7 +361,7 @@ async function fakeCommand({
       assert.match(project, /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
         // Podman Compose needs an explicitly empty host port; Docker Compose uses 0.
-        assert.equal(env.OCC_POSTGRES_PORT, command === "podman" ? "" : "0");
+        assert.equal(env.OPENCLAW_CI_POSTGRES_PORT, command === "podman" ? "" : "0");
         const port = 45000 + postgresServers.size;
         assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
         postgresServers.set(
