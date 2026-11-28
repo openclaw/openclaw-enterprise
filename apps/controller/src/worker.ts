@@ -2504,7 +2504,7 @@ export class ControllerWorker {
       if (previous === undefined) {
         continue;
       }
-      const retargeted = await this.state.transactWithQueue(async (unit, queue) => {
+      const stopResult = await this.state.transactWithQueue(async (unit, queue) => {
         const agent = scopedCandidate
           ? await this.fenceScopedDeployment(unit, claim, scopedCandidate)
           : await this.lockClaimAgent(unit, claim);
@@ -2526,17 +2526,24 @@ export class ControllerWorker {
         ) {
           // Release the live claim so the winning deployment can run immediately.
           await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" });
-          return true;
+          return "retargeted" as const;
         }
-        await unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
+        return unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
           predecessorRevisionId: previous.id,
           candidateRevisionId: claim.revisionId,
           phase: "stopping",
         });
       }, queueOptions);
-      if (retargeted) {
+      if (stopResult === "retargeted") {
         // The transaction already released this claim and refunded its attempt.
         throw new WorkClaimLostError();
+      }
+      if (
+        stopResult?.phase === "stopping" &&
+        stopResult.predecessorRevisionId === previous.id &&
+        stopResult.candidateRevisionId === claim.revisionId
+      ) {
+        this.deployTimings.recordPredecessorStopping(claim.idempotencyKey, stopResult.stoppingAt);
       }
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {

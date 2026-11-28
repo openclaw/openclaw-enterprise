@@ -857,7 +857,8 @@ export function createRepositoryFields(
     } else {
       const name = nextSearchChoice()?.dataset.searchName;
       const summary = state.selected.size ? `${state.selected.size} selected` : "";
-      setText(searchAction, name ? `Enter selects ${name}` : summary);
+      const hint = name ? `In search, Enter selects ${name}` : "";
+      setText(searchAction, summary && hint ? `${summary} in total. ${hint}` : summary || hint);
     }
   }
   function renderResults() {
@@ -944,11 +945,12 @@ export function createRepositoryFields(
             : null,
         ),
       );
-      checkbox.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && checkbox.form) {
-          event.preventDefault();
-          return;
+      checkbox.addEventListener("focus", () => {
+        if (checkbox.matches(":focus-visible")) {
+          row.scrollIntoView({ block: "nearest", inline: "nearest" });
         }
+      });
+      checkbox.addEventListener("keydown", (event) => {
         if (!["ArrowUp", "ArrowDown"].includes(event.key)) {
           return;
         }

@@ -128,6 +128,43 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
   assert.equal(await json.inputValue(), draft);
   assert.equal(patches, 0);
 
+  // A curly quote deep in a pasted list gives a longer repair instruction in a narrow window.
+  await page.setViewportSize({ width: 320, height: 480 });
+  const labels = Array.from({ length: 48 }, (_, index) => `"intake-queue-${index + 1}"`);
+  const listDraft = corrected.replace(
+    '"marker": "corrected"',
+    `"marker": "corrected", "routingLabels": [${labels.join(", ")}, "manual-review"]`,
+  );
+  const pasted = listDraft.replace('"manual-review"', '“manual-review"');
+  const quote = pasted.indexOf("“");
+  assert.ok(quote >= 0);
+  await json.fill(pasted);
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.getByText(/curly quote “.*straight quote/u).waitFor();
+  await nextFrames(page);
+  assert.equal(patches, 0);
+  assert.equal(await json.inputValue(), pasted);
+  assert.equal(await focusedId(page), "configuration-json");
+  assert.deepEqual(
+    await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    [quote, quote],
+  );
+  // Measure the rendered lines before typing can scroll the field.
+  const instructionVisible = await error.evaluate((node) => {
+    const text = document.createRange();
+    text.selectNodeContents(node);
+    const bounds = text.getBoundingClientRect();
+    return bounds.height > 0 && bounds.top >= 0 && bounds.bottom <= window.innerHeight;
+  });
+  assert.ok(instructionVisible, "the full repair instruction is visible before typing");
+  await page.keyboard.press("Delete");
+  await page.keyboard.type('"');
+  assert.equal(await json.inputValue(), listDraft);
+  assert.equal(await error.isHidden(), true);
+
   // Save from the end of the draft so focus alone cannot leave the first line in view.
   for (const viewport of [
     { width: 1440, height: 900 },
@@ -144,7 +181,8 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
     await page.keyboard.press("Tab");
     assert.equal(await save.evaluate((node) => node === document.activeElement), true);
     await page.keyboard.press("Enter");
-    await error.getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.").waitFor();
+    const syntaxMessage = "Invalid JSON at line 1, column 2. Enter a valid JSON object.";
+    await error.getByText(syntaxMessage).waitFor();
     assert.equal(await focusedId(page), "configuration-json");
     assert.equal(await json.inputValue(), syntaxDraft);
     assert.equal(patches, 0);
@@ -155,6 +193,19 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
       { selection: [1, 1], firstLineVisible: true, diagnosticVisible: true },
       `the first line and the full diagnostic are visible together at ${viewport.width}×${viewport.height}`,
     );
+
+    if (viewport.width === 1440) {
+      await page.setViewportSize({ width: 761, height: 513 });
+      await nextFrames(page);
+      assert.equal(await focusedId(page), "configuration-json");
+      assert.equal(await json.inputValue(), syntaxDraft);
+      assert.equal(await error.textContent(), syntaxMessage);
+      assert.equal(patches, 0);
+      const resized = await json.evaluate(jsonErrorVisibility);
+      assert.deepEqual(resized.selection, visible.selection);
+      assert.equal(resized.firstLineVisible, true, "Configuration keeps the caret line visible");
+      assert.equal(resized.diagnosticVisible, true, "Configuration keeps the error visible");
+    }
 
     // Repair from the caret, without moving focus or scrolling to the diagnostic.
     await page.keyboard.press("Delete");
@@ -407,7 +458,18 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.notEqual(misplacedComma, template);
   const commaOffset = misplacedComma.indexOf(",");
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  for (const viewport of [originalViewport, { width: 1024, height: 360 }]) {
+  const shortViewport = { width: 1024, height: 360 };
+  const actions = "#create-agent-form ~ .form-actions";
+  const repairVisible = {
+    selection: [commaOffset, commaOffset],
+    firstLineVisible: true,
+    diagnosticVisible: true,
+  };
+  for (const [viewport, shrink] of [
+    [originalViewport, false],
+    [shortViewport, false],
+    [originalViewport, true],
+  ] as const) {
     await page.setViewportSize(viewport);
     await json.fill(misplacedComma);
     await json.press("Control+End");
@@ -417,16 +479,49 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
       .waitFor();
     assert.equal(await focusedId(page), "configuration-json");
     assert.equal(await json.inputValue(), misplacedComma);
-    const visible = await json.evaluate(jsonErrorVisibility, "#create-agent-form ~ .form-actions");
     assert.deepEqual(
-      visible,
-      { selection: [commaOffset, commaOffset], firstLineVisible: true, diagnosticVisible: true },
+      await json.evaluate(jsonErrorVisibility, actions),
+      repairVisible,
       `Create Agent shows the caret line and full diagnostic above its actions at ${viewport.width}×${viewport.height}`,
     );
+    if (shrink) {
+      // Resizing without touching the editor must leave the same repair visible and focused.
+      await page.setViewportSize(shortViewport);
+      await nextFrames(page);
+      assert.equal(await focusedId(page), "configuration-json");
+      assert.deepEqual(
+        await json.evaluate(jsonErrorVisibility, actions),
+        repairVisible,
+        "Create Agent keeps the caret line and full diagnostic visible when the window shrinks",
+      );
+    }
     await page.keyboard.press("Delete");
     assert.equal(await json.inputValue(), template, "one Delete repairs the misplaced comma");
     assert.equal(await jsonError.isHidden(), true);
     assert.equal(await page.getByLabel("Agent name").inputValue(), "JSON feedback Agent");
+  }
+  await page.setViewportSize(originalViewport);
+
+  // A range error preserves the user's selection, even on the last line of a long draft.
+  const longDraft = overflow.trimEnd();
+  await json.fill(longDraft);
+  await json.press("Control+End");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await create.press("Enter");
+  for (const viewport of [originalViewport, shortViewport, { width: 320, height: 480 }]) {
+    await page.setViewportSize(viewport);
+    await nextFrames(page);
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal((await json.evaluate(jsonErrorVisibility, actions)).diagnosticVisible, true);
+    const end = await json.evaluate((node: HTMLTextAreaElement) => ({
+      selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+      extent: node.scrollHeight - node.clientHeight,
+      remaining: node.scrollHeight - node.scrollTop - node.clientHeight,
+      lineHeight: Number.parseFloat(getComputedStyle(node).lineHeight),
+    }));
+    assert.deepEqual(end.selection, [longDraft.length - 1, longDraft.length, "backward"]);
+    assert.ok(end.extent > 0, "the draft scrolls inside the editor");
+    assert.ok(end.remaining < end.lineHeight, "the selected last line stays inside the editor");
   }
   await page.setViewportSize(originalViewport);
 

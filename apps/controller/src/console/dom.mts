@@ -301,7 +301,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
       kind: "invalid-json",
       offset,
       message: fix
-        ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
+        ? `Invalid JSON at ${where}: ${fix("there")}.`
         : `Invalid JSON at ${where}. Enter a valid JSON object.`,
     };
   }
@@ -764,6 +764,152 @@ export function fieldError(input: HTMLElement) {
     show: (text: string) => setFieldError(input, text),
     clear: () => setFieldError(input, ""),
   };
+}
+
+// After focus has revealed the caret, show the diagnostic too if both fit.
+export function revealEditorError(editor: HTMLTextAreaElement) {
+  const error = fieldErrors.get(editor);
+  if (!error || error.hidden) {
+    return;
+  }
+  const editorTop = editor.getBoundingClientRect().top;
+  const messageBottom = error.getBoundingClientRect().bottom;
+  const viewportHeight = document.documentElement.clientHeight;
+  if (messageBottom > viewportHeight && messageBottom - editorTop <= viewportHeight) {
+    error.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  followEditorError(editor);
+}
+
+const editorErrorTracking = new WeakMap<HTMLTextAreaElement, AbortController>();
+
+// Round toward visibility. If both edges cannot fit, leave the user's position alone.
+function nearestVisibleShift(top: number, bottom: number) {
+  const up = Math.floor(top);
+  const down = Math.ceil(bottom);
+  return down <= up ? Math.max(down, Math.min(up, 0)) : undefined;
+}
+
+// Follow only a correction that was already visible. Focusing the editor again
+// to explain the same error must not cancel the session.
+export function followEditorError(
+  editor: HTMLTextAreaElement & {
+    createValueRange?(
+      start: number,
+      end: number,
+    ): Pick<Range, "getBoundingClientRect"> & { disconnect?(): void };
+  },
+  sticky?: { actions: Element; beforeResize: () => void; isCurrent: () => boolean },
+) {
+  editorErrorTracking.get(editor)?.abort();
+  const error = fieldErrors.get(editor);
+  if (!error || error.hidden || document.activeElement !== editor) {
+    return;
+  }
+  const viewport = document.documentElement;
+  const visibleBottom = () =>
+    sticky
+      ? Math.min(viewport.clientHeight, sticky.actions.getBoundingClientRect().top)
+      : viewport.clientHeight;
+  const tracking = new AbortController();
+  const { signal } = tracking;
+  const stop = () => tracking.abort();
+  const { outlineWidth, outlineOffset } = getComputedStyle(editor);
+  const outset = Math.max(0, Number.parseFloat(outlineWidth) + Number.parseFloat(outlineOffset));
+  const { selectionStart, selectionEnd, selectionDirection } = editor;
+  const range = editor.createValueRange?.(selectionStart, selectionEnd);
+  const outlinedTop = () => editor.getBoundingClientRect().top - outset;
+  const errorShift = (top: number) =>
+    nearestVisibleShift(top, error.getBoundingClientRect().bottom - visibleBottom());
+  function selectionShift(rect: DOMRectReadOnly | undefined) {
+    if (rect && rect.height > 0) {
+      const edge = editor.getBoundingClientRect().top + editor.clientTop;
+      return nearestVisibleShift(rect.top - edge, rect.bottom - edge - editor.clientHeight);
+    }
+    return undefined;
+  }
+  // A selected line near the bottom can fit with the message even if the whole editor cannot.
+  const selection = range?.getBoundingClientRect();
+  const selectionWasVisible = selectionShift(selection) === 0;
+  const repairTop = selection && selectionWasVisible ? selection.top : outlinedTop();
+  if (errorShift(repairTop) !== 0) {
+    range?.disconnect?.();
+    return;
+  }
+
+  // A detached focused field can miss blur. Observe its direct ancestry only
+  // while a correction is active. A fresh focus also ends the old session.
+  const message = error.textContent;
+  const stillFocused = () =>
+    document.activeElement === editor &&
+    error.isConnected &&
+    !error.hidden &&
+    error.textContent === message;
+  const observer = new MutationObserver(() => {
+    if (!stillFocused()) {
+      stop();
+    }
+  });
+  for (let parent = editor.parentNode; parent; parent = parent.parentNode) {
+    observer.observe(parent, { childList: true });
+  }
+  observer.observe(error, { childList: true, attributes: true, attributeFilter: ["hidden"] });
+  editorErrorTracking.set(editor, tracking);
+  signal.addEventListener(
+    "abort",
+    () => {
+      observer.disconnect();
+      range?.disconnect?.();
+      editorErrorTracking.delete(editor);
+    },
+    { once: true },
+  );
+
+  let y = window.scrollY;
+  let { clientWidth, clientHeight } = viewport;
+  for (const event of ["focus", "blur", "input", "pointerdown", "wheel"]) {
+    editor.addEventListener(event, stop, { signal, passive: true });
+  }
+  function stopIfScrolled() {
+    if (window.scrollY !== y) {
+      stop();
+    }
+  }
+  window.addEventListener("scroll", stopIfScrolled, { signal });
+  function onResize() {
+    if (
+      window.scrollY !== y ||
+      !stillFocused() ||
+      sticky?.isCurrent() === false ||
+      editor.selectionStart !== selectionStart ||
+      editor.selectionEnd !== selectionEnd ||
+      editor.selectionDirection !== selectionDirection
+    ) {
+      stop();
+      return;
+    }
+    if (clientWidth === viewport.clientWidth && clientHeight === viewport.clientHeight) {
+      return;
+    }
+    ({ clientWidth, clientHeight } = viewport);
+    sticky?.beforeResize();
+    const line = selectionWasVisible ? range?.getBoundingClientRect() : undefined;
+    const innerShift = selectionShift(line);
+    const shift =
+      errorShift(outlinedTop()) ??
+      (line && innerShift !== undefined ? errorShift(line.top - innerShift) : undefined);
+    if (shift === undefined) {
+      return;
+    }
+    if (innerShift) {
+      editor.scrollBy({ top: innerShift, behavior: "instant" });
+    }
+    if (shift) {
+      window.scrollBy({ top: shift, behavior: "instant" });
+      y = window.scrollY;
+    }
+  }
+  window.addEventListener("resize", onResize, { signal });
 }
 
 type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement;

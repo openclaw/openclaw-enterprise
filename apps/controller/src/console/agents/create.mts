@@ -29,6 +29,7 @@ import {
   element,
   field as formField,
   fieldError,
+  followEditorError,
   jsonObjectDiagnostic,
   setFieldError,
   setHidden,
@@ -2711,6 +2712,16 @@ function renderAgentForm(
     if (reportInvalid && input === configuration) {
       configurationError.show(diagnostic.message);
       focusConfiguration(diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined);
+      followEditorError(configuration, {
+        actions,
+        beforeResize: () => {
+          configuration.style.setProperty(
+            "--create-editor-actions-height",
+            `${Math.ceil(actions.getBoundingClientRect().height)}px`,
+          );
+        },
+        isCurrent: () => context.isCurrent(),
+      });
     } else if (reportInvalid) {
       const details = input.closest("details");
       if (details) {
@@ -2743,15 +2754,14 @@ function renderAgentForm(
     if (error.hidden) {
       return;
     }
-
-    // Show the message above the sticky actions without scrolling the repair line out of view.
-    const visibleBottom = Math.min(
+    // Reveal the message above the sticky actions if the editor can stay in view.
+    const limit = Math.min(
       document.documentElement.clientHeight,
       actions.getBoundingClientRect().top,
     );
-    const overlap = Math.ceil(error.getBoundingClientRect().bottom - visibleBottom);
-    if (overlap > 0 && configuration.getBoundingClientRect().top >= overlap) {
-      window.scrollBy(0, overlap);
+    const shift = Math.ceil(error.getBoundingClientRect().bottom - limit);
+    if (shift > 0 && shift <= configuration.getBoundingClientRect().top) {
+      window.scrollBy(0, shift);
     }
   }
   function hasEnabledChannel(values: Record<string, unknown>) {
@@ -4141,6 +4151,18 @@ function renderAgentForm(
       ? { method: authMethod.value }
       : undefined;
   }
+  form.addEventListener("keydown", (event) => {
+    const { target } = event;
+    if (
+      event.key === "Enter" &&
+      target instanceof HTMLInputElement &&
+      target.form === form &&
+      (target.type === "radio" || target.type === "checkbox")
+    ) {
+      // Enter on a choice can activate the form's submit button.
+      event.preventDefault();
+    }
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     // A restored draft sets the name and files without an input event.

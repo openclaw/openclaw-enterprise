@@ -186,6 +186,125 @@ test("docs build renders every authored page and preserves repository ownership"
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");
 });
 
+test("docs build confines Snippet includes to the docs root", async (t) => {
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-snippets-", {
+    logo: true,
+  });
+  const page = join(fixture, "docs/README.md");
+  const includes = join(fixture, "docs/includes");
+  const outside = join(fixture, "docs-outside");
+  await mkdir(includes);
+  await mkdir(outside);
+  await writeFile(join(includes, "ordinary.txt"), "**Included Markdown**\n");
+  await symlink("ordinary.txt", join(includes, "inside-link.txt"), "file");
+  await writeFile(join(outside, "sentinel.txt"), "outside-snippet-sentinel\n");
+  await symlink(join(outside, "sentinel.txt"), join(includes, "escape.txt"), "file");
+  await writeFile(
+    join(includes, "literal.txt"),
+    ['import Example from "./example.mdx";', '<Snippet file="escape.txt" />', "```"].join("\n"),
+  );
+  await writeFile(
+    page,
+    [
+      "# Snippets",
+      '<Snippet src="includes/inside-link.txt" />',
+      '<Snippet file="includes/escape.txt" />',
+      '<Snippet file="includes/literal.txt" lang="text" />',
+      "",
+    ].join("\n\n"),
+  );
+  const build = buildDocs(fixture);
+  assert.ifError(build.error);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.match(html, /<strong>Included Markdown<\/strong>/);
+  assert.match(html, /import Example from &quot;\.\/example\.mdx&quot;;<\/span>/);
+  assert.match(html, /&lt;Snippet file=&quot;escape\.txt&quot; \/&gt;<\/span>/);
+  assert.ok(html.includes('data-line="3">```</span>'));
+  assert.doesNotMatch(html, /outside-snippet-sentinel/);
+
+  await writeFile(page, '# Snippets\n\n<Snippet file="includes/escape.txt" lang="text" />\n');
+  const escapedCode = buildDocs(fixture, "--check");
+  assert.ifError(escapedCode.error);
+  assert.equal(escapedCode.status, 1, escapedCode.stderr || escapedCode.stdout);
+  assert.match(
+    escapedCode.stderr,
+    /Code snippet outside the documentation root in .*README\.md: includes\/escape\.txt/,
+  );
+  assert.doesNotMatch(escapedCode.stderr + escapedCode.stdout, /outside-snippet-sentinel/);
+});
+
+test("docs build bounds code-fence selections to rendered lines", async (t) => {
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-code-lines-", {
+    logo: true,
+  });
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    [
+      "# Code lines",
+      "",
+      "```text {4-3,1,3} focus=3-2",
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "```",
+      "",
+      "```text highlight=2-1000000 focus=999999-1000000",
+      "plain",
+      "bounded",
+      "last",
+      "```",
+      "",
+    ].join("\n"),
+  );
+  const build = buildDocs(fixture);
+  assert.ifError(build.error);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.deepEqual(
+    [...html.matchAll(/<span class="(code-line[^"]*)" data-line="(\d+)">([^<]*)<\/span>/g)].map(
+      ([, classes, line, content]) => [classes, line, content],
+    ),
+    [
+      ["code-line is-highlighted is-dimmed", "1", "first"],
+      ["code-line", "2", "second"],
+      ["code-line is-highlighted", "3", "third"],
+      ["code-line is-highlighted is-dimmed", "4", "fourth"],
+      ["code-line", "1", "plain"],
+      ["code-line is-highlighted", "2", "bounded"],
+      ["code-line is-highlighted", "3", "last"],
+    ],
+  );
+});
+
+test("docs build ignores unsafe code-fence line numbers", async (t) => {
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-unsafe-lines-", {
+    logo: true,
+  });
+  const unsafe = "9007199254740992";
+  const nonFinite = "9".repeat(310);
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    [
+      "# Code lines",
+      "",
+      "```text " + `highlight=${unsafe}-${unsafe},1-${unsafe},2 focus=1-${nonFinite},2.5`,
+      "first",
+      "second",
+      "```",
+      "",
+    ].join("\n"),
+  );
+  // buildDocs runs the real renderer in a subprocess with a 30-second timeout.
+  const build = buildDocs(fixture);
+  assert.ifError(build.error);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.match(html, /<span class="code-line" data-line="1">first<\/span>/);
+  assert.match(html, /<span class="code-line is-highlighted" data-line="2">second<\/span>/);
+});
+
 test("docs validation rejects broken links, anchors and navigation through the CLI", async (t) => {
   const { directory: fixture, config } = await createDocsFixture(t, "enterprise-docs-check-", {
     pages: ["README", "example"],

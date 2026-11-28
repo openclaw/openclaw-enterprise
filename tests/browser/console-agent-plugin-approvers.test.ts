@@ -698,6 +698,30 @@ async function conflictFeedback(response: Response, dialog: Locator) {
   return { advice, feedback };
 }
 
+test("Back keeps focus when saved plugin tools finish loading", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  await ui.page.setViewportSize({ width: 1100, height: 844 });
+  const back = ui.button("Back to plugins");
+  const focused = (node: Element) => node === node.ownerDocument.activeElement;
+  const held = ui.holdNextDetails();
+  try {
+    await ui.button("Alpha").click();
+    await within(held.started, "the pending plugin details read");
+    await ui.page.keyboard.press("Shift+Tab");
+    assert.equal(await back.evaluate(focused), true);
+    await discoveryResponse(ui.page, `${ui.catalogUrl}/details`, async () => held.release());
+  } finally {
+    held.release();
+  }
+  await ui.dialog.locator('details[data-tool="app_hosted/search"]').waitFor();
+  assert.equal(await back.evaluate(focused), true, "Back remains focused after the tool response");
+  await ui.page.keyboard.press("Enter");
+  await ui.button("Alpha").waitFor();
+  const search = ui.dialog.getByRole("searchbox", { name: "Search plugins" });
+  assert.equal(await search.evaluate(focused), true);
+  await ui.checkDraft();
+});
+
 test("Saved plugin details conflict offers manual retry and keeps the draft", async (t) => {
   const ui = await savedPluginConflictFixture(t);
   await ui.loadDetails("Beta");
@@ -846,6 +870,131 @@ test("Saved plugin catalog conflict revokes previously loaded Add authority", as
   await ui.button("Add Beta").click({ trial: true });
   await ui.checkDraft();
   assert.deepEqual(ui.reads(), [...reads, query, { pluginId: "remote-beta" }]);
+});
+
+test("Unreadable Plugin selections JSON keeps tool details without claiming inheritance", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  const { page, dialog } = ui;
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const input = page.getByLabel("Plugin selections JSON", { exact: true });
+  const done = ui.button("Done");
+  const tool = ui.tool("Original Alpha tool");
+  const row = dialog.locator('details[data-tool="app_hosted/search"]');
+  const enablement = row.getByLabel("Enable Original Alpha tool", { exact: true });
+  const override = row.getByText("Overrides", { exact: true });
+
+  await ui.loadDetails("Alpha");
+  await tool.waitFor();
+  await ui.button("Add Alpha").click();
+  await tool.click();
+  await enablement.selectOption("false");
+  await override.waitFor();
+  const draft = await input.inputValue();
+  const filter = dialog.getByRole("searchbox", { name: "Filter tools", exact: true });
+  const toolTotal = dialog.getByRole("heading", { name: "Tools (1)", exact: true });
+  const noMatchesGuidance = "No matching tools. Change or clear the filter.";
+  const noMatches = dialog.getByRole("status").filter({ hasText: noMatchesGuidance });
+  const readsBeforeFilter = ui.reads();
+  const filterTop = () => filter.evaluate((node) => node.getBoundingClientRect().top);
+
+  await row.locator("summary").focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await filter.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await page.keyboard.type("Alpha");
+  assert.equal(await filter.inputValue(), "Alpha");
+  await tool.waitFor();
+  assert.equal(await row.evaluate((node) => node.hasAttribute("open")), true);
+  await nextFrames(page);
+  const topBeforeNoMatches = await filterTop();
+  await page.keyboard.press("z");
+  assert.equal(
+    await filter.evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+    "The filter keeps focus when the last tool disappears",
+  );
+  await tool.waitFor({ state: "hidden" });
+  assert.equal(await toolTotal.isVisible(), true);
+  assert.equal(await noMatches.count(), 1, "The tool filter exposes one no-match status");
+  assert.equal(await noMatches.isVisible(), true);
+  assert.equal(await noMatches.innerText(), noMatchesGuidance);
+  await nextFrames(page);
+  assert.equal(
+    Math.abs((await filterTop()) - topBeforeNoMatches) <= 1,
+    true,
+    "The keyboard-focused tool filter keeps its viewport position when the last match disappears",
+  );
+  // Put the message at the bottom of the pane. The returning tool title needs more room.
+  await noMatches.evaluate((node) => node.scrollIntoView({ block: "end" }));
+  const pane = await dialog.locator(".plugin-detail").boundingBox();
+  const message = await noMatches.boundingBox();
+  assert.ok(pane && message);
+  const paneBottom = pane.y + pane.height;
+  assert.ok(
+    Math.abs(message.y + message.height - paneBottom) <= 1,
+    "The message starts at the bottom of the pane",
+  );
+  await page.keyboard.press("Backspace");
+  assert.equal(await filter.inputValue(), "Alpha");
+  await tool.waitFor();
+  await noMatches.waitFor({ state: "hidden" });
+  await nextFrames(page);
+  const field = await filter.boundingBox();
+  const title = await tool.boundingBox();
+  assert.ok(field && title);
+  assert.equal(
+    field.y >= pane.y && title.y + title.height <= paneBottom,
+    true,
+    "Backspace reveals the returning tool title without hiding the filter",
+  );
+  await page.keyboard.press("z");
+  await noMatches.waitFor();
+  assert.deepEqual(ui.reads(), readsBeforeFilter);
+
+  // Repair guidance should preserve catalog browsing while the override is unreadable.
+  await done.click();
+  await input.press("Control+End");
+  await page.keyboard.press("Backspace");
+  assert.equal(await input.inputValue(), draft.slice(0, -1));
+  await configure.click();
+  await dialog.getByRole("alert").filter({ hasText: "Fix Plugin selections JSON" }).waitFor();
+  assert.equal(await filter.isEnabled(), true, "Tool search stays available during repair");
+  assert.equal(await filter.inputValue(), "Alphaz");
+  await tool.waitFor({ state: "hidden" });
+  assert.equal(await toolTotal.isVisible(), true);
+  await noMatches.waitFor();
+
+  const readsBeforeClear = ui.reads();
+  await filter.click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Backspace");
+  assert.equal(await filter.inputValue(), "");
+  await tool.waitFor();
+  await noMatches.waitFor({ state: "hidden" });
+  assert.equal(await filter.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.deepEqual(ui.reads(), readsBeforeClear);
+
+  assert.equal(
+    await row.locator(".badge").count(),
+    0,
+    "Malformed Plugin JSON falsely shows inherited tool policy",
+  );
+  assert.equal(await row.locator("input, select, button").count(), 0);
+  if (!(await row.evaluate((node) => node.hasAttribute("open")))) {
+    await tool.click();
+  }
+  await row.getByText("Provided by app_hosted", { exact: true }).waitFor();
+
+  await done.click();
+  await input.press("Control+End");
+  await page.keyboard.insertText("}");
+  await configure.click();
+  await override.waitFor();
+  await enablement.waitFor();
+  assert.equal(await enablement.inputValue(), "false");
+  await done.click();
+  assert.equal(await input.inputValue(), draft);
+  await input.fill(conflictDraft);
+  await ui.checkDraft();
 });
 
 const googlePluginId = "occ-plugin:google@1.0.0";
@@ -2460,8 +2609,13 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
     }
     const { createPluginFields } = module;
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
-    const beta = { id: "beta", name: "Beta", tools: [] };
-    const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+    const beta = { id: "beta", name: "Beta", available: false, tools: [] };
+    const catalog: PluginFieldCatalog = {
+      status: "ready",
+      canLoad: true,
+      entries: [alpha, beta],
+      setup: { message: "Connect plugin accounts before deployment.", links: [] },
+    };
     const input = globalThis.document.createElement("textarea");
     input.id = "plugin-live-selections";
     input.value = "{}";
@@ -2515,6 +2669,12 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.evaluate(() => globalThis.showPluginPage2());
   await dialog.getByText("Page 2 · 2 plugins", { exact: true }).waitFor();
   assert.deepEqual(await liveWrites(), ["Page 2 · 2 plugins"]);
+  const alphaRow = pluginRow(dialog, "alpha");
+  const card = pluginCard(dialog, "alpha");
+  assert.equal(await alphaRow.locator(".badge").textContent(), "Not selected");
+  const add = card.getByRole("button", { name: "Add Alpha", exact: true });
+  await add.waitFor();
+
   const invalid =
     "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.";
   await page.evaluate(() => globalThis.showPluginPage2("["));
@@ -2527,6 +2687,52 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   });
   await page.evaluate(() => globalThis.showPluginPage2("["));
   assert.deepEqual(await liveWrites(), []);
+
+  // Alpha can still be browsed, but neither view knows whether it is selected.
+  const alphaHeading = card.getByRole("heading", { name: "Alpha" });
+  await alphaHeading.waitFor();
+  await alphaRow.waitFor();
+  assert.equal(await alphaRow.locator(".badge").count(), 0);
+  assert.equal(await card.locator(".plugin-detail-header .badge").count(), 0);
+  assert.equal(await add.count(), 0);
+
+  // At phone width the detail covers the list, so keyboard navigation must return to it.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await alphaRow.waitFor({ state: "hidden" });
+  await alphaHeading.focus();
+  const back = dialog.getByRole("button", { name: "Back to plugins", exact: true });
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await back.evaluate((node) => document.activeElement === node), true);
+  await page.keyboard.press("Enter");
+  const search = dialog.getByRole("searchbox", { name: "Search plugins", exact: true });
+  assert.equal(await search.evaluate((node) => document.activeElement === node), true);
+
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog
+    .getByText("Choose Done, then edit Plugin selections JSON.", { exact: true })
+    .waitFor();
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+
+  // Catalog availability, unlike selection state, does not depend on the draft.
+  const beta = pluginRow(dialog, "beta");
+  await beta.waitFor();
+  assert.equal(await beta.locator(".badge").textContent(), "Unavailable");
+  await beta.click();
+  const betaCard = pluginCard(dialog, "beta");
+  assert.equal(await betaCard.locator(".plugin-detail-header .badge").textContent(), "Unavailable");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const input = page.locator("#plugin-live-selections");
+  assert.equal(await input.inputValue(), "[");
+
+  // A typo should neither insert nor remove the setup reminder above the editor.
+  const reminder = page.locator(".plugin-setup-reminder");
+  assert.equal(await reminder.isVisible(), false);
+  await input.fill('{"alpha":{"enabled":false}}');
+  assert.equal(await reminder.isVisible(), true);
+  await input.fill("[");
+  assert.equal(await reminder.isVisible(), true);
+  await input.fill("{}");
+  assert.equal(await reminder.isVisible(), false);
 });
 
 test("Create Agent searches approvers with a search-only Slack Source", async (t) => {
@@ -3082,6 +3288,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
   await savedNotice.waitFor();
+  // The old editor announces the save before the replacement can accept the next edit.
+  await waitForEnabled(page.getByRole("button", { name: "Configure plugins", exact: true }));
   assert.equal(await defaultMode.locator("option:checked").textContent(), "Use OpenClaw routing");
   assert.equal(await accessibleDescription(defaultMode), "No default approver list is set.");
 
@@ -3523,27 +3731,151 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
     '"destructiveEnabled":1e400',
   );
   await summary.click();
+  // Save from the top of a long draft. The next edit should repair the offscreen quote.
+  const originalViewport = page.viewportSize();
+  assert.ok(originalViewport);
+  await page.setViewportSize({ width: 640, height: 360 });
+  const corrected = "\n".repeat(60) + '{"sample":{"enabled":true}}';
+  const pasted = corrected.replace('{"', "{“");
+  const offset = pasted.indexOf("“");
+  const error = page.locator("#agent-plugins-error");
+  await input.fill(pasted);
+  await input.press("Control+Home");
+  const atLastLine = () =>
+    input.evaluate((node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 1);
+  assert.equal(await atLastLine(), false, "the last line starts outside the editor");
+  const beforeRepair = agentRequests().length;
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.waitFor();
+  await nextFrames(page);
+  assert.equal(await input.inputValue(), pasted);
+  assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+  assert.deepEqual(
+    await input.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    [offset, offset],
+    "Save places the caret before the curly quote",
+  );
+  assert.equal(await atLastLine(), true, "the editor reveals the last line before typing");
+  assert.match((await error.textContent()) ?? "", /curly quote “.*straight quote/u);
+  const editorBox = await input.boundingBox();
+  const errorBox = await error.boundingBox();
+  assert.ok(editorBox && editorBox.y >= 0, "the editor starts onscreen");
+  assert.ok(errorBox && errorBox.y >= 0 && errorBox.y + errorBox.height <= 360);
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.keyboard.type('"');
+  assert.equal(await input.inputValue(), corrected);
+  assert.equal(await error.isHidden(), true);
+  assert.equal(
+    agentRequests().length,
+    beforeRepair,
+    "neither invalid Save nor editing sends a request",
+  );
+  // Enlarge the editor, then shrink the window while the refused draft still has focus.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await input.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await nextFrames(page);
+  const box = await input.boundingBox();
+  assert.ok(box);
+  const gripX = box.x + box.width - 4;
+  const gripY = box.y + box.height - 4;
+  await page.mouse.move(gripX, gripY);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(gripX, gripY + 144, { steps: 6 });
+  } finally {
+    await page.mouse.up();
+  }
+  const grown = await input.boundingBox();
+  assert.ok(grown && grown.height >= box.height + 64, "native grip enlarges the editor");
+  await input.fill(pasted);
+  await input.press("Control+Home");
+  assert.equal(await atLastLine(), false);
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.getByText(/curly quote “.*straight quote/u).waitFor();
+  const message = await error.textContent();
+  for (const height of [900, 513]) {
+    if (height === 513) {
+      await page.setViewportSize({ width: 761, height });
+    }
+    await nextFrames(page);
+    assert.equal(await atLastLine(), true);
+    // The last line can be internally scrolled into view but clipped by a panel or the viewport.
+    const state = await input.evaluate((node: HTMLTextAreaElement) => {
+      const { paddingBottom, paddingLeft, lineHeight } = getComputedStyle(node);
+      const { top, left } = node.getBoundingClientRect();
+      const lastLineBottom = node.scrollHeight - Number.parseFloat(paddingBottom);
+      const bottom = top + node.clientTop + lastLineBottom - node.scrollTop;
+      const x = left + node.clientLeft + Number.parseFloat(paddingLeft) + 1;
+      const exposed = [bottom - Number.parseFloat(lineHeight) + 1, bottom - 1].every(
+        (y) => document.elementFromPoint(x, y) === node,
+      );
+      return {
+        focused: node === document.activeElement,
+        selection: [node.selectionStart, node.selectionEnd],
+        exposed,
+      };
+    });
+    assert.equal(state.focused, true);
+    assert.deepEqual(state.selection, [offset, offset]);
+    assert.equal(state.exposed, true, "Plugins keeps the caret line visible");
+    assert.equal(await input.inputValue(), pasted);
+    assert.equal(await error.textContent(), message);
+    const diagnostic = await error.boundingBox();
+    assert.ok(diagnostic && diagnostic.y >= 0 && diagnostic.y + diagnostic.height <= height);
+  }
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.keyboard.type('"');
+  assert.equal(await input.inputValue(), corrected);
+  assert.equal(await error.isHidden(), true);
+  assert.equal(agentRequests().length, beforeRepair, "resizing and repairing send no request");
+  await page.setViewportSize(originalViewport);
+
   // Save must open the raw editor and explain the refusal before its GET preflight or PATCH.
-  for (const raw of [bad, bad.replace("1e400", "-1e400"), "{", "[]", "null"]) {
+  const numberError = "A number is too large or too small to save. Use a number closer to zero.";
+  const shapeError = "Enter a valid Plugin selections JSON object.";
+  for (const [raw, message] of [
+    [bad, numberError],
+    [bad.replace("1e400", "-1e400"), numberError],
+    ["{", "Invalid JSON at line 1, column 2. Enter a valid JSON object."],
+    ["[]", shapeError],
+    ["null", shapeError],
+  ] as const) {
     await input.fill(raw);
     await summary.click();
     const before = agentRequests().length;
     await save.click();
-    await page
-      .getByText(
-        raw.includes("1e400")
-          ? "A number is too large or too small to save. Use a number closer to zero."
-          : "Enter a valid Plugin selections JSON object.",
-        { exact: true },
-      )
-      .waitFor();
+    await page.getByText(message, { exact: true }).waitFor();
     assert.equal(await input.inputValue(), raw);
     assert.equal(await input.evaluate((node) => document.activeElement === node), true);
     assert.equal(await input.isVisible(), true);
     assert.equal(agentRequests().length, before);
   }
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const done = dialog.getByRole("button", { name: "Done", exact: true });
+  const configured = dialog.getByRole("button", { name: "Configured plugins", exact: true });
+  const status = dialog.locator(".plugin-browser-status [role=status]");
+  const counts = page.locator(".plugin-fields > p.hint");
+  const empty = dialog.getByText("No plugins configured. Choose Available plugins to add one.");
+
+  await input.fill("{}");
+  assert.match(await counts.innerText(), /^0 plugins configured\./);
+  await configure.click();
+  await configured.click();
+  await empty.waitFor();
+  assert.equal(await status.textContent(), "0 configured plugins");
+  await done.click();
+
   await input.fill(bad);
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  assert.equal(
+    await counts.textContent(),
+    "Fix Plugin selections JSON to see which plugins are configured.",
+  );
+  await configure.click();
+  await configured.click();
   await dialog
     .getByText(
       "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.",
@@ -3552,7 +3884,18 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
     .waitFor();
   assert.equal(await input.inputValue(), bad);
   assert.equal(await dialog.evaluate((node) => node.contains(document.activeElement)), true);
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.doesNotMatch((await status.textContent()) ?? "", /\b\d+ configured plugins?\b/);
+  assert.equal(await empty.count(), 0);
+  await done.click();
+
+  // Repair to a disabled selection: disabled is still configured.
+  await input.fill(JSON.stringify({ [id]: { enabled: false } }));
+  assert.match(await counts.innerText(), /^1 plugin configured\./);
+  await configure.click();
+  await configured.click();
+  await pluginRow(dialog, id).getByText("Disabled", { exact: true }).waitFor();
+  assert.equal(await status.textContent(), "1 configured plugin");
+  await done.click();
   assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, initial);
 
   // Valid JSON with an ill-typed policy still belongs to the real Driver's refusal path.
