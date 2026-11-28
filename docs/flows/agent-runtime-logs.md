@@ -1,14 +1,14 @@
 ---
 created: 2026-09-30
-updated: 2026-11-22
-last_updated_session: authoring-run/780fdd65-c36c-4e49-96d0-82230c495d93
+updated: 2026-11-27
+last_updated_session: authoring-run/e05334f8-89d1-41d6-864a-6e21705dbe0c
 ---
 
 # Agent runtime logs flow
 
 ## Overview
 
-Authorized runtime status and log reads return size-limited, redacted records. Downloads stay local.
+Authorized reads return redacted, size-limited records; downloads stay local.
 
 ## Entry Points
 
@@ -142,12 +142,12 @@ or a short uncut Driver page, and persists while time stays unchanged. Otherwise
 matching-time text stays suppressed; the page advancing time reports
 `window_exceeded` at it. Enlarging a cut tail must not reveal old occurrences as new. Legacy counts are inferred only below
 16 hashes. Byte cuts preserve counts for complete frontiers.
-It emits `stream_replaced`,
-`window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
-`runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
-`SanitizedRuntimeLogRecord`. `page-budget.ts` measures serialized pages,
-signed cursors and the HTTP envelope against 512 KiB. Oversized pages shrink to a fitting, not maximal, prefix without new I/O or audits. Fetched masking/withholding persist;
-state advances through delivered rows.
+It emits `stream_replaced`, `window_exceeded`, `cursor_expired` or `truncated` gaps.
+Only `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk` produces `SanitizedRuntimeLogRecord`.
+`runtime-logs/redact.ts:redactArgvCredentials` fully masks recognized credential arguments.
+`page-budget.ts` caps serialized pages, signed cursors and HTTP envelopes at 512 KiB.
+Oversized pages return a fitting, not necessarily maximal, prefix without new I/O or audits.
+Fetched masking/withholding persist; delivered rows advance state.
 
 Signed `pemOpen`/`pemAfterTime` describe delivered boundaries, never fetched overlap.
 Timestamp order is validated through the last delivered line; each line is
@@ -267,6 +267,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-27 08:56: Mask quoted arguments. (authoring-run/e05334f8-89d1-41d6-864a-6e21705dbe0c - 5601b4fe3a27ad6809b6921aef4fa51a44b4d2ec)
 
 - 2026-11-22 16:53: Distinguish runtime paths. (authoring-run/780fdd65-c36c-4e49-96d0-82230c495d93 - 3eedffbaae63cdc1b006e51d49b88504462d2a5c)
 
