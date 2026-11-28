@@ -4142,6 +4142,274 @@ test("A failed deployment keeps a parked click on its Deployment tab", async (t)
   assert.equal(await failure.isVisible(), true);
 });
 
+async function queuedReplacement(
+  t: TestContext,
+  namespaceName: string,
+  agentName: string,
+  draftValues?: Parameters<Fixture["updateConfiguration"]>[2],
+) {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, namespaceName, agentName);
+  const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  if (draftValues) {
+    await fixture.updateConfiguration(namespace.id, agent.configurationId, draftValues);
+  }
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  await page.route(recordUrl, (route) => route.fulfill(record));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, current.id, "configuration"),
+  );
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+
+  const pausePoll = async () => {
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  };
+  const poll = async () => {
+    const response = responseTo(page, "GET", recordUrl);
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    assert.equal((await response).status(), 200);
+  };
+  const completeReplacement = async () => {
+    // Let the worker outcome paint before the slower Agent read reports that v2 replaced v1.
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const reread = await holdRequests(t, page, agentUrl, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    });
+    await fixture.activateRevision(namespace.id, agent.id, pending.id, current.id);
+    record = deploymentStatusResponse(pending, { status: "succeeded" });
+    await poll();
+    assert.equal(required(await reread.requested).status(), 200);
+    await expectDeploymentOutcome(page, "Completed", { reveal: false });
+
+    return async function showHistoricalSnapshot() {
+      reread.release();
+      await page.clock.resume();
+      await page.getByText(/^Historical version · read-only admitted snapshot\./).waitFor();
+      await waitForIdleFetches(page);
+      await nextFrames(page);
+      assert.equal(await versionOption(page, 2).textContent(), "v2 · Selected for service");
+    };
+  };
+  return { fixture, namespace, agent, page, current, writes, pausePoll, poll, completeReplacement };
+}
+
+test("A parked click opens Deployment after a replacement succeeds", async (t) => {
+  const { page, current, writes, pausePoll, completeReplacement } = await queuedReplacement(
+    t,
+    "Replacement",
+    "Parked tab",
+  );
+
+  // The reader scrolls, then rests the pointer just inside Deployment's top edge.
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await page.mouse.move(720, 675);
+  await page.mouse.wheel(0, 120);
+  await page.waitForFunction(() => globalThis.scrollY === 120);
+  const box = required(await deployment.boundingBox());
+  const point = { x: Math.floor(box.x + box.width / 2), y: Math.ceil(box.y) + 6 };
+  await page.mouse.move(point.x, point.y);
+  await nextFrames(page);
+  const hitsDeployment = () =>
+    deployment.evaluate(
+      (node, { x, y }) => node.contains(globalThis.document.elementFromPoint(x, y)),
+      point,
+    );
+  assert.equal(await hitsDeployment(), true);
+  await pausePoll();
+  const showHistoricalSnapshot = await completeReplacement();
+  assert.equal(
+    await hitsDeployment(),
+    true,
+    "the pointer still hits Deployment before the refresh",
+  );
+  await showHistoricalSnapshot();
+
+  // A locator click would follow the tab if it moved out from under the pointer.
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await deployment.getAttribute("aria-selected"),
+    "true",
+    "the parked click opens Deployment",
+  );
+  await page.getByRole("tabpanel", { name: "Deployment", exact: true }).waitFor();
+  assert.equal(await versionChooser(page).inputValue(), current.id);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), current.id);
+  await waitForIdleFetches(page);
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A parked click opens Draft credentials after a replacement succeeds", async (t) => {
+  const draftValues = nativeValues("v2", { providerModel: "gpt-5.1" });
+  const { fixture, namespace, agent, page, current, writes, pausePoll, poll, completeReplacement } =
+    await queuedReplacement(t, "Reading v1", "Draft link", draftValues);
+  const configuration = page.getByRole("tabpanel", { name: "Configuration", exact: true });
+  const link = configuration.getByRole("link", { name: "Draft credentials", exact: true });
+  const currentNotice = page.getByText("Current version · read-only admitted snapshot.", {
+    exact: true,
+  });
+  await currentNotice.waitFor();
+  await page.evaluate(() => globalThis.document.fonts.ready);
+
+  // The reader scrolls to the snapshot and rests the pointer at the center of the link.
+  await link.evaluate((node) =>
+    node.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }),
+  );
+  assert.ok((await page.evaluate(() => globalThis.scrollY)) > 0);
+  const box = required(await link.boundingBox());
+  const point = { x: Math.floor(box.x + box.width / 2), y: Math.floor(box.y + box.height / 2) };
+  await page.mouse.move(point.x, point.y);
+  await nextFrames(page);
+  const hitsCredentials = () =>
+    link.evaluate(
+      (node, { x, y }) => node.contains(node.ownerDocument.elementFromPoint(x, y)),
+      point,
+    );
+  assert.equal(await hitsCredentials(), true);
+
+  await pausePoll();
+  await poll();
+  await page.clock.resume();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  assert.equal(await hitsCredentials(), true, "an unchanged poll keeps the link under the pointer");
+
+  await pausePoll();
+  const showHistoricalSnapshot = await completeReplacement();
+  assert.equal(await currentNotice.isVisible(), true);
+  assert.equal(await hitsCredentials(), true, "completion keeps the link under the pointer");
+  await showHistoricalSnapshot();
+  assert.equal(await versionChooser(page).inputValue(), current.id);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), current.id);
+
+  // A locator click would follow a moved link. Use the pointer parked before both polls.
+  const parkedPointHitsLink = await hitsCredentials();
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    parkedPointHitsLink,
+    true,
+    "the historical snapshot keeps Draft credentials under the pointer",
+  );
+
+  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  await page.waitForURL(
+    (url) =>
+      url.origin === draft.origin &&
+      url.pathname === draft.pathname &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("revision") === "draft" &&
+      url.searchParams.get("tab") === "credentials",
+  );
+  // The address changes before the draft mounts. Wait for the draft-only Credentials control.
+  const settled = page.locator(settledView);
+  await settled
+    .getByRole("tabpanel", { name: "Credentials", exact: true })
+    .getByRole("button", { name: "Save authentication source", exact: true })
+    .waitFor();
+  assert.equal(await versionChooser(page).inputValue(), "draft");
+  assert.equal(
+    await page.getByRole("tab", { name: "Credentials", selected: true, exact: true }).count(),
+    1,
+  );
+  await waitForIdleFetches(page);
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A slow return to retained Draft credentials keeps the wait in view", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Draft return", "Retained draft");
+  const { revision: historical } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, historical.id);
+  const viewport = { width: 390, height: 844 };
+  await page.setViewportSize(viewport);
+  await trackSettledFetches(page);
+
+  // Follow the same link twice so the second visit rechecks a previously opened draft.
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, historical.id, "configuration"),
+  );
+  const settled = page.locator(settledView);
+  const link = settled.getByRole("link", { name: "Draft credentials", exact: true });
+  const save = settled.getByRole("button", { name: "Save authentication source", exact: true });
+  await link.click();
+  await save.waitFor();
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await versionChooser(page).selectOption(historical.id);
+  await link.waitFor();
+  await waitForIdleFetches(page);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await link.focus();
+  await link.evaluate((node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  const scrollY = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrollY > 0, "the reader has scrolled to the snapshot link");
+
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const checking = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+  const original = required(await link.elementHandle());
+  const linkTop = required(await original.boundingBox()).y;
+  const slowRead = { method: "GET", once: true, afterServer: true };
+  const hold = await holdRequests(t, page, agentUrl, slowRead);
+  try {
+    await page.keyboard.press("Enter");
+    assert.equal(required(await hold.requested).status(), 200);
+    await checking.waitFor();
+    assert.equal(await checking.count(), 1);
+    assert.ok(
+      await original.evaluate((node) => node.isConnected && node.closest("[inert]") !== null),
+    );
+    assert.equal(await save.count(), 0);
+
+    // A status above the viewport still matches Playwright's visible check. Measure its text.
+    const bounds = await checking.evaluate((node) => {
+      const text = node.ownerDocument.createRange();
+      text.selectNodeContents(node);
+      const { left, top, right, bottom } = text.getBoundingClientRect();
+      return { left, top, right, bottom };
+    });
+    const { left, top, right, bottom } = bounds;
+    assert.ok(
+      left >= 0 &&
+        right > left &&
+        right <= viewport.width &&
+        top >= 0 &&
+        bottom > top &&
+        bottom <= viewport.height,
+      `the full waiting message must be in the viewport: ${JSON.stringify(bounds)}`,
+    );
+    assert.ok(
+      Math.abs(required(await original.boundingBox()).y - linkTop) < 1,
+      "the link stays in place",
+    );
+    assert.equal(await page.evaluate(() => globalThis.scrollY), scrollY);
+  } finally {
+    hold.release();
+  }
+
+  await save.waitFor();
+  await waitForIdleFetches(page);
+  await page.waitForFunction(versionDetailInView);
+  assert.equal(await checking.count(), 0);
+  assert.equal(await versionChooser(page).inputValue(), "draft");
+  assert.equal(await focusedTab(page), "Credentials");
+  assert.deepEqual(writeRequests(requests), []);
+});
+
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
 // sat under the open Deployment details, below the fold at 1440, and the failure's error showed

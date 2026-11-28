@@ -16,6 +16,7 @@ import {
   element,
   focusSaveOutcome,
   jsonObjectDiagnostic,
+  revealEditorError,
   revealStatus,
   setHidden,
   setText,
@@ -623,15 +624,23 @@ export function renderAgentPlugins(
     }
     const diagnostic = jsonObjectDiagnostic(input.value);
     if (diagnostic.kind !== "valid") {
+      const offset = diagnostic.kind === "invalid-json" ? diagnostic.offset : undefined;
       input.setCustomValidity(
-        diagnostic.kind === "number-range"
+        diagnostic.kind === "number-range" || offset !== undefined
           ? diagnostic.message
           : "Enter a valid Plugin selections JSON object.",
       );
+      if (offset !== undefined) {
+        // validateFields focuses the editor, which scrolls the selected position into view.
+        input.setSelectionRange(offset, offset);
+      }
       // The error goes under the field, opening its section, without the browser's bubble; the
       // status line does not repeat it.
       validateFields([input]);
       feedback.textContent = "";
+      if (offset !== undefined) {
+        revealEditorError(input);
+      }
       return;
     }
     const plugins = diagnostic.value;

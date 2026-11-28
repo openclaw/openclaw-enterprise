@@ -10,7 +10,7 @@ import { selfSigned, signedLeaf } from "../../../tests/helpers/certificates.ts";
 import {
   agentPods,
   chatTurn,
-  deployAgent,
+  deployAgentRevision,
   idHash,
   readyGateway,
   stopAgent,
@@ -24,6 +24,7 @@ import {
   run,
   waitFor,
   waitForChannelProxyReadiness,
+  type ChannelProxyDeployment,
   type SmokeStep,
 } from "./process.ts";
 import { kubectl, modelEvents, wireField, type SmokeStack } from "./setup.ts";
@@ -680,10 +681,15 @@ async function agentAuditRows(stack: SmokeStack, agentId: string): Promise<unkno
   return rows;
 }
 
+interface ProxyDeployment {
+  admission: CodexAdmission;
+  revisionId: string;
+  readGateway: () => Promise<GatewayPod>;
+}
+
 async function containment(
   stack: SmokeStack,
-  admission: CodexAdmission,
-  revisionId: string,
+  { admission, revisionId, readGateway }: ProxyDeployment,
   credentials: string[],
   harnessPolicy: unknown,
 ) {
@@ -694,7 +700,7 @@ async function containment(
     return [value, Buffer.from(value).toString("base64"), token, decoded, password];
   });
   const base = `/namespaces/${stack.namespaceId}/agents/${admission.agent.id}`;
-  const gateway = await readyGateway(stack, admission.agent.id, revisionId);
+  const gateway = await readGateway();
   const pods = await agentPods(stack, admission.agent.id);
   const harness = pods.find(
     (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent",
@@ -832,12 +838,27 @@ export async function proveControlledChannelProxy(
       enableSlack(stack, a, "a", http),
       enableSlack(stack, b, "b", https),
     ]);
-    const [aRevision, bRevision] = await smokeStep("channel-proxy-initial-deploy", () =>
+    // Keep the timing label with the Agent and revision that produced it.
+    // Read the Pod only when the scenario reaches its existing readiness check.
+    async function deploy(
+      admission: CodexAdmission,
+      context: ChannelProxyDeployment,
+    ): Promise<ProxyDeployment> {
+      const agentId = admission.agent.id;
+      const revision = await deployAgentRevision(stack, admission.agent, { smokeStep, context });
+      return {
+        admission,
+        revisionId: revision.id,
+        readGateway: () => readyGateway(stack, agentId, revision, context),
+      };
+    }
+    const [initialA, initialB] = await smokeStep("channel-proxy-initial-deploy", () =>
       Promise.all([
-        deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-initial-deploy-a" }),
-        deployAgent(stack, b.agent, { smokeStep, context: "channel-proxy-initial-deploy-b" }),
+        deploy(a, "channel-proxy-initial-deploy-a"),
+        deploy(b, "channel-proxy-initial-deploy-b"),
       ]),
     );
+    const aRevision = initialA.revisionId;
     await Promise.all([waitSocket("A"), waitSocket("B")]);
     const admissionEvents = await modelEvents();
     for (const caller of ["A", "B"]) {
@@ -872,15 +893,13 @@ export async function proveControlledChannelProxy(
     const [aGateway, bGateway] = await Promise.all([
       containment(
         stack,
-        a,
-        aRevision,
+        initialA,
         proxies.map((proxy) => proxy.authorization),
         aSetup.harnessPolicy,
       ),
       containment(
         stack,
-        b,
-        bRevision,
+        initialB,
         proxies.map((proxy) => proxy.authorization),
         bSetup.harnessPolicy,
       ),
@@ -980,23 +999,27 @@ export async function proveControlledChannelProxy(
       aGateway,
       "editing the Agent replaced its running Gateway before redeploy",
     );
-    const movedRevision = await smokeStep("channel-proxy-move-deploy", () =>
-      deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-move-deploy-a" }),
+    const movedDeployment = await smokeStep("channel-proxy-move-deploy", () =>
+      deploy(a, "channel-proxy-move-deploy-a"),
     );
-    assert.notEqual(movedRevision, aRevision, "proxy edit did not create a new revision");
+    assert.notEqual(
+      movedDeployment.revisionId,
+      aRevision,
+      "proxy edit did not create a new revision",
+    );
     await waitFor(
       "old HTTP proxy tunnels to retire",
       async () => ({ done: http.active() === 0 }),
       minute,
     );
-    const movedGateway = await readyGateway(stack, a.agent.id, movedRevision);
+    const movedGateway = await movedDeployment.readGateway();
     assert.equal(await rawConnect(stack, movedGateway, "slack.com:443"), 200);
 
     await stack.api("PATCH", base, { networkProxy: null });
     const aSocketsBeforeClear = await socketCount("A");
     const proxiesBeforeClear = proxyCounts(proxies);
-    const directRevision = await smokeStep("channel-proxy-clear-deploy", () =>
-      deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-clear-deploy-a" }),
+    const directDeployment = await smokeStep("channel-proxy-clear-deploy", () =>
+      deploy(a, "channel-proxy-clear-deploy-a"),
     );
     await waitSocket("A", aSocketsBeforeClear);
     assert.deepEqual(
@@ -1004,7 +1027,7 @@ export async function proveControlledChannelProxy(
       proxiesBeforeClear,
       "cleared selection contacted an upstream proxy",
     );
-    const directGateway = await readyGateway(stack, a.agent.id, directRevision);
+    const directGateway = await directDeployment.readGateway();
     assert.equal(
       await rawConnect(stack, directGateway, "slack.com:443"),
       200,
@@ -1026,10 +1049,10 @@ export async function proveControlledChannelProxy(
     await stack.api("PATCH", base, {
       networkProxy: { url: bad.url, credentialSecretId: badCredential.id },
     });
-    const badRevision = await smokeStep("channel-proxy-tls-control-deploy", () =>
-      deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-tls-control-deploy-a" }),
+    const badDeployment = await smokeStep("channel-proxy-tls-control-deploy", () =>
+      deploy(a, "channel-proxy-tls-control-deploy-a"),
     );
-    const badGateway = await readyGateway(stack, a.agent.id, badRevision);
+    const badGateway = await badDeployment.readGateway();
     assert.equal(
       await rawConnect(stack, badGateway, "slack.com:443"),
       503,

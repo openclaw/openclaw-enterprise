@@ -1996,9 +1996,13 @@ read_restart_inventory() {
     if [[ -z "$refusals" ]]; then
       return
     fi
-    if ((preflight_rehearsal)) && [[ "$original_worker_only" == true ]]; then
-      retained_revision_blockers=$refusals
-      return
+    if ((preflight_rehearsal)); then
+      if [[ "$original_worker_only" == true ]]; then
+        retained_revision_blockers=$refusals
+        return
+      fi
+      # The assessment covers the entire fleet, including revisions beyond the ten listed.
+      refusals+=$'\nCandidate startup and migration checks did not run because at least one restart assessment is unknown or missing. The list shows at most ten blocked revisions.'
     fi
     die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
 $refusals

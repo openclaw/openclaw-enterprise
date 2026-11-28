@@ -202,7 +202,14 @@ export interface Pod {
   };
   status?: {
     phase?: string;
-    conditions?: { type: string; status: string }[];
+    conditions?: { type: string; status: string; lastTransitionTime?: unknown }[];
+    containerStatuses?: {
+      name: string;
+      ready?: boolean;
+      restartCount?: number;
+      state?: { running?: { startedAt?: unknown }; waiting?: unknown; terminated?: unknown };
+      lastState?: { terminated?: unknown };
+    }[];
   };
 }
 

@@ -116,23 +116,25 @@ Check v7’s failed record, pending cleanup and unchanged v6 selection. One chec
 changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
 Cleanup triggers no further checks.
 
-Reopen the story. Focus **View deployment**. After cleanup, Enter opens v7.
+Reopen and focus **View deployment**. After cleanup, Enter opens v7.
 
-1. Separately, open **Pages / Agent detail / New version activated**
-   (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
-   At both widths, confirm its H1 shows a readable Agent name as an independent
-   success case. Check the compact summary separates Selected for service,
-   Latest visible deployment, and Live serving. Choose another **Viewing version**;
-   the service target stays the same.
-   Choose **Open draft**. Check the new-version notice has an even, neutral border
-   without a blue stripe. Open **Edit Configuration**; the notice stays visible.
-   Repeat this check at phone width. For the narrow layout check, choose
-   **Open preview in its own tab**. Set the browser content area to 390 pixels wide
-   and use 200% browser zoom (195 CSS pixels of layout width). Tab to **Viewing
-   version** and check that its label wraps above the picker. Use Home to view
-   **Draft**, then Tab back to the picker and select a numbered version. Both
-   choices stay readable without horizontal scrolling, and neither changes the
-   version selected for service.
+In signed-in tests, point near the top of **Deployment** in v1’s scrolled
+**Configuration**. After simulated activation, **Selected for service** shows v2.
+Click without moving. v1’s **Deployment** opens. Repeat over **Draft credentials**.
+On slow returns, “Still checking…” stays visible until **Credentials** opens.
+
+1. Open **Pages / Agent detail / New version activated**
+   (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).
+   Check the H1’s Agent name is legible at both widths. The summary
+   distinguishes Selected for service, Latest visible deployment and
+   Live serving. Changing **Viewing version** leaves the service target unchanged.
+   At both widths, choose **Open draft**. The new-version notice has an even,
+   neutral border without a blue stripe. It stays visible after **Edit Configuration**.
+   Choose **Open preview in its own tab**. At 390 px wide, zoom to 200%
+   (195 CSS px). Tab to **Viewing version**. Its label should wrap above the
+   picker. Use Home to view **Draft**, then Tab back and
+   select a numbered version. Check both remain readable without horizontal
+   scrolling and leave the service target unchanged.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
    record, and run diagnostics. Switch to Configuration and back: the record and
    results remain. **Logs** still opens the viewed version's output.

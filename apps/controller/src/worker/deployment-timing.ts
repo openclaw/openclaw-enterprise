@@ -5,6 +5,7 @@ interface DeployTiming {
   firstUnreadyAt: number | undefined;
   readinessWaitMs: number | undefined;
   readyAt: number | undefined;
+  predecessorStoppingAtMs: number | undefined;
 }
 
 const MAX_DEPLOY_TIMINGS = 256;
@@ -33,6 +34,7 @@ export class DeploymentTimings {
         firstUnreadyAt: undefined,
         readinessWaitMs: undefined,
         readyAt: undefined,
+        predecessorStoppingAtMs: undefined,
       };
       this.timings.set(key, timing);
     }
@@ -64,6 +66,18 @@ export class DeploymentTimings {
     };
   }
 
+  recordPredecessorStopping(key: string, stoppingAt: string | undefined): void {
+    const timing = this.timings.get(key);
+    if (timing === undefined || typeof stoppingAt !== "string") {
+      return;
+    }
+    // The database retains the original time even when a later pass repeats the stop.
+    const timestamp = Date.parse(stoppingAt);
+    if (Number.isFinite(timestamp) && timestamp > 0) {
+      timing.predecessorStoppingAtMs = timestamp;
+    }
+  }
+
   completionFields(
     key: string,
     terminal: boolean,
@@ -84,6 +98,9 @@ export class DeploymentTimings {
       prepareMs: timing.prepareMs,
       readinessWaitMs: readinessWait(timing, now) ?? 0,
       ...(timing.readyAt === undefined ? {} : { activationMs: now - timing.readyAt }),
+      ...(timing.predecessorStoppingAtMs === undefined
+        ? {}
+        : { predecessorStoppingAtMs: timing.predecessorStoppingAtMs }),
       elapsedMs: workAgeMs(),
     };
   }

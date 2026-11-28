@@ -142,6 +142,29 @@ For production, public GHCR pulls need no pull Secret. See
 to a private mirror. For local setup, export the resolved pair as
 [development image selections](../quickstart.md#optional-use-matching-published-images).
 
+## Check the recovery runtime before an upgrade
+
+Gateway startup can migrate the shared and Agent SQLite databases on retained
+storage. The controller's PostgreSQL preflight cannot tell you whether an
+older Gateway can reopen them.
+
+Run this command for each verified pair, on the target architecture. Record
+the output with the candidate and recovery runtime digests.
+
+```bash
+docker run --rm --pull=never --network none --read-only --entrypoint node \
+  "${RUNTIME_IMAGE:?Select a verified runtime digest}" \
+  -p 'JSON.stringify(require("/app/node_modules/openclaw/package.json").openclaw.schemaVersions)'
+```
+
+If the recovery image reports a lower `state` or `agent` version, choose
+another recovery pair. Missing versions leave compatibility unknown.
+
+Before relying on the recovery pair, [rehearse the upgrade and return](production-upgrade.md#rehearse-before-the-maintenance-window)
+on an isolated copy. Get a reply in an existing conversation on the candidate.
+With the recovery pair and the same data, verify that reply is still present
+and continue the conversation.
+
 ## Read runtime download client identities
 
 Use Node.js 24.22.1 or newer, Python 3, and Docker with the containerd image

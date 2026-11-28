@@ -945,6 +945,7 @@ export function createAgentDetailScenarios({
           "Confirm the array error appears below the raw JSON editor and the editor has focus.",
           'Replace the draft with {"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}. Collapse the JSON editor and choose Save plugin selections. The editor opens and takes focus with a number-range error; no save request starts.',
           "Open Configure plugins. The existing invalid-JSON guidance appears, focus stays in the dialog, and the raw draft remains unchanged. Correct the number before using policy controls.",
+          'Close Configure plugins. Paste {"sample":{“enabled":false}} into Plugin selections JSON. Tab to Save plugin selections and press Enter. Replace the curly quote at the cursor with a straight double quote. The error clears without saving the draft.',
         ],
       },
       agentAuthenticationRequiredFields: {

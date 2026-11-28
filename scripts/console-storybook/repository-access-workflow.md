@@ -81,22 +81,41 @@ discovery denied**, which display their own status instead.
 
 ## Repository search keyboard
 
-Open **Pages / Create Agent / Exact repository names before prefix matches**
+Open **Pages / Create Agent / Repository Exact Search**
 (`pages-create-agent--repository-exact-search`). Search for `application` with
-both exact matches unchecked. The cue names `omega/application` as the next selection.
+both exact matches unchecked. Press Down Arrow to focus `omega/application`,
+then press Enter. The checkbox stays unchecked and focused, and the form stays
+open. Press Space to select it. Reset the story and repeat the search.
+The cue names `omega/application` as the next selection.
 Press and hold Enter. Only `omega/application` becomes selected while the key
 repeats, and the cue changes to `zeta/application`.
 
 Release Enter and press Escape. Press Enter once to reopen the results. The cue
 again names `zeta/application`. Release Enter and press it again to select that
-repository. The cue now names `alpha/application-api`. Check at phone width
-that you can read the next name below the search field even when its row is
-out of view. Select the last two matches. The field now reports **4 selected**.
+repository. Search for `application-api`. Only `alpha/application-api` matches.
+The search hint shows **2 selected in total** and names that repository as the
+next selection. Return to `application` and check at phone width that you can
+read the next name below the search field even when its row is out of view.
+Select the last two matches. The field now reports **4 selected**.
+
+Reset the story and search for `application` at phone width. The hint starts
+with **In search, Enter selects**. Use Down Arrow and Up Arrow to move through
+the results. Check that you can read the full name of each focused repository
+above the Create Agent buttons.
 
 Reset the story and use Enter to commit text with an input method in the search
 field. Committing text must neither select a repository nor submit the form.
 These checks change the unsaved selection. They do not save the form, create an
 Agent, or grant runtime repository access.
+
+Reset the story. Choose **Service Accounts** under **Authentication method**
+and leave **Service account token Secret** empty. Enter `gpt-4.1` as the model ID.
+Under **Default repository access**, tab to **Contributor** and press Enter.
+Focus and selection stay on **Contributor**. Use the arrow keys to select
+**Read-only** and then **Contributor** again. Press Enter on **Customize access**
+to open it. Tab to **Create and manage issues** and press Enter. The checkbox
+stays checked and focused. Press Space to uncheck it. Press Enter on
+**Create Agent** and check that focus moves to the missing token field.
 
 ## First-deployment warning
 

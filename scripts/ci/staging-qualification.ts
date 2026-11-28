@@ -151,10 +151,12 @@ async function releaseProfile(root: string, sourceSha = env.SOURCE_SHA) {
     assert.equal(hash, "12d579bc223c90d7b3392651b986ed0ac33b5f7e1954bc2344a38190a2f9a8b5");
   } else {
     assert.equal(codexVersion, "0.164.0", "Unsupported release profile; refuse before pull.");
-    assert.equal(
-      recipe,
-      await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8"),
-      "Unreviewed historical runtime recipe.",
+    const trustedRecipe = await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8");
+    assert.ok(
+      recipe === trustedRecipe,
+      `Source ${sourceSha} has a different deploy/runtime/Dockerfile. ` +
+        "For Codex 0.164.0, staging requires an exact match with the workflow revision. " +
+        "Select an Enterprise Containers publication with a matching Dockerfile or request review of this recipe.",
     );
   }
   const suites = loadTestSuites(join(root, "scripts/ci/test-suites.json"));

@@ -41,6 +41,7 @@ import {
   focusSaveOutcome,
   isUnavailable,
   jsonObjectDiagnostic,
+  revealEditorError,
   revealStatus,
   setDescription,
   setHidden,
@@ -1838,11 +1839,34 @@ export async function renderAgentDetail(
     const bounds = tabs.getBoundingClientRect();
     return bounds.bottom > 0 && bounds.top < window.innerHeight ? bounds.top : null;
   }
-  function restoreTabStripTop(top: number | null) {
-    if (top === null) {
+  function inUseSnapshotAction() {
+    // Keep a tab under the pointer even if a snapshot link still has keyboard focus.
+    if (
+      !detailShown ||
+      selectedTab !== "configuration" ||
+      window.scrollY <= 0 ||
+      tabs.querySelector("button:hover")
+    ) {
+      return null;
+    }
+    const heading = content.querySelector(".agent-version-heading");
+    const link = heading?.querySelector("a:hover") ?? heading?.querySelector("a:focus-visible");
+    if (!link?.checkVisibility({ visibilityProperty: true })) {
+      return null;
+    }
+    const { top, bottom, left, right } = link.getBoundingClientRect();
+    return bottom > 0 && top < window.innerHeight && right > 0 && left < window.innerWidth
+      ? { link, top }
+      : null;
+  }
+  function restoreVerticalPosition(top: number | null, node: Element = tabs) {
+    if (
+      top === null ||
+      (node !== tabs && (!node.isConnected || !node.checkVisibility({ visibilityProperty: true })))
+    ) {
       return;
     }
-    const moved = tabs.getBoundingClientRect().top - top;
+    const moved = node.getBoundingClientRect().top - top;
     if (Math.abs(moved) >= 1) {
       window.scrollBy({ top: moved, left: 0, behavior: "instant" });
     }
@@ -2725,8 +2749,9 @@ export async function renderAgentDetail(
     }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
-    const workspaceStripTop =
-      workspaceAvailabilityChanged && mountedTab?.id === "workspace" ? inUseTabStripTop() : null;
+    // The new heading and version notice can move a tab or snapshot link the reader is using.
+    const action = revisionChanged ? inUseSnapshotAction() : null;
+    const stripTop = revisionChanged && !action ? inUseTabStripTop() : null;
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -2761,9 +2786,7 @@ export async function renderAgentDetail(
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
     logsServingChange?.(servingChange());
-    // The panel can grow after a deployment notice shrank the page. Keep the tab in view at
-    // the position it occupied before this synchronous rebuild.
-    restoreTabStripTop(workspaceStripTop);
+    restoreVerticalPosition(action?.top ?? stripTop, action?.link);
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2936,7 +2959,7 @@ export async function renderAgentDetail(
     const shortcutBounds = shortcut?.getBoundingClientRect();
 
     updateLatestDeployment();
-    restoreTabStripTop(stripTop);
+    restoreVerticalPosition(stripTop);
 
     if (
       !shortcut ||
@@ -5657,7 +5680,7 @@ export async function renderAgentDetail(
     deploymentAttention.hidden =
       selectedTab === "deployment" || !deploymentAttention.dataset.message;
     setLayoutShape();
-    restoreTabStripTop(stripTop);
+    restoreVerticalPosition(stripTop);
     const tab = selectedTab;
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
     content.toggleAttribute("data-restore-panel-focus", selected === "draft" && tab === "channels");
@@ -7595,13 +7618,7 @@ export async function renderAgentDetail(
           // Set the caret before focus so the browser scrolls it into view.
           editor.setSelectionRange(diagnostic.offset, diagnostic.offset);
           editor.focus();
-          const editorTop = editor.getBoundingClientRect().top;
-          const messageBottom = editorError.node.getBoundingClientRect().bottom;
-          const viewportHeight = document.documentElement.clientHeight;
-          // Keep the caret in view when the editor and diagnostic cannot fit together.
-          if (messageBottom > viewportHeight && messageBottom - editorTop <= viewportHeight) {
-            editorError.node.scrollIntoView({ block: "nearest", inline: "nearest" });
-          }
+          revealEditorError(editor);
         } else {
           editor.focus();
         }
