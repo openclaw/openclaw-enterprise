@@ -866,6 +866,7 @@
             "hidden": [
               "guides/quickstart",
               "guides/deploy/production-installation-preparation",
+              "guides/deploy/production-upgrade-console",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
@@ -1212,24 +1213,29 @@
                     "label": "Configuration"
                   },
                   {
-                    "page": "release/containers",
-                    "label": "Containers"
-                  },
-                  {
-                    "page": "release/chart-publication",
-                    "label": "Helm Chart"
-                  },
-                  {
-                    "page": "release/cli-publication",
-                    "label": "OCC CLI"
-                  },
-                  {
-                    "page": "release/staging-qualification",
-                    "label": "Staging Qualification"
-                  },
-                  {
-                    "page": "release/container-promotion",
-                    "label": "Docker Hub Promotion"
+                    "group": "Advanced",
+                    "pages": [
+                      {
+                        "page": "release/containers",
+                        "label": "Publish Images"
+                      },
+                      {
+                        "page": "release/chart-publication",
+                        "label": "Publish Helm Chart"
+                      },
+                      {
+                        "page": "release/cli-publication",
+                        "label": "Publish OCC CLI"
+                      },
+                      {
+                        "page": "release/staging-qualification",
+                        "label": "Standalone Release Checks"
+                      },
+                      {
+                        "page": "release/container-promotion",
+                        "label": "Copy to Docker Hub"
+                      }
+                    ]
                   }
                 ]
               },

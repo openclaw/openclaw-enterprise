@@ -1,64 +1,49 @@
 # Publish the OCE Helm chart
 
-For a chart release with matching images and OCC CLI binaries, use
-[Release OCE](README.md).
+For a complete release with matching CLI binaries, use [Release OCE](README.md).
+Use standalone **Enterprise Containers** to publish a versioned OpenClaw Control
+Plane (OCC) Helm chart and matching image tags. Complete [release configuration](configuration.md)
+once. The receipt records the immutable chart and image digests.
 
-The standalone [Enterprise Containers workflow](../../.github/workflows/container-publish.yml)
-optionally publishes the OpenClaw Control Plane (OCC) chart to public GHCR at
-`oci://ghcr.io/openclaw/charts/openclaw-enterprise`. It also gives the controller
-and runtime images a tag matching the chart. The existing `sha-<source-sha>` tags
-remain available. Deploy with the digest references recorded in the chart and
-publication receipt.
+## Publish
 
-## Choose one release version
+### Choose one release version
 
-Advance the SemVer version in root `package.json` and set both `version` and
-`appVersion` in `deploy/helm/openclaw-enterprise/Chart.yaml` to the same value.
-Do this for each chart release, including releases with image changes.
-Image-only publication does not require a new chart version. OCE is evolving quickly;
-one version gives operators a chart and image pair tested from one source commit
-without an independent chart compatibility matrix. The shared tag identifies the
-release, while the recorded digests identify the exact bytes.
+Set root `package.json` and both `version` and `appVersion` in
+`deploy/helm/openclaw-enterprise/Chart.yaml` to the same SemVer version.
+Chart publication accepts a prerelease suffix; [CLI publication](cli-publication.md#publish)
+requires a plain `X.Y.Z` version. Advance the version for every chart release,
+including image changes. Image-only
+publication does not require a new chart version. Merge the reviewed change to
+`main` and wait for its exact push CI to succeed.
 
-Review and merge the version change to `main`. Wait for that exact main-push CI
-run to pass, including `CI Required`. Follow [package setup](containers.md#operator-setup)
-and [bootstrap](containers.md#bootstrap-ghcr-packages) once. Bootstrap creates a
-nondeployable chart marker as well as image markers; confirm all three packages
-are public and grant this repository Actions access. Then dispatch **Enterprise
-Containers** on `main` with its full `source_sha`, matching `ci_run_id`, and
-`publish: true` and `publish_chart: true` (the latter defaults to false).
+### Run publication
 
-Preparation packages the chart with the assembled image digests. The image job
-publishes and verifies both images. A separate chart job downloads that run's
-prepared chart and image receipt, checks the version tags against the image
-digests, then pushes the chart. Both jobs use the protected publication environment.
-The workflow holds the shared publication lock across both jobs, including
-preparation, so overlapping runs cannot replace a pending chart job. The chart job rejects an existing version whose
-packaged files differ. Its `chart-publication-<run-id>-<attempt>` artifact
-records the chart manifest digest, source SHA, and both image digests. The older
-`container-publication` receipt retains its image-only format. If a step fails,
-inspect registry digests before starting a new full dispatch for the same source;
-existing tags with different bytes are never replaced. Rerunning only a failed
-chart job is unsupported because its new attempt has no matching image receipt.
-A later source commit requires a new OCE version for chart publication.
+1. [Select the source and CI run](containers.md#prepare-and-publish).
+2. Dispatch [Enterprise Containers](../../.github/workflows/container-publish.yml)
+   on `main` with `source_sha`, `ci_run_id`, `publish: true`, and
+   `publish_chart: true`. Choose `image_tag` deliberately: blank updates
+   `latest` for both images.
+3. Require successful image and chart jobs. Retain
+   `chart-publication-<run-id>-<attempt>`, which records the chart manifest
+   digest, source SHA, and both image digests. The image receipt remains separate.
 
-A chart failure fails the combined run, while the image job and its verified
-images remain successful. Use the separate job results and final run summary to
-distinguish these outcomes. Image-only publication never calls the chart publisher.
-
-Treat release version tags as single-writer state. Limit package-write access for
-the chart and both images to this repository's reviewed publication workflows
-and trusted package administrators; do not retag them during publication. The
-workflow concurrency group serializes participating jobs only. The receipt
-records the chart's immutable manifest digest after verification, but an
-independent writer changing the version tag between the pull and digest lookup
-would break that binding. Coordinated external writers need a registry-supported
-conditional write or an equivalent shared lock before using this flow.
+If the chart job fails, the verified images can remain published. Inspect the
+registry digests and retry the **full dispatch** for the same source while it
+is still the selected `main` commit. If `main` moved, review the new source and
+advance the version. A chart-only
+job rerun has no matching image receipt for its new attempt. There is no separate
+chart recovery workflow. Matching existing content is accepted; different bytes
+at a source or version tag are refused. Never delete or retag a conflict.
+A later source commit needs a new version. Restrict package writes to reviewed
+workflows and trusted administrators; workflow concurrency does not lock out
+external writers. An independent writer can change a version tag between the
+chart pull and digest lookup. Use a registry-supported conditional write or an
+equivalent shared lock if external writers must participate.
 
 ## Pull and install
 
-Public GHCR chart pulls do not require a workstation login. Select the version
-from the completed publication receipt:
+Use the version and digest from the receipt:
 
 ```bash
 export OCE_VERSION='<published-version>'
@@ -69,20 +54,17 @@ helm show chart "$chart"
 helm show values "$chart"
 ```
 
-Compare the digest printed by `helm pull` with the chart manifest digest in the
-publication receipt. Check the local chart's `openclaw.dev/source-revision`, `openclaw.dev/controller-image`,
-and `openclaw.dev/runtime-image` annotations against the receipt. Set
-`images.controller` in your protected Helm values to the controller digest and
-set the Installation's `drivers.compute.configuration.images.gateway` and
-`agent` to the runtime digest. The packaged controller default is pinned, but
-operator values take precedence. The production example values contain a
-placeholder image, so replace it before installation.
+Compare the pull digest and the chart's `openclaw.dev/source-revision`,
+`openclaw.dev/controller-image`, and `openclaw.dev/runtime-image` annotations
+with the receipt. Set `images.controller` in protected Helm values to the
+controller digest and the Installation's
+`drivers.compute.configuration.images.gateway` and `agent` to the runtime
+digest. Replace the production example's placeholder image. Public GHCR pulls
+need no login; private mirrors need operator-configured pull credentials.
 
-Prepare the other operator-owned values, database, Secrets, routing, and
-bootstrap credential Secret as described in the [production installation guide](../guides/deploy/production-installation.md).
-Public GHCR image pulls need no node pull Secret. Private mirrors still need node
-pull credentials configured by the operator. Use the matching CLI and the reviewed
-local archive for the [first install and handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff):
+Prepare database, Secrets, routing, values, and bootstrap credentials using
+[production installation](../guides/deploy/production-installation.md). Use the
+matching CLI and reviewed archive for [first install and handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff):
 
 ```bash
 INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
@@ -91,9 +73,7 @@ occ installation install --release oce --chart "$chart" \
   --values "$OCC_INPUT_DIRECTORY/values.yaml" --receipt "$INSTALL_RECEIPT_DIRECTORY"
 ```
 
-If the response is lost or Helm refuses the release name, stop; do not rerun or
-switch to an upgrade. [Resume the original installation](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
-
-This release packages the chart and images. It does not distribute the
-repository's bootstrap helper or Installation examples, and does not complete a
-fresh k3d trial without a checkout.
+If an install response is lost or Helm refuses the release name, stop and
+[resume the original installation](../guides/deploy/production-handoff.md#resume-an-installation-in-progress);
+do not rerun or switch to an upgrade. The chart does not distribute repository
+bootstrap helpers or Installation examples.

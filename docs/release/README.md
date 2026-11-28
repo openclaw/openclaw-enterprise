@@ -1,123 +1,110 @@
 # Release OpenClaw Enterprise
 
-Use **Release OCE** to qualify and publish the controller image, runtime image,
-Helm chart, and OpenClaw Control Plane (OCC) CLI from one reviewed commit.
-Start with a rehearsal.
+Use **Release OCE** to publish from one reviewed commit in protected `main`. Choose:
+
+- [Publish images only](#publish-images-only): controller and runtime images, without Full Integration.
+- [Rehearse a full release](#rehearse-a-release), then [publish and verify](#publish-and-verify): images, Helm chart, and OCC CLI.
+- [Recover an image-only publication](#recover-an-image-only-publication) or [a full release](#recover-a-partial-release).
 
 <a id="overview"></a>
-
-## Rehearse a release
-
-1. Set the root `package.json` version and Helm chart `version` and `appVersion` to the
-   same numeric `major.minor.patch` version. Merge the change to protected `main`.
-2. Select a reviewed commit in protected `main` history and record its full
-   40-character SHA. You can select the tip or an earlier commit. Check [release configuration](configuration.md), the [GHCR package setup](containers.md#bootstrap-ghcr-packages),
-   and the [integration approval environment](../testing/ci/configuration.md#environments).
-3. In **Actions → Release OCE → Run workflow**, select `main`. Set `source_sha`
-   to the reviewed SHA. This is the only required input. Leave `publish`
-   unchecked for a rehearsal. The workflow qualifies the source in its own run
-   without requiring a previous push CI run.
-4. To move a custom image tag such as `candidate` at publication, set
-   `image_tag`. A blank value selects `latest`. A custom tag leaves `latest`
-   unchanged. The [image tag rules](containers.md#prepare-and-publish) reserve
-   source, bootstrap, and version tags.
-5. Check the version, commit, and alias in the run summary. As the dispatcher,
-   approve the run through `integration-main-approval`. Wait for **Full
-   Integration Aggregate** for `lane=all`, native image checks on Linux AMD64
-   and ARM64, CLI verification, and chart preparation.
-
-A successful rehearsal checks the release destinations and leaves the prepared
-artifacts and `qualified-release-<run-id>-1` record in GitHub Actions. It
-creates no registry tags or GitHub Release. The release records two commits.
-The source SHA identifies the code under test and the artifacts. The workflow
-SHA identifies the protected `main` workflow that qualified those artifacts.
-Both stay fixed if `main` advances.
-
-## Publish and verify
-
-Start a fresh **Release OCE** dispatch with the reviewed inputs, select
-`publish`, and approve the new run. It qualifies its own artifacts. Check
-the following results before announcing the release.
-
-| Output                 | What to verify                                                                                                                                                                              |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Controller and runtime | Both GHCR packages have the verified multi-platform digest at `sha-<source_sha>` and `<version>`.                                                                                           |
-| Helm chart             | The published chart version and appVersion match the release. Its controller and runtime digest references match the images. See [Pull and install](chart-publication.md#pull-and-install). |
-| OCC CLI                | The public GitHub Release at `v<version>` identifies the source commit and provides four macOS/Linux binaries and `SHA256SUMS`. See [CLI setup](../guides/cli.md).                          |
-| Selected image alias   | Both images have the selected alias at their verified digests. The workflow moves the alias after it verifies the chart and CLI.                                                            |
+<a id="release-guides"></a>
 
 ## Publish images only
 
-To publish controller and runtime images while Full Integration is failing or
-unavailable, dispatch **Release OCE** on `main`. Set `source_sha` to the
-reviewed commit, select both `publish` and `images_only`, and leave
-`recovery_run_id` empty. Set `image_tag` for a custom alias or leave it blank
-to move `latest`. Approve the run through `integration-main-approval`.
+1. Check [release configuration](configuration.md) and [GHCR package setup](configuration.md#bootstrap-ghcr-packages).
+   Select a reviewed commit in `main` history. No version change or previous push CI run is required.
+2. Dispatch [Release OCE](../../.github/workflows/release-oce.yml) on `main` with the full
+   40-character `source_sha`, `publish: true`, and `images_only: true`. Leave
+   `recovery_run_id` empty. **A blank `image_tag` updates `latest` for both images.**
+   Use a [custom alias](containers.md#prepare-and-publish) to leave `latest` unchanged.
+   There is no image-only rehearsal.
+3. Check the SHA and alias in the summary, then approve through `integration-main-approval`.
+   Require the native Linux amd64 and arm64 checks for both images.
+4. Compare both `sha-<source_sha>` tags and selected aliases with the digests in
+   `container-publication-<run-id>-1`. The receipt expires after 30 days.
+   If publication stops, [recover it](#recover-an-image-only-publication).
 
-This mode skips Full Integration. Both images must still pass their native
-Linux AMD64 and ARM64 checks. The publisher verifies both `sha-<source_sha>`
-tags before moving the selected alias. Compare the digests for both aliases
-with the `container-publication-<run-id>-1` receipt in GitHub Actions.
-
-The receipt covers the two images. Version tags, the Helm chart, the OCC CLI,
-and the GitHub Release require the full release procedure above.
+This mode skips Full Integration. It publishes no version tags, Helm chart, OCC CLI,
+or GitHub Release. Docker Hub promotion and Staging Release Qualification do not accept this run.
 
 ### Recover an image-only publication
 
-If the image-only publisher fails, times out, or is cancelled after it starts writing,
-check both source tags and both aliases. Use digest references while the
-aliases point to different publications.
+If publication fails, times out, or is cancelled, inspect both source tags and aliases.
+Use digest references if the aliases differ.
 
-1. Keep the original publication run at attempt 1. Its prepared images and
-   `release-image-baseline-<run-id>-1` artifact expire after seven days.
-   The baseline records the expected images and the previous state of both aliases.
-2. Dispatch **Release OCE** on `main` with the original `source_sha` and
-   `image_tag`. Select both `publish` and `images_only`. Set `recovery_run_id`
-   to the original image-only publication run ID and approve the new run.
-3. Check the receipt and both aliases. Recovery reuses the original image
-   bytes. It accepts each alias at its previous state or at the intended
-   image digest. A conflicting source tag or alias stops recovery. Preserve
-   the evidence and refer a conflict to a release maintainer.
+1. Keep the original run at attempt 1. Its prepared images and
+   `release-image-baseline-<run-id>-1` expire after seven days.
+2. Dispatch **Release OCE** on `main` with the original `source_sha` and `image_tag`,
+   `publish: true`, `images_only: true`, and `recovery_run_id` set to the original run ID.
+   Approve the new run.
+3. Check the new receipt and both aliases. Recovery reuses the original bytes and
+   accepts each alias only at its previous or intended digest. A conflict stops recovery;
+   preserve the evidence and contact a release maintainer.
+
+## Rehearse a release
+
+1. Set root `package.json` and the Helm chart's `version` and `appVersion` to
+   the same numeric `X.Y.Z` version. Merge the version change to protected `main`.
+2. Select a reviewed commit in `main` history. Check [release configuration](configuration.md),
+   [GHCR package setup](configuration.md#bootstrap-ghcr-packages), and the
+   [integration approval environment](../testing/ci/configuration.md#environments).
+3. Dispatch [Release OCE](../../.github/workflows/release-oce.yml) on `main`.
+   Supply the full 40-character `source_sha` (the only required input).
+   Leave `publish` and `images_only` false for a rehearsal. No previous push CI run is required.
+   Choose `image_tag` now: **blank selects `latest` for both images**;
+   a custom alias leaves `latest` unchanged. See [alias rules](containers.md#prepare-and-publish).
+4. Check the version, SHA, and alias in the summary. Approve your dispatch through
+   `integration-main-approval`. Require **Full Integration Aggregate** for
+   `lane=all`, native Linux amd64/arm64 image checks, CLI verification, and chart preparation.
+
+A successful rehearsal checks destinations and retains prepared artifacts and
+`qualified-release-<run-id>-1`. It publishes nothing. The source SHA identifies
+the release code; the workflow SHA identifies the protected workflow that tested it.
+
+## Publish and verify
+
+Dispatch a fresh **Release OCE** run with the reviewed inputs and `publish: true`.
+Approve it and wait for its own qualification and publication to succeed. Verify:
+
+- controller and runtime: verified multi-platform digests at `sha-<source_sha>` and `<version>`;
+- chart: matching version, appVersion, and image digests; [pull and inspect it](chart-publication.md#pull-and-install);
+- CLI: public GitHub Release `v<version>` at the source SHA, four macOS/Linux binaries and `SHA256SUMS`;
+- alias: both images point to the verified digests. The workflow moves aliases after chart and CLI verification.
+
+If any step fails, inspect the public outputs before retrying or [recovering](#recover-a-partial-release).
 
 ## Recover a partial release
 
-If full release publication stops, inspect the run summary, the GitHub Release or draft,
-and each registry digest. Record which assets are already public. Writes to GitHub and GHCR are separate. Even a
-failure between the two alias updates can leave different versions active.
-Use digest references while recovering.
+Keep the original failed or cancelled full publication run at attempt 1.
+Image, chart, and alias-baseline artifacts expire after seven days. Inspect the run
+summary, registry digests, and GitHub Release or draft. Writes are not atomic;
+use digest references if the aliases differ.
 
-Keep the original failed or cancelled run at attempt 1. The image and chart
-artifacts expire after seven days. Start a new **Release OCE** run on
-protected `main`. Enter the original `source_sha` and `image_tag`, select
-`publish`, and set
-`recovery_run_id` to the original publication run ID. Complete the new
-approval. Recovery uses the current protected workflow to verify the original
-run, attempt, source SHA, qualifying workflow SHA, and prepared bytes. It
-completes missing steps from those bytes. The source must still be in `main` history. Expired evidence, conflicting bytes, or a newer alias
-stops recovery. Preserve the original run and refer the conflict to a release
-maintainer.
+Dispatch **Release OCE** on current protected `main` with the original
+`source_sha`, original `image_tag`, `publish: true`, and
+`recovery_run_id` set to the failed publication run ID. Approve the new run.
+Recovery verifies the original qualification and bytes, then completes missing
+steps. The source must remain in `main` history. Expired evidence, conflicting
+bytes, or a newer alias stops recovery. Preserve the original run and refer
+conflicts to a release maintainer.
 
-## Standalone publication
+<a id="standalone-publication"></a>
 
-**Enterprise Containers** and **Release OCC CLI** also support independent
-publication. Their release gates apply only to the outputs they own. Before the
-first versioned rollout, maintainers must decide whether to require the combined
-workflow or verified recovery for versioned releases. Coordinate updates to
-`latest` across all image publishers.
+## Advanced
 
-## Release guides
+Use these procedures when you need to publish an individual component or copy
+released images to another registry:
 
-| Guide                                          | Purpose                                                                           |
-| ---------------------------------------------- | --------------------------------------------------------------------------------- |
-| [Configuration](configuration.md)              | Set environment policies, registry destinations, credentials, and native runners. |
-| [Containers](containers.md)                    | Bootstrap packages, publish images, and recover partial publication.              |
-| [Helm chart](chart-publication.md)             | Publish a versioned chart with matching image tags and install it.                |
-| [OCC CLI](cli-publication.md)                  | Publish versioned macOS and Linux binaries.                                       |
-| [Docker Hub promotion](container-promotion.md) | Copy verified GHCR image digests to private Docker Hub repositories.              |
+- [Publish container images independently](containers.md#prepare-and-publish)
+- [Publish images with a Helm chart](chart-publication.md#publish)
+- [Publish the OCC CLI independently](cli-publication.md#publish)
+- [Check standalone published images](staging-qualification.md)
+- [Copy released images to private Docker Hub repositories](container-promotion.md#promote)
+- [Recover a standalone image publication](containers.md#recover-a-partial-publication)
 
-[Staging release qualification](staging-qualification.md) checks
-published container startup on amd64. It does not install or promote a release,
-prove staging readiness, or replace CI coverage.
+Standalone workflows qualify only their own outputs. Before the first versioned
+rollout, maintainers must decide whether versioned releases require Release OCE
+or verified recovery. Coordinate updates to `latest` across all image publishers.
 
 ## Implementation flows
 
