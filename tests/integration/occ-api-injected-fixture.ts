@@ -15,6 +15,7 @@ import {
   AgentResponse,
   ConfigurationResponse,
   CredentialSourceResponse,
+  ErrorResponse,
   InstallationResponse,
   JsonValue,
   NamespaceListResponse,
@@ -32,6 +33,7 @@ import {
   type AgentWire,
   type ChatGPTBackendDefinition,
   type ComputeAgentBinding,
+  type ErrorCode,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
   type CredentialSourceReference,
@@ -405,8 +407,11 @@ export async function injectedRequest(
     return { status: response.status, headers: response.headers };
   }
   const body: unknown = await response.json();
-  assert(Check(InjectedResponseEnvelope, body), JSON.stringify(body));
-  assert.equal(body.meta.requestId, response.headers.get("x-request-id"));
+  assert(Check(InjectedResponseEnvelope, body), "Invalid injected response envelope");
+  assert(
+    body.meta.requestId === response.headers.get("x-request-id"),
+    "Injected response request ID differs from its header",
+  );
   return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
@@ -439,11 +444,27 @@ export function checkedInjectedBody<Schema extends TSchema>(
   response: Awaited<ReturnType<FixtureRequest>>,
   status: number,
   schema: Schema,
+  label?: string,
 ): Static<Schema, typeof responseSchemas> {
-  const message = JSON.stringify(response.body);
-  assert.equal(response.status, status, message);
-  assert(Check(responseSchemas, schema, response.body), message);
+  const context = label ?? "Injected response";
+  assert.equal(response.status, status, `${context} has an unexpected status`);
+  assert(Check(responseSchemas, schema, response.body), `${context} does not match the schema`);
   return response.body;
+}
+
+export function checkedInjectedError(
+  response: Awaited<ReturnType<FixtureRequest>>,
+  status: number,
+  code: ErrorCode,
+  label?: string,
+): ErrorResponse {
+  const body = checkedInjectedBody(response, status, ErrorResponse, label);
+  assert.equal(
+    body.error.code,
+    code,
+    `${label ?? "Injected response"} has an unexpected error code`,
+  );
+  return body;
 }
 
 export async function createConfiguration(
@@ -703,9 +724,7 @@ export async function createServiceAccount(
   const response = await request("POST", `/namespaces/${namespaceId}/service-accounts`, {
     body: { name },
   });
-  assert.equal(response.status, 201, JSON.stringify(response.body));
-  assert(Check(ServiceAccountResponse, response.body), JSON.stringify(response.body));
-  const { data } = response.body;
+  const { data } = checkedInjectedBody(response, 201, ServiceAccountResponse);
   assert.match(data.id, identifier("sa"));
   assert.deepEqual(data, { id: data.id, namespaceId, name });
   return data;

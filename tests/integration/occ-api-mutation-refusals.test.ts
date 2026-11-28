@@ -12,7 +12,6 @@ import {
   NamespaceListResponse,
   SecretListResponse,
   SecretResponse,
-  type ErrorCode,
   type OpenClawConfigurationDocument,
   type Permission,
   type PluginDesiredState,
@@ -24,6 +23,7 @@ import { AGENT_NAME_CONFLICT, SECRET_NAME_CONFLICT } from "../helpers/refusal-te
 import {
   bootstrapInstallation as bootstrap,
   checkedInjectedBody,
+  checkedInjectedError,
   createAgent,
   createInjectedControllerFixture,
   createNamespace,
@@ -41,18 +41,6 @@ import {
 } from "./occ-api-resource-route-cases.ts";
 
 type InjectedReply = Awaited<ReturnType<FixtureRequest>>;
-
-function assertApiError(
-  reply: InjectedReply,
-  status: number,
-  code: ErrorCode,
-  label?: string,
-): asserts reply is InjectedReply & { body: ErrorResponse } {
-  const message =
-    label === undefined ? JSON.stringify(reply.body) : `${label}: ${JSON.stringify(reply.body)}`;
-  const { error } = checkedInjectedBody(reply, status, ErrorResponse);
-  assert.equal(error.code, code, message);
-}
 
 async function configuredController() {
   const fixture = await createInjectedControllerFixture({});
@@ -119,8 +107,8 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
     { action: "operate", resourceKind: "agent" },
   ]);
   const conflict = await injectedRequest(agentOperator, "POST", `${path}/withdraw`);
-  assertApiError(conflict, 409, "RESOURCE_CONFLICT");
-  assert.match(conflict.body.error.message, /has no active revision to withdraw/);
+  const { error: conflictError } = checkedInjectedError(conflict, 409, "RESOURCE_CONFLICT");
+  assert.match(conflictError.message, /has no active revision to withdraw/);
   const status = await injectedRequest(agentOperator, "GET", `${path}/withdrawal`);
   assert.notEqual(status.status, 403, JSON.stringify(status.body));
 
@@ -129,11 +117,8 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
     "DELETE",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assertApiError(configurationInUse, 409, "RESOURCE_CONFLICT");
-  assert.match(
-    configurationInUse.body.error.message,
-    /An Agent still references the Configuration/,
-  );
+  const { error: inUseError } = checkedInjectedError(configurationInUse, 409, "RESOURCE_CONFLICT");
+  assert.match(inUseError.message, /An Agent still references the Configuration/);
 
   // The denial's audit evidence names the Agent the route declares, not the source.
   assert(fixture.auditSink instanceof InMemoryAuditSink);
@@ -156,12 +141,12 @@ test("credential source registration checks Namespace readiness before TokenServ
 
   // Source enrollment must check the Namespace before trying its unavailable credential owner.
   const notReady = await controller.request("POST", path, { body });
-  assertApiError(notReady, 409, "NAMESPACE_NOT_READY");
+  checkedInjectedError(notReady, 409, "NAMESPACE_NOT_READY");
   await controller.fixture.markNamespaceReady(namespace.id);
 
   const rejected = await controller.request("POST", path, { body });
-  assertApiError(rejected, 503, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(rejected.body.error.message, "A required platform dependency is unavailable.");
+  const { error: rejectedError } = checkedInjectedError(rejected, 503, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(rejectedError.message, "A required platform dependency is unavailable.");
   assert.equal(JSON.stringify(rejected.body).includes(material), false);
 });
 
@@ -176,8 +161,8 @@ test("a duplicate Secret name answers 409 naming the taken Secret name", async (
   const duplicate = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Model API key", value: "second-value" },
   });
-  assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  assert.equal(duplicate.body.error.message, SECRET_NAME_CONFLICT);
+  const { error: duplicateError } = checkedInjectedError(duplicate, 409, "RESOURCE_CONFLICT");
+  assert.equal(duplicateError.message, SECRET_NAME_CONFLICT);
 });
 
 test("Secret values with an unpaired surrogate are refused as an invalid value", async () => {
@@ -195,12 +180,17 @@ test("Secret values with an unpaired surrogate are refused as an invalid value",
       ["PATCH", `/namespaces/${namespace.id}/secrets/${createdSecret.id}`, { value }],
     ] as const) {
       const rejected = await controller.request(method, path, { body });
-      assertApiError(rejected, 400, "INVALID_REQUEST", method);
+      const { error: rejectedError } = checkedInjectedError(
+        rejected,
+        400,
+        "INVALID_REQUEST",
+        method,
+      );
       assert.equal(
-        rejected.body.error.message,
+        rejectedError.message,
         "The request does not match the operation contract: body /value contains an unpaired UTF-16 surrogate.",
       );
-      assert.deepEqual(rejected.body.error.details, [{ path: "/value", code: "INVALID_VALUE" }]);
+      assert.deepEqual(rejectedError.details, [{ path: "/value", code: "INVALID_VALUE" }]);
     }
   }
 });
@@ -236,8 +226,8 @@ test("a state conflict names what blocks the request, after authorization only",
     const refused = await controller.request("POST", `/namespaces/${namespace.id}/${path}`, {
       body,
     });
-    assertApiError(refused, 409, "RESOURCE_CONFLICT", path);
-    assert.equal(refused.body.error.message, message);
+    const { error: refusedError } = checkedInjectedError(refused, 409, "RESOURCE_CONFLICT", path);
+    assert.equal(refusedError.message, message);
   }
 
   const options = await controller.request(
@@ -265,7 +255,7 @@ test("a state conflict names what blocks the request, after authorization only",
       `/namespaces/${namespace.id}/${path}`,
       body === undefined ? {} : { body },
     );
-    assertApiError(denied, 403, "FORBIDDEN", path);
+    checkedInjectedError(denied, 403, "FORBIDDEN", path);
   }
 });
 
@@ -320,8 +310,8 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   // Configuration it would leave behind (finding 2420). Another name, or none, still passes.
   const taken = await createAgent(controller, namespace.id, "taken-agent");
   const duplicate = await validate({}, { name: "taken-agent" });
-  assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  assert.equal(duplicate.body.error.message, AGENT_NAME_CONFLICT);
+  const { error: duplicateError } = checkedInjectedError(duplicate, 409, "RESOURCE_CONFLICT");
+  assert.equal(duplicateError.message, AGENT_NAME_CONFLICT);
   for (const extra of [{ name: "free-agent" }, {}]) {
     const free = await validate({}, extra);
     assert.equal(free.status, 204, JSON.stringify(free.body));
@@ -347,7 +337,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
     `/namespaces/${namespace.id}/agents/${leaving.id}`,
   );
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
-  assertApiError(await validate({}, { name: "leaving-agent" }), 409, "RESOURCE_CONFLICT");
+  checkedInjectedError(await validate({}, { name: "leaving-agent" }), 409, "RESOURCE_CONFLICT");
   // The name check comes last, so a taken name with a content refusal gets the content refusal.
   const both = await validate(
     { gateway: { auth: { password: "literal-password" } } },
@@ -393,7 +383,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
         headers: { "content-type": "application/json" },
       },
     );
-    assertApiError(unsafeConfiguration, 400, "INVALID_REQUEST", key);
+    checkedInjectedError(unsafeConfiguration, 400, "INVALID_REQUEST", key);
   }
 
   let deeplyNested: OpenClawConfigurationDocument = {};
@@ -431,7 +421,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   assert.equal(namespaceOverride.status, 400);
 
   const unexpectedQuery = await controller.request("GET", "/namespaces?owner=foreign");
-  assertApiError(unexpectedQuery, 400, "INVALID_REQUEST");
+  checkedInjectedError(unexpectedQuery, 400, "INVALID_REQUEST");
 
   await checkMalformedResourcePaths(controller, namespace, agent);
   await checkPayloadLimitAndAllowedMethods(controller, namespace, agent);
@@ -448,7 +438,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
       { body: { name: "invalid-scope", installationId: fixture.installationId } },
     ]) {
       const invalid = await injectedRequest(fixture.app, "POST", "/namespaces", options);
-      assertApiError(invalid, 400, "INVALID_REQUEST");
+      checkedInjectedError(invalid, 400, "INVALID_REQUEST");
       assertUnchanged();
     }
   });
@@ -539,13 +529,18 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
     ] as const) {
       const result = await injectedRequest(fixture.app, method, url, { body: body(bindings) });
       const label = `${path}, ${description}: ${JSON.stringify(result.body)}`;
-      assertApiError(result, status, status === 400 ? "INVALID_REQUEST" : "NOT_FOUND", label);
+      const { error } = checkedInjectedError(
+        result,
+        status,
+        status === 400 ? "INVALID_REQUEST" : "NOT_FOUND",
+        label,
+      );
       if (message !== undefined) {
-        assert.equal(result.body.error.message, message, label);
+        assert.equal(error.message, message, label);
       }
       if (message === reserved) {
         assert.deepEqual(
-          result.body.error.details,
+          error.details,
           [{ path: "/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
           label,
         );
@@ -598,9 +593,14 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
         body: body({ method: "api_key", source }),
       });
       const label = `${path}, ${description}: ${JSON.stringify(result.body)}`;
-      assertApiError(result, status, status === 400 ? "INVALID_REQUEST" : "NOT_FOUND", label);
+      const { error } = checkedInjectedError(
+        result,
+        status,
+        status === 400 ? "INVALID_REQUEST" : "NOT_FOUND",
+        label,
+      );
       if (message !== undefined) {
-        assert.equal(result.body.error.message, message, label);
+        assert.equal(error.message, message, label);
       }
     }
     // The method selects the api_key shape: only its missing source is reported. An unknown
@@ -608,14 +608,19 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
     const withoutSource = await injectedRequest(fixture.app, method, url, {
       body: body({ method: "api_key" }),
     });
-    assertApiError(withoutSource, 400, "INVALID_REQUEST", path);
+    const { error: withoutSourceError } = checkedInjectedError(
+      withoutSource,
+      400,
+      "INVALID_REQUEST",
+      path,
+    );
     assert.equal(
-      withoutSource.body.error.message,
+      withoutSourceError.message,
       "The request does not match the operation contract: body /harnessAuth/source is required.",
       path,
     );
     assert.deepEqual(
-      withoutSource.body.error.details,
+      withoutSourceError.details,
       [{ path: "/harnessAuth/source", code: "REQUIRED" }],
       path,
     );
@@ -624,23 +629,33 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
     const runtimeWithSource = await injectedRequest(fixture.app, method, url, {
       body: body({ method: "runtime", source: foreign }),
     });
-    assertApiError(runtimeWithSource, 400, "INVALID_REQUEST", path);
+    const { error: runtimeWithSourceError } = checkedInjectedError(
+      runtimeWithSource,
+      400,
+      "INVALID_REQUEST",
+      path,
+    );
     assert.equal(
-      runtimeWithSource.body.error.message,
+      runtimeWithSourceError.message,
       "The request does not match the operation contract: body /harnessAuth/source is not an accepted field.",
       path,
     );
     assert.deepEqual(
-      runtimeWithSource.body.error.details,
+      runtimeWithSourceError.details,
       [{ path: "/harnessAuth/source", code: "UNKNOWN_FIELD" }],
       path,
     );
     const unknownMethod = await injectedRequest(fixture.app, method, url, {
       body: body({ method: "password" }),
     });
-    assertApiError(unknownMethod, 400, "INVALID_REQUEST", path);
+    const { error: unknownMethodError } = checkedInjectedError(
+      unknownMethod,
+      400,
+      "INVALID_REQUEST",
+      path,
+    );
     assert.deepEqual(
-      unknownMethod.body.error.details,
+      unknownMethodError.details,
       [
         { path: "/harnessAuth/method", code: "INVALID_VALUE" },
         { path: "/harnessAuth/source", code: "REQUIRED" },
@@ -669,7 +684,7 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
     ],
   ] as const) {
     const result = await injectedRequest(fixture.app, "PATCH", url, { body });
-    assertApiError(result, 404, "NOT_FOUND", path);
+    checkedInjectedError(result, 404, "NOT_FOUND", path);
   }
 
   // The rejected writes changed nothing.

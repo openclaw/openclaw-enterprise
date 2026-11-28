@@ -3,11 +3,9 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
-  ErrorResponse,
   ServiceAccountForceDeletionResponse,
   ServiceAccountListResponse,
   ServiceAccountResponse,
-  type ErrorCode,
   type ServiceAccountCredential,
 } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
@@ -16,6 +14,7 @@ import { callerDenied, SERVICE_ACCOUNT_NAME_CONFLICT } from "../helpers/refusal-
 import {
   bootstrapInstallation,
   checkedInjectedBody,
+  checkedInjectedError,
   createConfiguration,
   createInjectedControllerFixture,
   createNamespace,
@@ -26,13 +25,6 @@ import {
 } from "./occ-api-injected-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof createInjectedControllerFixture>>;
-type Reply = Awaited<ReturnType<typeof injectedRequest>>;
-
-function checkRefusal(reply: Reply, status: number, code: ErrorCode) {
-  const { error } = checkedInjectedBody(reply, status, ErrorResponse);
-  assert.equal(error.code, code, JSON.stringify(error));
-  return error;
-}
 
 async function setupServiceAccounts({ recordOperations = false } = {}) {
   const auditSink = new InMemoryAuditSink();
@@ -94,11 +86,11 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
   for (const path of [accountPath, `${accountPath}?force=false`]) {
     const refused = await request("DELETE", path);
-    const error = checkRefusal(refused, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+    const { error } = checkedInjectedError(refused, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
     assert.match(error.message, /force the delete and revoke the token at the provider/);
   }
   const malformed = await request("DELETE", `${accountPath}?force=yes`);
-  checkRefusal(malformed, 400, "INVALID_REQUEST");
+  checkedInjectedError(malformed, 400, "INVALID_REQUEST");
 
   // Force adds no oracle: a caller without delete gets the same 403 for a real and an unknown
   // account, and the grant holder the usual 404 for an unknown one.
@@ -110,7 +102,8 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
       const reply = await request("DELETE", `${accountsPath}/${id}?force=true`, {
         session: outsider.session,
       });
-      return { status: reply.status, error: checkRefusal(reply, 403, "FORBIDDEN") };
+      const { error } = checkedInjectedError(reply, 403, "FORBIDDEN");
+      return { status: reply.status, error };
     },
     [account.id, missingId],
   );
@@ -181,7 +174,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
       },
     },
   });
-  const refusal = checkRefusal(agentResult, 409, "RESOURCE_CONFLICT");
+  const { error: refusal } = checkedInjectedError(agentResult, 409, "RESOURCE_CONFLICT");
   assert.equal(refusal.message, "Bind the issued ServiceAccount's Credential Source instead.");
 
   const { controller } = fixture;
@@ -190,7 +183,11 @@ test("native ServiceAccounts keep private credential references and cannot admit
   // This Installation has no ChatGPT Backend: issuance is a conflict naming the fix, not an
   // outage, and only after the caller's grant and the account lookup.
   const issuance = await request("POST", `${accountPath}/credentials`, { body: {} });
-  const issuanceError = checkRefusal(issuance, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+  const { error: issuanceError } = checkedInjectedError(
+    issuance,
+    409,
+    "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+  );
   assert.equal(
     issuanceError.message,
     "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
@@ -252,7 +249,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   fixture.state.identities.push(outsider.principal);
   assert(outsider.session);
   const forbidden = await request("DELETE", accountPath, { session: outsider.session });
-  checkRefusal(forbidden, 403, "FORBIDDEN");
+  checkedInjectedError(forbidden, 403, "FORBIDDEN");
 
   await assertBodylessDelete(fixture, accountPath);
 
@@ -305,13 +302,13 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const duplicate = await request("POST", accountsPath, {
     body: { name: "account-a" },
   });
-  const duplicateError = checkRefusal(duplicate, 409, "RESOURCE_CONFLICT");
+  const { error: duplicateError } = checkedInjectedError(duplicate, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
   assert.equal(duplicateError.message, SERVICE_ACCOUNT_NAME_CONFLICT);
 
   // Account ownership participates in Namespace emptiness even before any Agent is created.
   const occupiedNamespace = await request("DELETE", namespaceAPath);
-  checkRefusal(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
+  checkedInjectedError(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
 
   for (const invalid of [
     { name: "unrecognized-field", implementation: "native" },
@@ -329,7 +326,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     const rejected = await request("PATCH", credentialPath, {
       body: invalid,
     });
-    checkRefusal(rejected, 400, "INVALID_REQUEST");
+    checkedInjectedError(rejected, 400, "INVALID_REQUEST");
   }
 
   const credential: ServiceAccountCredential = {
@@ -410,7 +407,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(Object.hasOwn(visibleAccount, "backendId"), false);
 
   const denied = await injectedRequest(readerApp, "GET", `${accountsPath}/${accountB.id}`);
-  checkRefusal(denied, 403, "FORBIDDEN");
+  checkedInjectedError(denied, 403, "FORBIDDEN");
   const denial = auditSink.events.at(-1);
   assert(denial?.kind === "authorization_denial");
   assert.deepEqual(denial.resource, {

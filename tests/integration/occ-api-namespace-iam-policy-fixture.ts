@@ -1,37 +1,17 @@
 import assert from "node:assert/strict";
-import type { Static, TSchema } from "typebox";
-import { Check } from "typebox/value";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { ErrorResponse, type ErrorCode } from "../../packages/contracts/src/index.ts";
 import {
   bootstrapInstallation,
   createAgent as createInjectedAgent,
   createInjectedControllerFixture,
   requestForFixture,
   withoutBackendSummaries,
-  type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
-type Reply = Awaited<ReturnType<FixtureRequest>>;
-
-export function checkedBody<Schema extends TSchema>(
-  reply: Reply,
-  status: number,
-  schema: Schema,
-  label?: string,
-): Static<Schema> {
-  const message =
-    label === undefined ? JSON.stringify(reply.body) : `${label}: ${JSON.stringify(reply.body)}`;
-  assert.equal(reply.status, status, message);
-  assert(Check(schema, reply.body), message);
-  return reply.body;
-}
-
-export function assertApiError(reply: Reply, status: number, code: ErrorCode, label?: string) {
-  const body = checkedBody(reply, status, ErrorResponse, label);
-  assert.equal(body.error.code, code, JSON.stringify(body));
-  return body;
-}
+export {
+  checkedInjectedBody as checkedBody,
+  checkedInjectedError as assertApiError,
+} from "./occ-api-injected-fixture.ts";
 
 export async function configuredController() {
   const auditSink = new InMemoryAuditSink();

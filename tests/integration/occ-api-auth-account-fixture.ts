@@ -1,17 +1,15 @@
-import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { ErrorResponse, RequestId, type ErrorCode } from "../../packages/contracts/src/index.ts";
+import { RequestId } from "../../packages/contracts/src/index.ts";
 import {
-  checkedInjectedBody,
   createInjectedControllerFixture,
   requestForFixture,
   withoutBackendSummaries,
-  type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
+export { checkedInjectedError as assertApiError } from "./occ-api-injected-fixture.ts";
+
 type FixtureOptions = Parameters<typeof createInjectedControllerFixture>[0];
-type Reply = Awaited<ReturnType<FixtureRequest>>;
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -32,11 +30,6 @@ export const AccountResponse = Type.Object({
   }),
   meta: Type.Object({ requestId: RequestId }),
 });
-
-export function assertApiError(reply: Reply, status: number, code: ErrorCode, label?: string) {
-  const body = checkedInjectedBody(reply, status, ErrorResponse);
-  assert.equal(body.error.code, code, label ?? JSON.stringify(body));
-}
 
 export async function configuredController(options: FixtureOptions = {}) {
   const auditSink = new InMemoryAuditSink();

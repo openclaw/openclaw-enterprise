@@ -17,6 +17,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   bootstrapInstallation,
   checkedInjectedBody,
+  checkedInjectedError,
   createConfiguration,
   createInjectedControllerFixture,
   createNamespace,
@@ -133,10 +134,7 @@ test("Channel directory accepts Slack's null terminal cursor without losing prio
   // Accepting the documented null sentinel must not accept arbitrary cursor types.
   terminalCursor = 7;
   const invalid = await controller.request("POST", path, { body });
-  assert.equal(
-    checkedInjectedBody(invalid, 503, ErrorResponse).error.code,
-    "CHANNEL_DIRECTORY_INVALID_RESPONSE",
-  );
+  checkedInjectedError(invalid, 503, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
 });
 
 test("Slack directory refuses a non-bot Source before sending its value to Slack", async () => {
@@ -167,8 +165,7 @@ test("Slack directory refuses a non-bot Source before sending its value to Slack
     `/namespaces/${namespace.id}/channel-directory/lookup`,
     { body: { sourceId: source.id, kind: "users", query: "member" } },
   );
-  const error = checkedInjectedBody(refused, 400, ErrorResponse).error;
-  assert.equal(error.code, "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED");
+  const { error } = checkedInjectedError(refused, 400, "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED");
   assert.equal(
     error.message,
     "The channel provider rejected the selected credential. Check it and retry.",
@@ -212,7 +209,7 @@ test("Channel directory lookup checks the exact edit target and Source before an
   });
   assert.equal(obsoleteBody.status, 400, "the cutover contract accepts sourceId, not secretId");
   const unavailable = await controller.request("POST", path, { body });
-  assert.equal(checkedInjectedBody(unavailable, 501, ErrorResponse).error.code, "NOT_IMPLEMENTED");
+  checkedInjectedError(unavailable, 501, "NOT_IMPLEMENTED");
 
   let providerCalls = 0;
   let lastProviderInput: ChannelDirectoryLookupInput | undefined;
@@ -391,26 +388,17 @@ test("Channel directory lookup checks the exact edit target and Source before an
   const incompleteHydration = await controller.request("POST", path, {
     body: { sourceId: source.id, kind: "users", ids: ["U123"] },
   });
-  assert.equal(
-    checkedInjectedBody(incompleteHydration, 503, ErrorResponse).error.code,
-    "CHANNEL_DIRECTORY_INVALID_RESPONSE",
-  );
+  checkedInjectedError(incompleteHydration, 503, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
 
   providerResult = { workspaceId: "T123", workspaceName: token, candidates: [], complete: true };
   const echoed = await controller.request("POST", path, { body });
-  assert.equal(
-    checkedInjectedBody(echoed, 503, ErrorResponse).error.code,
-    "CHANNEL_DIRECTORY_INVALID_RESPONSE",
-  );
+  checkedInjectedError(echoed, 503, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
   assert.equal(JSON.stringify(echoed.body).includes(token), false);
 
   providerResult = { workspaceId: "T123", candidates: [], complete: true, token };
   // Simulate a malformed external Driver reply that omits its required workspace identity.
   Reflect.deleteProperty(providerResult, "workspaceId");
   const invalid = await controller.request("POST", path, { body });
-  assert.equal(
-    checkedInjectedBody(invalid, 503, ErrorResponse).error.code,
-    "CHANNEL_DIRECTORY_INVALID_RESPONSE",
-  );
+  checkedInjectedError(invalid, 503, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
   assert.equal(JSON.stringify(invalid.body).includes(token), false);
 });

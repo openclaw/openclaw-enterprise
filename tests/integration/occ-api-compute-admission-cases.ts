@@ -11,11 +11,9 @@ import {
   AgentRevisionReadResponse,
   AgentRevisionResponse,
   ConfigurationResponse,
-  ErrorResponse,
   SecretResponse,
   type AgentWire,
   type ComputeDriver,
-  type ErrorCode,
   type OpenClawConfigurationDocument,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -36,6 +34,7 @@ import {
   bindHarnessKey,
   bootstrapInstallation,
   checkedInjectedBody,
+  checkedInjectedError,
   createAgent,
   createConfiguration,
   createInjectedControllerFixture,
@@ -48,14 +47,7 @@ import {
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
-type InjectedReply = Awaited<ReturnType<FixtureRequest>>;
 type FixtureOptions = Parameters<typeof createInjectedControllerFixture>[0];
-
-function checkApiError(reply: InjectedReply, status: number, code: ErrorCode) {
-  const { error } = checkedInjectedBody(reply, status, ErrorResponse);
-  assert.equal(error.code, code, JSON.stringify(reply.body));
-  return error;
-}
 
 async function createAdmissionController(options: FixtureOptions) {
   const fixture = await createInjectedControllerFixture(options, withoutBackendSummaries);
@@ -140,7 +132,7 @@ export function registerGatewayAdmissionCases(): void {
           if (message === undefined) {
             checkedInjectedBody(result, 202, AgentRevisionResponse);
           } else {
-            const error = checkApiError(result, 409, "RESOURCE_CONFLICT");
+            const { error } = checkedInjectedError(result, 409, "RESOURCE_CONFLICT");
             assert.equal(error.message, message);
             // No revision is admitted, so the worker never stops the running one.
             assert.deepEqual(await readRevisions(controller, path), []);
@@ -170,7 +162,7 @@ export function registerGatewayAdmissionCases(): void {
           const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
           const result = await controller.request("POST", `${path}/deploy`);
           if (expectedStatus === 409) {
-            const error = checkApiError(result, 409, "RESOURCE_CONFLICT");
+            const { error } = checkedInjectedError(result, 409, "RESOURCE_CONFLICT");
             assert.match(error.message, /gateway\.tls\.enabled must be omitted or false/);
             assert.doesNotMatch(JSON.stringify(result.body), /owned\/cert/);
             assert.deepEqual(await readRevisions(controller, path), []);
@@ -205,13 +197,16 @@ export function registerGatewayAdmissionCases(): void {
       "Configuration setting cron must be an object: a dedicated Codex Gateway cannot apply it otherwise.",
     );
     const named = await deploy();
-    assert.equal(checkApiError(named, 400, "INVALID_REQUEST").message, refusal.message);
+    assert.equal(
+      checkedInjectedError(named, 400, "INVALID_REQUEST").error.message,
+      refusal.message,
+    );
 
     // Other driver refusals can carry internal detail and get fixed text, not "already exists".
     refusal = new Error("internal driver detail");
     const generic = await deploy();
     assert.equal(
-      checkApiError(generic, 409, "RESOURCE_CONFLICT").message,
+      checkedInjectedError(generic, 409, "RESOURCE_CONFLICT").error.message,
       "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
     );
     assert.doesNotMatch(JSON.stringify(generic.body), /internal driver detail/);
@@ -238,7 +233,7 @@ export function registerGatewayAdmissionCases(): void {
       await bindHarnessKey(fixture, namespace.id, refusedAgent);
       const path = `/namespaces/${namespace.id}/agents/${refusedAgent.id}`;
       const refused = await controller.request("POST", `${path}/deploy`);
-      assert.equal(checkApiError(refused, 409, "RESOURCE_CONFLICT").message, message);
+      assert.equal(checkedInjectedError(refused, 409, "RESOURCE_CONFLICT").error.message, message);
       assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
       assert.deepEqual(await readRevisions(controller, path), []);
     }
@@ -260,7 +255,7 @@ export function registerGatewayAdmissionCases(): void {
     const allowUsersPath = `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}`;
     const refusedAllowUsers = await controller.request("POST", `${allowUsersPath}/deploy`);
     assert.equal(
-      checkApiError(refusedAllowUsers, 409, "RESOURCE_CONFLICT").message,
+      checkedInjectedError(refusedAllowUsers, 409, "RESOURCE_CONFLICT").error.message,
       KUBERNETES_ALLOW_USERS_REFUSAL,
     );
     assert.doesNotMatch(
@@ -296,7 +291,7 @@ export function registerGatewayAdmissionCases(): void {
       "POST",
       `/namespaces/${namespace.id}/agents/${deniedAgent.id}/deploy`,
     );
-    checkApiError(denied, 403, "FORBIDDEN");
+    checkedInjectedError(denied, 403, "FORBIDDEN");
     assert.doesNotMatch(JSON.stringify(denied.body), /gateway\.auth|trusted-proxy/);
 
     // An unavailable hook dependency answers 503; any other hook refusal stays with preparation.
@@ -308,7 +303,7 @@ export function registerGatewayAdmissionCases(): void {
       throw new DependencyUnavailableError("The gateway setting check is unavailable.");
     };
     const unavailable = await deployHookAgent();
-    checkApiError(unavailable, 503, "DEPENDENCY_UNAVAILABLE");
+    checkedInjectedError(unavailable, 503, "DEPENDENCY_UNAVAILABLE");
     assert.deepEqual(await readRevisions(controller, hookAgentPath), []);
     computeDriver.validateGatewaySettings = () => {
       throw new Error("internal gateway detail");
@@ -385,7 +380,7 @@ export function registerSshAdmissionCases(): void {
           harnessAuth: { method: "runtime", ...extra },
         },
       });
-      checkApiError(invalid, 400, "INVALID_REQUEST");
+      checkedInjectedError(invalid, 400, "INVALID_REQUEST");
     }
     const createdResponse = await controller.request("POST", collection, {
       body: {
@@ -419,7 +414,10 @@ export function registerSshAdmissionCases(): void {
       ["PATCH", path, { gatewayManagedMode: true }],
     ] as const) {
       const refused = await controller.request(method, target, { body });
-      assert.equal(checkApiError(refused, 400, "INVALID_REQUEST").message, unsupported);
+      assert.equal(
+        checkedInjectedError(refused, 400, "INVALID_REQUEST").error.message,
+        unsupported,
+      );
     }
     // An Agent saved before managed mode existed was migrated to on; deploy still refuses it
     // until an Installation administrator turns it off.
@@ -440,7 +438,7 @@ export function registerSshAdmissionCases(): void {
     );
     assert.equal(persisted?.gatewayManagedMode, true);
     const rejected = await controller.request("POST", `${path}/deploy`);
-    assert.equal(checkApiError(rejected, 400, "INVALID_REQUEST").message, unsupported);
+    assert.equal(checkedInjectedError(rejected, 400, "INVALID_REQUEST").error.message, unsupported);
     assert.deepEqual(await readRevisions(controller, path), []);
     const updated = await controller.request("PATCH", path, {
       body: { gatewayManagedMode: false },
@@ -480,7 +478,7 @@ export function registerSshAdmissionCases(): void {
       action: "deploy",
       effect: "deny",
     });
-    checkApiError(await controller.request("POST", `${path}/deploy`), 403, "FORBIDDEN");
+    checkedInjectedError(await controller.request("POST", `${path}/deploy`), 403, "FORBIDDEN");
   });
 
   test("SSH Compute names a Harness authentication method other than runtime at Agent save", async () => {
@@ -505,7 +503,7 @@ export function registerSshAdmissionCases(): void {
       },
     });
     assert.equal(
-      checkApiError(created, 400, "INVALID_REQUEST").message,
+      checkedInjectedError(created, 400, "INVALID_REQUEST").error.message,
       "Agent setting harnessAuth.method must be runtime for embedded OpenClaw on SSH Compute: change harnessAuth.",
     );
   });
@@ -656,7 +654,10 @@ export function registerSshAdmissionCases(): void {
       if (message === undefined) {
         checkedInjectedBody(deployed, 202, AgentRevisionResponse);
       } else {
-        assert.equal(checkApiError(deployed, 409, "RESOURCE_CONFLICT").message, message);
+        assert.equal(
+          checkedInjectedError(deployed, 409, "RESOURCE_CONFLICT").error.message,
+          message,
+        );
         assert.doesNotMatch(JSON.stringify(deployed.body), /synthetic-gateway|SYNTHETIC/);
         assert.deepEqual(await readRevisions(controller, `${collection}/${agent.id}`), []);
       }
@@ -699,7 +700,7 @@ export function registerSshAdmissionCases(): void {
     });
     const deployed = await deploy(agent);
     assert.equal(
-      checkApiError(deployed, 400, "INVALID_REQUEST").message,
+      checkedInjectedError(deployed, 400, "INVALID_REQUEST").error.message,
       "Configuration secretBindings must be empty on SSH Compute: provision credentials in the operator-owned <agentDir>/env file.",
     );
     assert.deepEqual(await readRevisions(controller, `${collection}/${agent.id}`), []);
@@ -751,7 +752,7 @@ export function registerSshAdmissionCases(): void {
     ] as const) {
       const configuration = await createConfiguration(controller, namespace.id, withAgents(agents));
       const refused = await create("Unreadable setup", configuration.id, files);
-      assert.equal(checkApiError(refused, 400, "INVALID_REQUEST").message, message);
+      assert.equal(checkedInjectedError(refused, 400, "INVALID_REQUEST").error.message, message);
       // Without initial workspace files the same Configuration saves.
       const plain = await create(`Plain ${configuration.id}`, configuration.id);
       assert.equal(plain.status, 201, JSON.stringify(plain.body));
@@ -772,7 +773,7 @@ export function registerSshAdmissionCases(): void {
     assert.equal(changed.status, 200, JSON.stringify(changed.body));
     const path = `${collection}/${created.id}`;
     const deployed = await controller.request("POST", `${path}/deploy`);
-    assert.equal(checkApiError(deployed, 400, "INVALID_REQUEST").message, roster);
+    assert.equal(checkedInjectedError(deployed, 400, "INVALID_REQUEST").error.message, roster);
     // A workspace added after save refuses the deploy too.
     const moved = await controller.request(
       "PATCH",
@@ -782,7 +783,7 @@ export function registerSshAdmissionCases(): void {
     assert.equal(moved.status, 200, JSON.stringify(moved.body));
     const redeployed = await controller.request("POST", `${path}/deploy`);
     assert.equal(
-      checkApiError(redeployed, 400, "INVALID_REQUEST").message,
+      checkedInjectedError(redeployed, 400, "INVALID_REQUEST").error.message,
       workspace("agents.entries.Main.workspace"),
     );
     assert.deepEqual(await readRevisions(controller, path), []);
@@ -822,7 +823,7 @@ export function registerSshAdmissionCases(): void {
     );
     assert.equal(emptied.status, 200, JSON.stringify(emptied.body));
     const completed = await controller.request("POST", `${path}/deploy`);
-    assert.equal(checkApiError(completed, 400, "INVALID_REQUEST").message, roster);
+    assert.equal(checkedInjectedError(completed, 400, "INVALID_REQUEST").error.message, roster);
     assert.deepEqual(
       (await readRevisions(controller, path)).map(({ id }) => id),
       [firstRevision.id],
@@ -836,7 +837,7 @@ export function registerSshAdmissionCases(): void {
     const switched = await controller.request("PATCH", path, {
       body: { configurationId: broken.id },
     });
-    assert.equal(checkApiError(switched, 400, "INVALID_REQUEST").message, roster);
+    assert.equal(checkedInjectedError(switched, 400, "INVALID_REQUEST").error.message, roster);
     // Restating the stored execution mode is no change either.
     for (const body of [
       { configurationId: configuration.id },
