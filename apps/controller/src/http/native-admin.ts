@@ -47,6 +47,7 @@ import {
   requestFailure,
 } from "./errors.ts";
 import { GENERIC_DENIAL, NATIVE_ADMIN_DENIAL } from "./caller-denial.ts";
+import { gatewayPredecessorUnavailable } from "../gateway/contracts.ts";
 import { RequestRateLimiter } from "./request-rate-limiter.ts";
 import type { RequestContext } from "./types.ts";
 import { parse as parseDomain } from "tldts";
@@ -859,24 +860,6 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         readonly nativeSubject: string;
       } & NativeAdminTargetStatus);
 
-  // An exclusive Compute Driver stops the active revision's workload before a newer
-  // revision starts, so nothing serves until that revision activates. If it fails, the
-  // Agent stays down while the old revision is still recorded as active.
-  function replacesActiveWorkload(successor: Readonly<AgentRevision>): boolean {
-    const controller = getController();
-    let compute: ComputeDriver;
-    try {
-      compute = controller!.selectedDriver("compute");
-    } catch {
-      throw dependencyUnavailable();
-    }
-    return (
-      successor.compute.id === compute.id &&
-      successor.compute.implementation === compute.implementation &&
-      compute.requiresStoppedPredecessors?.(successor) === true
-    );
-  }
-
   async function resolveNativeAdminAvailability(input: {
     readonly actorId: string;
     readonly namespaceId: string;
@@ -915,7 +898,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (nativeAdminDomain.length > 214) {
       return { status: "unavailable" };
     }
-    const { agent, revision, successor, mode } = selection;
+    const { agent, revision, mode } = selection;
     const target = nativeAdminTarget({
       publicOrigin,
       installationId,
@@ -926,12 +909,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (agent.desiredRuntimeState !== "running") {
       return { status: "stopped", agent, revision, target, mode };
     }
-    if (
-      selection.predecessorPhase === "stopping" ||
-      (selection.predecessorPhase === undefined &&
-        successor !== undefined &&
-        replacesActiveWorkload(successor))
-    ) {
+    if (gatewayPredecessorUnavailable(controller, selection)) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {

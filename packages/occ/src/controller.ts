@@ -949,6 +949,21 @@ export class OpenClawController {
     );
   }
 
+  async getWorkspaceFileRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: "read" | "operate",
+  ): Promise<ActiveAgentRevisionSelection> {
+    return this.composition.agentQueries.getAuthorizedActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agentId,
+      action,
+      true,
+    );
+  }
+
   async getReadableActiveAgentRevision(
     principalId: string,
     namespaceId: string,

@@ -387,11 +387,25 @@ test(
           };
           child.child.stdin.end(JSON.stringify(input));
           const result = await child;
-          assert.deepEqual(JSON.parse(result.stdout), {
+          const observed: unknown = JSON.parse(result.stdout);
+          assert.ok(isRecord(observed));
+          assert.deepEqual(observed, {
             apiWrite: 200,
             apiRead: 200,
             scopeControls: true,
             deniedIdentity: deniedWrite.identity,
+            ...(explicitAgentId !== undefined && deniedWrite.identity === "proof-read"
+              ? {
+                  handoff: {
+                    staleWrite: 503,
+                    revoked: [
+                      { action: "read", status: 403, denials: 1 },
+                      { action: "operate", status: 403, denials: 1 },
+                    ],
+                    readAfter: 200,
+                  },
+                }
+              : {}),
           });
           // Inspect actual native disk after each denial, before another admin PUT
           // can reset it. No fixture returns file RPC answers.
@@ -407,6 +421,14 @@ test(
             content,
             `Native file changed after ${deniedWrite.identity} PUT`,
           );
+          if (observed.handoff !== undefined) {
+            t.diagnostic(
+              JSON.stringify({
+                handoff: observed.handoff,
+                diskReadback: stored.stdout === content,
+              }),
+            );
+          }
         }
         const counter = await runDocker([
           "exec",

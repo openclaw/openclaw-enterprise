@@ -78,15 +78,18 @@ records the Agent, file name, and outcome in the audit log.
 | Error                        | Meaning                                              |
 | ---------------------------- | ---------------------------------------------------- |
 | `400 INVALID_REQUEST`        | Invalid file name or content.                        |
+| `403 FORBIDDEN`              | Agent permission or session checks failed.           |
 | `404 NOT_FOUND`              | The requested Agent or file was not found.           |
 | `409 AGENT_DELETING`         | The Agent is being deleted.                          |
-| `409 RESOURCE_CONFLICT`      | The Agent is stopping, or has no running version.    |
+| `409 RESOURCE_CONFLICT`      | No running version, or a write while stopping.       |
 | `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 97 KiB.                     |
-| `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
+| `503 DEPENDENCY_UNAVAILABLE` | Unavailable, including during replacement.           |
 | `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |
 
-After `UNKNOWN_OUTCOME`, read the current file before deciding whether to submit
-another write.
+If a deployment interrupts access, keep a copy of unsaved edits. Once the new
+revision is active, read the file again. A write that returned `UNKNOWN_OUTCOME`
+may already have succeeded. Compare the saved contents with your intended edit
+before deciding whether to write again.
 
 See [gateway routing](../gateway-routing.md) for transport,
 [workspace-file setup](../../guides/deploy/workspace-routing.md#agent-workspace-files) to enable

@@ -58,7 +58,7 @@ export interface AgentRevisionListPage {
 export interface ActiveAgentRevisionSelection {
   readonly agent: Readonly<Agent>;
   readonly revision: Readonly<AgentRevision>;
-  /** Administering reads only: the newest admitted revision after the active one, if any. */
+  /** Gateway access checks: the newest admitted revision after the active one, if any. */
   readonly successor?: Readonly<AgentRevision>;
   readonly predecessorPhase?: "pre-stop" | "stopping";
 }
@@ -516,6 +516,7 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
     namespaceId: string,
     agentId: string,
     action: PermissionAction,
+    includeReplacement?: boolean,
   ): Promise<ActiveAgentRevisionSelection>;
 
   async function getAuthorizedActiveAgentRevision(
@@ -523,6 +524,7 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
     namespaceId: string,
     agentId: string,
     access: PermissionAction | "browser",
+    includeReplacement = false,
   ) {
     const action = await authorizeAgentAccess(principalId, namespaceId, agentId, access);
     const browserAccess = access === "browser";
@@ -552,10 +554,16 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
       if (!revision) {
         throw new DependencyUnavailableError("The active Agent revision is unavailable.");
       }
-      if (action !== "administer" && !browserAccess) {
+      if (!includeReplacement && action !== "administer" && !browserAccess) {
         return Object.freeze({ agent, revision });
       }
-      // Native admin status must know whether a newer deployment is replacing this revision.
+      const replacement = await state.agents.findPredecessorReplacement(namespace.id, agent.id);
+      const predecessorPhase =
+        replacement?.predecessorRevisionId === revision.id ? replacement.phase : undefined;
+      if (includeReplacement && predecessorPhase !== undefined) {
+        return Object.freeze({ agent, revision, predecessorPhase });
+      }
+      // Gateway access must account for a newer deployment replacing this revision.
       // Only the newest later revision is decoded strictly, so an unreadable older snapshot
       // cannot make a healthy Agent's native admin unavailable, and no other is decoded at all.
       const newest = (await state.revisions.listRevisionMetadata(namespace.id, agent.id))
@@ -565,14 +573,11 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
-      const replacement = await state.agents.findPredecessorReplacement(namespace.id, agent.id);
       const selection = Object.freeze({
         agent,
         revision,
         ...(successor === undefined ? {} : { successor }),
-        ...(replacement?.predecessorRevisionId === revision.id
-          ? { predecessorPhase: replacement.phase }
-          : {}),
+        ...(predecessorPhase === undefined ? {} : { predecessorPhase }),
       });
       const mode = action === "administer" ? "admin" : "chat";
       return browserAccess ? { ...selection, mode } : selection;

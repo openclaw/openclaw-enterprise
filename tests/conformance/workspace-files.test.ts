@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Permission } from "../../packages/contracts/src/index.ts";
 import { validateNativeIAMState } from "../../packages/iam/src/index.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { AuthorizationDeniedError, OpenClawController } from "../../packages/occ/src/index.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   type ControllerWorkspaceFileReadRequest,
@@ -20,7 +20,7 @@ import {
   type TenantReaderApp,
   type TenantRequestOptions,
 } from "../helpers/tenant-reader-app.ts";
-import { bindRole } from "../helpers/iam-grants.ts";
+import { bindRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   workspaceVersionStarting,
   workspaceWithoutRunningVersion,
@@ -90,9 +90,10 @@ type Fixture = Omit<SharedFixture, "app"> & {
 // app and run one at a time. Each gets a new Namespace and Agent, its own workspace file
 // provider (the app's forwards to the running case's) and the audit events since it started.
 // An app with a shorter workspace file deadline is built once per deadline, on the same controller.
-const running: { workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined } = {
-  workspaceFilesAccess: undefined,
-};
+const running: {
+  workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined;
+  exclusiveReplacement: boolean;
+} = { workspaceFilesAccess: undefined, exclusiveReplacement: false };
 const deadlineApps = new Map<number, TenantReaderApp>();
 let shared: Promise<SharedFixture> | undefined;
 
@@ -110,6 +111,7 @@ async function createFixture({
       ...createDevelopmentComputeDriver(),
       id: "compute-workspace-files",
       implementation: "deterministic-test",
+      requiresStoppedPredecessors: () => running.exclusiveReplacement,
     },
     secretDriver: createTestSecretDriver(),
     appOptions: (overrides) => ({
@@ -371,6 +373,77 @@ test("Agent workspace file routes read and replace fixed files through the selec
   );
   assert.equal(JSON.stringify(audits).includes("content from"), false);
   assert.equal(JSON.stringify(audits).includes("new soul"), false);
+});
+
+test("workspace files remain available until an exclusive deployment starts stopping the predecessor", async (t) => {
+  const attempts: string[] = [];
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read({ revision }) {
+        attempts.push(revision.id);
+        return { status: "missing" };
+      },
+      async write({ revision, filename }) {
+        attempts.push(revision.id);
+        return { status: "ok", file: { name: filename } };
+      },
+    },
+  });
+  const ns = await createNamespace(fixture, "Workspace handoff");
+  const { agent, revision } = await createAgent(fixture, ns, "Workspace predecessor");
+  assert.ok(revision);
+  const base = `/namespaces/${ns.id}/agents/${agent.id}`;
+  const path = `${base}/workspace/files/USER.md`;
+
+  // A non-exclusive successor shares no stop boundary with the serving revision.
+  const deploy = () => request(fixture.app, `${base}/deploy`, { method: "POST" });
+  assert.equal((await deploy()).response.status, 202);
+  assert.equal((await request(fixture.app, path)).response.status, 404);
+
+  // The successor is now seen by an exclusive Driver, as for an older deployment
+  // admitted before stop boundaries were recorded.
+  replaceForCase(t, running, "exclusiveReplacement", true);
+  const legacy = await request(fixture.app, path);
+  assert.equal(legacy.response.status, 503);
+  assert.equal(errorOf(legacy).code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(attempts, [revision.id]);
+
+  // A distinct Agent's first exclusive replacement records pre-stop at admission.
+  const next = await createAgent(fixture, ns, "Exclusive workspace");
+  assert.ok(next.revision);
+  const nextBase = `/namespaces/${ns.id}/agents/${next.agent.id}`;
+  const nextPath = `${nextBase}/workspace/files/USER.md`;
+  const deployed = await request(fixture.app, `${nextBase}/deploy`, { method: "POST" });
+  assert.equal(deployed.response.status, 202);
+  const successor = resourceOf(deployed);
+  const predecessor = next.revision.id;
+  assert.equal((await request(fixture.app, nextPath)).response.status, 404);
+  assert.equal((await put(fixture.app, nextPath, { content: "pre-stop" })).response.status, 200);
+
+  await fixture.controller.transact((unit) =>
+    unit.agents.recordPredecessorReplacement(ns.id, next.agent.id, {
+      predecessorRevisionId: predecessor,
+      candidateRevisionId: successor.id,
+      phase: "stopping",
+    }),
+  );
+  for (const refused of [
+    await request(fixture.app, nextPath),
+    await put(fixture.app, nextPath, { content: "during stop" }),
+  ]) {
+    assert.equal(refused.response.status, 503);
+    assert.equal(errorOf(refused).code, "DEPENDENCY_UNAVAILABLE");
+  }
+  assert.deepEqual(attempts, [revision.id, predecessor, predecessor]);
+  assert.equal(fileAudits(fixture).at(-1)?.reasonCode, "DEPENDENCY_UNAVAILABLE");
+
+  await fixture.controller.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(ns.id, next.agent.id, predecessor, successor.id),
+  );
+  const missing = await request(fixture.app, nextPath);
+  assert.equal(missing.response.status, 404);
+  assert.equal(errorOf(missing).message, "The requested workspace file was not found.");
+  assert.equal(attempts.at(-1), successor.id);
 });
 
 test("Agent workspace file routes enforce read and operate permissions separately", async (context) => {
@@ -661,6 +734,9 @@ test("Agent workspace file routes map provider file states without leaking conte
         if (read.filename === "SOUL.md") {
           return { status: "missing" };
         }
+        if (read.filename === "USER.md") {
+          throw new AuthorizationDeniedError();
+        }
         if (read.filename === "AGENTS.md") {
           // One byte over the content limit: OCC refuses it rather than relaying it.
           return {
@@ -671,6 +747,9 @@ test("Agent workspace file routes map provider file states without leaking conte
         return { status: "unavailable" };
       },
       async write(write) {
+        if (write.filename === "IDENTITY.md") {
+          throw Object.assign(new Error("provider error"), { name: "AuthorizationDeniedError" });
+        }
         return { status: write.filename === "SOUL.md" ? "missing" : "unavailable" };
       },
     },
@@ -715,6 +794,15 @@ test("Agent workspace file routes map provider file states without leaking conte
   assert.equal(writeMissing.response.status, 404);
   assert.equal(errorOf(writeMissing).code, "NOT_FOUND");
 
+  // Neither a provider-thrown denial nor its name alone is an OCC IAM decision.
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files`;
+  const providerRead = await request(fixture.app, `${path}/USER.md`);
+  const providerWrite = await put(fixture.app, `${path}/IDENTITY.md`, { content: "unused" });
+  for (const result of [providerRead, providerWrite]) {
+    assert.equal(result.response.status, 503);
+    assert.equal(errorOf(result).code, "DEPENDENCY_UNAVAILABLE");
+  }
+
   const audits = fileAudits(fixture);
   assert.equal(JSON.stringify(audits).includes("secret-ish"), false);
   assert.deepEqual(
@@ -727,6 +815,7 @@ test("Agent workspace file routes map provider file states without leaking conte
     [
       ["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "USER.md"],
       ["openclaw.agents.workspace.files.write", "failure", "FILE_MISSING", "SOUL.md"],
+      ["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "IDENTITY.md"],
     ],
   );
 });
@@ -846,6 +935,53 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
   assert.equal(JSON.stringify(result.payload).includes("sent once"), false);
 });
 
+test("a workspace denial keeps its audit when connection cleanup outlasts the deadline", async () => {
+  const denied: string[] = [];
+  async function denyThenHold(
+    input: ControllerWorkspaceFileReadRequest,
+    action: "read" | "operate",
+  ): Promise<never> {
+    const restriction = restrict(fixture.state, action, "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
+    try {
+      assert.equal(await input.isRevisionCurrent?.(), false);
+      denied.push(action);
+    } finally {
+      liftRestriction(fixture.state, restriction);
+    }
+    // The RPC was refused. Model a connection whose cleanup has not finished when the timer fires.
+    return new Promise<never>(() => {});
+  }
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      read: (input) => denyThenHold(input, "read"),
+      write: (input) => denyThenHold(input, "operate"),
+    },
+    workspaceFileRequestTimeoutMs: 250,
+  });
+  const namespace = await createNamespace(fixture, "Delayed workspace cleanup");
+  const { agent } = await createAgent(fixture, namespace, "Workspace cleanup");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
+  for (const action of ["read", "operate"] as const) {
+    const reply =
+      action === "read"
+        ? await request(fixture.app, path)
+        : await put(fixture.app, path, { content: "unused" });
+    assert.equal(reply.response.status, 403);
+    const events = fixture.auditSink.events.filter(
+      (event) =>
+        event.requestId === reply.response.headers.get("x-request-id") &&
+        event.action.startsWith("openclaw.agents.workspace.files."),
+    );
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.kind, "authorization_denial");
+    assert.equal(events[0]?.authorization?.action, action);
+  }
+  assert.deepEqual(denied, ["read", "operate"]);
+});
+
 test("Agent workspace file requests are bounded before and during provider access", async (context) => {
   const preAccess = await createFixture({
     workspaceFilesAccess: {
@@ -863,7 +999,7 @@ test("Agent workspace file requests are bounded before and during provider acces
   const restoreLookup = replaceForCase(
     context,
     preAccess.controller,
-    "getReadableActiveAgentRevision",
+    "getWorkspaceFileRevision",
     async () => new Promise(() => {}),
   );
 

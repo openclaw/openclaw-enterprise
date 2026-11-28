@@ -107,11 +107,20 @@ async function requestNativeWorkspaceFile(
       scopes: [],
       edgeAuthHeaders: { "x-api-key": target.apiKey },
       onHelloOk: resolveHello,
+      onClose: (_code, _reason, info) => {
+        // A selection checked after Hello belongs to this socket. Never dispatch on a reconnect.
+        if (info?.phase === "post-hello") {
+          client?.stop();
+        }
+      },
       onConnectError: rejectHello,
     });
     client.start();
     const hello = await waitForHello(connected, request, timeoutMs);
-    if (!hasGrant(hello, operation)) {
+    if (
+      !hasGrant(hello, operation) ||
+      (request.isRevisionCurrent !== undefined && !(await request.isRevisionCurrent()))
+    ) {
       return { status: "unavailable" };
     }
     const defaults = hello.snapshot.sessionDefaults;
@@ -150,7 +159,7 @@ async function requestNativeWorkspaceFile(
     if (operation === "write" && writeOutcomeUnknown(error, requestSent)) {
       throw new ControllerWorkspaceFileUnknownOutcomeError(undefined, { cause: error });
     }
-    if (operation === "read" && isMissingFileError(error)) {
+    if (operation === "read" && requestSent && isMissingFileError(error)) {
       return { status: "missing" };
     }
     return { status: "unavailable" };

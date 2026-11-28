@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { connect, createServer, type Socket } from "node:net";
 import { Check } from "typebox/value";
 import { createWorkspaceFilesAccess } from "../../../apps/controller/src/composition/workspace-files.ts";
 import type { ControllerWorkspaceFileReadRequest } from "../../../apps/controller/src/gateway/contracts.ts";
@@ -14,7 +16,7 @@ import type {
 } from "../../../packages/contracts/src/index.ts";
 import { createDevelopmentComputeDriver } from "../../helpers/development.ts";
 import { createTestSecretDriver } from "../../helpers/secret-driver.ts";
-import { bindRole } from "../../helpers/iam-grants.ts";
+import { bindRole, liftRestriction, restrict } from "../../helpers/iam-grants.ts";
 import {
   createTenantReaderFixture,
   tenantRequest,
@@ -88,9 +90,10 @@ const keyPath = process.env.OCC_WORKSPACE_PROOF_KEY_PATH;
 const endpoint = process.env.OCC_WORKSPACE_PROOF_ENDPOINT;
 assert.ok(keyPath, "OCC_WORKSPACE_PROOF_KEY_PATH is required");
 assert.ok(endpoint, "OCC_WORKSPACE_PROOF_ENDPOINT is required");
+let gatewayEndpoint = endpoint;
 const compute = {
   ...createDevelopmentComputeDriver(),
-  getGatewayEndpoint: () => endpoint,
+  getGatewayEndpoint: () => gatewayEndpoint,
 };
 const access = createWorkspaceFilesAccess(compute, keyPath);
 const readableResources: Permission["resourceKind"][] = [
@@ -221,6 +224,13 @@ const read = await call(path);
 assert.equal(read.response.status, 200, JSON.stringify(read.payload));
 assert.equal(responseRecord(read.payload.data).content, scenario.content);
 
+let handoff:
+  | {
+      staleWrite: number;
+      revoked: { action: string; status: number; denials: number }[];
+      readAfter: number;
+    }
+  | undefined;
 const { explicitAgentId } = scenario;
 if (explicitAgentId !== undefined) {
   const revision = await controller.getRevision(
@@ -270,6 +280,121 @@ if (explicitAgentId !== undefined) {
     apiKey: "proof-admin",
   }));
   assert.deepEqual(await main.read(request), { status: "unavailable" });
+
+  if (scenario.deniedWrite.identity === "proof-read") {
+    const successor = await call(`/namespaces/${namespaceId}/agents/${agent.id}/deploy`, {
+      method: "POST",
+    });
+    assert.equal(successor.response.status, 202, "Expected replacement deploy to be admitted");
+    const successorId = resourceId(successor.payload.data);
+    assert.notEqual(successorId, revisionId);
+
+    const activate = async () => {
+      const active = await controller.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, revisionId, successorId),
+      );
+      assert.equal(active?.activeRevisionId, successorId, "Expected predecessor to be replaced");
+    };
+    const upstreamUrl = new URL(endpoint);
+    const sockets = new Set<Socket>();
+    let beforeHello = activate;
+    let change: Promise<void> | undefined;
+    const relay = createServer((client) => {
+      const upstream = connect(Number(upstreamUrl.port), upstreamUrl.hostname);
+      for (const [socket, peer] of [
+        [client, upstream],
+        [upstream, client],
+      ] as const) {
+        sockets.add(socket);
+        socket.on("error", () => peer.destroy());
+        socket.on("close", () => {
+          sockets.delete(socket);
+          peer.destroy();
+        });
+      }
+      // OCC has admitted the request. Apply the change before forwarding the TLS handshake.
+      change ??= beforeHello();
+      void change.then(
+        () => client.pipe(upstream).pipe(client),
+        () => client.destroy(),
+      );
+    });
+    relay.listen(0, "127.0.0.1");
+    await once(relay, "listening");
+    try {
+      const address = relay.address();
+      assert.ok(address && typeof address === "object");
+      const relayUrl = new URL(upstreamUrl);
+      relayUrl.port = String(address.port);
+      gatewayEndpoint = relayUrl.href;
+
+      const stale = await put("Stale predecessor write");
+      assert.ok(change, "The predecessor PUT must reach the TCP relay");
+      await change;
+      assert.equal(stale.response.status, 503, "The PUT crossed activation before native Hello");
+      assert.equal(responseRecord(stale.payload.error).code, "DEPENDENCY_UNAVAILABLE");
+
+      // Revoke the exact caller permission only after its request connects. The native
+      // operator still has admin scope, so the second OCC check must stop dispatch.
+      const revoked = [];
+      for (const action of ["read", "operate"] as const) {
+        change = undefined;
+        let restriction: ReturnType<typeof restrict> | undefined;
+        beforeHello = async () => {
+          restriction = restrict(fixture.state, action, "agent", {
+            namespaceId,
+            resourceId: agent.id,
+          });
+        };
+        const reading = action === "read";
+        const denied = reading ? await call(path) : await put("Revoked caller write");
+        assert.ok(restriction, "The request must reach the relay before revocation");
+        assert.equal(
+          denied.response.status,
+          403,
+          `Revoked ${action} must deny the connected request`,
+        );
+        assert.equal(responseRecord(denied.payload.error).code, "FORBIDDEN");
+        const events = fixture.auditSink.events.filter(
+          (event) =>
+            event.requestId === denied.response.headers.get("x-request-id") &&
+            event.action.startsWith("openclaw.agents.workspace.files."),
+        );
+        assert.equal(events.length, 1);
+        const [event] = events;
+        assert.ok(event);
+        assert.equal(event.kind, "authorization_denial");
+        assert.equal(event.outcome, "denied");
+        assert.equal(event.reasonCode, "AUTHORIZATION_DENIED");
+        assert.equal(event.actorId, fixture.administrator.id);
+        assert.equal(event.action, `openclaw.agents.workspace.files.${reading ? "read" : "write"}`);
+        const resource = { kind: "agent", id: agent.id, namespaceId };
+        assert.deepEqual(event.resource, resource);
+        assert.deepEqual(event.authorization, {
+          principalId: fixture.administrator.id,
+          action,
+          resource,
+        });
+        assert.deepEqual(responseRecord(event.details?.iamEvidence).restrictionIds, [
+          restriction.id,
+        ]);
+        revoked.push({ action, status: denied.response.status, denials: events.length });
+        liftRestriction(fixture.state, restriction);
+      }
+
+      // Neither the stale predecessor nor the revoked caller changed the native file.
+      const current = await call(path);
+      assert.equal(current.response.status, 200, "Expected a live GET on the cutover route");
+      assert.equal(responseRecord(current.payload.data).content, scenario.content);
+      handoff = { staleWrite: stale.response.status, revoked, readAfter: current.response.status };
+    } finally {
+      gatewayEndpoint = endpoint;
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  }
 }
 // Finish with one denied write so the parent can inspect native disk before
 // another probe's successful admin PUT could hide an unauthorized file change.
@@ -283,5 +408,6 @@ process.stdout.write(
     apiRead: 200,
     scopeControls: true,
     deniedIdentity: deniedWrite.identity,
+    handoff,
   }) + "\n",
 );

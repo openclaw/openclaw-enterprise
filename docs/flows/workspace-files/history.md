@@ -8,6 +8,35 @@ This record preserves the dated changes to the Agent workspace files flow. See t
 
 ## Changelog
 
+- 2026-11-22 09:27: Explain bounded reply policy selection. (authoring-run/50df6805-135e-42e6-a549-2a24c9b17fb8 - 1a8d9d9f46da702b830d50cc53215317d602ab4c)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
+
+- 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
+
+- 2026-11-11 09:02: Retain native effort capabilities without request overrides. (authoring-run/34b5633f-b4b7-4b67-98ff-d5b3c3ab1a6b - 9f30b1e6b9f6552865d47fedd6d0b82729bf70fb)
+
+- 2026-11-05 00:00: Clarify enrollment limits. (authoring-run/813d3dd8-d371-45db-a6f1-d70156152311 - a23d33a4d561d0678410a993e5c10a8cddf1a720)
+
+- 2026-11-04 23:20: Require credential possession before enrollment. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
+
+- 2026-11-04 10:02: Document setup renewal with retained identity. (authoring-run/689059e8-4902-4d70-b7c0-56353dcc9ca3 - b927adfdaef17693496f076bfedf36afe0fccf7d)
+
+- 2026-11-04 09:51: Refresh file-delivered setup without restarting Codex or resetting node identity. (authoring-run/c90ec001-aeb3-4f1d-b60c-04e78883528c - b927adfdaef17693496f076bfedf36afe0fccf7d)
+
+- 2026-10-27 07:45: Resolve omitted Configuration IDs before checking Agent update topology. (Codex/01a16ff3-354f-7873-a064-92d0ff2bcf0f - 46f6f41f4763335da2512d5127e7082987df77f8)
+- 2026-10-26 22:29: Point workspace setup to the version and template digest it checks. (authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64 - 855eeed7cb66c8f85b0ad9672d561bf0a825e621)
+
+- 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
+
+- 2026-10-23 13:17: Describe direct Harness inputs. (authoring-run/2c3f5532-2023-4496-954f-df02d9be44c1 - bd4948208)
+
+- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
+- 2026-10-12 22:30: Initial workspace files in a Sandbox are refused at save with a `409`. (fix-1144-1145b - 8aa391300)
+
 - 2026-11-01 08:00: A Harness stopped during native setup waits until setup ends, so the node state lock on the workspace claim does not outlive the Pod. (fix-3104, finding 3104)
 
 - 2026-10-27 09:00: Hold a failed Harness native setup as check `workspace-baseline` instead of exiting, and drop OpenClaw's doctor hints from its log. (fix-2686-status, findings 2686, 2699)
