@@ -435,6 +435,7 @@ test("Back after switching Namespace keeps the shown page until the return is ad
 for (const [mode, title] of Object.entries({
   tab: "Switching Namespace from Agent details keeps the destination header and keyboard focus",
   stay: "Switching Namespace from Agent details restores the remembered row without a Tab",
+  again: "Switching Namespace twice updates the empty header before the second list arrives",
   phone: "Switching Namespace keeps focus on Open navigation while the phone list loads",
   back: "Interrupting Back across Namespaces hides the previous Agent and restores the remembered row",
 })) {
@@ -449,7 +450,7 @@ for (const [mode, title] of Object.entries({
       const agent = agentResource(
         await fixture.createAgent(scope.id, `${name} Agent`, nativeValues("v1")),
       );
-      return { ...scope, agent };
+      return { id: scope.id, name, agent };
     };
     const east = await createScope("East");
     const west = await createScope("West");
@@ -531,8 +532,21 @@ for (const [mode, title] of Object.entries({
     if (mode !== "back") {
       assert.ok(await hasFocus(agentsHeading), "The destination heading keeps temporary focus");
     }
-    let expectedFocus = row(west.agent);
-    if (mode === "tab") {
+    const destination = mode === "again" ? east : west;
+    const other = mode === "again" ? west : east;
+    let pendingList = list;
+    let expectedFocus = row(destination.agent);
+    if (mode === "again") {
+      // West has no rows on screen yet, so there is no West scope to preserve.
+      pendingList = await holdRequests(t, page, agentsRead(east), options);
+      await picker.press("ArrowUp");
+      assert.equal((await pendingList.requested)?.status(), 200);
+      await waitForEnabled(picker);
+      assert.equal(await picker.inputValue(), east.id);
+      assert.equal(await main.locator(".scope").textContent(), "Namespace · East");
+      assert.ok(await hasFocus(agentsHeading));
+      list.release();
+    } else if (mode === "tab") {
       await page.keyboard.press("Tab");
       assert.ok(await hasFocus(picker), "Tab moved focus to the admitted picker");
       expectedFocus = picker;
@@ -547,13 +561,17 @@ for (const [mode, title] of Object.entries({
       assert.ok(await hasFocus(toggle), "Showing the loading message kept focus on the toggle");
       expectedFocus = toggle;
     }
-    const delivered = responseTo(page, "GET", westRead);
+    const delivered = responseTo(
+      page,
+      "GET",
+      `${fixture.origin}/namespaces/${destination.id}/agents`,
+    );
     session.release();
-    list.release();
+    pendingList.release();
     assert.equal((await delivered).status(), 200);
-    await row(west.agent).waitFor();
-    assert.equal(await main.locator(".scope").textContent(), "Namespace · West");
-    assert.equal(await row(east.agent).count(), 0);
+    await row(destination.agent).waitFor();
+    assert.equal(await main.locator(".scope").textContent(), `Namespace · ${destination.name}`);
+    assert.equal(await row(other.agent).count(), 0);
     assert.ok(await hasFocus(expectedFocus), `Expected focus on ${expectedFocus}`);
     const writes = requests.filter(({ method }) => method !== "GET" && method !== "HEAD");
     assert.deepEqual(writes, []);

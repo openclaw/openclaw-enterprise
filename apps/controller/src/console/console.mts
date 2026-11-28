@@ -910,10 +910,10 @@ const stillCheckingDelayMs = 1000;
 let mountedRouteKey: string | null = null;
 // The page whose shell is on screen. A held page keeps its own navigation and header.
 let shownFeature: Page | null = null;
-// Keep the Namespace with the header. An interrupted navigation may already have changed
-// the requested Namespace while this header is still on screen.
-type HeaderPage = (NonNullable<ShellState["page"]> & { namespaceId: string | null }) | null;
-let shownPage: HeaderPage = null;
+let shownPage: Exclude<ShellState["page"], undefined> = null;
+// A visible Agent, or the empty header replacing it, belongs to one Namespace.
+// Ordinary collection rows retain their own scope until their replacement is ready.
+let shownAgentScope: string | null | undefined;
 let mountedAgent: AgentRead | null | undefined = null;
 let mountedViewState: MountedView | null = null;
 let resumePending: Promise<void> | null = null;
@@ -1158,6 +1158,7 @@ function holdShownView({ busyCue = true, keepFocus = false } = {}) {
   const shell = renderShell(shownFeature, true, {
     recovery,
     page: shownPage,
+    agentScope: shownAgentScope,
   });
   if (title) {
     app.querySelector<HTMLHeadingElement>(".content h1")!.textContent = title;
@@ -1440,14 +1441,14 @@ function resetReads({
 
 // The header shape for a route: an Agent's page and Create Agent lead with ← Agents and carry a
 // meta row (the ID, the Namespace) under the title; collections do not (UX spec 3.2).
-function headerPage(current: Route): HeaderPage {
+function headerPage(current: Route): NonNullable<ShellState["page"]> | null {
   if (current.feature !== "agents") {
     return null;
   }
   if (current.creating) {
-    return { creating: true, namespaceId };
+    return { creating: true };
   }
-  return current.agentId ? { agentId: current.agentId, namespaceId } : null;
+  return current.agentId ? { agentId: current.agentId } : null;
 }
 
 function collectionPath(feature: string, namespacePath: string | null) {
@@ -1478,10 +1479,12 @@ function renderShell(
   {
     recovery = true,
     page = headerPage(route()),
-  }: Pick<ShellState, "recovery"> & { page?: HeaderPage } = {},
+    agentScope = page?.agentId ? namespaceId : undefined,
+  }: Pick<ShellState, "page" | "recovery"> & { agentScope?: string | null | undefined } = {},
 ) {
   shownFeature = feature;
   shownPage = page;
+  shownAgentScope = agentScope;
   const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
@@ -2057,8 +2060,8 @@ async function loadPage({
     knownPrivateState &&
     (fromNavigation || restoreHistory !== null) &&
     !openingAgent &&
-    shownPage?.agentId !== undefined &&
-    shownPage.namespaceId !== current.namespace;
+    shownAgentScope !== undefined &&
+    shownAgentScope !== current.namespace;
   // The shell keeps the picker and sidebar focused. The closed phone drawer's toggle
   // sits outside both. Leave the heading to the existing return-to-row handoff.
   const scopeControl = () =>
@@ -2068,7 +2071,7 @@ async function loadPage({
   let shell: LoadingShell | null = null;
   if (changingAgentScope) {
     // Show the destination without the previous Agent's ID, actions or data.
-    shell = renderShell(privatePage, true, { page: null });
+    shell = renderShell(privatePage, true, { page: null, agentScope: current.namespace });
     if (focused?.closest(".content, .sidebar")) {
       app.querySelector<HTMLElement>(".content h1")!.focus({ preventScroll: true });
     }

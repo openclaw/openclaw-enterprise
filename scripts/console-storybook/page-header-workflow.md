@@ -63,8 +63,9 @@ deployment or clipboard permissions in a real browser profile.
 
 The stock Row navigation story has two rows and no built-in return delay. To check the slow return in the standalone story, supply extra rows and a delayed successful reply.
 
-The signed-in browser test holds the successful list response automatically. Install the Console browser test prerequisites before running it.
+The signed-in browser tests hold successful responses automatically. Install the Console browser test prerequisites before running them.
 
 ```sh
 node --test --test-name-pattern="Back keeps the keyboard-focused Agent in view when the filtered list changes" tests/browser/console-refocus-focus.test.ts
+node --test --test-name-pattern="Switching Namespace|Interrupting Back across Namespaces" tests/browser/console-retained-revalidation.test.ts
 ```
