@@ -226,6 +226,7 @@ function runtimeLogs() {
 
 // The API's message for the model probe failure the recovery tests below record.
 const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
+const PROBE_DIAGNOSIS = `${PROBE_FAILED_MESSAGE} RUNTIME_MODEL_PROBE_FAILED`;
 
 function routeFailedRecord(
   page: Page,
@@ -2205,12 +2206,9 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await routeFailedRecord(page, fixture, namespace, agent, revision);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  await recovery
-    .getByText(
-      `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). ${PROBE_FAILED_MESSAGE}`,
-      { exact: true },
-    )
-    .waitFor();
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  const diagnosis = recovery.getByText(PROBE_DIAGNOSIS, { exact: true });
+  await diagnosis.waitFor();
   // Revoke log access after the permission check, before the Controller handles the read.
   const logPath = new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`);
   const held = await holdRequests(t, page, logPath, { once: true, method: "GET" });
@@ -2230,16 +2228,18 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   // The denial updates the recovery at once: it says who can check the logs instead of
   // steering the reader into another denied read.
   const askForLogs = recovery.getByText(
-    `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+    "Ask someone with log access to check the failed version’s logs.",
     { exact: true },
   );
   await askForLogs.waitFor();
+  assert.ok(await diagnosis.isVisible());
   assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
     "Open Configuration draft",
   ]);
   // Leaving Logs for another tab of the same version keeps that.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
+  assert.ok(await diagnosis.isVisible());
   assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
     "Open Configuration draft",
   ]);
@@ -2290,18 +2290,26 @@ test("A replaced current version still says who can check the logs once Logs is 
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  await recovery.getByRole("heading", { name: "This Agent may be offline" }).waitFor();
+  const warning = recovery.getByRole("heading", {
+    level: 2,
+    name: "This Agent may be offline",
+    exact: true,
+  });
+  await warning.waitFor();
   // Over a line about serving, the label names the failed version.
   assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v2");
   assert.equal(await recovery.locator(".status-label").isVisible(), true);
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
   await page.getByText(LOG_TEXT_DENIED).waitFor();
   await recovery
-    .getByText(
-      `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). v1 is still selected, but its runtime was probably stopped for this deployment. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
-      { exact: true },
-    )
+    .getByText("Ask someone with log access to check the failed version’s logs.", { exact: true })
     .waitFor();
+  assert.ok(await warning.isVisible());
+  const service = "v1 is still selected, but its runtime was probably stopped for this deployment.";
+  assert.ok(
+    await recovery.getByText(`This Agent may be offline. ${service}`, { exact: true }).isVisible(),
+  );
+  assert.equal(await recovery.locator(".status-body").innerText(), PROBE_DIAGNOSIS);
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
 });
 
@@ -2341,9 +2349,8 @@ test("Recovery waits for the caller's permission answer before offering the draf
   assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
 
   permissions.release();
-  await recovery
-    .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
-    .waitFor();
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  await recovery.getByText(PROBE_DIAGNOSIS, { exact: true }).waitFor();
   assert.equal(
     await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
     "button button--primary",
@@ -2440,7 +2447,13 @@ for (const c of [
       const inView = (node: Locator) =>
         node.evaluate((element) => {
           const box = element.getBoundingClientRect();
-          return { top: box.top, bottom: box.bottom, innerHeight: globalThis.innerHeight };
+          return {
+            top: box.top,
+            bottom: box.bottom,
+            left: box.left,
+            right: box.right,
+            innerHeight: globalThis.innerHeight,
+          };
         });
       const textBox = await inView(text);
       const actionBox = await inView(action);
@@ -2509,10 +2522,16 @@ for (const c of [
         }),
         [c.primary],
       );
-      // At phone width the actions stack, each the block's full width.
-      assert.deepEqual(
-        actions.map((link) => link.fullWidth),
-        actions.map(() => viewport.width < 520),
+      // Use a separate action column on the desktop and the full card width on the phone.
+      if (viewport.width === 1440) {
+        assert.ok(actionBox.left > textBox.right, "the action sits beside the diagnosis");
+      } else {
+        assert.ok(actionBox.top > textBox.bottom, "the action follows the diagnosis");
+        assert.ok(Math.abs(actionBox.left - textBox.left) < 1);
+        assert.ok(Math.abs(actionBox.right - textBox.right) < 1);
+      }
+      assert.ok(
+        actions.every((link) => link.fullWidth),
         JSON.stringify(actions),
       );
       // Only a message that says to deploy again offers it, as the step's own link.
@@ -2989,11 +3008,8 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-    await recovery
-      .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
-        exact: false,
-      })
-      .waitFor();
+    await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+    await recovery.getByText(PROBE_DIAGNOSIS, { exact: true }).waitFor();
     await page
       .locator(".agent-current-summary")
       .getByText("v2 · Failed", { exact: true })
@@ -4457,8 +4473,10 @@ for (const viewport of [
     const read = page.waitForResponse(recordUrl);
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     await read;
-    const failure = "v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).";
-    await recovery.getByText(failure, { exact: false }).waitFor();
+    const heading = recovery.getByRole("heading", { name: "v2 deployment failed", exact: true });
+    const diagnosis = recovery.getByText(PROBE_DIAGNOSIS, { exact: true });
+    await heading.waitFor();
+    await diagnosis.waitFor();
     await waitForIdleFetches(page);
     // Where the card sits, whether the details are open, and how often the error shows.
     const layout = () =>
@@ -4502,7 +4520,8 @@ for (const viewport of [
     // A failed record is not polled, so the clock may run again for the reload.
     await page.clock.resume();
     await page.reload();
-    await recovery.getByText(failure, { exact: false }).waitFor();
+    await heading.waitFor();
+    await diagnosis.waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await waitForIdleFetches(page);
     await page.evaluate(() => globalThis.document.fonts.ready);

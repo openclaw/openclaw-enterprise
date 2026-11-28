@@ -449,9 +449,9 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
   assert.equal(answer.deploy, true);
   assert.equal(answer.update, false);
   const recovery = recoveryOf(page);
-  await recovery
-    .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
-    .waitFor();
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  const probe = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED");
+  await recovery.getByText(`${probe.message} ${probe.code}`, { exact: true }).waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
   // The link used to render with Logs, before any Configuration read.

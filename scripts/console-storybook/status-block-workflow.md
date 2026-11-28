@@ -43,9 +43,11 @@ at 390.
     refusal below it comes into view; focus stays on the button.
 14. Open **Pages / Agent detail / New version failed**. The failed-deployment
     block above the facts is a danger block with 20/24 px padding (16 px at
-    390). Its label reads "Deployment failed · v7", its title is one 16 px
-    semibold line, and `CONVERGENCE_DEADLINE_EXCEEDED` ends its first sentence
-    in mono. Open v7 Logs is its one filled button.
+    390). Its label reads "Deployment failed · v7". **This Agent may be
+    offline** is a heading, followed by what happened to the selected version.
+    The diagnosis includes `CONVERGENCE_DEADLINE_EXCEEDED` in mono.
+    **Open v7 Logs** is the only filled button. At 1440 px the actions sit
+    beside the diagnosis. At 920 and 390 px they sit below it.
 15. Open **Pages / Agent detail / New version failed, deploy again** at 390.
     Deploy again (filled) and Open v7 Logs (edged) stack, each the block's
     full width and at least 44 px tall. Any status block's actions stack this
@@ -55,8 +57,10 @@ at 390.
     may deploy**, **Open draft** is the only recovery action. Press Tab to
     reach it, then Enter to open the draft.
     In **New version failed, viewer may inspect runtime status** at 1440 and
-    390, check that recovery says who can deploy after the fix and whom to
-    ask about logs. Use Tab and Enter to
+    390, read the service warning first. The startup diagnosis appears once
+    and ends with `RUNTIME_MODEL_PROBE_FAILED`. Check who can deploy after
+    the fix. The advice about log access appears with the action. Enlarge
+    the text and check that the code, advice and action fit. Use Tab and Enter to
     open **View v7 runtime status in Logs**, go Back and open it again. Check
     that v7’s simulated runtime status appears both times while log text
     remains unavailable.

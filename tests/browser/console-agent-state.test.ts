@@ -3170,11 +3170,19 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
   await waitForChosenVersion(page, 1);
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("May be offline", { exact: true }).waitFor();
-  await page
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByText("Deployment failed · v2", { exact: true }).waitFor();
+  await recovery.getByRole("heading", { name: "This Agent may be offline", exact: true }).waitFor();
+  await recovery
     .getByText(
-      /v2 did not deploy successfully \(RUNTIME_AUTHENTICATION_FAILED\)\. v1 is still selected, but its runtime was probably stopped/,
+      "This Agent may be offline. v1 is still selected, but its runtime was probably stopped for this deployment.",
+      { exact: true },
     )
     .waitFor();
+  assert.equal(
+    await recovery.locator(".status-body").innerText(),
+    `v2 did not deploy successfully (RUNTIME_AUTHENTICATION_FAILED). ${authenticationFailure.message}`,
+  );
 });
 
 // Embedded activation selects the new version before its gateway is ready, so a failed
@@ -3343,25 +3351,32 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     const activity = await openFailureDetails(page);
     await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    await recovery.getByText("Deployment failed · v1", { exact: true }).waitFor();
+    await recovery
+      .getByRole("heading", { name: "This Agent may be offline", exact: true })
+      .waitFor();
+    const diagnosis = recovery.locator(".status-body");
+    assert.equal(await diagnosis.locator("code").innerText(), error.code);
     if (recoveryMessage) {
-      await recovery.getByText(recoveryMessage, { exact: false }).waitFor();
+      // The model remedy omits which check failed. Keep that context above the action.
+      await recovery
+        .getByText(`v1 failed its startup model check (${error.code}). ${recoveryMessage}`, {
+          exact: true,
+        })
+        .waitFor();
       assert.equal(
         await recovery.getByRole("link").first().textContent(),
         "Open Configuration draft",
       );
-    } else if (error.code === "RUNTIME_MODEL_PROBE_FAILED") {
-      await recovery.getByText(error.message, { exact: false }).waitFor();
+    } else if (error.code === "AGENT_GATEWAY_UNAUTHORIZED") {
+      assert.equal(
+        await diagnosis.innerText(),
+        `v1 did not deploy successfully (${error.code}). ${error.message}`,
+      );
+    } else {
+      // Both the failure and timeout messages name the startup check. Show it once.
+      assert.equal(await diagnosis.innerText(), `${error.message} ${error.code}`);
     }
-    // A failed or timed-out model check leads as one; a refused gateway CLI does not.
-    const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")
-      ? "v1 failed its startup model check"
-      : "v1 did not deploy successfully";
-    assert.ok(
-      requiredText(await recovery.locator(".status-body").textContent()).startsWith(
-        `${lead} (${error.code}). `,
-      ),
-      error.code,
-    );
     assert.equal(
       await activity.getByText("Cause", { exact: true }).count(),
       cause === undefined ? 0 : 1,

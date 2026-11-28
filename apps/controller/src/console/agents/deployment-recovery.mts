@@ -142,24 +142,23 @@ export function createDeploymentRecovery(
   },
 ) {
   const { agentId, namespaceId } = context;
-  const recoveryTitle = element("h2");
-  // A danger status block (spec 3.4): the failed version in the label, the code at the end of
-  // the message's first sentence, and one primary action. Each part is its own node, so a poll
-  // that reads back the same failure writes nothing.
+  // Keep each part of the warning and its actions attached through unchanged polls.
   const recoveryLabel = element("p", { className: "status-label" });
-  const recoveryLead = document.createTextNode("");
+  const recoveryTitle = element("h2");
+  const serviceNote = document.createTextNode("");
+  const beforeCode = document.createTextNode("");
   const recoveryCode = element("code", { hidden: true });
-  const recoveryRest = document.createTextNode("");
-  const recoveryMessage = element(
-    "p",
-    { className: "status-body" },
-    recoveryLead,
-    recoveryCode,
-    recoveryRest,
-  );
+  const afterCode = document.createTextNode("");
+  const accessNote = element("p");
   const recoveryActions = element("div", {
     className: "status-actions deployment-recovery-actions",
   });
+  const recoveryNext = element(
+    "div",
+    { className: "deployment-recovery-next" },
+    accessNote,
+    recoveryActions,
+  );
   const recovery = element(
     "section",
     {
@@ -168,10 +167,14 @@ export function createDeploymentRecovery(
       hidden: true,
       "aria-label": "Deployment needs attention",
     },
-    recoveryLabel,
-    recoveryTitle,
-    recoveryMessage,
-    recoveryActions,
+    element(
+      "div",
+      { className: "deployment-recovery-summary" },
+      recoveryLabel,
+      element("div", {}, recoveryTitle, serviceNote),
+      element("p", { className: "status-body" }, beforeCode, recoveryCode, afterCode),
+    ),
+    recoveryNext,
   );
   let recoveryTarget: string | undefined;
   // The failed version whose Deployment details the card has folded. A reader who reopens the details keeps them open.
@@ -299,21 +302,32 @@ export function createDeploymentRecovery(
     const failureText = unavailable
       ? `${modelLabel} is unavailable with this credential (model_not_found). ${modelRecoveryStep(canOpenConfiguration && configurationEditable, canOpenConfiguration && permissions?.deploy === true)}`
       : (credentialFixAsk ?? errorMessage);
-    let impact = failureText || generic;
+    let service = "";
     if (servingImpact === "replacement-failed") {
-      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
+      service = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.`;
     } else if (servingImpact === "selected-failed") {
-      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
+      service = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.`;
     }
-    if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
-      // Runtime status alone cannot show the failed version’s log text.
-      impact += " Ask someone with log access to check the failed version’s logs.";
-    }
-    // The code ends the first sentence, so the reader can match it to Logs and to occ.
-    setText(recoveryLead, code ? `${lead} (` : `${lead}.`);
+    const diagnosis = failureText || (service ? "" : generic);
+    // Runtime status alone cannot show the failed version’s log text.
+    const access =
+      (servingImpact || (errorMessage && step === "logs")) && !logsAllowed
+        ? "Ask someone with log access to check the failed version’s logs."
+        : "";
+    setText(serviceNote, service ? `. ${service}` : "");
+    setText(accessNote, access);
+    setHidden(accessNote, !access);
     setText(recoveryCode, code ?? "");
     setHidden(recoveryCode, !code);
-    setText(recoveryRest, code ? `). ${impact}` : ` ${impact}`);
+    // The heading or label names the version. OCC's probe messages already name the
+    // startup check, but the tailored model remedy and fallback do not.
+    if (modelCheck && errorMessage?.trim() && !unavailable) {
+      setText(beforeCode, `${diagnosis} `);
+      setText(afterCode, "");
+    } else {
+      setText(beforeCode, code ? `${lead} (` : `${lead}.`);
+      setText(afterCode, `${code ? ")." : ""}${diagnosis ? ` ${diagnosis}` : ""}`);
+    }
     const canOpenCredentials =
       guidance === "credentials" &&
       agentEditable &&
@@ -363,7 +377,10 @@ export function createDeploymentRecovery(
       }
       recoveryActions.hidden = actions.length === 0;
     }
-    return { revisionId: latest.id, version, text: `${lead}. ${impact}` };
+    setHidden(recoveryNext, !access && recoveryActions.childElementCount === 0);
+    // The Logs view uses one standalone sentence and has no separate service heading.
+    const text = [`${lead}.`, service, diagnosis, access].filter(Boolean).join(" ");
+    return { revisionId: latest.id, version, text };
   }
 
   // Another version's tabs have no reason to read the Configuration, so recovery reads it once
