@@ -26,12 +26,10 @@ interface HttpResponse {
 
 interface ConfigurationCredentialSaveFixtures {
   saveFixture(t: TestContext): Promise<SaveContext>;
-  request(
-    app: ControllerApp,
-    method: "POST" | "GET",
-    pathname: string,
-    options?: { body: unknown },
-  ): Promise<HttpResponse>;
+  createSavedConfiguration(
+    context: SaveContext,
+    values: OpenClawConfigurationDocument,
+  ): Promise<{ created: HttpResponse; item: string }>;
   savePreset(context: SaveContext, template: PresetDraftTemplate): Promise<HttpResponse>;
   assertRefused(
     response: HttpResponse,
@@ -48,7 +46,7 @@ interface ConfigurationCredentialSaveFixtures {
     context: SaveContext,
     values: OpenClawConfigurationDocument,
   ): Promise<HttpResponse>;
-  assertNothingStored(context: SaveContext, kept: string[]): Promise<void>;
+  assertOnlyStoredConfiguration(context: SaveContext, created: HttpResponse): Promise<void>;
   referenceFormRefusal(
     setting: string,
     form: "inline" | "shorthand" | "fallback" | "otherText",
@@ -61,9 +59,13 @@ interface ConfigurationCredentialSaveFixtures {
 }
 
 type CredentialRefusal = readonly [values: OpenClawConfigurationDocument, message: string];
-type HeaderRefusal = readonly [root: string, header: string, value: string | number];
+type HeaderRefusal = readonly [root: string, header: string, value: string | number, name?: string];
 
-const schemaContext = { SafeJsonValue: JsonValue };
+export function configurationData(body: unknown) {
+  assert.ok(Check({ SafeJsonValue: JsonValue }, ConfigurationResponse, body));
+  return body.data;
+}
+
 const environmentReference = (id: string) => ({ source: "env", provider: "default", id });
 
 export function registerConfigurationCredentialSaveCases(
@@ -71,12 +73,12 @@ export function registerConfigurationCredentialSaveCases(
 ): void {
   const {
     saveFixture,
-    request,
+    createSavedConfiguration,
     savePreset,
     assertRefused,
     refusedOnSave,
     acceptedOnSave,
-    assertNothingStored,
+    assertOnlyStoredConfiguration,
     referenceFormRefusal,
     at,
     inline,
@@ -87,49 +89,37 @@ export function registerConfigurationCredentialSaveCases(
   const literalHeader = (field: string) =>
     `${inline(field)} Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 
-  async function createEmptyConfiguration(context: SaveContext) {
-    const created = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: {} },
-    });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
-    assert.ok(Check(schemaContext, ConfigurationResponse, created.body));
-    return created.body.data;
-  }
-
-  async function assertNoCredentialWrite(
-    context: SaveContext,
-    original: Awaited<ReturnType<typeof createEmptyConfiguration>>,
-  ): Promise<void> {
-    // A refusal must leave the existing Configuration intact and create no new records.
-    const saved = await request(context.app, "GET", `${context.collection}/${original.id}`);
-    assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.ok(Check(schemaContext, ConfigurationResponse, saved.body));
-    assert.deepEqual(saved.body.data, original);
-    await assertNothingStored(context, [`${original.id}.json`]);
-  }
-
   test("Configuration and Preset saves refuse a literal credential in an MCP server header", async (t) => {
     // Finding 1278: OpenClaw marks MCP server headers sensitive, and a model provider's credential
     // headers already had to hold references, but an MCP server saved a literal `Authorization`.
     const context = await saveFixture(t);
-    const original = await createEmptyConfiguration(context);
-    const item = `${context.collection}/${original.id}`;
+    const { created, item } = await createSavedConfiguration(context, {});
     const sentinel = `synthetic-mcp-header-${randomUUID()}`;
     const server = (headers: Readonly<Record<string, string | number>>) => ({
       url: "https://mcp.example.test/mcp",
       headers,
     });
     const refused: HeaderRefusal[] = [
-      ["/mcp/servers/docs", "Authorization", `Bearer ${sentinel}`],
+      [
+        "/mcp/servers/docs",
+        "Authorization",
+        `Bearer ${sentinel}`,
+        "refuses a literal bearer token in the MCP Authorization header",
+      ],
       ["/nodeHost/mcp/servers/docs", "X-Api-Key", sentinel],
       // `Bearer ${NAME}` holds a reference only in an Authorization header; a number is a literal.
       ["/mcp/servers/docs", "X-Auth-Token", "Bearer ${MCP_TOKEN}"],
       ["/mcp/servers/docs", "x-client-secret", 12345],
-      ["/mcp/servers/docs", "Authorization", `Bearer ${sentinel}\${SUFFIX}`],
+      [
+        "/mcp/servers/docs",
+        "Authorization",
+        `Bearer ${sentinel}\${SUFFIX}`,
+        "refuses a literal bearer token followed by a reference",
+      ],
     ];
-    for (const [root, header, value] of refused) {
+    for (const [root, header, value, name] of refused) {
       const field = `${root}/headers/${header}`;
-      await t.test(`refuses ${field}`, async () => {
+      await t.test(name ?? `refuses ${field}`, async () => {
         const values = at(root, server({ [header]: value }));
         await refusedOnSave(context, values, literalHeader(field), { item, sentinel });
       });
@@ -147,7 +137,7 @@ export function registerConfigurationCredentialSaveCases(
       const field = "/mcp/servers/docs/headers/Authorization{{ vars.suffix }}";
       assertRefused(response, literalHeader(field), { label: field, sentinel });
     });
-    await assertNoCredentialWrite(context, original);
+    await assertOnlyStoredConfiguration(context, created);
 
     // Credential headers that hold references, and headers that name no credential, still save.
     const headers = {
@@ -171,8 +161,7 @@ export function registerConfigurationCredentialSaveCases(
     // OpenTelemetry export, skills and the cron webhook carry keys the Gateway sends, most marked
     // sensitive by OpenClaw, but a literal value saved in each and reached the ConfigMap.
     const context = await saveFixture(t);
-    const original = await createEmptyConfiguration(context);
-    const item = `${context.collection}/${original.id}`;
+    const { created, item } = await createSavedConfiguration(context, {});
     const sentinel = `synthetic-gateway-key-${randomUUID()}`;
     const option = (field: string) =>
       `${inline(field)} Make the option value a \${NAME} reference.`;
@@ -257,7 +246,7 @@ export function registerConfigurationCredentialSaveCases(
       });
       assertRefused(response, option(field), { label: field, sentinel });
     });
-    await assertNoCredentialWrite(context, original);
+    await assertOnlyStoredConfiguration(context, created);
 
     // `${NAME}` and SecretRef references, and headers that name no credential, still save.
     const headers = {
@@ -333,8 +322,7 @@ export function registerConfigurationCredentialSaveCases(
     // ConfigMap that Namespace members read. Channel and plugin keys are matched as OpenClaw
     // matches plugin-owned fields, plus the fields bundled manifests mark sensitive.
     const context = await saveFixture(t);
-    const original = await createEmptyConfiguration(context);
-    const item = `${context.collection}/${original.id}`;
+    const { created, item } = await createSavedConfiguration(context, {});
     const sentinel = `synthetic-sensitive-slot-${randomUUID()}`;
     const slot = (
       field: string,
@@ -418,7 +406,7 @@ export function registerConfigurationCredentialSaveCases(
       configuration: { values: { channels: { telegram: { botToken: "{{ vars.token }}" } } } },
     });
     assertRefused(variable, channelLiteral("/channels/telegram/botToken"));
-    await assertNoCredentialWrite(context, original);
+    await assertOnlyStoredConfiguration(context, created);
 
     // `${NAME}` and SecretRef references still save, and so do settings the rule leaves alone:
     // where a credential is read from (`secretFile`), a channel map key that reads like one, a
@@ -491,8 +479,7 @@ export function registerConfigurationCredentialSaveCases(
     // the reference were a credential. The refusal stays; its message names the form and what to
     // write, and never the text around the reference or the fallback, which may hold the token.
     const context = await saveFixture(t);
-    const original = await createEmptyConfiguration(context);
-    const item = `${context.collection}/${original.id}`;
+    const { created, item } = await createSavedConfiguration(context, {});
     const sentinel = `synthetic-${randomUUID()}`;
     // The message names the setting as the channel binding rules do (finding 2503).
     const shorthand = (path: string) => referenceFormRefusal(path, "shorthand");
@@ -564,7 +551,7 @@ export function registerConfigurationCredentialSaveCases(
     for (const [values, message] of refused) {
       await refusedOnSave(context, values, message, { item, sentinel });
     }
-    await assertNoCredentialWrite(context, original);
+    await assertOnlyStoredConfiguration(context, created);
   });
 
   test("a plugin secret input saves OpenClaw's whole $NAME shorthand as a reference", async (t) => {
