@@ -59,7 +59,7 @@ const appliedPatches: readonly AppliedPatch[] = [
     sha256: "5a90575bfe5c44b76dab5c68d2ab21f219c2e66dc2b3d3d7660da2f70b1b2087",
   },
 ];
-const runtimePaths = [
+const runtimePaths = new Set([
   "dist",
   "node_modules",
   "package.json",
@@ -67,33 +67,13 @@ const runtimePaths = [
   "pnpm-workspace.yaml",
   "patches",
   "scripts",
-  "node-version.mjs",
-  "node-sqlite.mjs",
-  "node-sqlite-capabilities.mjs",
-  "runtime-process-bootstrap.generated.mjs",
-  "runtime-process-scripts.generated.mjs",
-  "standalone-runtime-profile.mjs",
-  "node-runtime-update.mjs",
-  "node-runtime-recovery.mjs",
-  "node-runtime-env.mjs",
-  "cli-invocation.mjs",
-  "cli-parent-lifetime.mjs",
-  "cli-root-options.mjs",
-  "gateway-prewarm.mjs",
-  "gateway-run-argv.mjs",
-  "gateway-shutdown-budget.mjs",
-  "node-host-launcher.mjs",
-  "node-compile-cache.mjs",
-  "worker-heap-flag.mjs",
-  "openclaw.mjs",
-  "release-launcher-forward.mjs",
   "extensions",
   "skills",
   "docs",
   "LICENSE",
   "README.md",
   "THIRD_PARTY_NOTICES.md",
-];
+]);
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const codexPlatformByArchitecture = {
   x64: {
@@ -376,10 +356,31 @@ async function packageRuntime(root: string, output: string, manifestPath: string
   if (process.env.GIT_COMMIT !== source.commit) {
     throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
   }
+  const { files, packageManager } = await readJsonObject(join(root, "package.json"));
+  if (!Array.isArray(files)) {
+    throw new Error("Expected a files array in the OpenClaw package.json");
+  }
+  if (packageManager !== undefined && typeof packageManager !== "string") {
+    throw new Error("Expected a package manager name and version in package.json");
+  }
+  // Upstream declares its launcher modules in files. Add only literal root filenames.
+  const publishedModules = new Set(
+    files.filter(
+      (name: unknown): name is string =>
+        typeof name === "string" && name.endsWith(".mjs") && !/[^\w.-]/.test(name),
+    ),
+  );
+  const rootEntries = await readdir(root, { withFileTypes: true });
+  if (
+    !publishedModules.has("openclaw.mjs") ||
+    !rootEntries.some((entry) => entry.name === "openclaw.mjs" && entry.isFile())
+  ) {
+    throw new Error("Expected openclaw.mjs in the OpenClaw source root and package.json files");
+  }
   // Preserve runtime templates and help text; omit upstream development/QA trees.
-  for (const name of await readdir(root)) {
-    if (!runtimePaths.includes(name)) {
-      await rm(join(root, name), { recursive: true, force: true });
+  for (const entry of rootEntries) {
+    if (!runtimePaths.has(entry.name) && !(entry.isFile() && publishedModules.has(entry.name))) {
+      await rm(join(root, entry.name), { recursive: true, force: true });
     }
   }
   for (const name of ["assets", "images", ".generated", ".i18n", "refactor", "releases"]) {
@@ -387,10 +388,6 @@ async function packageRuntime(root: string, output: string, manifestPath: string
   }
   await pruneUnusedDependencies(root);
   const contents = await writeRuntimeInventory(root, output, { pruneSourceAssets: true });
-  const { packageManager } = await readJsonObject(join(root, "package.json"));
-  if (packageManager !== undefined && typeof packageManager !== "string") {
-    throw new Error("Expected a package manager name and version in package.json");
-  }
   await writeFile(
     join(output, "provenance.json"),
     `${JSON.stringify(
