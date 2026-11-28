@@ -224,6 +224,19 @@ function podInterval(start: number | undefined, end: number | undefined): number
   return elapsed >= 0 && elapsed <= 60 * minute ? elapsed : undefined;
 }
 
+function logPodTiming(
+  context: ChannelProxyDeployment,
+  message: string,
+  intervals: readonly [name: string, elapsed: number | undefined][],
+) {
+  const fields = intervals.flatMap(([name, elapsed]) =>
+    elapsed === undefined ? [] : [`${name}=${elapsed}`],
+  );
+  if (fields.length > 0) {
+    log(`${context}: ${message} ${fields.join(" ")}`);
+  }
+}
+
 function logGatewayPodIntervals(pod: Pod, context: ChannelProxyDeployment) {
   const created = podTimestamp(pod.metadata.creationTimestamp);
   const scheduled = podConditionTimestamp(pod, "PodScheduled");
@@ -243,17 +256,43 @@ function logGatewayPodIntervals(pod: Pod, context: ChannelProxyDeployment) {
 
   // Ready is the latest recorded transition in this sample. These intervals do
   // not measure the deployment's wall time or the old Pod's retirement.
-  const intervals = [
+  logPodTiming(context, "sampled gateway Pod intervals", [
     ["createdToScheduledMs", podInterval(created, scheduled)],
     ["scheduledToGatewayStartMs", podInterval(scheduled, started)],
     ["gatewayStartToLatestPodReadyMs", podInterval(started, ready)],
-  ] as const;
-  const fields = intervals.flatMap(([name, elapsed]) =>
-    elapsed === undefined ? [] : [`${name}=${elapsed}`],
+  ]);
+}
+
+function logHarnessPodOffsets(
+  pods: Pod[],
+  agentId: string,
+  revisionId: string,
+  revisionCreated: number | undefined,
+  context: ChannelProxyDeployment,
+) {
+  const harnesses = pods.filter(
+    ({ metadata: { labels } }) =>
+      labels?.["openclaw.dev/workload-role"] === "agent" &&
+      labels["openclaw.dev/agent"] === agentId &&
+      labels["openclaw.dev/revision"] === revisionId,
   );
-  if (fields.length > 0) {
-    log(`${context}: sampled gateway Pod intervals ${fields.join(" ")}`);
+  const harness = harnesses.length === 1 ? harnesses[0] : undefined;
+  if (harness === undefined) {
+    return;
   }
+  const created = podTimestamp(harness.metadata.creationTimestamp);
+  const ready = Array.isArray(harness.status?.conditions)
+    ? podConditionTimestamp(harness, "Ready")
+    : undefined;
+  logPodTiming(context, "sampled harness Pod offsets", [
+    ["revisionToHarnessPodCreationMs", podInterval(revisionCreated, created)],
+    [
+      "revisionToHarnessPodLatestReadyMs",
+      created !== undefined && ready !== undefined && ready >= created
+        ? podInterval(revisionCreated, ready)
+        : undefined,
+    ],
+  ]);
 }
 
 export async function readyGateway(
@@ -293,13 +332,15 @@ export async function readyGateway(
       try {
         // PostgreSQL and the Kubernetes API server can disagree about wall time.
         // Pod creation is recorded to whole seconds and may be for a replacement.
+        const revisionCreated = revisionTimestamp(revision.createdAt);
         const elapsed = podInterval(
-          revisionTimestamp(revision.createdAt),
+          revisionCreated,
           podTimestamp(gateway.metadata.creationTimestamp),
         );
         if (elapsed !== undefined) {
           log(`${context}: revisionToPodCreationMs=${elapsed}`);
         }
+        logHarnessPodOffsets(pods, agentId, revisionId, revisionCreated, context);
       } catch {
         // An unavailable sample must not change the readiness result.
       }
