@@ -22,7 +22,7 @@ const env = process.env;
 const workflow = ".github/workflows/staging-qualification.yml";
 const maxReceiptBytes = 64 * 1024;
 const startupFiles = [
-  ["images-packaging", "tests/integration/production-image-startup.test.mjs"],
+  ["images-packaging", "tests/integration/production-image-startup.test.ts"],
   ["images-runtime-startup", "tests/integration/runtime-image-startup.test.ts"],
 ] as const;
 

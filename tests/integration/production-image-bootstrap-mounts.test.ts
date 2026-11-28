@@ -8,7 +8,7 @@ import test from "node:test";
 import { image, imageTestOptions, runDocker } from "./production-image-controller-startup-cases.ts";
 
 // This case builds the occ CLI with Go, so only the images-packaging suite runs it.
-// The native image smoke runs production-image-startup.test.mjs, which needs no Go.
+// The native image smoke runs production-image-startup.test.ts, which needs no Go.
 
 test(
   "development bootstrap mount copies support a different reader UID",

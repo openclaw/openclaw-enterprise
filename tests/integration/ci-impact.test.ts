@@ -825,7 +825,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     "tests/integration/console-theme.test.ts",
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-agents.test.ts",
-    "tests/integration/production-image-startup.test.mjs",
+    "tests/integration/production-image-startup.test.ts",
   ]) {
     initial[path] = "";
   }

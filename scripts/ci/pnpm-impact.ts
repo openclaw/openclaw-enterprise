@@ -139,7 +139,7 @@ const assetTests = [
   "tests/integration/console-theme.test.ts",
   "tests/browser/console-shell.test.ts",
   "tests/browser/console-agents.test.ts",
-  "tests/integration/production-image-startup.test.mjs",
+  "tests/integration/production-image-startup.test.ts",
 ];
 
 type Identity = { base: string; tested: string; head: string };
