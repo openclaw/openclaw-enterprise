@@ -1073,7 +1073,7 @@ function retainMountedView(returnControl: Element | null, scrollY = window.scrol
       restoreAgentControl = rememberAgentControl(view, returnControl);
     }
   }
-  retainedViews.set(mountedRouteKey, {
+  retainedViews.set(navigation.retainedViewKey(mountedRouteKey), {
     owner,
     snapshot: state ? view : (view.cloneNode(true) as HTMLDivElement),
     state,
@@ -1094,7 +1094,8 @@ function retainMountedView(returnControl: Element | null, scrollY = window.scrol
 // recheck, say) leaves it for the next return (finding 1441).
 function peekRetainedView(current: Route) {
   const owner = sessionOwnerKey(session);
-  const key = routeKey(current);
+  const address = routeKey(current);
+  const key = address && navigation.retainedViewKey(address);
   const retained = key && retainedViews.get(key);
   if (!owner || !retained || retained.owner !== owner) {
     return null;
@@ -2015,7 +2016,9 @@ async function loadPage({
     const creationDrafts = drafts.scope(abandonedCreation.namespaceId, "create");
     creationDrafts.forget("create");
     creationDrafts.forget("channels");
-    retainedViews.delete(previousMountedRouteKey!);
+    if (previousMountedRouteKey !== null) {
+      retainedViews.delete(navigation.retainedViewKey(previousMountedRouteKey));
+    }
     discardCreationOnExit = null;
   }
   const taken = knownPrivateState ? peekRetainedView(current) : null;

@@ -77,12 +77,13 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     if (selection !== null) {
       url.searchParams.set("namespace", selection);
     }
-    return pageAddress(url);
+    return `${url.pathname}${url.search}`;
   }
 
-  // Version links, sign-in and older history entries can order the same three
-  // fields differently. Use one address when looking up or returning to that page.
-  function pageAddress(url: URL) {
+  // Version links and sign-in can order the same selectors differently.
+  // Share the retained view while preserving the original address for navigation.
+  function retainedViewKey(address: string) {
+    const url = new URL(address, location.origin);
     const { searchParams } = url;
     const prefix = "/console/agents/";
     if (
@@ -94,8 +95,9 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
       searchParams.has("tab")
     ) {
       searchParams.sort();
+      return `${url.pathname}${url.search}`;
     }
-    return `${url.pathname}${url.search}`;
+    return address;
   }
 
   // Login destinations are structured routes, never a URL supplied to the login page.
@@ -251,7 +253,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     const returned = position === restoring?.position ? restoring : null;
     restoring = null;
     // Never skip the admission recheck of an inert or no longer mounted page.
-    if (returned && fromNavigation && mountedUrl === pageAddress(new URL(location.href))) {
+    if (returned && fromNavigation && mountedUrl === location.pathname + location.search) {
       returned.onReturn?.();
       return;
     }
@@ -284,6 +286,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     replaceUrl,
     route,
     pageUrl,
+    retainedViewKey,
     captureIntent,
     validIntent,
     intentUrl,
