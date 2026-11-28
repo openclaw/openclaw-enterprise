@@ -350,6 +350,14 @@
     "integration/configuration-credential-save-cases.ts",
     "integration/configuration-stored-compatibility-cases.ts"
   ],
+  "exclude": [
+    "../legacy",
+    "../legacy/**",
+    "../node_modules",
+    "../**/node_modules",
+    "../**/dist",
+    "docs/docs-site.test.ts"
+  ],
   "references": [
     {
       "path": "../packages/utils"

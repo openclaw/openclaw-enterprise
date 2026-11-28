@@ -69,6 +69,14 @@
     "console-storybook/plugin-fields.storybook-wrapper.mts",
     "console-storybook/public/**/*.mts"
   ],
+  "exclude": [
+    "../legacy",
+    "../legacy/**",
+    "../node_modules",
+    "../**/node_modules",
+    "../**/dist",
+    "check-specs.ts"
+  ],
   "references": [
     {
       "path": "../packages/utils"

@@ -2,11 +2,17 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Parser } from "htmlparser2";
+import { parseDocsDocument } from "./vendor/docs-markdown.mjs";
 import {
-  createDocsMarkdown,
-  parseDocsDocument,
-  parseFrontmatter,
-} from "./vendor/docs-markdown.mjs";
+  array,
+  createDocsParser,
+  docsParser,
+  frontmatter,
+  isRecord,
+  record,
+  string,
+} from "./parser-boundary.ts";
 
 export const DEFAULT_REVIEW_WORDS = 1500;
 export const DEFAULT_MAX_WORDS = 2500;
@@ -14,19 +20,60 @@ export const DEFAULT_MAX_WORDS = 2500;
 const __filename = fileURLToPath(import.meta.url);
 const markdownWord = /[\p{L}\p{N}]/u;
 
-function countWords(text) {
+function countWords(text: string) {
   return String(text)
     .split(/\s+/u)
     .filter((word) => markdownWord.test(word)).length;
 }
 
-function stripHtml(value) {
-  return String(value)
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<[^>]*>/g, " ");
+function htmlText(html: string) {
+  const parts: string[] = [];
+  const separate = () => parts.push(" ");
+  const parser = new Parser(
+    {
+      ontext: (text) => parts.push(text),
+      onopentagname: separate,
+      onclosetag: separate,
+    },
+    { decodeEntities: false },
+  );
+  parser.end(html);
+  return parts.join("");
 }
 
-function gitMarkdownFiles(root) {
+function inlineText(token: Record<string, unknown>): string {
+  const children = token.children == null ? [] : array(token.children);
+  const parts: string[] = [];
+  let previousText = false;
+  let interrupted = false;
+  for (const value of children) {
+    const child = record(value);
+    const type = child.type;
+    if (type === "html_inline" && string(child.content).startsWith("<!--")) {
+      interrupted = previousText;
+      continue;
+    }
+    if (type === "text" || type === "image" || type === "code_inline" || type === "html_inline") {
+      const content = string(child.content);
+      // A comment may interrupt a word. Join its text only after Markdown parsing.
+      if (!interrupted || type !== "text") {
+        parts.push(" ");
+      }
+      if (type === "html_inline") {
+        parts.push(htmlText(content));
+      } else if (type === "image" && content.includes("<!--") && child.children != null) {
+        parts.push(inlineText(child));
+      } else {
+        parts.push(content);
+      }
+    }
+    previousText = type === "text";
+    interrupted = false;
+  }
+  return parts.join("");
+}
+
+function gitMarkdownFiles(root: string) {
   return execFileSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.md"],
@@ -37,10 +84,20 @@ function gitMarkdownFiles(root) {
     .sort((left, right) => left.localeCompare(right));
 }
 
-export function collectMarkdownFiles({ root = process.cwd(), files } = {}) {
+type FileOptions = { root?: string | undefined; files?: string[] | undefined };
+type MarkdownFile = { path: string; absolutePath: string; realPath: string; aliases: string[] };
+type Section = {
+  heading: string;
+  level?: string;
+  line: number;
+  proseWords: number;
+  codeWords: number;
+};
+
+export function collectMarkdownFiles({ root = process.cwd(), files }: FileOptions = {}) {
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const seenPaths = new Set();
-  const byRealPath = new Map();
+  const byRealPath = new Map<string, MarkdownFile>();
   for (const file of files ?? gitMarkdownFiles(absoluteRoot)) {
     const relativePath = file.split(path.sep).join("/");
     if (seenPaths.has(relativePath)) {
@@ -71,50 +128,69 @@ export function collectMarkdownFiles({ root = process.cwd(), files } = {}) {
   return [...byRealPath.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export function countMarkdownWords(markdown, options = {}) {
-  const md = options.markdown ?? createDocsMarkdown();
-  const content = parseFrontmatter(markdown).content.replace(/<!--[\s\S]*?-->/g, "");
-  const parsed = parseDocsDocument(content, md, options);
+type MarkdownWordCountOptions = { sourceFile?: string; root?: string };
+
+export function countMarkdownWords(
+  markdown: string,
+  options: MarkdownWordCountOptions & { markdown?: unknown } = {},
+) {
+  const md = docsParser(options.markdown);
+  return countContentWords(frontmatter(markdown).content, md, options);
+}
+
+function countContentWords(
+  body: string,
+  md: ReturnType<typeof createDocsParser>,
+  options: MarkdownWordCountOptions,
+) {
+  const parsed: unknown = parseDocsDocument(body, md, options);
+  const tokens = array(record(parsed).tokens);
   const sections = [];
   let proseWords = 0;
   let codeWords = 0;
-  let current = { heading: "Introduction", line: 1, proseWords: 0, codeWords: 0 };
+  let current: Section = { heading: "Introduction", line: 1, proseWords: 0, codeWords: 0 };
 
-  const addProse = (text) => {
+  const addProse = (text: string) => {
     const words = countWords(text);
     proseWords += words;
     current.proseWords += words;
   };
-  const addCode = (text) => {
+  const addCode = (text: string) => {
     const words = countWords(text);
     codeWords += words;
     current.codeWords += words;
   };
 
-  for (let index = 0; index < parsed.tokens.length; index++) {
-    const token = parsed.tokens[index];
-    if (token.type === "heading_open" && ["h1", "h2", "h3"].includes(token.tag)) {
-      sections.push(current);
-      current = {
-        heading: parsed.tokens[index + 1]?.content ?? token.tag,
-        level: token.tag,
-        line: (token.map?.[0] ?? 0) + 1,
-        proseWords: 0,
-        codeWords: 0,
-      };
-      continue;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = record(tokens[index]);
+    const type = token.type;
+    if (type === "heading_open") {
+      const tag = string(token.tag);
+      if (["h1", "h2", "h3"].includes(tag)) {
+        const next = tokens[index + 1];
+        const heading = string(next == null ? tag : (record(next).content ?? tag));
+        const map = token.map == null ? undefined : array(token.map);
+        const line = map?.[0] ?? 0;
+        if (typeof line !== "number") {
+          throw new TypeError("Unsupported docs parser contract: expected line number");
+        }
+        sections.push(current);
+        current = {
+          heading: heading.includes("<!--") ? inlineText(record(next)).trim() : heading,
+          level: tag,
+          line: line + 1,
+          proseWords: 0,
+          codeWords: 0,
+        };
+        continue;
+      }
     }
-    if (token.type === "inline") {
-      addProse(
-        (token.children ?? [])
-          .filter((child) => ["text", "code_inline", "html_inline", "image"].includes(child.type))
-          .map((child) => (child.type === "html_inline" ? stripHtml(child.content) : child.content))
-          .join(" "),
-      );
-    } else if (token.type === "fence" || token.type === "code_block") {
-      addCode(token.content);
-    } else if (token.type === "html_block") {
-      addProse(stripHtml(token.content));
+    if (type === "inline") {
+      addProse(inlineText(token));
+    } else if (type === "fence" || type === "code_block") {
+      addCode(string(token.content));
+    } else if (type === "html_block") {
+      addProse(htmlText(string(token.content)));
     }
   }
   sections.push(current);
@@ -131,21 +207,21 @@ export function checkMarkdownWordCounts({
   maxWords = DEFAULT_MAX_WORDS,
   reviewWords = DEFAULT_REVIEW_WORDS,
   files,
-} = {}) {
-  const md = createDocsMarkdown();
+}: FileOptions & { maxWords?: number; reviewWords?: number } = {}) {
+  const md = createDocsParser();
   const markdownFiles = collectMarkdownFiles({ root, files });
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const rows = markdownFiles.map((file) => {
     const markdown = fs.readFileSync(file.absolutePath, "utf8");
-    const { tags } = parseFrontmatter(markdown).data;
+    const { data, content } = frontmatter(markdown);
+    const tags = isRecord(data) ? data.tags : undefined;
     if (
       tags !== undefined &&
-      (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string" || !tag.trim()))
+      (!Array.isArray(tags) || tags.some((tag: unknown) => typeof tag !== "string" || !tag.trim()))
     ) {
       throw new Error(`${file.path}: tags frontmatter must be a list of nonempty strings`);
     }
-    const counts = countMarkdownWords(markdown, {
-      markdown: md,
+    const counts = countContentWords(content, md, {
       sourceFile: file.absolutePath,
       root: file.path.startsWith("docs/")
         ? path.join(absoluteRoot, "docs")
@@ -189,7 +265,7 @@ export function checkMarkdownWordCounts({
   };
 }
 
-export function formatWordCountReport(result) {
+export function formatWordCountReport(result: ReturnType<typeof checkMarkdownWordCounts>) {
   const lines = [
     `Checked ${result.fileCount} Markdown files; hard limit ${result.maxWords} words; review threshold ${result.reviewWords} words.`,
   ];
@@ -249,8 +325,13 @@ export function formatWordCountReport(result) {
   return lines.join("\n");
 }
 
-function parseCliArgs(argv) {
-  const options = {
+function parseCliArgs(argv: string[]) {
+  const options: {
+    root: string | undefined;
+    maxWords: number;
+    reviewWords: number;
+    json: boolean;
+  } = {
     root: process.cwd(),
     maxWords: DEFAULT_MAX_WORDS,
     reviewWords: DEFAULT_REVIEW_WORDS,
@@ -265,7 +346,7 @@ function parseCliArgs(argv) {
     } else if (arg === "--max") {
       options.maxWords = Number(argv[++index]);
     } else {
-      throw new Error("Usage: word-count.mjs [--root <path>] [--max <words>] [--json]");
+      throw new Error("Usage: word-count.ts [--root <path>] [--max <words>] [--json]");
     }
   }
   if (!Number.isInteger(options.maxWords) || options.maxWords < 1) {
@@ -306,11 +387,15 @@ export function runWordCountCli(argv = process.argv.slice(2)) {
   return result.ok ? 0 : 1;
 }
 
-if (process.argv[1] === __filename) {
+export function runWordCountMain() {
   try {
     process.exitCode = runWordCountCli();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
+}
+
+if (process.argv[1] === __filename) {
+  runWordCountMain();
 }

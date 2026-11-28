@@ -354,7 +354,7 @@ jobs:
       - name: Check documentation length
         run: pnpm docs:check-length
       - name: Check specifications
-        run: node scripts/check-specs.mjs
+        run: node scripts/check-specs.ts
       - name: Build documentation
         run: pnpm docs:build
       - name: Save documentation dependencies

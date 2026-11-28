@@ -75,7 +75,7 @@ policy and actual decision evidence.
 - Check the document against current source, scope, alternatives, failure
   behavior, and required outcomes. Apply the technical-writing clarity pass.
 - Run documentation length and link checks, and formatting for changed authored
-  files using the installed toolchain. Include `node scripts/check-specs.mjs`,
+  files using the installed toolchain. Include `node scripts/check-specs.ts`,
   also run by `pnpm docs:check`, for spec metadata and link targets.
   Do not install dependencies or run product
   tests for RFC prose. Follow any explicitly requested independent review.
