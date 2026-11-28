@@ -1,6 +1,9 @@
 import { oauthIssuerOperations } from "./connections/oauth-issuer.ts";
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
-import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
+import {
+  admitOpenShellRepositoryCredentials,
+  matchesFrozenOpenShellRepositoryPolicy,
+} from "./composition/openshell-credential-admission.ts";
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
@@ -13,7 +16,6 @@ import {
 import type {
   CredentialDeploymentContext,
   CredentialProxyDriver,
-  DeploymentRequestMatch,
   LegacyEgressProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -145,7 +147,12 @@ import {
   gatewayStartupSourceDelivery,
 } from "./composition/token-service.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
-import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
+import {
+  primaryComputeFailure,
+  loggedErrorClass,
+  revisionFailureLogFields,
+  computeCleanupLogFields,
+} from "./worker/failure-diagnostics.ts";
 import { ConfigurationFailure as ComputeConfigurationFailure } from "./drivers/compute/configuration-failure.ts";
 import type {
   NativeRepositoryWithdrawalSession,
@@ -392,151 +399,10 @@ function repositoryCleanupRecheckMs(intervalMs: number, ageMs: number): number {
   );
 }
 
-const LOGGED_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
-// A Kubernetes Status reason is one bare CamelCase word, such as Forbidden.
-const LOGGED_STATUS_REASON = /^[A-Za-z]{1,64}$/u;
-
-function loggedHttpStatus(error: unknown): number | undefined {
-  const status =
-    error !== null && typeof error === "object"
-      ? (error as { readonly code?: unknown }).code
-      : undefined;
-  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
-    ? status
-    : undefined;
-}
-
-/**
- * The HTTP status and Status reason on an error's `cause`. A Driver error that
- * replaces an SDK error, to keep private request data out of logs (a Kubernetes
- * private Secret write) or to classify it as transient, keeps them there.
- */
-function causeStatusLogFields(error: object): {
-  readonly status?: number;
-  readonly reason?: string;
-} {
-  const cause = (error as { readonly cause?: unknown }).cause;
-  const status = loggedHttpStatus(cause);
-  if (status === undefined) {
-    return {};
-  }
-  const reason = (cause as { readonly reason?: unknown }).reason;
-  return {
-    status,
-    ...(typeof reason === "string" && LOGGED_STATUS_REASON.test(reason) ? { reason } : {}),
-  };
-}
-
-/**
- * The cleanup failures a Compute Driver reported beside each primary failure the worker took out
- * of a ComputeCleanupFailedError, so the pass's log line still shows that cleanup failed.
- */
-const computeCleanupFailures = new WeakMap<object, readonly unknown[]>();
-
-/**
- * The failure a Compute Driver operation's outcome follows. A Driver whose cleanup also failed
- * reports both; the operation's own failure decides, so a refusal still fails at once and an
- * outage still waits, and the cleanup failure is kept for the log fields (finding 2268). A
- * primary failure that is not an object cannot carry that record, so its aggregate stays whole
- * and is classified as before. A Driver can throw one error object again (a memoized client
- * failure), so a failure without a failed cleanup clears any record it kept.
- */
-function primaryComputeFailure(error: unknown): unknown {
-  if (!(error instanceof ComputeCleanupFailedError)) {
-    if (error !== null && typeof error === "object") {
-      computeCleanupFailures.delete(error);
-    }
-    return error;
-  }
-  const primary = error.primary;
-  if (primary === null || typeof primary !== "object" || error.cleanupFailures.length === 0) {
-    return error;
-  }
-  computeCleanupFailures.set(primary, error.cleanupFailures);
-  return primary;
-}
-
-/** The error class a log line may name: its own name or constructor's, else `Error`. */
-function loggedErrorClass(error: unknown): string {
-  const record = error !== null && typeof error === "object" ? error : undefined;
-  return (
-    (record === undefined
-      ? undefined
-      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
-          (candidate): candidate is string =>
-            typeof candidate === "string" &&
-            candidate !== "Error" &&
-            LOGGED_ERROR_NAME.test(candidate),
-        )) ?? "Error"
-  );
-}
-
-/**
- * Log fields that say which dependency failed and why, without provider text:
- * a transient dependency names itself and a closed reason; any other failure
- * gives its error class and any fixed Driver request diagnostic. Other errors add
- * the HTTP status of an SDK error, its own or its cause's, and the Status reason a cause keeps.
- * A failure whose Compute cleanup also failed adds `cleanupCause`, the first cleanup failure's
- * class, so a failed cleanup never reads as a clean one (finding 2268).
- */
-function revisionFailureLogFields(error: unknown): {
-  readonly dependency?: string;
-  readonly cause?: string;
-  readonly failure?: string;
-  readonly status?: number;
-  readonly reason?: string;
-  readonly method?: string;
-  readonly grpcStatus?: number;
-  readonly validationCategory?: string;
-  readonly cleanupCause?: string;
-} {
-  return { ...primaryFailureLogFields(error), ...computeCleanupLogFields(error) };
-}
-
-/** `cleanupCause` when the Compute cleanup after this failure failed too, else nothing. */
-function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: string } {
-  if (error === null || typeof error !== "object") {
-    return {};
-  }
-  // A Sandbox gateway outage reaches the log as the transient failure that wraps it.
-  const cause = (error as { readonly cause?: unknown }).cause;
-  const cleanup =
-    computeCleanupFailures.get(error) ??
-    (cause !== null && typeof cause === "object" ? computeCleanupFailures.get(cause) : undefined);
-  return cleanup === undefined ? {} : { cleanupCause: loggedErrorClass(cleanup[0]) };
-}
-
-function primaryFailureLogFields(error: unknown): {
-  readonly dependency?: string;
-  readonly cause?: string;
-  readonly failure?: string;
-  readonly status?: number;
-  readonly reason?: string;
-  readonly method?: string;
-  readonly grpcStatus?: number;
-  readonly validationCategory?: string;
-} {
-  if (error instanceof TransientDependencyError) {
-    return { dependency: error.dependency, cause: error.reason, ...causeStatusLogFields(error) };
-  }
-  const record = error !== null && typeof error === "object" ? error : undefined;
-  const errorClass = loggedErrorClass(error);
-  if (error instanceof ActivationFailedError && error.permissionDenials !== undefined) {
-    return { cause: errorClass, failure: error.permissionDenials.join("_") };
-  }
-  if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
-    const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
-    return { cause: errorClass, method, grpcStatus, validationCategory };
-  }
-  // Kubernetes SDK errors carry the HTTP status in `code`.
-  const status = loggedHttpStatus(record);
-  if (status !== undefined) {
-    return { cause: errorClass, status };
-  }
-  return record === undefined
-    ? { cause: errorClass }
-    : { cause: errorClass, ...causeStatusLogFields(record) };
-}
+type RevisionFailureFields = ReturnType<typeof revisionFailureLogFields> & {
+  readonly refusal?: string;
+  readonly predecessorStop?: string;
+};
 
 /** An invalid row: reading it again fails the same way until someone repairs it. */
 function unrecoverableRead(error: unknown): boolean {
@@ -609,7 +475,7 @@ class RefusedCandidateStopError extends Error {
    */
   pending(): {
     readonly result: RevisionDispatchResult;
-    readonly logFields: Readonly<Record<string, string | number>>;
+    readonly logFields: RevisionFailureFields;
   } {
     return {
       result: {
@@ -681,6 +547,10 @@ interface NamespaceDispatchResult extends DispatchResult {
   readonly namespaceParticipants?: readonly NamespaceLifecycleEvidence[];
   readonly observation?: Observation;
   readonly hintCode?: NamespaceHintCode;
+}
+
+function permanentFailure<Code extends string>(code: Code) {
+  return { outcome: "permanent", code } as const;
 }
 
 function deniedAuthorization(authorization: AuthorizationRequest, decision: AuthorizationDecision) {
@@ -1077,6 +947,12 @@ function workerPassErrorCode(error: unknown): string {
     return "AUDIT_CAPACITY_EXCEEDED";
   }
   return "WORKER_UNAVAILABLE";
+}
+
+function matchesComputeDriver(revision: Readonly<AgentRevision>, compute: ComputeDriver): boolean {
+  return (
+    revision.compute.id === compute.id && revision.compute.implementation === compute.implementation
+  );
 }
 
 function validDriver(driver: ComputeDriver): boolean {
@@ -2420,9 +2296,7 @@ export class ControllerWorker {
         this.emit({
           event: "worker.compute-prepare-failed",
           ...workLogFields(claim),
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
+          ...revisionOwner(revision),
           computeDriverId: this.compute.id,
           code: diagnostic.code,
           step: diagnostic.stage,
@@ -2672,10 +2546,7 @@ export class ControllerWorker {
   ): Promise<void> {
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
     if (cleanupRevisionId === undefined) {
-      await this.finalize(claim, undefined, {
-        outcome: "permanent",
-        code: "INVALID_TARGET",
-      });
+      await this.finalize(claim, undefined, permanentFailure("INVALID_TARGET"));
       return;
     }
     const effect = await this.runRepositoryCleanupEffects(
@@ -2723,10 +2594,7 @@ export class ControllerWorker {
       if (!closeLiveSessions) {
         return cleanup;
       }
-      if (
-        revision.compute.id !== this.compute.id ||
-        revision.compute.implementation !== this.compute.implementation
-      ) {
+      if (!matchesComputeDriver(revision, this.compute)) {
         throw new Error("COMPUTE_DRIVER_MISMATCH");
       }
       const resources = await this.state.read(async (view) => ({
@@ -3323,10 +3191,7 @@ export class ControllerWorker {
 
   private async processNamespace(claim: ClaimedWork): Promise<void> {
     if (claim.agentId !== undefined || claim.namespaceTarget === undefined) {
-      await this.finalize(claim, undefined, {
-        outcome: "permanent",
-        code: "INVALID_TARGET",
-      });
+      await this.finalize(claim, undefined, permanentFailure("INVALID_TARGET"));
       return;
     }
     let namespace: Readonly<Namespace> | undefined;
@@ -3563,7 +3428,7 @@ export class ControllerWorker {
       ...workLogFields(claim),
       namespaceId: claim.namespaceId,
       result: resolved.outcome,
-      outcome: resolved.outcome,
+      outcome,
       code: resolved.code,
       ...(reason === undefined ? {} : { reason }),
       ...(resolved.hintCode === undefined ? {} : { hintCode: resolved.hintCode }),
@@ -3659,19 +3524,13 @@ export class ControllerWorker {
         claim.agentTarget !== "stopped" ||
         claim.namespaceTarget !== undefined
       ) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_TARGET",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_TARGET"));
       }
       const authorizedAgent = await this.state.read((view) =>
         view.agents.findAgent(claim.namespaceId, claim.agentId!),
       );
       if (authorizedAgent === undefined) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_OWNER",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_AGENT_OWNER"));
       }
       const denied = await this.authorizeAgentAction(claim, authorizedAgent, "operate");
       if (denied !== undefined) {
@@ -3691,10 +3550,7 @@ export class ControllerWorker {
         agent === undefined ||
         agent.servicePrincipalId !== authorizedAgent.servicePrincipalId
       ) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_OWNER",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_AGENT_OWNER"));
       }
       if (agent.desiredRuntimeState !== "stopped") {
         return await this.finalizeAgentStop(claim, {
@@ -3705,10 +3561,7 @@ export class ControllerWorker {
       }
       const active = revisions.find((revision) => revision.id === agent.activeRevisionId);
       if (agent.activeRevisionId !== undefined && active === undefined) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_ACTIVE_REVISION",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_ACTIVE_REVISION"));
       }
       if (active !== undefined && !revisionAdmittedBeforeWork(active, claim)) {
         return await this.finalizeAgentStop(claim, {
@@ -3717,10 +3570,7 @@ export class ControllerWorker {
           servicePrincipalId: agent.servicePrincipalId,
         });
       }
-      const ownedByCompute = (revision: Readonly<AgentRevision>) =>
-        revision.compute.id === this.compute.id &&
-        revision.compute.implementation === this.compute.implementation;
-      if (active !== undefined && !ownedByCompute(active)) {
+      if (active !== undefined && !matchesComputeDriver(active, this.compute)) {
         return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
@@ -3735,7 +3585,7 @@ export class ControllerWorker {
         ...revisions.filter(
           (revision) =>
             revision.id !== active?.id &&
-            ownedByCompute(revision) &&
+            matchesComputeDriver(revision, this.compute) &&
             revisionAdmittedBeforeWork(revision, claim),
         ),
       ];
@@ -3747,10 +3597,7 @@ export class ControllerWorker {
             revision.servicePrincipalId !== agent.servicePrincipalId,
         )
       ) {
-        return await this.finalizeAgentStop(claim, {
-          outcome: "permanent",
-          code: "INVALID_REVISION_OWNER",
-        });
+        return await this.finalizeAgentStop(claim, permanentFailure("INVALID_REVISION_OWNER"));
       }
       if (cleanup.length > 0 && this.compute.bindAgent !== undefined) {
         await this.withClaimHeartbeat(claim, async () => {
@@ -3762,10 +3609,7 @@ export class ControllerWorker {
           view.agents.findAgent(claim.namespaceId, claim.agentId!),
         );
         if (current === undefined || current.servicePrincipalId !== agent.servicePrincipalId) {
-          return await this.finalizeAgentStop(claim, {
-            outcome: "permanent",
-            code: "INVALID_AGENT_OWNER",
-          });
+          return await this.finalizeAgentStop(claim, permanentFailure("INVALID_AGENT_OWNER"));
         }
         if (current.desiredRuntimeState !== "stopped") {
           return await this.finalizeAgentStop(claim, {
@@ -3895,10 +3739,7 @@ export class ControllerWorker {
         claim.agentTarget !== "deleted" ||
         claim.namespaceTarget !== undefined
       ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_TARGET",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_TARGET"));
       }
       const resources = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -3915,16 +3756,10 @@ export class ControllerWorker {
       });
       const { namespace, agent, revisions, provisioning } = resources;
       if (namespace === undefined || agent === undefined) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_OWNER",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_AGENT_OWNER"));
       }
       if (agent.status !== "deleting" || agent.desiredRuntimeState !== "stopped") {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_AGENT_STATE",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_AGENT_STATE"));
       }
       const denied = await this.authorizeAgentAction(claim, agent, "delete");
       if (denied !== undefined) {
@@ -3938,31 +3773,19 @@ export class ControllerWorker {
             revision.servicePrincipalId !== agent.servicePrincipalId,
         )
       ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "INVALID_REVISION_OWNER",
-        });
+        return await this.finalizeAgentDeletion(claim, permanentFailure("INVALID_REVISION_OWNER"));
       }
-      if (
-        revisions.some(
-          (revision) =>
-            revision.compute.id !== this.compute.id ||
-            revision.compute.implementation !== this.compute.implementation,
-        )
-      ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "COMPUTE_DRIVER_MISMATCH",
-        });
+      if (revisions.some((revision) => !matchesComputeDriver(revision, this.compute))) {
+        return await this.finalizeAgentDeletion(claim, permanentFailure("COMPUTE_DRIVER_MISMATCH"));
       }
       if (
         this.compute.provisionAgentRuntimeCredentials !== undefined &&
         this.compute.deleteAgentRuntimeCredentials === undefined
       ) {
-        return await this.finalizeAgentDeletion(claim, {
-          outcome: "permanent",
-          code: "CREDENTIAL_DELETION_UNSUPPORTED",
-        });
+        return await this.finalizeAgentDeletion(
+          claim,
+          permanentFailure("CREDENTIAL_DELETION_UNSUPPORTED"),
+        );
       }
       const pendingProvisioningEffect =
         provisioning === undefined ? undefined : provisioningPendingEffect(provisioning);
@@ -4259,10 +4082,7 @@ export class ControllerWorker {
     const attempts: CredentialWithdrawalAttempt[] = [];
     try {
       if (claim.agentId === undefined || claim.revisionId === undefined) {
-        await this.finalizeCredentialWithdrawal(claim, {
-          outcome: "permanent",
-          code: "INVALID_TARGET",
-        });
+        await this.finalizeCredentialWithdrawal(claim, permanentFailure("INVALID_TARGET"));
         return;
       }
       const agent = await this.state.read((view) =>
@@ -4333,9 +4153,7 @@ export class ControllerWorker {
       }
       if (detachable.length > 0) {
         const compute = this.compute;
-        const matchesCompute =
-          revision.compute.id === compute.id &&
-          revision.compute.implementation === compute.implementation;
+        const matchesCompute = matchesComputeDriver(revision, compute);
         const withdraw = matchesCompute
           ? compute.withdrawCredentialSource?.bind(compute)
           : undefined;
@@ -5054,7 +4872,7 @@ export class ControllerWorker {
       this.deployTimings.beginPass(claim.idempotencyKey);
     }
     let result: RevisionDispatchResult;
-    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    let failureLogFields: RevisionFailureFields | undefined;
     let refusalWaitRead = false;
     let claimAgent: Readonly<Agent> | undefined;
     let supervisedRevision: Readonly<AgentRevision> | undefined;
@@ -5065,7 +4883,7 @@ export class ControllerWorker {
         claim.namespaceTarget !== undefined ||
         claim.agentTarget !== undefined
       ) {
-        await this.finalizeRevision(claim, { outcome: "permanent", code: "INVALID_TARGET" });
+        await this.finalizeRevision(claim, permanentFailure("INVALID_TARGET"));
         return;
       }
       const resources = await this.state.read(async (view) => {
@@ -5089,10 +4907,7 @@ export class ControllerWorker {
       const { namespace, agent, revision, previous } = resources;
       claimAgent = agent;
       if (namespace === undefined || agent === undefined || revision === undefined) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: "INVALID_REVISION_OWNER",
-        });
+        await this.finalizeRevision(claim, permanentFailure("INVALID_REVISION_OWNER"));
         return;
       }
       await this.readRefusalWait(claim, agent, revision.id);
@@ -5113,10 +4928,7 @@ export class ControllerWorker {
         }
       };
       if (namespace.status !== "ready") {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "NAMESPACE_NOT_READY",
-        });
+        await refuseAdmission(permanentFailure("NAMESPACE_NOT_READY"));
         return;
       }
       if (
@@ -5124,28 +4936,16 @@ export class ControllerWorker {
         revision.agentId !== agent.id ||
         revision.servicePrincipalId !== agent.servicePrincipalId
       ) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "INVALID_ADMITTED_REVISION",
-        });
+        await refuseAdmission(permanentFailure("INVALID_ADMITTED_REVISION"));
         return;
       }
       const approvedHarness = resolveApprovedHarness(revision.harness.id, revision.harness.mode);
       if (approvedHarness === undefined || revision.harness.version !== approvedHarness.version) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "HARNESS_DESCRIPTOR_MISMATCH",
-        });
+        await refuseAdmission(permanentFailure("HARNESS_DESCRIPTOR_MISMATCH"));
         return;
       }
-      if (
-        revision.compute.id !== this.compute.id ||
-        revision.compute.implementation !== this.compute.implementation
-      ) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "COMPUTE_DRIVER_MISMATCH",
-        });
+      if (!matchesComputeDriver(revision, this.compute)) {
+        await refuseAdmission(permanentFailure("COMPUTE_DRIVER_MISMATCH"));
         return;
       }
       const maintenance = claim.idempotencyKey.startsWith(
@@ -5155,11 +4955,7 @@ export class ControllerWorker {
         revision.repositoryCredentials !== undefined &&
         agent.activeRevisionId === revision.id &&
         agent.desiredRuntimeState === "running"
-          ? await this.queue.repositoryExpiryState({
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-            })
+          ? await this.queue.repositoryExpiryState(revisionOwner(revision))
           : undefined;
       if (maintenance) {
         const original = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
@@ -5177,15 +4973,12 @@ export class ControllerWorker {
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
-          await this.finalizeRevision(claim, { outcome: "permanent", code: "REVISION_SUPERSEDED" });
+          await this.finalizeRevision(claim, permanentFailure("REVISION_SUPERSEDED"));
           return;
         }
       }
       if (agent.activeRevisionId !== undefined && previous === undefined) {
-        await refuseAdmission({
-          outcome: "permanent",
-          code: "INVALID_ACTIVE_REVISION",
-        });
+        await refuseAdmission(permanentFailure("INVALID_ACTIVE_REVISION"));
         return;
       }
       const withdrawnExecutionWork =
@@ -5200,10 +4993,7 @@ export class ControllerWorker {
       if (!historySupported && agent.activeRevisionId !== revision.id) {
         // A recovered candidate can predate the API history check. Fail its work
         // before finalization can stop a predecessor. Stop and withdrawal keep their own paths.
-        await refuseAdmission({
-          outcome: "permanent",
-          code: INCOMPATIBLE_REPOSITORY_HISTORY,
-        });
+        await refuseAdmission(permanentFailure(INCOMPATIBLE_REPOSITORY_HISTORY));
         return;
       }
       // A removal can commit after the original deployment published its active pointer.
@@ -5336,10 +5126,7 @@ export class ControllerWorker {
         if (active) {
           await this.finalizeActiveRevision(claim, revision, "PLUGIN_DRIVER_MISMATCH");
         } else {
-          await refuseAdmission({
-            outcome: "permanent",
-            code: "PLUGIN_DRIVER_MISMATCH",
-          });
+          await refuseAdmission(permanentFailure("PLUGIN_DRIVER_MISMATCH"));
         }
         return;
       }
@@ -5626,10 +5413,7 @@ export class ControllerWorker {
         existingHarnessOnly ? { ...secretContext, existingHarnessOnly: true } : secretContext,
       );
       if (!validRevisionObservation(observation, revision, compute)) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: "INVALID_DRIVER_OBSERVATION",
-        });
+        await this.finalizeRevision(claim, permanentFailure("INVALID_DRIVER_OBSERVATION"));
         return;
       }
       resultData = pluginWarningsResultData(
@@ -6218,7 +6002,7 @@ export class ControllerWorker {
     if (withdraw === undefined) {
       return false;
     }
-    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    let failureLogFields: RevisionFailureFields | undefined;
     const withdrawal = await this.withClaimHeartbeat(claim, async () => {
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
@@ -6654,7 +6438,7 @@ export class ControllerWorker {
         throw new DependencyUnavailableError("The staged Repository authority is unavailable.");
       }
       await owner.assertCurrentGitHubAppSourceScope(source);
-      const matches = admitOpenShellRepositoryCredentials(
+      const requests = admitOpenShellRepositoryCredentials(
         this.tokenServiceDrivers?.repositoryRegistry,
         {
           namespaceId: revision.namespaceId,
@@ -6663,24 +6447,7 @@ export class ControllerWorker {
           grants,
         },
       )?.credentialRequests;
-      const injections = policy.injectionPolicies.filter(
-        ({ bindingRef }) => bindingRef === repositoryBinding.bindingRef,
-      );
-      const frozen = injections[0]?.allowedRequests ?? [];
-      const isGit = ({ host, ports }: DeploymentRequestMatch) =>
-        host.toLowerCase() === "github.com" &&
-        ports.some(({ from, to }) => from <= 443 && 443 <= to);
-      // Newly eligible publication must not change the policy of an existing revision.
-      const isRepositoryRequest = (request: DeploymentRequestMatch) =>
-        isGit(request) || frozen.some((saved) => isDeepStrictEqual(saved, request));
-      const approved = matches?.filter(isRepositoryRequest);
-      const network = policy.networkAccessPolicy.allowed.filter(isRepositoryRequest);
-      if (
-        injections.length !== 1 ||
-        !matches?.some(isGit) ||
-        !isDeepStrictEqual(frozen, approved) ||
-        !isDeepStrictEqual(network, frozen)
-      ) {
+      if (!matchesFrozenOpenShellRepositoryPolicy(policy, repositoryBinding.bindingRef, requests)) {
         throw new DependencyUnavailableError("The staged Repository policy is no longer approved.");
       }
     }
@@ -6986,7 +6753,7 @@ export class ControllerWorker {
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<void> {
     if (
       this.refusalWait?.idempotencyKey === claim.idempotencyKey &&
@@ -7171,7 +6938,7 @@ export class ControllerWorker {
     transition: RevisionTransition,
     resolved: RevisionDispatchResult,
     outcome: Outcome,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<void> {
     if (transition.kind === "stopped") {
       const stoppedCandidate = transition.revision;
@@ -7311,27 +7078,29 @@ export class ControllerWorker {
       transition.kind === "active-revision-changed"
         ? { outcome: "retry", code: "ACTIVE_REVISION_CHANGED" }
         : resolved,
-      stopYields,
-      failureLogFields,
+      { stopYields, failureLogFields },
     );
   }
 
   private emitRevisionCompletion(
     claim: ClaimedWork,
     result: Pick<RevisionDispatchResult, "outcome" | "code">,
-    stopYields: number | undefined,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    observation: {
+      readonly stopYields?: number | undefined;
+      readonly failureLogFields?: RevisionFailureFields | undefined;
+      readonly capturedRevisionId?: string;
+    },
   ): void {
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
-      revisionId: claim.revisionId,
+      revisionId: observation.capturedRevisionId ?? claim.revisionId,
       result: result.outcome,
       outcome: result.outcome,
       code: result.code,
-      ...failureLogFields,
+      ...observation.failureLogFields,
       ...this.deployTimingFields(claim),
-      ...stopYieldsField(stopYields),
+      ...stopYieldsField(observation.stopYields),
     });
   }
 
@@ -7349,15 +7118,7 @@ export class ControllerWorker {
           claim.revisionId!,
         );
         if (revision?.repositoryCredentials !== undefined) {
-          await queue.enqueueRepositoryCleanup(
-            claim,
-            {
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-            },
-            "terminal-runtime",
-          );
+          await queue.enqueueRepositoryCleanup(claim, revisionOwner(revision), "terminal-runtime");
         }
         await this.appendRevisionSuperseded(unit, claim, resolved.supersededBy);
       } else if (resolved.revision !== undefined && resolved.outcome === "success") {
@@ -7468,7 +7229,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     drain: "yield" | "wait" = "wait",
     failures: "log" | "throw" = "log",
-  ): Promise<Readonly<Record<string, string | number>>> {
+  ): Promise<Pick<RevisionFailureFields, "predecessorStop">> {
     if (
       claim.agentId === undefined ||
       claim.revisionId === undefined ||
@@ -7550,8 +7311,7 @@ export class ControllerWorker {
       revision.namespaceId !== namespace.id ||
       revision.agentId !== agent.id ||
       revision.servicePrincipalId !== agent.servicePrincipalId ||
-      revision.compute.id !== compute.id ||
-      revision.compute.implementation !== compute.implementation ||
+      !matchesComputeDriver(revision, compute) ||
       agent.activeRevisionId === revision.id
     ) {
       return;
@@ -7758,11 +7518,7 @@ export class ControllerWorker {
       ) {
         return undefined;
       }
-      const disposition = await queue.repositoryExpiryState({
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-      });
+      const disposition = await queue.repositoryExpiryState(revisionOwner(revision));
       if (disposition !== "removal" && disposition !== "retiring") {
         return undefined;
       }
@@ -7858,11 +7614,7 @@ export class ControllerWorker {
       }
       // Activation has completed under this claim. A later stop waits for its
       // acknowledgement instead of making this work repeat the stop itself.
-      const repositoryWithdrawal = await queue.repositoryExpiryState({
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-      });
+      const repositoryWithdrawal = await queue.repositoryExpiryState(revisionOwner(revision));
       if (
         repositoryWithdrawal === "retiring" ||
         (!isCandidateDeployment(claim) && repositoryWithdrawal === "removal")
@@ -7916,7 +7668,7 @@ export class ControllerWorker {
       this.emitRevisionCompletion(
         claim,
         { outcome: "retry", code: "ACTIVE_REVISION_CHANGED" },
-        this.stopYields.count(claim.idempotencyKey),
+        { stopYields: this.stopYields.count(claim.idempotencyKey) },
       );
       return;
     }
@@ -7926,7 +7678,9 @@ export class ControllerWorker {
     if (claim.idempotencyKey === `agent_revision:${revision.id}:reconcile`) {
       this.metrics?.observeAgentOperation("deploy", this.workAgeMs(claim) / 1000);
     }
-    this.emitRevisionCompletion(claim, result, this.stopYields.count(claim.idempotencyKey));
+    this.emitRevisionCompletion(claim, result, {
+      stopYields: this.stopYields.count(claim.idempotencyKey),
+    });
   }
 
   private async finalizeActiveRevision(
@@ -7936,7 +7690,7 @@ export class ControllerWorker {
     runtimeFailure?: RuntimeFailureEvidence,
     failure: {
       readonly dependencyFailure?: TransientDependencyError;
-      readonly failureLogFields?: Readonly<Record<string, string | number>>;
+      readonly failureLogFields?: RevisionFailureFields;
     } = {},
   ): Promise<void> {
     if (
@@ -8023,7 +7777,7 @@ export class ControllerWorker {
   private async continueExhaustedActiveRevision(
     claim: ClaimedWork,
     code: string,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<boolean> {
     const revisionId = claim.revisionId;
     if (
@@ -8071,17 +7825,15 @@ export class ControllerWorker {
       return false;
     }
     this.passOutcome = "permanent";
-    this.emit({
-      event: "worker.completed",
-      ...agentWorkLogFields(claim),
-      revisionId,
-      result: "retry",
-      outcome: "retry",
-      code,
-      // Like any other ended pass, say why the last attempt failed (finding 1743).
-      ...failureLogFields,
-      ...this.deployTimingFields(claim),
-    });
+    // Like any other ended pass, say why the last attempt failed (finding 1743).
+    this.emitRevisionCompletion(
+      claim,
+      { outcome: "retry", code },
+      {
+        failureLogFields,
+        capturedRevisionId: revisionId,
+      },
+    );
     return true;
   }
 
@@ -8149,7 +7901,7 @@ export class ControllerWorker {
   private async continueRevisionWithoutGit(
     claim: ClaimedWork,
     code: string,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<boolean> {
     if (claim.agentId === undefined || claim.revisionId === undefined) {
       return false;
@@ -8172,16 +7924,7 @@ export class ControllerWorker {
       return false;
     }
     this.passOutcome = "permanent";
-    this.emit({
-      event: "worker.completed",
-      ...agentWorkLogFields(claim),
-      revisionId: claim.revisionId,
-      result: "permanent",
-      outcome: "permanent",
-      code,
-      ...failureLogFields,
-      ...this.deployTimingFields(claim),
-    });
+    this.emitRevisionCompletion(claim, { outcome: "permanent", code }, { failureLogFields });
     return true;
   }
 
@@ -8233,11 +7976,7 @@ export class ControllerWorker {
           continue;
         }
         const candidate = await view.revisions.findRevision(namespaceId, agentId, entry.id);
-        if (
-          candidate === undefined ||
-          candidate.compute.id !== this.compute.id ||
-          candidate.compute.implementation !== this.compute.implementation
-        ) {
+        if (candidate === undefined || !matchesComputeDriver(candidate, this.compute)) {
           continue;
         }
         const exclusive = this.compute.requiresStoppedPredecessors?.(candidate) === true;
@@ -8356,9 +8095,7 @@ export class ControllerWorker {
     await queue.enqueue(
       {
         idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
+        ...revisionOwner(revision),
         actorId: claim.actorId,
       },
       undefined,

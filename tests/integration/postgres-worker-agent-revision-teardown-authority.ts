@@ -3,6 +3,7 @@ import test from "node:test";
 import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/controller-work.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import type { WorkIdentity } from "../helpers/postgres-worker-refused-candidate.ts";
 import { completedPasses, expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";
 import {
   repositoryBoundary,
@@ -23,6 +24,32 @@ type PublishedDeploymentCase = {
   newAgent?: true;
 };
 
+function recordStops(
+  fixture: { compute: ComputeDriver },
+  stopped: string[],
+): ComputeDriver["stopRevision"] {
+  return async (revision) => {
+    stopped.push(revision.id);
+    return fixture.compute.stopRevision(revision);
+  };
+}
+
+async function assertDependencyRetry(
+  events: readonly WorkerEvent[],
+  work: WorkIdentity,
+  causeMessage = "the log names the cause of the dependency outage",
+) {
+  const passes = await completedPasses(events, work, "retry");
+  // Each outage injects the failure on the first and only pass of this work.
+  assert.equal(passes.length, 1, `expected one completed pass for work ${work.idempotencyKey}`);
+  const ended = required(passes.at(-1), "final retry event");
+  assert.equal(ended.revisionId, work.id);
+  assert.equal(ended.result, "retry");
+  assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(ended.cause, "Error", causeMessage);
+  return ended;
+}
+
 export function testActiveRevisionAuthority(setup: RevisionSetup) {
   test(
     "exhausted repository maintenance during a dependency outage keeps the active runtime",
@@ -40,10 +67,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       let iamUnavailable = false;
       const compute: ComputeDriver = {
         ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
+        stopRevision: recordStops(fixture, stopped),
       };
       const events: WorkerEvent[] = [];
       const startWorker = () =>
@@ -65,12 +89,8 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       await fixture.work(outage, "failed_permanent");
       await fixture.stop();
       // The log says why the exhausted pass failed (finding 1743).
-      const ended = required(
-        (await completedPasses(events, outage, "retry")).at(-1),
-        "final retry event",
-      );
-      assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(ended.cause, "Error");
+      const ended = await assertDependencyRetry(events, outage);
+      assert.equal(Object.hasOwn(ended, "stopYields"), false);
       const failed = await fixture.observerPool.query<{ reason_code: string | null }>(
         "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
         [outage.idempotencyKey],
@@ -140,12 +160,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       await fixture.stop();
       assert.equal(activations, 1, "only the check after activation met the outage");
       // The retry says why the check failed (finding 2272).
-      const ended = required(
-        (await completedPasses(events, candidate, "retry")).at(-1),
-        "final retry event",
-      );
-      assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(ended.cause, "Error");
+      await assertDependencyRetry(events, candidate);
     },
   );
 
@@ -162,10 +177,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       const stopped: string[] = [];
       const compute: ComputeDriver = {
         ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
+        stopRevision: recordStops(fixture, stopped),
       };
       await fixture.start(compute);
       await fixture.work(candidate, "succeeded");
@@ -271,10 +283,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       let iamUnavailable = false;
       const compute: ComputeDriver = {
         ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
+        stopRevision: recordStops(fixture, stopped),
         async retireRevision(revision) {
           retired.push(revision.id);
           return fixture.compute.retireRevision(revision);
@@ -443,10 +452,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
         const compute: ComputeDriver = {
           ...fixture.compute,
           ...(maintained ? { maintenanceIntervalMs: 3_600_000 } : {}),
-          async stopRevision(revision) {
-            stopped.push(revision.id);
-            return fixture.compute.stopRevision(revision);
-          },
+          stopRevision: recordStops(fixture, stopped),
         };
         const events: WorkerEvent[] = [];
         const options = {
@@ -473,16 +479,12 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
         await fixture.start(compute, options);
         await fixture.work(second, "failed_permanent");
         await fixture.stop();
-        const ended = required(
-          (await completedPasses(events, second, "retry")).at(-1),
-          "final retry event",
-        );
-        assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
-        assert.equal(
-          ended.cause,
-          "Error",
+        const ended = await assertDependencyRetry(
+          events,
+          second,
           "the log names the failure that exhausted the deployment",
         );
+        assert.equal(Object.hasOwn(ended, "stopYields"), false);
         const maintenance = await fixture.observerPool.query<{ idempotency_key: string }>(
           `SELECT idempotency_key FROM occ.controller_work
            WHERE revision_id = $1 AND idempotency_key LIKE $2`,

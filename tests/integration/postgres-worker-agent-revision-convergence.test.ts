@@ -30,6 +30,7 @@ import type {
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
+  completedPasses,
   completion,
   makeWorkDue,
 } from "../helpers/postgres-worker-revision-queue.ts";
@@ -1389,6 +1390,10 @@ for (const { agent, material } of [
             outcome === "permanent"),
       );
       assert.equal(ended.event, "worker.completed", JSON.stringify(ended));
+      assert.equal(ended.revisionId, candidate.id);
+      assert.equal(ended.result, "permanent");
+      assert.equal(ended.code, expectedCode);
+      assert.equal(Object.hasOwn(ended, "stopYields"), false);
       assert.equal(await pointer(), candidate.id);
       const active = await fixture.currentAgent(owner);
       assert.ok(active, "the existing Agent remains persisted");
@@ -1431,6 +1436,14 @@ for (const { agent, material } of [
       assert.equal(await pointer(), fixed.id);
       assert.ok(retired.includes(candidate.id), retired.join());
       assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+      // Drain the worker before checking the original deployment's full sequence of passes.
+      await fixture.stop();
+      const passes = await completedPasses(events, candidate, "permanent");
+      for (const pass of passes.slice(0, -1)) {
+        assert.equal(pass.revisionId, candidate.id);
+        assert.equal(pass.outcome, "pending");
+        assert.equal(pass.result, "pending");
+      }
     },
   );
 }

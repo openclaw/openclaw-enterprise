@@ -2298,6 +2298,22 @@ revisionTest(
   },
 );
 
+function captureWorkerLogs() {
+  const output: unknown[] = [];
+  const events: WorkerEvent[] = [];
+  const logger = createWorkerLogEmitter(
+    createOccLogger({
+      component: "occ-worker",
+      destination: jsonLineDestination(output),
+    }),
+  );
+  const log: NonNullable<ControllerWorkerOptions["emit"]> = (event) => {
+    events.push(checkedWorkerEvent(event));
+    logger(event);
+  };
+  return { events, output, log };
+}
+
 test(
   "a failed Namespace logs the Compute refusal reason while status and audit keep only the failure",
   requiresPostgres,
@@ -2321,18 +2337,7 @@ test(
     ];
     let attempts = 0;
     let deletes = 0;
-    const output: unknown[] = [];
-    const events: WorkerEvent[] = [];
-    const logger = createWorkerLogEmitter(
-      createOccLogger({
-        component: "occ-worker",
-        destination: jsonLineDestination(output),
-      }),
-    );
-    const log: NonNullable<ControllerWorkerOptions["emit"]> = (event) => {
-      events.push(checkedWorkerEvent(event));
-      logger(event);
-    };
+    const { events, output, log } = captureWorkerLogs();
     await fixture.start(
       {
         ...fixture.compute,
@@ -2422,6 +2427,75 @@ test(
       deleted.map((event) => Object.hasOwn(event, "reason")),
       [false, false],
     );
+  },
+);
+
+test(
+  "Namespace provisioning logs a permanent outcome when retryable observations exhaust attempts",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const namespace = await fixture.controller.createNamespace(fixture.actor.id, {
+      name: `exhausted-${randomUUID()}`,
+    });
+    assert.equal(namespace.status, "provisioning");
+    const work = { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:ready` };
+    const reason = "Compute could not yet provision the Namespace.";
+    const { events, output, log } = captureWorkerLogs();
+    let observations = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async ensureNamespace(target, ...options) {
+          if (target.id !== namespace.id) {
+            return fixture.compute.ensureNamespace(target, ...options);
+          }
+          observations += 1;
+          return { namespaceId: target.id, namespaceReady: false, failure: "retryable", reason };
+        },
+      },
+      { emit: log },
+    );
+
+    const terminal = await fixture.work(work, "failed_permanent");
+    assert.equal(terminal.attempt_count, 2);
+    assert.equal(terminal.claim_token, null);
+    // The queue commit becomes visible before completion is logged. Join the in-flight pass.
+    await fixture.stop();
+    assert.equal(observations, 2);
+
+    const passes = (lines: readonly unknown[]) =>
+      lines
+        .filter(
+          (line): line is Readonly<Record<string, unknown>> =>
+            isRecord(line) &&
+            line.event === "worker.completed" &&
+            line.workId === work.idempotencyKey &&
+            line.namespaceId === namespace.id &&
+            line.operation === "namespace.ensure",
+        )
+        .map((line) => [line.attempt, line.result, line.outcome, line.code, line.reason]);
+    const expected = [
+      [1, "retry", "retry", "NAMESPACE_INCOMPLETE", reason],
+      [2, "retry", "permanent", "NAMESPACE_INCOMPLETE", reason],
+    ];
+    assert.deepEqual(passes(events), expected, "raw Worker completions");
+    assert.deepEqual(passes(output), expected, "serialized Worker completions");
+    assert.deepEqual((await fixture.workResult(work)).rows, [
+      { reason_code: "NAMESPACE_INCOMPLETE", result_data: null },
+    ]);
+    const failed = required(
+      await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id)),
+    );
+    assert.equal(failed.status, "failed");
+    assert.equal(JSON.stringify(failed).includes(reason), false);
+    const { rows } = await fixture.observerPool.query(
+      `SELECT details FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.lifecycle.ensure'`,
+      [namespace.id],
+    );
+    assert.equal(rows.length, 2);
+    assert.equal(JSON.stringify(rows).includes(reason), false);
   },
 );
 
@@ -2878,9 +2952,16 @@ revisionTest(
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("stop-initial-failure");
     const stopped: string[] = [];
+    const teardownEffects: string[] = [];
     await fixture.start(
       {
         ...fixture.compute,
+        async bindAgent(input) {
+          if (input.namespace.id === fixture.namespace.id && input.agent.id === owner.id) {
+            teardownEffects.push("bind");
+          }
+          await fixture.compute.bindAgent?.(input);
+        },
         async prepareRevision(revision) {
           return { ...(await fixture.compute.prepareRevision(revision)), ready: false };
         },
@@ -2891,18 +2972,30 @@ revisionTest(
           }
           return fixture.compute.stopRevision(revision);
         },
+        async retireRevision(revision) {
+          if (revision.namespaceId === fixture.namespace.id && revision.agentId === owner.id) {
+            teardownEffects.push("retire");
+          }
+          return fixture.compute.retireRevision(revision);
+        },
+        async deleteAgentRuntimeCredentials(input) {
+          if (input.namespace.id === fixture.namespace.id && input.agent.id === owner.id) {
+            teardownEffects.push("delete credentials");
+          }
+          await fixture.compute.deleteAgentRuntimeCredentials?.(input);
+        },
       },
       { convergenceTimeoutMs: 50 },
     );
     await fixture.work(candidate, "failed_permanent");
-    // Historical records from another selected Compute are not cleanup inputs
-    // for this worker, even when the Agent has no active pointer.
+    // A retired implementation may reuse the selected Compute ID.
+    const retiredRevisionId = `rev_${randomUUID()}`;
     await fixture.state.transact((unit) =>
       unit.revisions.createRevision({
         ...candidate,
-        id: `rev_${randomUUID()}`,
+        id: retiredRevisionId,
         revision: 2,
-        compute: { id: "retired-compute", implementation: "retired-compute" },
+        compute: { id: candidate.compute.id, implementation: "retired-compute" },
       }),
     );
     const stop = await fixture.requestStop(owner);
@@ -2911,6 +3004,24 @@ revisionTest(
     const current = required(await fixture.currentAgent(owner));
     assert.equal(current.desiredRuntimeState, "stopped");
     assert.equal(current.activeRevisionId, undefined);
+
+    // Deletion checks all revisions before issuing any Compute teardown call.
+    const priorEffects = [...teardownEffects];
+    const deletion = await fixture.requestDeletion(owner);
+    const work = await waitFor("permanent Agent deletion refusal", async () => {
+      const observed = await fixture.state.read((view) =>
+        view.operations.findWork(deletion.idempotencyKey),
+      );
+      assert.deepEqual(stopped, [candidate.id], "Delete attempted another stop");
+      assert.deepEqual(teardownEffects, priorEffects, "Delete attempted Compute teardown");
+      return observed?.state === "failed_permanent" ? observed : undefined;
+    });
+    assert.equal(work.reasonCode, "COMPUTE_DRIVER_MISMATCH");
+    assert.ok(await fixture.currentAgent(owner));
+    const retained = await fixture.state.read((view) =>
+      view.revisions.listRevisions(fixture.namespace.id, owner.id),
+    );
+    assert.deepEqual(retained.map(({ id }) => id).sort(), [candidate.id, retiredRevisionId].sort());
   },
 );
 

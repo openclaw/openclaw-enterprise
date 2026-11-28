@@ -98,8 +98,9 @@ selecting that namespace again ends `failed` until an operator clears them; see
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
 
 The API reports `failed` without a cause. Check the worker's `worker.completed`
-line for `namespace.ensure`. It includes a `reason` when the Kubernetes Compute
-Driver supplies one. For example, `Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.`
+line for `namespace.ensure`. If retries are exhausted, `result=retry` with
+`outcome=permanent` means the work has failed. The line includes a `reason` when
+the Kubernetes Compute Driver supplies one. For example, `Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.`
 The message identifies the blocking marker's key and keeps the other tenant's value private.
 
 A provisioning timeout alone does not identify the cause. See
