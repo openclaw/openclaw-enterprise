@@ -110,6 +110,20 @@ function required<T>(value: T | null | undefined): T {
   return value;
 }
 
+function assertTakeoverAudit(
+  rows: readonly AuditRow[],
+  takeoverActorId: string,
+  initiatingActorId: string,
+): void {
+  assert.equal(rows.length, 1);
+  const event = required(rows[0]);
+  assert.equal(event.actorId, takeoverActorId);
+  assert.equal(event.outcome, "success");
+  const details = auditDetails(event.details);
+  assert.equal(details.takeover, true);
+  assert.equal(details.previousActorId, initiatingActorId);
+}
+
 const removeAccessBindings: (
   fixture: Pick<Fixture, "observerPool">,
   subjectId: string,
@@ -1979,33 +1993,15 @@ test(
       1,
       "retry must retain the original failure evidence",
     );
-    assert.deepEqual(
-      ownedAudit
-        .filter((event) => event.action === "openclaw.agents.delete.retry")
-        .map((event) => {
-          const details = auditDetails(event.details);
-          return {
-            actorId: event.actorId,
-            outcome: event.outcome,
-            details: {
-              workId: details.workId,
-              previousAttemptCount: details.previousAttemptCount,
-              previousReasonCode: details.previousReasonCode,
-            },
-          };
-        }),
-      [
-        {
-          actorId: fixture.actor.id,
-          outcome: "success",
-          details: {
-            workId: deletion.idempotencyKey,
-            previousAttemptCount: 1,
-            previousReasonCode: "DEPENDENCY_UNAVAILABLE",
-          },
-        },
-      ],
-    );
+    const retries = ownedAudit.filter((event) => event.action === "openclaw.agents.delete.retry");
+    assert.equal(retries.length, 1);
+    const retry = required(retries[0]);
+    assert.equal(retry.actorId, fixture.actor.id);
+    assert.equal(retry.outcome, "success");
+    const details = auditDetails(retry.details);
+    assert.equal(details.workId, deletion.idempotencyKey);
+    assert.equal(details.previousAttemptCount, 1);
+    assert.equal(details.previousReasonCode, "DEPENDENCY_UNAVAILABLE");
   },
 );
 
@@ -2067,25 +2063,7 @@ test(
        WHERE namespace_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.delete.retry'`,
       [fixture.namespace.id, owner.id],
     );
-    assert.deepEqual(
-      retryAudit.map((event) => {
-        const details = auditDetails(event.details);
-        return {
-          actorId: event.actorId,
-          outcome: event.outcome,
-          takeover: details.takeover,
-          previousActorId: details.previousActorId,
-        };
-      }),
-      [
-        {
-          actorId: otherActor,
-          outcome: "success",
-          takeover: true,
-          previousActorId: fixture.actor.id,
-        },
-      ],
-    );
+    assertTakeoverAudit(retryAudit, otherActor, fixture.actor.id);
   },
 );
 
@@ -2175,23 +2153,14 @@ revisionTest(
        ORDER BY occurred_at, id`,
       [namespace.id],
     );
-    assert.deepEqual(
-      retryAudit.map(({ actorId, outcome, details: value }) => {
-        const details = auditDetails(value);
-        return {
-          actorId,
-          outcome,
-          workId: details.workId,
-          previousReasonCode: details.previousReasonCode,
-        };
-      }),
-      Array.from({ length: 2 }, () => ({
-        actorId: fixture.actor.id,
-        outcome: "success",
-        workId: deletion.idempotencyKey,
-        previousReasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
-      })),
-    );
+    assert.equal(retryAudit.length, 2);
+    for (const event of retryAudit) {
+      assert.equal(event.actorId, fixture.actor.id);
+      assert.equal(event.outcome, "success");
+      const details = auditDetails(event.details);
+      assert.equal(details.workId, deletion.idempotencyKey);
+      assert.equal(details.previousReasonCode, "CONVERGENCE_DEADLINE_EXCEEDED");
+    }
   },
 );
 
@@ -2526,25 +2495,7 @@ revisionTest(
        WHERE namespace_id = $1 AND action = 'openclaw.namespaces.delete.retry'`,
       [namespace.id],
     );
-    assert.deepEqual(
-      retryAudit.map(({ actorId, outcome, details: value }) => {
-        const details = auditDetails(value);
-        return {
-          actorId,
-          outcome,
-          takeover: details.takeover,
-          previousActorId: details.previousActorId,
-        };
-      }),
-      [
-        {
-          actorId: otherActor,
-          outcome: "success",
-          takeover: true,
-          previousActorId: fixture.actor.id,
-        },
-      ],
-    );
+    assertTakeoverAudit(retryAudit, otherActor, fixture.actor.id);
   },
 );
 
