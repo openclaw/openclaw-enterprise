@@ -29,6 +29,7 @@ import {
   fileBrowser,
   grantSecretOperate,
   holdRequests,
+  inViewport,
   login,
   nativeValues,
   newPage,
@@ -3340,16 +3341,49 @@ for (const c of [
         assert.deepEqual(before.selection, [draft.length - 1, draft.length, "backward"]);
         assert.equal(await editor.inputValue(), draft);
 
-        await page.goBack();
-        await view.getByRole("heading", { name: "Configuration snapshot" }).waitFor();
-        await nextFrames(page);
-        assert.deepEqual(await page.locator("h1:focus").allTextContents(), ["Recovery Agent"]);
+        const sessionUrl = `${fixture.origin}/api/auth/session`;
+        const sessionRead = { once: true, method: "GET", afterServer: true };
+        const account = page.locator(":is(.account-toggle, .topbar-avatar):visible");
+        for (const timing of ["ordinary", "tab return", "focus moved"]) {
+          await page.goBack();
+          await view.getByRole("heading", { name: "Configuration snapshot" }).waitFor();
+          await nextFrames(page);
+          assert.deepEqual(await page.locator("h1:focus").allTextContents(), ["Recovery Agent"]);
 
-        await page.goForward();
-        await editor.waitFor();
-        await nextFrames(page);
-        assert.deepEqual(await place(), before);
-        assert.equal(await editor.inputValue(), draft);
+          if (timing === "ordinary") {
+            await page.goForward();
+          } else {
+            // The first successful read is still held when returning to the tab starts its own.
+            const forward = await holdRequests(t, page, sessionUrl, sessionRead);
+            await page.goForward();
+            assert.equal((await forward.requested)?.status(), 200);
+            const resumed = await holdRequests(t, page, sessionUrl, sessionRead);
+            await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+            assert.equal((await resumed.requested)?.status(), 200);
+            if (timing === "focus moved") {
+              await account.focus();
+              assert.equal(await account.evaluate((node) => node === document.activeElement), true);
+            }
+            const delivered = responseTo(page, "GET", sessionUrl);
+            resumed.release();
+            assert.equal((await delivered).status(), 200);
+            forward.release();
+          }
+
+          await editor.waitFor();
+          await nextFrames(page);
+          assert.equal(await editor.inputValue(), draft);
+          const returned = await place();
+          if (timing === "focus moved") {
+            assert.equal(await account.evaluate((node) => node === document.activeElement), true);
+            assert.equal(await inViewport(account), true);
+            assert.equal(returned.focused, false);
+            assert.deepEqual(returned.selection, before.selection);
+          } else {
+            assert.equal(returned.focused, true, "Forward restores focus to the draft editor");
+            assert.deepEqual(returned, before);
+          }
+        }
       }
     });
   }
