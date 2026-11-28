@@ -2,7 +2,7 @@ import type { OpenClawConfigurationDocument } from "./index.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { deepFreeze } from "@openclaw-enterprise/utils";
-import { CredentialSourceId, SecretId, ServiceAccountId } from "./api/common.ts";
+import { CredentialSourceId, NamespaceId, SecretId, ServiceAccountId } from "./api/common.ts";
 import { isAllowedSecretBindingDestination } from "./secret-bindings.ts";
 import {
   PresetValidationError,
@@ -81,8 +81,9 @@ function hasFields(value: unknown, fields: string[]): value is Record<string, un
 /** Only authentication defaults and credential bindings are admitted here; draft launch fields may be unfinished. */
 function validateCredentials(
   template: PresetDraftTemplate,
-  namespaceId: string,
+  namespaceId: string | undefined,
 ): asserts template is PresetTemplate {
+  const namespace = namespaceId === undefined ? NamespaceId : Type.Literal(namespaceId);
   const resolved = presetTemplateDefaults(template);
   const definitions = template.variables ?? {};
   const scalar = (original: unknown, value: unknown, schema: Type.TSchema): boolean => {
@@ -99,7 +100,7 @@ function validateCredentials(
     hasFields(original, ["kind", "namespaceId", "id"]) &&
     isRecord(value) &&
     scalar(original.kind, value.kind, Type.Literal(kind)) &&
-    scalar(original.namespaceId, value.namespaceId, Type.Literal(namespaceId)) &&
+    scalar(original.namespaceId, value.namespaceId, namespace) &&
     scalar(original.id, value.id, kind === "secret" ? SecretId : CredentialSourceId);
   const bindings = template.configuration?.secretBindings;
   if (bindings !== undefined) {
@@ -168,7 +169,7 @@ function validateCredentials(
         hasFields(auth.source, ["kind", "namespaceId", "id"]) &&
         isRecord(value.source) &&
         scalar(auth.source.kind, value.source.kind, Type.Literal("service_account")) &&
-        scalar(auth.source.namespaceId, value.source.namespaceId, Type.Literal(namespaceId)) &&
+        scalar(auth.source.namespaceId, value.source.namespaceId, namespace) &&
         scalar(auth.source.id, value.source.id, ServiceAccountId)))
   ) {
     return;
@@ -178,13 +179,12 @@ function validateCredentials(
   );
 }
 
-/** Store a safe template; ordinary create/deploy admission owns concrete launch settings. */
-export function normalizePresetTemplate(input: unknown, namespaceId: string): PresetTemplate {
-  const template = structuredClone(validatePresetTemplate(input));
+function withNamespace(template: PresetDraftTemplate, namespaceId: string): PresetDraftTemplate {
+  const copy = structuredClone(template);
   // Preset writes already carry an authorized Namespace; relative SecretRefs use it.
   const bindings = [
-    template.agent?.harnessAuth,
-    ...Object.values(template.configuration?.secretBindings ?? {}),
+    copy.agent?.harnessAuth,
+    ...Object.values(copy.configuration?.secretBindings ?? {}),
   ];
   for (const binding of bindings) {
     if (
@@ -195,6 +195,19 @@ export function normalizePresetTemplate(input: unknown, namespaceId: string): Pr
       binding.source.namespaceId = namespaceId;
     }
   }
+  return copy;
+}
+
+/** Store a safe template; ordinary create/deploy admission owns concrete launch settings. */
+export function normalizePresetTemplate(input: unknown, namespaceId: string): PresetTemplate {
+  const template = withNamespace(validatePresetTemplate(input), namespaceId);
   validateCredentials(template, namespaceId);
   return deepFreeze(template);
+}
+
+const ANY_NAMESPACE_ID = "ns_00000000-0000-4000-8000-000000000000";
+
+/** Apply the credential rules of Namespace seeding to a file template that has no Namespace yet. */
+export function validatePresetFileCredentials(template: PresetDraftTemplate): void {
+  validateCredentials(withNamespace(template, ANY_NAMESPACE_ID), undefined);
 }

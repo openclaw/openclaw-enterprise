@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   isName,
   NAME_RULE,
+  validatePresetFileCredentials,
   validatePresetTemplate,
   type PresetDraftDefinition,
 } from "@openclaw-enterprise/contracts";
@@ -30,10 +31,9 @@ function presetDefinition(value: unknown, path: string): PresetDraftDefinition {
   if (!isName(name)) {
     throw new Error(`${path}.name must follow the Name rule: ${NAME_RULE}.`);
   }
-  return Object.freeze({
-    name,
-    template: validatePresetTemplate(preset.template),
-  });
+  const template = validatePresetTemplate(preset.template);
+  validatePresetFileCredentials(template);
+  return Object.freeze({ name, template });
 }
 
 /**

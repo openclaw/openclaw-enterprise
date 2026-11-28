@@ -25,12 +25,12 @@ presets:
 Omitting or disabling it stops bundled seeding; explicit `files`
 still load. Each JSON file contains one `{ "name": "...", "template": { ... } }`
 object. Relative paths resolve beside the Installation YAML. The Helm chart mounts
-only that YAML, so on Helm list only files shipped in the controller image, by
-absolute path. Missing, malformed, invalid, or duplicate-name files, and names
+only that YAML, so list only files shipped in the controller image, by
+absolute path. Missing, malformed, invalid, or duplicate-name files, names
 that break the API Name rule (edge whitespace, control characters, line or
-paragraph separators, more than 200 characters), prevent
-startup (`PRESET_FILE_INVALID`); a file named like a bundled default, such
-as `default-codex`, replaces it; the API (not the worker, which never applies
+paragraph separators, more than 200 characters), and templates Namespace
+seeding refuses prevent startup (`PRESET_FILE_INVALID`); a file named like a
+bundled default replaces it; the API (not the worker, which never applies
 defaults) logs `presets.bundled-default-shadowed`.
 API startup adds missing defaults to ready
 or provisioning Namespaces, including the bootstrap Namespace; new Namespaces

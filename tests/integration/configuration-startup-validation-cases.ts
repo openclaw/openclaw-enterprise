@@ -704,6 +704,23 @@ export function registerStartupPresetCases({
         JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
         /Preset agent: contains unsupported fields/,
       ],
+      // Namespace seeding refuses this binding and stops the controller before its API starts,
+      // so startup validation must refuse it first.
+      [
+        "unsupported-auth.json",
+        JSON.stringify({
+          name: "unsupported-auth",
+          template: {
+            agent: {
+              harnessAuth: {
+                method: "credential_source",
+                sourceId: "cs_00000000-0000-4000-8000-000000000001",
+              },
+            },
+          },
+        }),
+        /Preset Harness authentication requires a supported binding/,
+      ],
       [
         "invalid-name.json",
         JSON.stringify({ name: "edge\u00a0", template: {} }),

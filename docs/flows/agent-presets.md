@@ -75,7 +75,8 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 The loader validates the opt-in boolean, file list, names and templates; reads bundled
 JSON; and resolves explicit paths beside startup YAML. It rejects missing, malformed,
-invalid or duplicate-name files. A file matching a bundled name replaces that default
+invalid or duplicate-name files, and applies the credential rules of Namespace seeding
+(`validatePresetFileCredentials`) to each template. A file matching a bundled name replaces that default
 and triggers `presets.bundled-default-shadowed` . API and worker share the unwatched
 startup snapshot and source path; only the API applies defaults and logs warnings.
 [Production composition](../../apps/controller/src/composition/production.ts) and
