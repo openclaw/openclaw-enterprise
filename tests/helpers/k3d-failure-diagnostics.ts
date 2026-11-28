@@ -13,6 +13,7 @@ import {
 } from "../../scripts/ci/failure-redaction.ts";
 import { maskPrivateKeyLogLines } from "../../scripts/ci/k3d-node-log.ts";
 import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
+import { isBoundedInteger } from "./egress-observation-values.ts";
 import {
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -76,7 +77,7 @@ type TurnMessage = {
     item?: TurnItem | null;
     willRetry?: unknown;
     error?: { message?: unknown } | null;
-    turn?: { status?: unknown; error?: { message?: unknown } | null } | null;
+    turn?: { id?: unknown; status?: unknown; error?: { message?: unknown } | null } | null;
     [key: string]: unknown;
   } | null;
 };
@@ -113,7 +114,12 @@ export function observedTurn(value: unknown) {
   return Object.assign(result, { items });
 }
 
-type CompletedCommand = TurnItem & { id: string; command: string; exitCode: number };
+type CompletedCommand = TurnItem & {
+  id: string;
+  command: string;
+  exitCode: number;
+  status?: "completed" | "failed";
+};
 type TurnResult = { items: readonly TurnMessage[] };
 type EchoCommand = { command?: unknown; aggregatedOutput?: unknown; exitCode?: unknown };
 type EchoReply = Record<string, unknown> & { shown: string };
@@ -944,7 +950,75 @@ function isCompletedCommand(item: TurnItem): item is CompletedCommand {
     typeof item.id === "string" &&
     typeof item.command === "string" &&
     typeof item.exitCode === "number" &&
-    Number.isSafeInteger(item.exitCode)
+    Number.isSafeInteger(item.exitCode) &&
+    (!("status" in item) || item.status === "completed" || item.status === "failed")
+  );
+}
+
+function differentKnownIds(left: unknown, right: unknown): boolean {
+  return (
+    typeof left === "string" &&
+    left.trim() !== "" &&
+    typeof right === "string" &&
+    right.trim() !== "" &&
+    left !== right
+  );
+}
+
+// The Harness records either the command itself or its shell invocation.
+export function matchesShellCommand(command: string, expected: string): boolean {
+  return (
+    command === expected ||
+    /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(command)?.[2] === expected
+  );
+}
+
+export function onlyMatchingCommand<T extends TurnItem>(
+  commands: readonly T[],
+  matches: (command: string) => boolean,
+): T | undefined {
+  const matchesFound = commands.filter(
+    ({ command }) => typeof command === "string" && matches(command),
+  );
+  assert.ok(matchesFound.length <= 1, "multiple matching command completions");
+  return matchesFound[0];
+}
+
+export function selectBackendCommand(commands: readonly CompletedCommand[], backend: string) {
+  return onlyMatchingCommand(commands, (command) => command.includes(backend));
+}
+
+// Only used when the expected command is absent. Do not serialize arbitrary item fields.
+export function summarizeOtherBackendCommands(commands: readonly CompletedCommand[]) {
+  return commands.map(({ command, status, exitCode, durationMs }) => ({
+    label: /chatgpt_base_url|features list|backend-api/.test(command) ? "codex-rewritten" : "other",
+    status: status ?? null,
+    exitCode,
+    durationMs:
+      typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0
+        ? durationMs
+        : null,
+  }));
+}
+
+function policyTurnCommands(messages: readonly TurnMessage[]): CompletedCommand[] | undefined {
+  const terminal = messages.find(({ method }) => method === "turn/completed");
+  assert.ok(terminal, "expected a completed Codex turn");
+  return completedSandboxCommands(messages, terminal);
+}
+
+export function settledPolicyCommands(turn: unknown): CompletedCommand[] {
+  const commands = policyTurnCommands(observedTurn(turn).items);
+  assert.ok(commands, "OpenShell policy command evidence is unsettled");
+  return commands;
+}
+
+export function canRetrySkippedBackendTurn(messages: readonly TurnMessage[]): boolean {
+  const commands = policyTurnCommands(messages);
+  // Even an approval scoped elsewhere vetoes another request.
+  return (
+    commands?.length === 0 &&
+    !messages.some(({ method }) => method === "item/commandExecution/requestApproval")
   );
 }
 
@@ -952,19 +1026,35 @@ function isCompletedCommand(item: TurnItem): item is CompletedCommand {
 // A completion can settle a command even when its start was not in the transcript.
 function completedSandboxCommands(
   messages: readonly TurnMessage[],
+  terminal = messages.find(({ method }) => method === "turn/completed"),
 ): CompletedCommand[] | undefined {
   const pending = new Map<string, unknown>();
   const completed = new Map<string, CompletedCommand>();
   for (const { method, params } of messages) {
-    const item = params?.item;
-    if (
-      item?.type !== "commandExecution" ||
-      (method !== "item/started" && method !== "item/completed")
-    ) {
+    if (method !== "item/started" && method !== "item/completed") {
       continue;
     }
+    // A missing or malformed type cannot establish that the turn skipped the command.
+    const item = params?.item;
+    if (!item || typeof item.type !== "string" || !item.type || item.type !== item.type.trim()) {
+      return undefined;
+    }
     const { id, command } = item;
-    if (typeof id !== "string" || !id.trim() || completed.has(id)) {
+    if (params?.command !== undefined && params.command !== command) {
+      return undefined;
+    }
+    if (item.type !== "commandExecution") {
+      if (command !== undefined) {
+        return undefined;
+      }
+      continue;
+    }
+    if (
+      typeof id !== "string" ||
+      !id.trim() ||
+      completed.has(id) ||
+      (params?.itemId !== undefined && params.itemId !== id)
+    ) {
       return undefined;
     }
     if (method === "item/started") {
@@ -977,7 +1067,7 @@ function completedSandboxCommands(
       if (
         !isCompletedCommand(item) ||
         !item.command.trim() ||
-        (startedCommand && item.command !== startedCommand)
+        (startedCommand !== undefined && item.command !== startedCommand)
       ) {
         return undefined;
       }
@@ -985,7 +1075,40 @@ function completedSandboxCommands(
       completed.set(id, item);
     }
   }
-  return pending.size === 0 ? [...completed.values()] : undefined;
+  if (pending.size !== 0) {
+    return undefined;
+  }
+
+  // Output and approvals can reach the transcript without a start. They rule out a
+  // retry unless the command settled or the turn's terminal proves the event was foreign.
+  for (const { method, params } of messages) {
+    if (
+      method !== "item/commandExecution/outputDelta" &&
+      method !== "item/commandExecution/requestApproval"
+    ) {
+      continue;
+    }
+    if (
+      differentKnownIds(params?.threadId, terminal?.params?.threadId) ||
+      differentKnownIds(params?.turnId, terminal?.params?.turn?.id)
+    ) {
+      continue;
+    }
+    const itemId = params?.item?.id;
+    const id = params?.itemId === undefined ? itemId : params.itemId;
+    const settled = typeof id === "string" ? completed.get(id) : undefined;
+    if (!settled || (itemId !== undefined && itemId !== id)) {
+      return undefined;
+    }
+    if (
+      [params?.command, params?.item?.command].some(
+        (command) => command !== undefined && command !== settled.command,
+      )
+    ) {
+      return undefined;
+    }
+  }
+  return [...completed.values()];
 }
 
 // The token echo (startTokenEcho in the OpenShell k3d test) answers each Harness curl call with
@@ -1014,7 +1137,7 @@ export function tokenEchoReply(
   url: string,
   secrets: Secrets,
 ): EchoReply {
-  const echo = commands.find(({ command }) => String(command).includes(url));
+  const echo = onlyMatchingCommand(commands, (command) => command.includes(url));
   assert.ok(echo, `the Harness must call ${url}`);
   const output = String(echo.aggregatedOutput ?? "").trim();
   const printed = output.length === 0 ? "nothing" : shownEchoText(output, secrets, echoShownChars);
@@ -1030,19 +1153,70 @@ export function tokenEchoReply(
   if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
     return { unparsed: shownEchoText(output, secrets, echoOutputChars), shown };
   }
+  assert.ok(!Object.hasOwn(reply, "shown"), "shown is reserved for token echo diagnostics");
   return { ...reply, shown };
 }
 
-/**
- * The digest in a token echo reply. Output that is not the echo's or OpenShell's JSON fails
- * here, naming the command and what it printed (finding 2281: a curl error or two merged
- * commands read as digest `undefined`). JSON without a digest, such as OpenShell's credential
- * refusal, gives `undefined`, for the caller to judge with `reply.shown` in its message.
- */
-export function tokenEchoDigest(reply: unknown): string | undefined {
-  const value = asRecord(reply);
-  if (value?.unparsed !== undefined) {
-    assert.fail(`the token echo call must print JSON: ${value.shown}`);
+function readTokenEcho(
+  reply: EchoReply,
+  expectedPath: string,
+  call: "refresh token" | "token echo",
+) {
+  if (reply.error !== undefined) {
+    // Recognize the recorded refusal. A different error or a mix of refusal and echo fields
+    // is inconclusive. Do not include an arbitrary error body in the assertion.
+    assert.ok(
+      reply.error === "credential_unavailable" &&
+        typeof reply.message === "string" &&
+        reply.message.trim() !== "" &&
+        Object.keys(reply).every((key) => ["error", "message", "shown"].includes(key)),
+      `the ${call} call returned an unrecognized refusal`,
+    );
+    return undefined;
   }
-  return typeof value?.digest === "string" ? value.digest : undefined;
+  assert.ok(
+    reply.path === expectedPath &&
+      typeof reply.digest === "string" &&
+      /^[0-9a-f]{64}$/u.test(reply.digest) &&
+      typeof reply.placeholder === "boolean" &&
+      isBoundedInteger(reply.length, Number.MAX_SAFE_INTEGER),
+    `the ${call} call must return the expected path and echo fields`,
+  );
+  return { digest: reply.digest, placeholder: reply.placeholder, length: reply.length };
+}
+
+export function matchesToolToken(reply: EchoReply, tool: { url: string; digest: string }): boolean {
+  if (reply.unparsed !== undefined) {
+    assert.fail(`the token echo call must print JSON: ${reply.shown}`);
+  }
+  const url = new URL(tool.url);
+  const echo = readTokenEcho(reply, url.pathname + url.search, "token echo");
+  return echo !== undefined && echo.digest === tool.digest;
+}
+
+/** Only a recognized refusal or a reply from the expected echo can establish token loss. */
+export function hasCachedRefreshToken(
+  reply: EchoReply,
+  expectedPath: string,
+  reconfiguredAt: number,
+): boolean {
+  assert.ok(reply.unparsed === undefined, "the refresh token echo must print one JSON object");
+  const echo = readTokenEcho(reply, expectedPath, "refresh token");
+  if (!echo || reply.jwt === undefined) {
+    return false;
+  }
+  const jwt = asRecord(reply.jwt);
+  assert.ok(jwt && typeof jwt.valid === "boolean", "the echo must report whether the JWT is valid");
+  if (!jwt.valid) {
+    return false;
+  }
+  assert.ok(
+    !echo.placeholder && echo.length > 0 && typeof jwt.iat === "number" && Number.isFinite(jwt.iat),
+    "a valid JWT must arrive substituted and have a numeric issue time",
+  );
+  assert.ok(
+    jwt.iat < reconfiguredAt - 2,
+    "a token minted after reconfiguration must not reach a Sandbox admitted under the previous epoch",
+  );
+  return true;
 }

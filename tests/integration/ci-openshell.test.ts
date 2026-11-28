@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
@@ -40,6 +41,8 @@ import {
   outageAttemptRead,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { withFirstPrepareRevisionFailureDiagnostic } from "../helpers/openshell-sandbox-workflows.mjs";
+import { recordFirstProvisioningFailure } from "../helpers/openshell-worker-diagnostics.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { openShellTestDirectory } from "./ci-openshell-fixtures.ts";
 
@@ -305,6 +308,175 @@ test("OpenShell persisted queue records survive the reporter's per-line limit", 
   const last = lines.at(-1);
   assert.ok(last);
   assert.match(last, /ACCESS_DENIED/);
+});
+
+const prepareTokenSources = {
+  compute: {
+    kubeconfigContext: "compute-context",
+    user: "compute-account",
+    kind: "ServiceAccount token",
+    mintedAt: "2026-01-01T00:00:00.000Z",
+  },
+  sandboxOperator: { kubeconfigContext: "operator-context", kind: "test operator kubeconfig" },
+  teardownStarted: false,
+};
+
+function capturePrepareDiagnostics(t: TestContext) {
+  const lines: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    lines.push(String(line));
+    return true;
+  });
+  return lines;
+}
+
+test("OpenShell keeps the first provisioning error per revision when diagnostics throw", (t) => {
+  const failures = new Map<string, unknown>();
+  let cachedBeforeRendering = false;
+  const first = {
+    get message(): never {
+      cachedBeforeRendering = failures.get("one") === first;
+      throw new Error("unreadable message");
+    },
+  };
+  const lines: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    lines.push(String(line));
+    throw new Error("output unavailable");
+  });
+
+  const next = new Error("provision refused");
+  recordFirstProvisioningFailure(failures, "one", first);
+  recordFirstProvisioningFailure(failures, "one", next);
+  recordFirstProvisioningFailure(failures, "two", next);
+
+  assert.ok(cachedBeforeRendering);
+  assert.equal(failures.get("one"), first);
+  assert.equal(failures.get("two"), next);
+  assert.deepEqual(lines, [
+    "OpenShell first provisioning failure for one: error message unavailable\n",
+    "OpenShell first provisioning failure for two: provision refused\n",
+  ]);
+});
+
+test("OpenShell Compute diagnostics preserve the first 401 when stderr throws", async (t) => {
+  const original = Object.assign(new Error("prepare refused"), { code: 401 });
+  const effects: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    effects.push(String(line));
+    throw new Error("diagnostic output failed");
+  });
+  const driver = { prepareRevision: () => Promise.reject(original) };
+
+  // Exercise the export with the same one-argument call supported by the earlier wrapper.
+  const firstFailureOnly = withFirstPrepareRevisionFailureDiagnostic(driver);
+  await assert.rejects(firstFailureOnly.prepareRevision(), (error) => error === original);
+  const initial =
+    "OpenShell integration: initial Compute prepareRevision failed: prepare refused\n";
+  assert.deepEqual(effects.splice(0), [initial]);
+
+  const compute = withFirstPrepareRevisionFailureDiagnostic(driver, undefined, () => {
+    effects.push("read token sources");
+    return prepareTokenSources;
+  });
+
+  await assert.rejects(compute.prepareRevision(), (error) => error === original);
+  await assert.rejects(compute.prepareRevision(), (error) => error === original);
+  assert.equal(effects.length, 3);
+  assert.equal(effects[0], initial);
+  assert.equal(effects[1], "read token sources");
+  assert.match(effects[2] ?? "", /got HTTP 401; token sources:/);
+});
+
+test("OpenShell Compute diagnostics redact the first failure and report a later 401 once", async (t) => {
+  const marker = "invented preparation secret";
+  setEnvironment(t, { OCE_TEST_PREPARE_DIAGNOSTIC_SECRET: marker });
+  const effects = capturePrepareDiagnostics(t);
+  const revision = { id: "test-revision" };
+  const prepared = { ready: true };
+  const ordinary = Object.assign(new Error(`prepare refused (${marker})\nHTTP-Code: 4010`), {
+    code: "401",
+  });
+  const unauthorized = new Error("request refused\nHTTP-Code: 401\nrequest ended");
+  class Compute {
+    #prepared = prepared;
+
+    async prepareRevision(input: typeof revision, failure?: Error) {
+      assert.equal(input, revision);
+      effects.push("prepare");
+      if (failure) {
+        throw failure;
+      }
+      return this.#prepared;
+    }
+  }
+  const compute = withFirstPrepareRevisionFailureDiagnostic(
+    new Compute(),
+    (stage, input) => {
+      assert.equal(input, revision);
+      effects.push(stage);
+    },
+    () => {
+      effects.push("read token sources");
+      return prepareTokenSources;
+    },
+  );
+
+  assert.equal(await compute.prepareRevision(revision), prepared);
+  for (const failure of [ordinary, unauthorized, unauthorized]) {
+    await assert.rejects(compute.prepareRevision(revision, failure), (error) => error === failure);
+  }
+  const [initial = "", unauthorizedLine = ""] = effects.filter((effect) =>
+    effect.startsWith("OpenShell integration:"),
+  );
+  const attempt = ["compute-prepare", "prepare"];
+  assert.deepEqual(effects, [
+    ...attempt,
+    ...attempt,
+    initial,
+    ...attempt,
+    "read token sources",
+    unauthorizedLine,
+    ...attempt,
+  ]);
+  assert.match(initial, /initial Compute prepareRevision failed: prepare refused/);
+  assert.ok(!initial.includes(marker), "initial diagnostic must redact the environment secret");
+  assert.match(unauthorizedLine, /^OpenShell integration: Compute prepareRevision got HTTP 401;/);
+  assert.deepEqual(
+    jsonObject(unauthorizedLine.slice(unauthorizedLine.indexOf("{"))),
+    prepareTokenSources,
+  );
+});
+
+test("OpenShell Compute diagnostics support a lone Driver and an absent error message", async (t) => {
+  const lines = capturePrepareDiagnostics(t);
+  const waiting = Object.assign(
+    new Error(
+      "The OpenShell compatibility proof is waiting for the Gateway node setup projection.",
+    ),
+    { code: 401 },
+  );
+  const unreadable = {
+    get message(): never {
+      throw new Error("message unavailable");
+    },
+  };
+  for (const original of [waiting, undefined, unreadable]) {
+    const compute = withFirstPrepareRevisionFailureDiagnostic({
+      prepareRevision: () => Promise.reject(original),
+    });
+    await compute.prepareRevision().then(
+      () => assert.fail("prepareRevision must reject"),
+      (error: unknown) => assert.equal(error, original),
+    );
+  }
+  const missing =
+    "OpenShell integration: initial Compute prepareRevision failed: error message unavailable\n";
+  assert.deepEqual(lines, [
+    "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry.\n",
+    missing,
+    missing,
+  ]);
 });
 
 test("OpenShell activation diagnostics share one deadline and preserve the original failure", async (t) => {
@@ -931,9 +1103,70 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   prependPath(t, directory);
   const { requestCodexTurnFromGatewayPod, readCodexThreadFromGatewayPod } =
     createOpenShellKubernetesFixture(localProbeOptions);
+  const commandOutput = "item/commandExecution/outputDelta";
+  const commandApproval = "item/commandExecution/requestApproval";
+  const itemId = "original";
+  const nonce = "probe-command";
 
-  for (const event of [
+  type LateParams = { itemId: string; command?: string; item?: { id: string; command?: string } };
+  type LateMessage =
+    | { method: typeof commandOutput; params: LateParams & { delta: string } }
+    | { method: typeof commandApproval; params: LateParams & { delta?: never } };
+
+  function lateEvent(
+    label: string,
+    method: LateMessage["method"],
+    privacy: "retain IDs" | "omit IDs",
+    params: LateParams,
+  ) {
+    const message: LateMessage =
+      method === commandOutput
+        ? { method, params: { ...params, delta: "partial output" } }
+        : { method, params };
+    return { label, ...message, omitIdentities: privacy === "omit IDs" };
+  }
+
+  for (const scenario of [
     "late result",
+    "orphan output before turn ends",
+    "in-progress completion before turn ends",
+    "blank command type before turn ends",
+    lateEvent("orphan output after turn ends", commandOutput, "retain IDs", { itemId: "orphan" }),
+    lateEvent("conflicting output IDs for pending command", commandOutput, "retain IDs", {
+      itemId,
+      item: { id: "orphan" },
+    }),
+    lateEvent("conflicting output IDs for settled command", commandOutput, "retain IDs", {
+      itemId: "extra",
+      item: { id: "orphan" },
+    }),
+    lateEvent("output contradicts pending command", commandOutput, "omit IDs", {
+      itemId,
+      command: nonce,
+      item: { id: itemId, command: "setup" },
+    }),
+    lateEvent("output contradicts settled command", commandOutput, "omit IDs", {
+      itemId: "extra",
+      command: "setup",
+      item: { id: "extra", command: nonce },
+    }),
+    lateEvent("approval notification after turn ends", commandApproval, "retain IDs", {
+      itemId: "orphan",
+    }),
+    lateEvent("conflicting approval command after turn ends", commandApproval, "omit IDs", {
+      itemId,
+      command: "setup",
+      item: { id: itemId, command: nonce },
+    }),
+    lateEvent("conflicting approval IDs and command", commandApproval, "retain IDs", {
+      itemId,
+      command: nonce,
+      item: { id: "orphan", command: nonce },
+    }),
+    "blank command type after turn ends",
+    "untyped item without a command after turn ends",
+    "start without thread ID after turn ends",
+    "completion with blank turn ID after turn ends",
     "foreign completion before turn ends",
     "completion without turn ID",
     "start without thread ID",
@@ -948,14 +1181,26 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   ] as const) {
     const threadId = "probe-thread";
     const turnId = "probe-turn";
-    const nonce = "probe-command";
+    const expectsLateRefusal = typeof scenario !== "string";
+    const event = expectsLateRefusal ? scenario.label : scenario;
     const unexpected = event !== "late result" && event !== "expiry" && event !== "close";
+    const contradictoryCompletion = scenario === "in-progress completion before turn ends";
+    const blankCommandType = scenario === "blank command type before turn ends";
+    const malformedEarlyCommand = contradictoryCompletion || blankCommandType;
+    const unboundStart = scenario === "start without thread ID";
+    const unboundCompletion =
+      scenario === "foreign completion before turn ends" ||
+      scenario === "completion without turn ID";
+    let peerTurns = 0;
     peer.once("connection", (socket, stream) => {
       socket.on("message", (data) => {
         const { method, id } = readPeerMessage(data);
         const send = (message: object) => socket.send(JSON.stringify(message));
-        // The approval response is checked below.
-        if (method === undefined || method === "initialized") {
+        if (method === undefined) {
+          assert.equal(event, "late result", "only the identified approval may receive a response");
+          return;
+        }
+        if (method === "initialized") {
           return;
         }
         if (method === "initialize") {
@@ -968,50 +1213,75 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           });
         }
         assert.equal(method, "turn/start");
+        peerTurns += 1;
+        assert.equal(peerTurns, 1, event);
         const turn = { id: turnId, status: "inProgress" };
         // Deliver the response and notifications in one write. The client can receive
         // them in one socket read, before its turn/start await continuation runs.
         stream.cork();
         send({ id, result: { turn } });
         const item = {
-          id: "original",
-          type: "commandExecution",
-          command: unexpected ? "setup" : nonce,
+          id: itemId,
+          type: blankCommandType ? " " : "commandExecution",
+          command: unexpected && !malformedEarlyCommand ? "setup" : nonce,
           status: "inProgress",
         };
-        send({ method: "item/started", params: { threadId, turnId, item } });
-        const extra = { ...item, id: "extra" };
-        const unbound: Partial<
-          Record<typeof event, { turnId?: string | undefined; threadId?: string | undefined }>
-        > = {
-          "foreign completion before turn ends": { turnId: "other-turn" },
-          "completion without turn ID": { turnId: undefined },
-          "start without thread ID": { threadId: undefined },
-        };
-        const unboundScope = unbound[event];
-        if (unboundScope) {
-          // Even with the probe nonce, this event cannot establish what our command did.
-          const started = event === "start without thread ID";
-          const status = started ? {} : { status: "failed", exitCode: 77 };
+        const orphanOutput = (outputTurnId: string) =>
           send({
-            method: started ? "item/started" : "item/completed",
+            method: commandOutput,
+            params: { threadId, turnId: outputTurnId, itemId: "orphan", delta: "partial output" },
+          });
+        if (event === "orphan output before turn ends") {
+          orphanOutput(turnId);
+        } else if (event === "late result") {
+          orphanOutput("other-turn");
+        }
+        const sendStart = (params: { threadId?: string; turnId: string; item: object }) =>
+          send({ method: "item/started", params });
+        if (event !== "orphan output before turn ends") {
+          sendStart({ threadId, turnId, item });
+        }
+        const extra = { ...item, id: "extra", command: "setup" };
+        // Even with the probe nonce, an unbound event cannot establish what our command did.
+        if (unboundStart) {
+          sendStart({ turnId, item: { ...extra, command: nonce } });
+        } else if (unboundCompletion) {
+          send({
+            method: "item/completed",
             params: {
               threadId,
-              turnId,
-              ...unboundScope,
-              item: { ...extra, ...status, command: nonce },
+              turnId: scenario === "foreign completion before turn ends" ? "other-turn" : undefined,
+              item: { ...extra, status: "failed", exitCode: 77, command: nonce },
             },
           });
         }
-        if (event === "duplicate completion") {
-          send({ method: "item/started", params: { threadId, turnId, item: extra } });
+        const settleExtra =
+          event === "late result" || (expectsLateRefusal && scenario.params.itemId === extra.id);
+        if (event === "duplicate completion" || settleExtra) {
+          sendStart({ threadId, turnId, item: extra });
+        }
+        if (settleExtra) {
+          send({
+            method: "item/completed",
+            params: { threadId, turnId, item: { ...extra, status: "completed", exitCode: 0 } },
+          });
+        }
+        if (contradictoryCompletion) {
+          // The matching nonce and exit 1 previously made this look like a denial.
+          send({
+            method: "item/completed",
+            params: { threadId, turnId, item: { ...item, exitCode: 1 } },
+          });
         }
         send({
           method: "turn/completed",
           params: { threadId, turn: { ...turn, status: "completed", error: null } },
         });
         stream.uncork();
-        const setupSucceeded = unexpected && !unboundScope;
+        if (scenario === "orphan output before turn ends" || malformedEarlyCommand) {
+          return;
+        }
+        const setupSucceeded = unexpected && !unboundStart && !unboundCompletion;
         const terminal = {
           ...item,
           status: setupSucceeded ? "completed" : "failed",
@@ -1023,70 +1293,200 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
             item: Omit<typeof terminal, "exitCode"> & { exitCode: number | null };
           },
         ) => send({ method: "item/completed", params: completion });
-        if (event === "late result") {
+        if (scenario === "late result") {
           // Neither an unrelated completion nor output from the command is its terminal.
-          completed({ ...params, turnId: "other-turn" });
-          completed({ ...params, threadId: "other-thread" });
+          completed({ ...params, turnId: "other-turn", item: { ...terminal, exitCode: 31 } });
+          completed({ ...params, threadId: "other-thread", item: { ...terminal, exitCode: 32 } });
+          sendStart({ threadId: "other-thread", turnId, item: extra });
+          sendStart({ threadId, turnId: "other-turn", item: { ...extra, type: " " } });
           send({
-            method: "item/commandExecution/outputDelta",
+            method: "item/completed",
+            params: { threadId, turnId, item: { id: "reasoning", type: "reasoning" } },
+          });
+          orphanOutput("other-turn");
+          send({
+            method: commandOutput,
             params: { threadId, turnId, itemId: item.id, delta: "output" },
           });
-          send({ id: "approval", method: "item/commandExecution/requestApproval", params });
+          send({
+            method: commandOutput,
+            params: {
+              threadId,
+              turnId,
+              itemId: item.id,
+              command: item.command,
+              item: { id: item.id, command: item.command },
+              delta: "output",
+            },
+          });
+          send({
+            method: commandApproval,
+            params: { threadId, turnId, itemId: item.id, command: item.command },
+          });
+          send({
+            method: commandApproval,
+            params: { threadId, turnId, itemId: extra.id, command: extra.command },
+          });
+          send({ id: "approval", method: commandApproval, params });
           socket.once("message", (data) => {
             const { id, result } = readPeerMessage(data);
             assert.equal(id, "approval");
             assert.deepEqual(result, { decision: "decline" });
             completed(params);
           });
-        } else if (event === "close") {
-          socket.close();
-        } else if (unboundScope) {
-          completed(params);
-        } else if (unexpected) {
-          // If the client loses evidence of the probe, the later successful setup
-          // completion would make observeSandboxProbe eligible to request turn two.
-          const other = { ...terminal, command: nonce, id: "second" };
-          if (event === "another start" || event === "duplicate start") {
-            const started =
-              event === "duplicate start" ? item : { ...item, command: nonce, id: other.id };
-            send({ method: "item/started", params: { ...params, item: started } });
-          } else {
-            const changes: Partial<
-              Record<typeof event, { id?: string; command?: string; exitCode?: null | number }>
-            > = {
-              "conflicting command": { command: nonce },
-              "incomplete result": { exitCode: null },
-              "untracked completion": other,
-              "duplicate completion": { id: extra.id },
-            };
-            const changed = changes[event];
-            if (event === "duplicate completion") {
-              completed({ ...params, item: { ...terminal, id: extra.id } });
-            }
-            completed({ ...params, item: { ...terminal, ...changed } });
-          }
-          completed(params);
+          return;
         }
-        // In the expiry case no more messages arrive; the client owns the deadline.
+        if (scenario === "expiry") {
+          // No more messages arrive; the client owns the deadline.
+          return;
+        }
+        if (scenario === "close") {
+          return socket.close();
+        }
+
+        if (unboundStart || unboundCompletion) {
+          // The unbound evidence was already sent before turn/completed.
+          return completed(params);
+        }
+        // Send the selected evidence first. A successful setup completion alone would
+        // make observeSandboxProbe eligible to request another turn.
+        if (expectsLateRefusal) {
+          send({ method: scenario.method, params: { threadId, turnId, ...scenario.params } });
+        } else {
+          switch (scenario) {
+            case "blank command type after turn ends":
+              sendStart({ threadId, turnId, item: { ...extra, type: " ", command: nonce } });
+              break;
+            case "untyped item without a command after turn ends":
+              sendStart({ threadId, turnId, item: { id: extra.id, type: " " } });
+              break;
+            case "start without thread ID after turn ends":
+              sendStart({ turnId, item: { ...extra, command: nonce } });
+              break;
+            case "completion with blank turn ID after turn ends":
+              completed({
+                ...params,
+                turnId: " ",
+                item: { ...terminal, id: extra.id, command: nonce },
+              });
+              break;
+            case "another start":
+              sendStart({ ...params, item: { ...item, command: nonce, id: "second" } });
+              break;
+            case "duplicate start":
+              sendStart({ ...params, item });
+              break;
+            case "conflicting command":
+              completed({ ...params, item: { ...terminal, command: nonce } });
+              break;
+            case "incomplete result":
+              completed({ ...params, item: { ...terminal, exitCode: null } });
+              break;
+            case "untracked completion":
+              completed({ ...params, item: { ...terminal, command: nonce, id: "second" } });
+              break;
+            case "duplicate completion": {
+              const duplicate = { ...params, item: { ...terminal, id: extra.id } };
+              completed(duplicate);
+              completed(duplicate);
+              break;
+            }
+            default:
+              assert.fail(`Unhandled probe scenario: ${scenario satisfies never}`);
+          }
+        }
+        completed(params);
       });
     });
 
     const attempts: number[] = [];
+    let identityOnly = false;
+    let retainedLateOutput = false;
     const probe = observeSandboxProbe({
       nonce,
       traceSecrets: [],
       async requestTurn(attempt) {
         attempts.push(attempt);
         assert.equal(attempt, 1, event);
-        return observedTurn(await requestCodexTurnFromGatewayPod(gatewayProbe));
+        const result = observedTurn(await requestCodexTurnFromGatewayPod(gatewayProbe));
+        if (event === "late result") {
+          const terminalIndex = result.items.findIndex(({ method }) => method === "turn/completed");
+          retainedLateOutput = result.items
+            .slice(terminalIndex + 1)
+            .some(({ method }) => method === commandOutput);
+        } else if (malformedEarlyCommand) {
+          const startIndex = result.items.findIndex(
+            ({ method, params }) => method === "item/started" && params?.item?.command === nonce,
+          );
+          const completionIndex = result.items.findIndex(
+            ({ method, params }) => method === "item/completed" && params?.item?.command === nonce,
+          );
+          const terminalIndex = result.items.findIndex(({ method }) => method === "turn/completed");
+          assert.ok(startIndex >= 0 && startIndex < terminalIndex, event);
+          const started = result.items[startIndex]?.params?.item;
+          assert.equal(started?.id, "original", event);
+          assert.equal(started?.type, blankCommandType ? " " : "commandExecution", event);
+          if (contradictoryCompletion) {
+            assert.ok(startIndex < completionIndex && completionIndex < terminalIndex, event);
+            assert.deepEqual(result.items[completionIndex]?.params?.item, {
+              ...started,
+              status: "inProgress",
+              exitCode: 1,
+            });
+          } else {
+            assert.equal(completionIndex, -1, event);
+          }
+        } else if (expectsLateRefusal) {
+          const { params, omitIdentities } = scenario;
+          const retained = result.items.filter(({ method }) => method === scenario.method);
+          const { item } = params;
+          const identities = omitIdentities
+            ? {}
+            : { itemId: params.itemId, ...(item && { item: { id: item.id } }) };
+          identityOnly = isDeepStrictEqual(retained, [
+            { method: scenario.method, params: { threadId, turnId, ...identities } },
+          ]);
+        }
+        return result;
       },
     });
     if (event === "late result") {
       assert.equal((await probe).run?.exitCode, 23, "retain the command's actual nonzero result");
+      assert.equal(retainedLateOutput, false, "omit matched and foreign late output");
+    } else if (event === "orphan output before turn ends") {
+      // The transport returned a completed turn. Its retained delta must stop the observer.
+      await assert.rejects(
+        probe,
+        /OpenShell probe outcome is unknown;.*item\/commandExecution\/outputDelta.*turn\/completed/,
+        event,
+      );
+    } else if (malformedEarlyCommand) {
+      await assert.rejects(
+        probe,
+        { message: /^OpenShell probe outcome is unknown; not sending another turn\. Attempt 1:/ },
+        event,
+      );
+    } else if (expectsLateRefusal) {
+      const error = await probeFailure(probe);
+      const lateEvidence = new RegExp(
+        `^OpenShell probe outcome is unknown;.*turn/completed completed.*${scenario.method}.*item/completed commandExecution status=completed exitCode=0`,
+      );
+      assert.ok(
+        lateEvidence.test(error.message),
+        `${event}: expected late evidence before setup completion (attempts ${attempts.join(", ")})`,
+      );
+      assert.equal(identityOnly, true, `${event}: expected identity-only evidence`);
     } else {
-      await assert.rejects(probe, /Codex command outcome is unknown/, event);
+      const error = await kubectlFailure(probe);
+      assert.equal(error.code, 1, event);
+      assert.ok(
+        error.stderr.includes("Codex command outcome is unknown; not sending another turn"),
+        `${event}: expected the client to refuse the turn (attempts ${attempts.join(", ")})`,
+      );
+      assert.ok(!error.stderr.includes(nonce), `${event}: unexpected command in stderr`);
     }
     assert.deepEqual(attempts, [1], event);
+    assert.equal(peerTurns, 1, event);
   }
 
   await t.test("thread reads ignore unrelated notifications without starting work", async () => {
@@ -1375,7 +1775,11 @@ test("a turn the model answered at capacity runs again only for its own final er
     socket.on("message", (data) => {
       const { method, id } = readPeerMessage(data);
       const send = (message: object) => socket.send(JSON.stringify(message));
-      if (method === undefined || method === "initialized") {
+      if (method === undefined) {
+        assert.equal(id, "approval", "only the identified approval may receive a response");
+        return;
+      }
+      if (method === "initialized") {
         return;
       }
       if (scripts[0] === `stall ${method}`) {
@@ -1432,6 +1836,11 @@ test("a turn the model answered at capacity runs again only for its own final er
         method: "turn/completed",
         params: { threadId, turn: { ...turn, status: "completed" } },
       };
+      // As the app server sends them: an approval request and output name the item, not carry it.
+      const approval = {
+        method: "item/commandExecution/requestApproval",
+        params: { ...at, itemId: command.id, command: command.command },
+      };
       const eventsByScript: Record<string, readonly (object | "close")[]> = {
         capacity: [atCapacity(at)],
         // Our own turn's final error before any action, but not the at-capacity answer.
@@ -1460,15 +1869,8 @@ test("a turn the model answered at capacity runs again only for its own final er
         "capacity naming no turn": [atCapacity({})],
         "capacity without willRetry": [atCapacity(at, { willRetry: undefined })],
         "command completed": [started, completed("completed", 0), atCapacity(at)],
-        // As the app server sends them: an approval request and output name the item, not carry it.
-        approval: [
-          {
-            id: "approval",
-            method: "item/commandExecution/requestApproval",
-            params: { ...at, itemId: command.id, command: command.command },
-          },
-          atCapacity(at),
-        ],
+        approval: [{ id: "approval", ...approval }, atCapacity(at)],
+        "approval notification": [approval, atCapacity(at)],
         output: [
           {
             method: "item/commandExecution/outputDelta",
@@ -1564,13 +1966,20 @@ test("a turn the model answered at capacity runs again only for its own final er
     "command completed",
     "file change",
     "approval",
+    "approval notification",
     "output",
   ]) {
     const error = await kubectlFailure(turn([script, "reply"]));
     assert.equal(threadStarts, 1, script);
     assert.deepEqual(sleeps, [], script);
     assert.equal(error.message.split("\n")[0], notRetried, script);
-    assert.equal(summaryOf(error).retrySafe, false, script);
+    const summary = summaryOf(error);
+    assert.equal(summary.retrySafe, false, script);
+    if (script === "approval notification") {
+      assert.equal(error.code, 1, script);
+      assert.equal(summary.actionSeen, true, script);
+      assert.equal(summary.approvalRequests, 0, script);
+    }
   }
 
   // A command that ends within the grace after the final error: its result is kept, the turn

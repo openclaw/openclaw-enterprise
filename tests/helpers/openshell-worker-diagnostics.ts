@@ -1,7 +1,12 @@
 import type { Pool, QueryResult, QueryResultRow } from "pg";
 
+import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { summarizeWorkerEvents, workerDiagnosticLines } from "./k3d-failure-diagnostics.ts";
-import { diagnosticDeadlinePassed } from "./kubernetes-real.ts";
+import {
+  diagnosticDeadlineMs,
+  diagnosticDeadlinePassed,
+  withinDiagnosticDeadline,
+} from "./kubernetes-real.ts";
 
 export const diagnosticQueryTimeoutMs = 3_000;
 
@@ -39,6 +44,212 @@ type WorkerCompletionDiagnostic = {
   persisted: PersistedWorkerState | { readError: "unavailable" };
   events: ReturnType<typeof summarizeWorkerEvents>;
 };
+
+// The thrown value controls even its name. Report only known error classes, never its text.
+const diagnosticErrorNames = new Set([
+  "AbortError",
+  "AggregateError",
+  "AssertionError",
+  "EvalError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TimeoutError",
+  "TypeError",
+  "URIError",
+]);
+
+function diagnosticErrorName(error: unknown): string {
+  try {
+    const name = typeof error === "object" && error !== null && "name" in error && error.name;
+    return typeof name === "string" && diagnosticErrorNames.has(name) ? name : "Error";
+  } catch {
+    return "Error";
+  }
+}
+
+type PrepareTokenSources = {
+  compute: { kubeconfigContext: string; user: string; kind: string; mintedAt: string };
+  sandboxOperator: { kubeconfigContext: string | undefined; kind: string };
+  teardownStarted: boolean;
+};
+
+function errorField(error: unknown, field: "code" | "message"): unknown {
+  try {
+    if ((typeof error === "object" && error !== null) || typeof error === "function") {
+      return Reflect.get(error, field);
+    }
+  } catch {
+    // The thrown value may have a getter that throws.
+  }
+  return undefined;
+}
+
+function errorMessage(error: unknown): string | undefined {
+  const message = errorField(error, "message");
+  return typeof message === "string" ? message : undefined;
+}
+
+function writeFailureDiagnostic(prefix: string, message?: string): void {
+  try {
+    const detail =
+      message === undefined ? "" : redactLogLine(message, failureSecrets([process.env]), 800);
+    process.stderr.write(`${prefix}${detail}\n`);
+  } catch {
+    // Reporting must not interrupt cleanup or replace the original rejection.
+  }
+}
+
+export function recordFirstProvisioningFailure(
+  failures: Map<string, unknown>,
+  revisionId: string,
+  error: unknown,
+): void {
+  if (failures.has(revisionId)) {
+    return;
+  }
+  failures.set(revisionId, error);
+  writeFailureDiagnostic(
+    `OpenShell first provisioning failure for ${revisionId}: `,
+    errorMessage(error) ?? "error message unavailable",
+  );
+}
+
+export function withFirstPrepareRevisionFailureDiagnostic<
+  Args extends unknown[],
+  Driver extends object,
+>(
+  computeDriver: Driver & { prepareRevision: (...args: Args) => Promise<unknown> },
+  observeScratchEffect?: (stage: "compute-prepare", revision: Args[0]) => void,
+  tokenSources?: () => PrepareTokenSources,
+): Driver {
+  let reportedFailure = false;
+  let reportedUnauthorized = false;
+
+  function reportFailure(error: unknown, preparing: boolean) {
+    let message: string | undefined;
+    if (preparing && !reportedFailure) {
+      reportedFailure = true;
+      message = errorMessage(error) ?? "error message unavailable";
+      if (
+        message ===
+        "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
+      ) {
+        writeFailureDiagnostic(
+          "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry.",
+        );
+      } else {
+        writeFailureDiagnostic(
+          "OpenShell integration: initial Compute prepareRevision failed: ",
+          message,
+        );
+      }
+    }
+
+    // A 401 can also come from the scratch observer, before Compute is called.
+    if (
+      tokenSources &&
+      !reportedUnauthorized &&
+      (errorField(error, "code") === 401 ||
+        /^HTTP-Code: 401$/m.test(message ?? errorMessage(error) ?? ""))
+    ) {
+      reportedUnauthorized = true;
+      try {
+        process.stderr.write(
+          `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
+        );
+      } catch {
+        // The metadata lookup and write are both best effort.
+      }
+    }
+  }
+
+  return new Proxy(computeDriver, {
+    get(target, property): unknown {
+      if (property !== "prepareRevision") {
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (...args: Args) => {
+        let preparing = false;
+        try {
+          observeScratchEffect?.("compute-prepare", args[0]);
+          preparing = true;
+          return await target.prepareRevision(...args);
+        } catch (error) {
+          reportFailure(error, preparing);
+          throw error;
+        }
+      };
+    },
+  });
+}
+
+type RevisionFailureCallbacks = {
+  readWorker: () => unknown;
+  describe: (worker: object | undefined) => string | PromiseLike<string>;
+};
+
+export async function describeRevisionFailure({
+  flow,
+  readWorker,
+  describe,
+  timeoutMs = diagnosticDeadlineMs,
+}: RevisionFailureCallbacks & {
+  flow: "Recovery" | "Replacement";
+  timeoutMs?: number;
+}): Promise<string> {
+  // Give the description its full budget even if the worker uses all of its own.
+  const read = await withinDiagnosticDeadline(
+    () =>
+      Promise.resolve()
+        .then(readWorker)
+        .catch(() => null),
+    { timeoutMs, timedOut: null },
+  );
+  const worker = typeof read === "object" && read !== null ? read : undefined;
+  return withinDiagnosticDeadline(
+    () =>
+      Promise.resolve()
+        .then(() => describe(worker))
+        .catch(
+          (error: unknown) => `\n${flow} diagnostic unavailable: ${diagnosticErrorName(error)}`,
+        ),
+    { timeoutMs, timedOut: `\n${flow} diagnostic timed out after ${timeoutMs / 1_000} s` },
+  );
+}
+
+// Finding 2017: after the gateway outage the held deployment can end failed_permanent with
+// RUNTIME_LOGIN_FAILED. The proof reads why near the failure, before its refresh checks take
+// minutes and the failed revision's Pods go: `readWorker` gives the worker's events and persisted
+// state, and `describe(worker)` the revision's Pods with the Gateway, Harness and OpenShell
+// supervisor log tails. Each read stops at the diagnostic deadline, and one that fails or stalls
+// only says so: it never replaces the failure it explains. The text is written to stderr, added
+// to `failure`'s message when the wait itself failed, and returned for the assertion.
+export async function failedRecoveryDiagnostic(
+  {
+    readWorker,
+    describe,
+    failure,
+    write = (text) => process.stderr.write(text),
+  }: RevisionFailureCallbacks & {
+    failure?: Error | undefined;
+    write?: (text: string) => unknown;
+  },
+  { timeoutMs = diagnosticDeadlineMs } = {},
+) {
+  const detail = await describeRevisionFailure({
+    flow: "Recovery",
+    readWorker,
+    describe,
+    timeoutMs,
+  });
+  write(`OpenShell integration: gateway outage recovery failed.${detail}\n`);
+  if (failure instanceof Error) {
+    failure.message = `${failure.message}${detail}`;
+  }
+  return detail;
+}
 
 export async function diagnosticQuery<Row extends QueryResultRow = Record<string, unknown>>(
   pool: Pool,

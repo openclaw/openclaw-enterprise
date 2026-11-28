@@ -86,11 +86,18 @@ import {
 } from "../helpers/kubernetes-real.ts";
 import {
   assertGatewayPolicyRunSucceeded,
+  canRetrySkippedBackendTurn,
+  hasCachedRefreshToken,
+  matchesShellCommand,
+  matchesToolToken,
+  onlyMatchingCommand,
+  selectBackendCommand,
+  settledPolicyCommands,
+  summarizeOtherBackendCommands,
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
   observedTurn,
-  tokenEchoDigest,
   tokenEchoReply,
   createOpenShellWorkerLogEmitter,
   workerFailureDetail,
@@ -112,10 +119,15 @@ import {
   redeployOpenShellReplacement,
 } from "./openshell-replacement-activation.ts";
 import {
+  describeRevisionFailure,
   diagnosticQuery,
   diagnosticQueryTimeoutMs,
+  recordFirstProvisioningFailure,
+  withFirstPrepareRevisionFailureDiagnostic,
   writeWorkerCompletionDiagnostics,
 } from "./openshell-worker-diagnostics.ts";
+
+export { withFirstPrepareRevisionFailureDiagnostic };
 
 /** @param {unknown} turn */
 function turnMessages(turn) {
@@ -128,10 +140,11 @@ function turnMessages(turn) {
 }
 
 /** @param {unknown} turn */
-function completedTurnItems(turn) {
+function completedEchoCommands(turn) {
   return turnMessages(turn)
     .filter(({ method }) => method === "item/completed")
-    .map(({ params }) => record(params).item);
+    .map(({ params }) => record(record(params).item))
+    .filter(({ type }) => type === "commandExecution");
 }
 
 const executeFile = promisify(execFile);
@@ -1687,12 +1700,7 @@ function createIntegrationSandboxDriverFactory(
             provisioning,
           ).provisionHarness(provisioning);
         } catch (error) {
-          if (!provisioningFailures.has(context.revision.id)) {
-            process.stderr.write(
-              `OpenShell first provisioning failure for ${context.revision.id}: ${redactLogLine(error.message, failureSecrets([process.env]), 800)}\n`,
-            );
-            provisioningFailures.set(context.revision.id, error);
-          }
+          recordFirstProvisioningFailure(provisioningFailures, context.revision.id, error);
           if (bridge !== undefined && !credentialBridges.has(context.revision.id)) {
             await deleteCredentialJob(operatorKubernetes, context, bridge.metadata.name).catch(
               () => undefined,
@@ -1898,69 +1906,8 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-export function withFirstPrepareRevisionFailureDiagnostic(computeDriver, observeScratchEffect) {
-  let reported = false;
-  return new Proxy(computeDriver, {
-    get(target, property) {
-      if (property === "prepareRevision") {
-        return async (...args) => {
-          observeScratchEffect?.("compute-prepare", args[0]);
-          try {
-            return await target.prepareRevision(...args);
-          } catch (error) {
-            if (!reported) {
-              reported = true;
-              const message =
-                error.message ===
-                "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
-                  ? "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry."
-                  : `OpenShell integration: initial Compute prepareRevision failed: ${redactLogLine(error.message, failureSecrets([process.env]), 800)}`;
-              process.stderr.write(`${message}\n`);
-            }
-            throw error;
-          }
-        };
-      }
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-// The Kubernetes client's rejection of a request the API server refused to authenticate.
-function isKubernetesUnauthorized(error) {
-  return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
-}
-
-// Whether the test's bounded teardown has begun, for the 401 diagnostic below.
+// Whether the test's bounded teardown has begun, for the 401 diagnostic.
 let teardownStarted = () => false;
-
-// Finding 1711: a 401 on prepareRevision names no credential. On the first one, `tokenSources()`
-// names the credentials the call may have used, by name and kind, never a value.
-function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
-  let reported = false;
-  return new Proxy(computeDriver, {
-    get(target, property) {
-      if (property === "prepareRevision") {
-        return async (...args) => {
-          try {
-            return await target.prepareRevision(...args);
-          } catch (error) {
-            if (!reported && isKubernetesUnauthorized(error)) {
-              reported = true;
-              process.stderr.write(
-                `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
-              );
-            }
-            throw error;
-          }
-        };
-      }
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
 
 async function prepareProductionInstallation(
   context,
@@ -2255,11 +2202,9 @@ async function prepareProductionInstallation(
       workerDrivers: loaded,
       diagnosticWorkerDrivers: {
         ...loaded,
-        computeDriver: withUnauthorizedTokenSourceDiagnostic(
-          withFirstPrepareRevisionFailureDiagnostic(
-            replacementNode?.wrap(loaded.computeDriver) ?? loaded.computeDriver,
-            observeScratchEffect,
-          ),
+        computeDriver: withFirstPrepareRevisionFailureDiagnostic(
+          replacementNode?.wrap(loaded.computeDriver) ?? loaded.computeDriver,
+          observeScratchEffect,
           tokenSources,
         ),
       },
@@ -3699,12 +3644,8 @@ async function assertRefreshCredentialSources(topology) {
       new RegExp(nonce),
       "the model source must keep working",
     );
-    const commands = completedTurnItems(result)
-      .map(record)
-      .filter(({ type }) => type === "commandExecution");
-    // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
-    // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
-    // check below treats it as a missing token.
+    const commands = completedEchoCommands(result);
+    // Keep unparseable output redacted and bounded (finding 1883). It cannot prove token loss.
     const echoed = (source) => tokenEchoReply(commands, source.url, secrets);
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
   };
@@ -3807,17 +3748,13 @@ async function assertRefreshCredentialSources(topology) {
   // update can stay cached in the Sandbox and remains a valid JWT until it expires; a token
   // issued after the update would mean the new epoch reached the old Sandbox.
   const epochDeadline = Date.now() + 420_000;
+  const refreshPath = new URL(refreshToken.url).pathname;
   let afterReconfigure;
   for (;;) {
     afterReconfigure = await call();
-    const presented = afterReconfigure.rt?.jwt;
-    if (presented?.valid !== true) {
+    if (!hasCachedRefreshToken(afterReconfigure.rt, refreshPath, reconfiguredAt)) {
       break;
     }
-    assert.ok(
-      presented.iat < reconfiguredAt - 2,
-      "a token minted after reconfiguration must not reach a Sandbox admitted under the previous epoch",
-    );
     assert.ok(
       Date.now() < epochDeadline,
       "the running Sandbox must lose the reconfigured source's token by the old token's expiry",
@@ -4022,9 +3959,7 @@ async function assertNonModelCredentialSource(topology) {
       new RegExp(nonce),
       "the model source must keep working",
     );
-    const commands = completedTurnItems(result)
-      .map(record)
-      .filter(({ type }) => type === "commandExecution");
+    const commands = completedEchoCommands(result);
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
     // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
@@ -4035,12 +3970,11 @@ async function assertNonModelCredentialSource(topology) {
       b: tokenEchoReply(commands, toolB.url, secrets),
     };
   };
-  // Digests are compared, never shown; `shown` says what the command printed instead. A checked
-  // call whose output is not JSON fails in tokenEchoDigest.
+  // Compare only booleans so failures show the redacted command and output without the digests.
   const assertDelivered = (observed, tool, message) =>
-    assert.equal(tokenEchoDigest(observed) === tool.digest, true, `${message}: ${observed.shown}`);
+    assert.equal(matchesToolToken(observed, tool), true, `${message}: ${observed.shown}`);
   const assertWithheld = (observed, tool, message) =>
-    assert.equal(tokenEchoDigest(observed) === tool.digest, false, `${message}: ${observed.shown}`);
+    assert.equal(matchesToolToken(observed, tool), false, `${message}: ${observed.shown}`);
   const withdrawalPath = (tool) =>
     `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${tool.id}`;
   const readWithdrawal = async (tool) => {
@@ -6342,20 +6276,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
   });
-  const completedCommands = completedTurnItems(result)
-    .map((item) => {
-      assert.ok(item != null, "expected the completed Codex item");
-      return record(item);
-    })
-    .filter(({ type }) => type === "commandExecution");
-  // The Harness records either the command itself or its shell invocation.
+  const completedCommands = settledPolicyCommands(result);
   const findCurl = (expected) =>
-    completedCommands.find(
-      ({ command }) =>
-        command === expected ||
-        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(String(command))?.[2] ===
-          expected,
-    );
+    onlyMatchingCommand(completedCommands, (command) => matchesShellCommand(command, expected));
   const approvedCommand = findCurl(approvedCurl);
   const deniedCommand = findCurl(deniedCurl);
   const workspaceCommand = completedCommands.find(({ command }) =>
@@ -6364,11 +6287,11 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   const approvedPathCommand = completedCommands.find(({ command }) =>
     String(command).includes(approvedRead),
   );
-  const readonlyCommand = completedCommands.find(({ command }) =>
-    String(command).includes(`touch ${readonlyPath}`),
+  const readonlyCommand = onlyMatchingCommand(completedCommands, (command) =>
+    command.includes(`touch ${readonlyPath}`),
   );
-  const escapedCommand = completedCommands.find(({ command }) =>
-    String(command).includes(escapedPath),
+  const escapedCommand = onlyMatchingCommand(completedCommands, (command) =>
+    command.includes(escapedPath),
   );
   assert.ok(workspaceCommand, "the real Codex Harness must attempt an approved workspace write.");
   assert.ok(approvedPathCommand, "the real Codex Harness must read its projected config path.");
@@ -6404,88 +6327,40 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           `which is expected to fail: ${deniedConfigCommand}. ` +
           `Then reply with exactly ${backendNonce}.`,
       });
-    /** @param {unknown} turn */
-    const startedCommands = (turn) =>
-      turnMessages(turn).filter(
-        ({ method, params }) =>
-          method === "item/started" && record(record(params).item).type === "commandExecution",
-      ).length;
-    /** @param {unknown} result */
-    const hasCommandActivity = (result) => {
-      const items = turnMessages(result);
-      // Ignore a command delta only when it explicitly belongs to another thread or turn.
-      const terminal = items.find(({ method }) => method === "turn/completed");
-      assert.ok(terminal, "expected a completed Codex turn");
-      const { threadId, turn } = record(terminal.params);
-      const couldMatchId = (id, expected) => typeof id !== "string" || id === "" || id === expected;
-      return items.some(({ method, params }) => {
-        const data = record(params);
-        if (method === "item/commandExecution/outputDelta") {
-          return (
-            couldMatchId(data.threadId, threadId) && couldMatchId(data.turnId, record(turn).id)
-          );
-        }
-        return (
-          method === "item/commandExecution/requestApproval" ||
-          ((method === "item/started" || method === "item/completed") &&
-            record(data.item).type === "commandExecution")
-        );
-      });
-    };
-    let backendTurn = record(await requestBackendTurn());
+    let backendTurn = observedTurn(await requestBackendTurn());
     const skippedTurns = [];
     // Ask once more only when the turn showed no command activity at all. A rewritten,
     // declined, approval-gated or unsettled command is still judged below.
-    if (!hasCommandActivity(backendTurn)) {
+    if (canRetrySkippedBackendTurn(backendTurn.items)) {
       skippedTurns.push({
-        items: turnMessages(backendTurn).length,
+        items: backendTurn.items.length,
         replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
       });
-      backendTurn = record(await requestBackendTurn());
+      backendTurn = observedTurn(await requestBackendTurn());
     }
-    const backendCommands = completedTurnItems(backendTurn)
-      .map((item) => {
-        assert.ok(item != null, "expected the completed Codex item");
-        return record(item);
-      })
-      .filter(({ type }) => type === "commandExecution");
-    const deniedConfigRequest = backendCommands.find(({ command }) =>
-      String(command).includes(deniedBackend),
-    );
-    // How the turn went, by label only: a missing request then shows whether the model
-    // skipped it, rewrote it, or asked for approval instead.
-    const commandSummary = {
-      skippedTurns,
-      started: startedCommands(backendTurn),
-      completed: backendCommands.map((command) => ({
-        label:
-          command === deniedConfigRequest
-            ? "codex-backend"
-            : /chatgpt_base_url|features list|backend-api/.test(String(command.command))
-              ? "codex-rewritten"
-              : "other",
-        status: command.status,
-        exitCode: command.exitCode,
-        durationMs: command.durationMs ?? null,
-      })),
-      approvalRequests: turnMessages(backendTurn).filter(
-        ({ method }) => method === "item/commandExecution/requestApproval",
-      ).length,
-      replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
-    };
-    assert.ok(
-      deniedConfigRequest,
-      `the real Codex binary must attempt the unapproved backend path: ${JSON.stringify(commandSummary)}.`,
-    );
+    const backendCommands = settledPolicyCommands(backendTurn);
+    const deniedConfigRequest = selectBackendCommand(backendCommands, deniedBackend);
+    if (!deniedConfigRequest) {
+      const { items, assistant } = backendTurn;
+      const summary = {
+        skippedTurns,
+        started: items.filter(
+          ({ method, params }) =>
+            method === "item/started" && params?.item?.type === "commandExecution",
+        ).length,
+        completed: summarizeOtherBackendCommands(backendCommands),
+        approvalRequests: items.filter(
+          ({ method }) => method === "item/commandExecution/requestApproval",
+        ).length,
+        replyHasNonce: new RegExp(backendNonce).test(String(assistant)),
+      };
+      assert.fail(
+        `the real Codex binary must attempt the unapproved backend path: ${JSON.stringify(summary)}.`,
+      );
+    }
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
-      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${turnMessages(
-        backendTurn,
-      ).some(
-        ({ method, params }) =>
-          method === "item/commandExecution/requestApproval" &&
-          record(params).itemId === deniedConfigRequest.id,
-      )}).`,
+      "the forbidden backend request must execute.",
     );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
     // The network supervisor runs outside the workload Pod. Match its boundary pair
@@ -8411,16 +8286,11 @@ export async function waitForReplacementActivation(
         `Last completed pending replacement Compute decision: ${observation}.`,
       );
     }
-    const worker = await topology.diagnoseRevision(redeployed.data.id);
-    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
-    const detail = await withinDiagnosticDeadline(
-      () =>
-        diagnose(topology, redeployed.data, worker).catch(
-          (diagnosticError) =>
-            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-        ),
-      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
-    );
+    const detail = await describeRevisionFailure({
+      flow: "Replacement",
+      readWorker: () => topology.diagnoseRevision(redeployed.data.id),
+      describe: (worker) => diagnose(topology, redeployed.data, worker),
+    });
     // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
     if (error instanceof Error) {
       error.message = `${error.message}${detail}`;

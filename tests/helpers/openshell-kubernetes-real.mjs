@@ -26,6 +26,8 @@ import { parseJson, record } from "./egress-observation-values.ts";
 import { appServerUrlShape, nativeFailureMarker } from "./egress-native-exec-observation.ts";
 import { observeConnectedOperation, rememberKubectlOutcome } from "./egress-connected-failure.ts";
 
+export { failedRecoveryDiagnostic } from "./openshell-worker-diagnostics.ts";
+
 const execute = promisify(execFile);
 const kubectlKillSignal = "SIGKILL";
 
@@ -296,41 +298,6 @@ export function outageAttemptRead({ readWork, readStatus }) {
     }
     return { work, status: await readStatus() };
   };
-}
-
-// Finding 2017: after the gateway outage the held deployment can end failed_permanent with
-// RUNTIME_LOGIN_FAILED. The proof reads why near the failure, before its refresh checks take
-// minutes and the failed revision's Pods go: `readWorker` gives the worker's events and persisted
-// state, and `describe(worker)` the revision's Pods with the Gateway, Harness and OpenShell
-// supervisor log tails. Each read stops at the diagnostic deadline, and one that fails or stalls
-// only says so: it never replaces the failure it explains. The text is written to stderr, added
-// to `failure`'s message when the wait itself failed, and returned for the assertion.
-export async function failedRecoveryDiagnostic(
-  { readWorker, describe, failure, write = (text) => process.stderr.write(text) },
-  { timeoutMs = diagnosticDeadlineMs } = {},
-) {
-  // A worker read that failed or stalled gives `describe` no worker (an undefined timedOut
-  // would fall back to the deadline's default text).
-  const read = await withinDiagnosticDeadline(
-    () =>
-      Promise.resolve()
-        .then(readWorker)
-        .catch(() => null),
-    { timeoutMs, timedOut: null },
-  );
-  const worker = typeof read === "object" && read !== null ? read : undefined;
-  const detail = await withinDiagnosticDeadline(
-    () =>
-      Promise.resolve()
-        .then(() => describe(worker))
-        .catch((error) => `\nRecovery diagnostic unavailable: ${error?.name ?? "Error"}`),
-    { timeoutMs, timedOut: `\nRecovery diagnostic timed out after ${timeoutMs / 1_000} s` },
-  );
-  write(`OpenShell integration: gateway outage recovery failed.${detail}\n`);
-  if (failure instanceof Error) {
-    failure.message = `${failure.message}${detail}`;
-  }
-  return detail;
 }
 
 // The real model's final answer when its provider has no capacity for the selected model; the
@@ -2066,31 +2033,42 @@ export function createOpenShellKubernetesFixture({
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
         const item = params?.item;
-        // Any server request (an approval of any API version) counts as an action too.
+        const commandApproval = method === "item/commandExecution/requestApproval";
+        // Server requests and command approval notices both count as action.
         if ((item?.type !== undefined && !["userMessage", "agentMessage", "reasoning"].includes(item.type)) ||
-            (message.id !== undefined && method !== undefined) || String(method).endsWith("/outputDelta")) {
+            (message.id !== undefined && method !== undefined) || commandApproval || String(method).endsWith("/outputDelta")) {
           actionSeen = true;
         }
         const decline = message.id !== undefined && (
-          method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval"
+          commandApproval || method === "item/fileChange/requestApproval"
         );
-        const commandEvent = item?.type === "commandExecution" &&
-          (method === "item/started" || method === "item/completed");
+        const itemLifecycle = method === "item/started" || method === "item/completed";
+        const commandEvent = itemLifecycle && item?.type === "commandExecution";
         const command = commandEvent && threadId && turnId &&
           params.threadId === threadId && params.turnId === turnId;
         // Before the turn ends, an unbound command leaves the probe outcome unknown.
-        // Afterward we observe only the commands already outstanding on our turn.
         if (!commandDeadline && commandEvent && !command) return unknownCommandOutcome();
         const starting = method === "item/started" && command;
         const ending = method === "item/completed" && command;
-        if (method === "item/commandExecution/outputDelta" && params?.turnId === turnId &&
-            commandTimes.has(params.itemId)) {
+        const commandOutput = method === "item/commandExecution/outputDelta";
+        if (commandOutput && params?.turnId === turnId && commandTimes.has(params.itemId)) {
           const time = commandTimes.get(params.itemId);
           time.deltas += 1;
           time.bytes += typeof params.delta === "string" ? params.delta.length : 0;
         }
         if (commandDeadline) {
-          if (starting) return unknownCommandOutcome();
+          const differentKnownIds = (left, right) =>
+            typeof left === "string" && left.trim() && typeof right === "string" && right.trim() &&
+            left !== right;
+          const foreign = differentKnownIds(params?.threadId, threadId) ||
+            differentKnownIds(params?.turnId, turnId);
+          // An untyped item cannot prove that the turn skipped a command.
+          const validType = typeof item?.type === "string" && item.type !== "" &&
+            item.type === item.type.trim();
+          if (!foreign && itemLifecycle && !ending &&
+              (!validType || commandEvent || params?.command !== undefined || item?.command !== undefined)) {
+            return unknownCommandOutcome();
+          }
           if (ending) {
             // Only a terminal matching a command outstanding at turn completion can
             // settle it. Never discard a second command and then report only the first.
@@ -2098,6 +2076,39 @@ export function createOpenShellKubernetesFixture({
                 !["completed", "failed"].includes(item.status) || !Number.isSafeInteger(item.exitCode)) {
               return unknownCommandOutcome();
             }
+          } else if (!decline && (commandOutput || commandApproval)) {
+            if (foreign) return;
+            // Keep omitted IDs distinct from invalid IDs, without retaining arbitrary values.
+            const identity = (id) => (id === undefined || typeof id === "string" ? id : null);
+            const itemId = identity(params?.itemId);
+            const embeddedId = identity(item?.id);
+            const id = itemId === undefined ? embeddedId : itemId;
+            const conflictingIds = embeddedId !== undefined && embeddedId !== id;
+            let conflictingCommand = false;
+            if (!conflictingIds && (params?.command !== undefined || item?.command !== undefined)) {
+              const observedCommand = pendingCommands.has(id) ? pendingCommands.get(id) :
+                items.findLast(({ method, params }) =>
+                  method === "item/completed" && params?.item?.type === "commandExecution" &&
+                  params.item.id === id,
+                )?.params.item.command;
+              conflictingCommand = [params?.command, item?.command].some(
+                (reported) => reported !== undefined && reported !== observedCommand,
+              );
+            }
+            if (commandOutput && !conflictingIds && !conflictingCommand && pendingCommands.has(id)) {
+              return;
+            }
+            // Contradictory IDs prove uncertainty on their own. If only the command
+            // conflicts, omit its otherwise matching ID. Never retain the text.
+            items.push({ method, params: {
+              threadId: identity(params?.threadId),
+              turnId: identity(params?.turnId),
+              ...(!conflictingCommand && {
+                itemId,
+                item: embeddedId === undefined ? undefined : { id: embeddedId },
+              }),
+            } });
+            return;
           } else if (!decline) return;
         }
         rememberFailureSignals(message);

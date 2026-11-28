@@ -555,6 +555,52 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.output.omittedLines, 0);
 });
 
+test("replacement activation keeps the deployment failure when the worker read rejects", async (t) => {
+  const { waitForReplacementActivation } =
+    await import("../helpers/openshell-sandbox-workflows.mjs");
+  const { workerFailureDetail } = await import("../helpers/k3d-failure-diagnostics.ts");
+  const agentPath = "/namespaces/ns/agents/agent";
+  const reads: string[] = [];
+  const described: unknown[] = [];
+  const topology = {
+    namespaceId: "ns",
+    agent: { id: "agent" },
+    async request(method: "GET", path: string) {
+      assert.equal(method, "GET");
+      if (path === agentPath) {
+        return { status: 200, data: { activeRevisionId: "previous" } };
+      }
+      assert.equal(path, agentPath + "/deployments/replacement");
+      return { status: 200, data: { status: "failed" } };
+    },
+    async diagnoseRevision(id: string) {
+      reads.push(`${this.agent.id}/${id}`);
+      throw new Error("worker read failed");
+    },
+  };
+  // The failed deployment is terminal. Even without worker evidence, append the real summary.
+  await assert.rejects(
+    waitForReplacementActivation(
+      topology,
+      { data: { id: "replacement" } },
+      t,
+      undefined,
+      async (_topology, _revision, worker: Parameters<typeof workerFailureDetail>[0]) => {
+        described.push(worker);
+        return `\n${workerFailureDetail(worker, [])}`;
+      },
+    ),
+    {
+      name: "AssertionError",
+      actual: "failed",
+      message:
+        'Replacement OpenShell revision replacement failed: {"status":"failed"}\nWorker: {"events":[]}',
+    },
+  );
+  assert.deepEqual(reads, ["agent/replacement"]);
+  assert.deepEqual(described, [undefined]);
+});
+
 test("replacement readiness goes only to the failed attempt diagnostic output", async (t) => {
   const root = await createRunnerFixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "replacement");
@@ -573,7 +619,7 @@ test("replacement readiness goes only to the failed attempt diagnostic output", 
   );
   assert.equal(
     details.detail.message,
-    "Timed out waiting for replacement OpenShell revision replacement activation.",
+    "Timed out waiting for replacement OpenShell revision replacement activation.\nWorker read timed out.",
   );
   assert.deepEqual(
     details.output.lines.filter((line) => line.includes("pending replacement")),
