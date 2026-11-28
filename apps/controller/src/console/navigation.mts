@@ -80,6 +80,26 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     return `${url.pathname}${url.search}`;
   }
 
+  // Version links and sign-in can order the same selectors differently.
+  // Share the retained view while preserving the original address for navigation.
+  function retainedViewKey(address: string) {
+    const url = new URL(address, location.origin);
+    const { searchParams } = url;
+    const prefix = "/console/agents/";
+    if (
+      url.pathname.startsWith(prefix) &&
+      agentId.test(url.pathname.slice(prefix.length)) &&
+      searchParams.size === 3 &&
+      searchParams.has("namespace") &&
+      searchParams.has("revision") &&
+      searchParams.has("tab")
+    ) {
+      searchParams.sort();
+      return `${url.pathname}${url.search}`;
+    }
+    return address;
+  }
+
   // Login destinations are structured routes, never a URL supplied to the login page.
   const resourceSuffix = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
   const agentId = new RegExp(`^agt_${resourceSuffix}$`);
@@ -266,6 +286,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     replaceUrl,
     route,
     pageUrl,
+    retainedViewKey,
     captureIntent,
     validIntent,
     intentUrl,

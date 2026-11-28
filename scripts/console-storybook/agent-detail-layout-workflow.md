@@ -96,32 +96,34 @@ output and retry message. Wait past five seconds, while the Gateway read is stil
 pending, and confirm the message stays gone. After about ten seconds from the
 switch, **gateway listening** appears. Reload to repeat.
 
-**Runtime Logs Refresh Rate Limited** (`RuntimeLogsRefreshRateLimited`)
-covers staying on the same source. Both stories use simulated responses. The
-controller-backed browser regression in `tests/browser/console-agent-logs.test.ts`
-checks the source switch through the Console API.
+**Runtime Logs Refresh Rate Limited** (`RuntimeLogsRefreshRateLimited`) tests
+one source. Both stories simulate responses.
+`tests/browser/console-agent-logs.test.ts` checks switching sources through
+the Controller’s Console API.
 
 Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
-in its own tab. Select **Deploy new version**. The unavailable button’s
-accessible description should name the Secret. Switch tabs and return. The
-simulated grant clears the refusal and enables Deploy on the same draft without
-sending a Deploy request. Use **Deployment needs Secret operate** to check
-access that stays denied.
+in a new tab. Select **Deploy new version**. Its accessible description names
+the Secret. Switch tabs and return. The simulated grant clears the refusal and
+enables Deploy on that draft without a Deploy request.
+In **Deployment needs Secret operate**, access stays denied.
 
-Return to the same version in **Current version's Sandbox lost**. Check the warning.
+In **Current version's Sandbox lost**, revisit the version. Check the warning.
 
-In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
-Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
-Check v7’s failed record, pending cleanup and unchanged v6 selection. One check
-changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
-Cleanup triggers no further checks.
+In **Bootstrap failure with cleanup pending**, hover over **Deployment** (scroll
+sideways on phones). When v7 fails, the tab stays put. Click without moving.
+Check v7’s failed record, pending cleanup and v6 selection. One check changes
+**Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
+Cleanup triggers no more checks. Refocus **View deployment**. After cleanup,
+Enter opens v7.
 
-Reopen and focus **View deployment**. After cleanup, Enter opens v7.
+Both “A parked click” tests in `tests/browser/console-agent-overview.test.ts`
+scroll v1’s **Configuration**. When the fixture activates v2, click near
+**Deployment**’s top edge without moving. v1’s tab opens. Repeat over
+**Draft credentials**.
 
-In signed-in tests, point near the top of **Deployment** in v1’s scrolled
-**Configuration**. After simulated activation, **Selected for service** shows v2.
-Click without moving. v1’s **Deployment** opens. Repeat over **Draft credentials**.
-On slow returns, “Still checking…” stays visible until **Credentials** opens.
+On a disposable Controller, copy v1’s **Draft credentials** link. Open signed out,
+sign in, reselect v1 and press Enter. Slow reads keep v1 and “Still checking…”
+visible until **Credentials** opens. Repeat signed in.
 
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).

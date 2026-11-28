@@ -879,11 +879,20 @@ test("Back refused by unsaved repository changes preserves the previous Agent ta
   await choice.check();
   await page.locator("#repository-default-git-read").check();
   const repositoriesUrl = page.url();
+  assert.equal(
+    new URL(repositoriesUrl).search,
+    `?revision=draft&tab=repositories&namespace=${namespace.id}`,
+  );
 
-  await page.goBack();
-  await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
-  await page.waitForURL(repositoriesUrl);
+  // Wait for the return after the editor refuses Back, then check the settled page.
+  await Promise.all([
+    page.waitForEvent("framenavigated", (frame) => frame.url() === repositoriesUrl),
+    page.goBack(),
+  ]);
+  await settled(page);
   assert.equal(await choice.isChecked(), true, "Back kept the unsaved selection");
+  assert.equal(page.url(), repositoriesUrl, "Back kept the original Repositories address");
+  await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
 
   // Cancel rereads the saved access in place. Wait for its unselected repository before Back.
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
