@@ -1,0 +1,209 @@
+From 58960163856eec7197134f6802a56faf7679fea4 Mon Sep 17 00:00:00 2001
+From: Prakash Sanker <307704256+prakash-oai@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 10:39:26 -0800
+Subject: [PATCH] fix: link HTTP chat completions to their saved inputs
+
+---
+ src/agents/command/session-helpers.ts         |  1 +
+ src/agents/command/types.ts                   |  3 ++
+ src/gateway/openai-compatible-agent-run.ts    |  8 ++++
+ src/gateway/openai-http.ts                    |  3 ++
+ .../server.chat-recovered-output.test.ts      | 47 +++++++++++++++++--
+ 5 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/src/agents/command/session-helpers.ts b/src/agents/command/session-helpers.ts
+index 3dfe1b36044c0c2f0dfef81c229c617e498d72b3..53831e744ca1400a4ef9022ded63954fedb871de 100644
+--- a/src/agents/command/session-helpers.ts
++++ b/src/agents/command/session-helpers.ts
+@@ -74,6 +74,7 @@ export function prepareCommandUserTurnTranscript(
+       ...(!suppressUserTurnPersistence && (recorderTranscriptText || hasTranscriptMedia)
+         ? {
+             input: {
++              ...params.opts.transcriptSource,
+               text: recorderTranscriptText,
+               ...(hasTranscriptMedia ? { media: transcriptMedia } : {}),
+               senderIsOwner: params.opts.senderIsOwner,
+diff --git a/src/agents/command/types.ts b/src/agents/command/types.ts
+index 039c6039abf13b1ac3de8908bde4e0be916da372..b74b4c1179040f5cbf7d9ce2deb6a21883e56666 100644
+--- a/src/agents/command/types.ts
++++ b/src/agents/command/types.ts
+@@ -56,6 +56,8 @@ export type AgentCommandOpts = {
+   message: string;
+   /** User-visible transcript body; defaults to message and excludes runtime-only context. */
+   transcriptMessage?: string;
++  /** Gateway-assigned identity for a single submitted user message. */
++  transcriptSource?: Pick<UserTurnInput, "idempotencyKey" | "transport">;
+   /** Durable media metadata for the user-visible transcript turn. */
+   transcriptMedia?: UserTurnInput["media"];
+   images?: ImageContent[];
+@@ -272,6 +274,7 @@ export const AGENT_COMMAND_PUBLIC_INGRESS_DEFAULTS = {
+   assertTurnAdmissionCurrent: undefined,
+   operatorAuthority: undefined,
+   requesterOrigin: undefined,
++  transcriptSource: undefined,
+   privateCompletion: undefined,
+   extraSystemPromptTurnContext: undefined,
+   replyExpectation: undefined,
+diff --git a/src/gateway/openai-compatible-agent-run.ts b/src/gateway/openai-compatible-agent-run.ts
+index bf548e171554d25903498c7ade80b5c30bc67d96..ae4bc380f6eecce2d2d53dd6598a21a93b2346ce 100644
+--- a/src/gateway/openai-compatible-agent-run.ts
++++ b/src/gateway/openai-compatible-agent-run.ts
+@@ -11,6 +11,7 @@ import { getRuntimeConfig } from "../config/io.js";
+ import { isAbortError } from "../infra/abort-signal.js";
+ import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+ import { defaultRuntime } from "../runtime.js";
++import { buildRunUserTurnIdempotencyKey } from "../sessions/user-turn-transcript.metadata.js";
+ import { resolveAssistantResultText } from "./agent-event-assistant-text.js";
+ import type { AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
+ import type { GatewayHttpRequestAuthOptions } from "./http-request-authority.js";
+@@ -106,6 +107,7 @@ export function readOpenAiHttpRunTerminal(result: unknown): {
+
+ export async function runOpenAiCompatibleAgentCommand(params: {
+   message: string;
++  singleUserInput?: boolean;
+   images?: ImageContent[];
+   clientTools?: ClientToolDefinition[];
+   extraSystemPrompt?: string;
+@@ -171,6 +173,12 @@ export async function runOpenAiCompatibleAgentCommand(params: {
+     const result = await agentCommandFromGatewayIngress(
+       {
+         message: params.message,
++        transcriptSource: params.singleUserInput
++          ? {
++              idempotencyKey: buildRunUserTurnIdempotencyKey(params.runId),
++              transport: { channel: "openai-http" },
++            }
++          : undefined,
+         images: params.images?.length ? params.images : undefined,
+         clientTools: params.clientTools?.length ? params.clientTools : undefined,
+         extraSystemPrompt: params.extraSystemPrompt || undefined,
+diff --git a/src/gateway/openai-http.ts b/src/gateway/openai-http.ts
+index df8b311eaff311bd318f94368aa71b3cc01fa726..deed7950ed369eadb6e1d4b39cfb463e57434596 100644
+--- a/src/gateway/openai-http.ts
++++ b/src/gateway/openai-http.ts
+@@ -274,6 +274,7 @@ function buildAgentPrompt(
+   activeTurnContext: Pick<ActiveTurnContext, "activeUserMessageIndex" | "imageUrls">,
+ ): {
+   message: string;
++  singleUserInput: boolean;
+   extraSystemPrompt?: string;
+ } {
+   const hasActiveTurnImage =
+@@ -358,6 +359,7 @@ function buildAgentPrompt(
+
+   return {
+     message,
++    singleUserInput: conversationEntries.length === 1 && conversationEntries[0]?.role === "user",
+     extraSystemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
+   };
+ }
+@@ -540,6 +542,7 @@ export async function handleOpenAiHttpRequest(
+   const runAgentCommand = () =>
+     runOpenAiCompatibleAgentCommand({
+       message: prompt.message,
++      singleUserInput: prompt.singleUserInput,
+       extraSystemPrompt: mergedExtraSystemPrompt,
+       images,
+       clientTools: toolChoice.tools,
+diff --git a/src/gateway/server.chat-recovered-output.test.ts b/src/gateway/server.chat-recovered-output.test.ts
+index 4cb7a810f7c8baded270543a8c84af04d17b5976..e705e2c5d25ac9751a8455d6f33b3aab305d680e 100644
+--- a/src/gateway/server.chat-recovered-output.test.ts
++++ b/src/gateway/server.chat-recovered-output.test.ts
+@@ -28,6 +28,7 @@ import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.
+ const prefix = "The answer is";
+ const answer = "The answer is 42.";
+ const scenarios = ["continuation", "fallback", "terminal", "no-fallback", "settled-write"];
++const agents = [...scenarios, "http-input"];
+ const requests = new Map<string, Record<string, unknown>[]>();
+ const displayFrames: ChatDisplayFrame[] = [];
+ let home: Awaited<ReturnType<typeof setupGatewayTempHome>>;
+@@ -57,7 +58,7 @@ function writeResponse(response: ServerResponse, model: string, attempt: number)
+   const writeTool = model === "settled-write" && attempt === 1;
+   const failed =
+     ["fallback", "terminal", "terminal-fallback", "no-fallback"].includes(model) ||
+-    (model === "continuation" && attempt === 1) ||
++    (["continuation", "http-input"].includes(model) && attempt === 1) ||
+     (model === "settled-write" && attempt === 2);
+   const text = failed ? prefix : answer;
+   const item = writeTool
+@@ -131,7 +132,7 @@ beforeAll(async () => {
+   });
+   const baseUrl = await provider.listen();
+   const providerConfig = buildMockOpenAiResponsesProvider(baseUrl).config;
+-  const models = [...scenarios, "recovered", "terminal-fallback"].map((id) => {
++  const models = [...agents, "recovered", "terminal-fallback"].map((id) => {
+     const model = buildMockOpenAiResponsesProvider(baseUrl, id).config.models[0];
+     model.maxTokens = 256;
+     return model;
+@@ -141,7 +142,7 @@ beforeAll(async () => {
+     fallback: ["openai/recovered"],
+     terminal: ["openai/terminal-fallback"],
+   };
+-  for (const scenario of scenarios) {
++  for (const scenario of agents) {
+     entries[scenario] = {
+       model: {
+         primary: `openai/${scenario}`,
+@@ -156,6 +157,7 @@ beforeAll(async () => {
+     );
+   }
+   const config: OpenClawConfig = {
++    gateway: { http: { endpoints: { chatCompletions: { enabled: true } } } },
+     agents: {
+       ownership: "explicit",
+       defaults: { workspace: home.workspaceDir, skipBootstrap: true, utilityModel: "" },
+@@ -192,7 +194,7 @@ beforeAll(async () => {
+   });
+   // Settle catalog persistence before chat retains the initially absent session store.
+   const cfg = loadConfig();
+-  for (const agentId of scenarios) {
++  for (const agentId of agents) {
+     const owner = await loadPreparedModelRuntimeSnapshot({
+       config: cfg,
+       agentId,
+@@ -220,6 +222,43 @@ afterAll(async () => {
+   }
+ });
+
++it("links each HTTP completion to its original input across model retries and repeated sends", async () => {
++  const sessionKey = "agent:http-input:main";
++  const input = { role: "user", content: "What is the answer?" };
++  const post = async (messages: (typeof input)[]) => {
++    const response = await fetch(`http://127.0.0.1:${gateway.port}/v1/chat/completions`, {
++      method: "POST",
++      headers: {
++        authorization: "Bearer recovery-test",
++        "content-type": "application/json",
++        "x-openclaw-session-key": sessionKey,
++      },
++      body: JSON.stringify({ model: "openclaw/http-input", messages }),
++    });
++    const body = await response.json();
++    expect(response.status, JSON.stringify(body)).toBe(200);
++    return body.id;
++  };
++  const first = await post([input]);
++  expect(requests.get("http-input")).toHaveLength(2);
++  const second = await post([input]);
++  expect(first).not.toBe(second);
++  const combined = await post([input, { role: "user", content: "Please explain." }]);
++  const history = await gateway.client.request<{ messages: unknown[] }>("chat.history", {
++    sessionKey,
++  });
++  const inputs = history.messages.filter(isRecord).filter((message) => message.role === "user");
++  expect(inputs).toHaveLength(3);
++  for (const [index, runId] of [first, second].entries()) {
++    expect(inputs[index]).toMatchObject({
++      content: input.content,
++      idempotencyKey: `${runId}:user`,
++      __openclaw: { transport: { channel: "openai-http" } },
++    });
++  }
++  expect(inputs[2]?.idempotencyKey).not.toBe(`${combined}:user`);
++}, 90_000);
++
+ it.each(scenarios)(
+   "Responses HTTP chat.send retains only the selected output after %s",
+   async (scenario) => {
+
+base-commit: 7af6a10fd32884e50c06822723f853dafc5a1b1b
