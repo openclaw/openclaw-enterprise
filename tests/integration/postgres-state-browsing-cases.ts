@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { promisify } from "node:util";
+import type { Pool } from "pg";
 import type { Static } from "typebox";
 
 import type { ControllerAuth } from "../../apps/controller/src/auth/index.ts";
@@ -12,6 +13,7 @@ import type {
   AgentCallerPermissionsResponse,
   AgentListResponse,
   AgentReadWire,
+  AgentResponse,
   AgentRevision,
   AgentRevisionListResponse,
   AgentRevisionRead,
@@ -35,6 +37,66 @@ import {
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
+const plugins: PluginDesiredState = {
+  "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+};
+
+// A previously accepted approval enum that the current contract no longer decodes.
+const malformedPlugins = {
+  "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
+};
+
+async function createAgentWithLegacyAuth(
+  pool: Pool,
+  api: Awaited<ReturnType<typeof startController>>,
+  namespaceId: string,
+  name: string,
+) {
+  const { agent, configuration } = await createConfiguredAgent(api, namespaceId, name);
+  assert.deepEqual(configuration.values, defaultAgentConfigurationValues);
+  assert.equal(agent.namespaceId, namespaceId);
+  assert.equal(agent.configurationId, configuration.id);
+  // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
+  // it as an older release did, to match the revisions seeded below.
+  const update = await pool.query(
+    "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+    [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
+  );
+  assert.equal(update.rowCount, 1);
+  return { agent, configuration };
+}
+
+function admittedRevision(agent: AgentResponse["data"], revision: number): AgentRevision {
+  return {
+    id: `rev_${randomUUID()}`,
+    namespaceId: agent.namespaceId,
+    agentId: agent.id,
+    revision,
+    backendId: null,
+    gatewayManagedMode: agent.gatewayManagedMode,
+    configurationId: agent.configurationId,
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: defaultAgentConfigurationValues,
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
+    compute: {
+      id: "compute-local-development",
+      implementation: "deterministic-local-development",
+    },
+    executionAdmission: { version: 2, mode: "unprotected" },
+    harnessAuth: { method: "runtime" },
+    servicePrincipalId: agent.servicePrincipalId,
+    plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export async function browseUnreadableState(context: TestContext): Promise<void> {
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString: databaseUrl });
@@ -46,28 +108,16 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
   });
   assert.equal(namespace.status, 201);
   const namespaceId = namespace.data.id;
-  const plugins: PluginDesiredState = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
-  };
-  const configurationValues = defaultAgentConfigurationValues;
-  const { agent, configuration } = await createConfiguredAgent(
+  const { agent, configuration } = await createAgentWithLegacyAuth(
+    pool,
     api,
     namespaceId,
     "Unreadable saved configuration",
-    configurationValues,
-  );
-  assert.deepEqual(configuration.values, configurationValues);
-  // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
-  // it as an older release did, to match the revisions seeded below.
-  await pool.query(
-    "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
-    [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
   );
   const { agent: healthyAgent } = await createConfiguredAgent(
     api,
     namespaceId,
     "Healthy saved configuration",
-    configurationValues,
   );
   const agentsPath = `/namespaces/${namespaceId}/agents`;
   const agentPath = `${agentsPath}/${agent.id}`;
@@ -83,6 +133,7 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
         [agent.id],
       );
     const beforeMutation = await readMutationState();
+    assert.equal(beforeMutation.rows.length, 1);
     for (const [method, path, body] of [
       ["PATCH", agentPath, { configurationId: configuration.id }],
       ["POST", `${agentPath}/deploy`, undefined],
@@ -98,34 +149,7 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
   // Seed an admitted snapshot through its persistence owner. This test proves
   // browsing saved state, not Compute execution or runtime readiness.
   const revision = await state.transact((unit) =>
-    unit.revisions.createRevision({
-      id: `rev_${randomUUID()}`,
-      namespaceId,
-      agentId: agent.id,
-      revision: 1,
-      backendId: null,
-      gatewayManagedMode: agent.gatewayManagedMode,
-      configurationId: configuration.id,
-      configurationKind: "agent",
-      configurationGeneration: 1,
-      configuration: configurationValues,
-      harness: {
-        id: "openclaw",
-        version: "1.0.0",
-        mode: "embedded",
-        overrides: {},
-        configuration: {},
-      },
-      compute: {
-        id: "compute-local-development",
-        implementation: "deterministic-local-development",
-      },
-      executionAdmission: { version: 2, mode: "unprotected" },
-      harnessAuth: { method: "runtime" },
-      servicePrincipalId: agent.servicePrincipalId,
-      plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
-      createdAt: new Date().toISOString(),
-    }),
+    unit.revisions.createRevision(admittedRevision(agent, 1)),
   );
   // Preserve a normal queued deployment record for the healthy snapshot, so
   // CLI status enrichment remains observable without executing a workload.
@@ -225,8 +249,8 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
 
   // Keep the original revision history intact. Copy its complete admitted snapshot into
   // the sibling's history, binding it to the sibling's matching configuration.
-  const insertProxyRevision = async (revisionNumber: number, url: string) => {
-    const id = `rev_${randomUUID()}`;
+  const proxyAdmission = "fixture admission";
+  const insertProxyRevision = async (id: string, revisionNumber: number, url: string) => {
     const insert = await pool.query(
       `INSERT INTO occ.agent_revisions
          (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec,
@@ -242,24 +266,33 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
         healthyAgent.configurationId,
         healthyAgent.gatewayManagedMode,
         url,
-        "fixture admission",
+        proxyAdmission,
         revision.id,
       ],
     );
     assert.equal(insert.rowCount, 1);
-    return id;
   };
-  const canonicalRevisionId = await insertProxyRevision(1, proxyOrigin);
+  const canonicalSnapshot = admittedRevision(healthyAgent, 1);
+  await insertProxyRevision(canonicalSnapshot.id, canonicalSnapshot.revision, proxyOrigin);
+  const expectedCanonical: AgentRevision = {
+    ...canonicalSnapshot,
+    createdAt: revision.createdAt,
+    networkProxy: { url: proxyOrigin },
+    compute: { ...canonicalSnapshot.compute, networkProxyAdmission: proxyAdmission },
+  };
   const canonicalRevision = await state.read((view) =>
-    view.revisions.findRevision(namespaceId, healthyAgent.id, canonicalRevisionId),
+    view.revisions.findRevision(namespaceId, healthyAgent.id, canonicalSnapshot.id),
   );
   assert.ok(canonicalRevision);
   assert.deepEqual(canonicalRevision.networkProxy, { url: proxyOrigin });
+  assert.equal(canonicalRevision.compute.networkProxyAdmission, proxyAdmission);
+  assert.deepEqual(canonicalRevision, expectedCanonical);
   const proxyRevisionPath = `${agentsPath}/${healthyAgent.id}/revisions`;
-  const proxyRevisionList: AgentRevisionRead[] = [canonicalRevision];
+  const proxyRevisionList: AgentRevisionRead[] = [expectedCanonical];
   for (const [index, [fault, url]] of invalidProxySelections.entries()) {
     const revisionNumber = index + 2;
-    const id = await insertProxyRevision(revisionNumber, url);
+    const id = `rev_${randomUUID()}`;
+    await insertProxyRevision(id, revisionNumber, url);
     const expected: AgentRevisionRead = {
       id,
       namespaceId,
@@ -293,9 +326,6 @@ export async function browseUnreadableState(context: TestContext): Promise<void>
 
   // A previously accepted approval enum survives in PostgreSQL after the
   // application contract changes. Preserve the valid immutable snapshot.
-  const malformedPlugins = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
-  };
   await pool.query(
     "UPDATE occ.agents SET plugins = $2::jsonb, plugin_driver = $3::jsonb WHERE id = $1",
     [agent.id, JSON.stringify(malformedPlugins), JSON.stringify(revision.plugins.driver)],
@@ -545,58 +575,14 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
   });
   assert.equal(namespace.status, 201);
   const namespaceId = namespace.data.id;
-  const configurationValues = defaultAgentConfigurationValues;
-  const { agent, configuration } = await createConfiguredAgent(
+  const { agent } = await createAgentWithLegacyAuth(
+    pool,
     api,
     namespaceId,
     "Native admin successor",
-    configurationValues,
   );
-  assert.deepEqual(configuration.values, configurationValues);
-  // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
-  // it as an older release did, to match the revisions seeded below.
-  await pool.query(
-    "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
-    [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
-  );
-  const plugins: PluginDesiredState = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
-  };
-  // A previously accepted approval enum that the current contract no longer decodes.
-  const malformedPlugins = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
-  };
   const createRevision = (revision: number) =>
-    state.transact((unit) =>
-      unit.revisions.createRevision({
-        id: `rev_${randomUUID()}`,
-        namespaceId,
-        agentId: agent.id,
-        revision,
-        backendId: null,
-        gatewayManagedMode: agent.gatewayManagedMode,
-        configurationId: configuration.id,
-        configurationKind: "agent",
-        configurationGeneration: 1,
-        configuration: configurationValues,
-        harness: {
-          id: "openclaw",
-          version: "1.0.0",
-          mode: "embedded",
-          overrides: {},
-          configuration: {},
-        },
-        compute: {
-          id: "compute-local-development",
-          implementation: "deterministic-local-development",
-        },
-        executionAdmission: { version: 2, mode: "unprotected" },
-        harnessAuth: { method: "runtime" },
-        servicePrincipalId: agent.servicePrincipalId,
-        plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
-        createdAt: new Date().toISOString(),
-      }),
-    );
+    state.transact((unit) => unit.revisions.createRevision(admittedRevision(agent, revision)));
   // Revisions are immutable to the application role, so seed unreadable rows as copies.
   const insertUnreadable = async (template: Pick<AgentRevision, "id">, revision: number) => {
     const id = `rev_${randomUUID()}`;
