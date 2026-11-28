@@ -37,7 +37,20 @@ Namespace control. Check each story at 1440, 1101, 1100, 1024 and 390 px.
    While the access check runs, Open draft is held with the page, and
    focus returns to it.
 6. Open **Pages / Agent detail / Copy Agent ID without clipboard access**. The
-   entire Agent ID is selected and "Copy selection" appears.
+   story simulates an unavailable clipboard. The entire Agent ID should be
+   selected and “Copy selection” should appear.
+
+   With the Console browser test prerequisites installed, run the command
+   below to check a delayed failure. The test selects a word in the Agent
+   name while the copy is pending. When the write fails, the word should
+   stay selected and “Copy the ID manually” should appear. If the selection
+   predates the copy and stays unchanged, the test checks that the Console
+   selects the ID for manual copying.
+
+   ```sh
+   node --test --test-name-pattern="Copy Agent ID gives manual copy instructions when clipboard writes are unavailable" tests/browser/console-page-header.test.ts
+   ```
+
 7. Open **Pages / Create Agent / Choose a starting point** and **Pages / Settings / Account**.
    Create Agent has ← Agents and the Namespace control under its title. Its
    card heading, **Your next teammate**, is a step smaller than the page title
