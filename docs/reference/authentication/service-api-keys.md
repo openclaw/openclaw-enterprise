@@ -17,17 +17,17 @@ upstream credentials managed by [Service accounts](../service-accounts.md).
   one. Fresh bootstrap creates an Installation service administrator. For
   Namespace automation or a member's CLI, create a Namespace service principal
   with `occ iam service-principal create` (`POST
-/namespaces/:namespaceId/iam/service-principals`) and grant it a Role with an
-  AccessBinding; both use the [Namespace IAM API](../authorization.md#manage-namespace-policy).
-  A new service principal holds no grant. You must already hold every grant of
-  the principal whose key you issue or revoke.
+/namespaces/:namespaceId/iam/service-principals`). A new principal can
+  receive a key before it has any grants. To grant access, bind a Role to
+  the principal through the [Namespace IAM API](../authorization.md#manage-namespace-policy).
+  To issue or revoke its key, you must hold every grant the principal currently has.
 - A private directory for credentials. Keep shell tracing disabled, do not print
   keys, and run the examples from the repository root. CLI examples assume the
   [`occ` executable](../../guides/cli.md) is installed and on `PATH`.
 
 ## Issue a service key
 
-If you do not have a human session cookie, [sign in](#sign-in-as-a-human-administrator)
+For the cookie and session key used below, [sign in](#sign-in-as-a-human-administrator)
 or use an [existing service administrator](#manage-keys-with-a-service-administrator).
 The sample issues a 30-day Namespace key into an owner-readable file. Omit
 `namespaceId` only for an Installation-scoped principal.
@@ -37,7 +37,8 @@ umask 077
 export OCC_SERVICE_KEY_DIRECTORY='/secure/occ/service-keys'
 install -d -m 700 "$OCC_SERVICE_KEY_DIRECTORY"
 export OCC_SERVICE_KEY_FILE="$(mktemp "$OCC_SERVICE_KEY_DIRECTORY/key.XXXXXX")"
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
+curl -q --fail-with-body --silent --show-error --cookie "${OCC_SESSION_COOKIE_JAR:?}" \
+  -H @- <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}" \
   "$OCC_URL/api/auth/service-keys" -H "Origin: $OCC_ORIGIN" -H 'Content-Type: application/json' \
   --data '{"servicePrincipalId":"<service-principal-id>","namespaceId":"<namespace-id>","name":"nightly-reader","expiresIn":2592000}' \
   --output "$OCC_SERVICE_KEY_FILE"
@@ -55,8 +56,14 @@ Installation principal, unset `OCC_NAMESPACE`, which the CLI also sends as
 Success returns HTTP `201`. The response contains the credential exactly once in
 `data.key` and a non-secret `data.id` needed to revoke it. Record the key and
 principal IDs separately for recovery; there is no plaintext retrieval endpoint.
-If the request fails, read and then delete the file (it holds the error
-response, or nothing); never give it to an automation client.
+If issuance fails, keep any output file private. Even an interrupted transfer
+can leave part or all of the credential. Do not print the file or give it to
+a client. [Resolve an uncertain outcome](#recover-a-lost-or-exposed-service-key)
+before deleting the file or issuing another key.
+
+If the CLI cannot write or close the file after receiving a key ID, it
+reports that ID and attempts revocation and file removal. Either step can
+fail. If printing the summary fails after the save, the file remains.
 
 ## Use a service key
 
@@ -75,62 +82,130 @@ back to the cookie.
 
 ## Revoke or rotate a service key
 
-To revoke the key in `OCC_SERVICE_KEY_FILE` with the administrator session:
+Confirm the Installation, principal and non-secret key ID. Use the target's
+`serviceKeyId` from an audit event or the unsaved key ID from a CLI error.
+`actorServiceKeyId` identifies the caller. If you have the complete issuance
+file for that key, you can read just `data.id` from it. Never print the file
+or use `data.key` as the ID.
+
+Replace the placeholder with the confirmed ID. This command uses the
+administrator session and encodes the ID as one URL path segment.
 
 ```bash
-OCC_SERVICE_KEY_ID="$(python3 -c 'import json, os, pathlib; print(json.loads(pathlib.Path(os.environ["OCC_SERVICE_KEY_FILE"]).read_text())["data"]["id"])')"
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
-  -H "Origin: $OCC_ORIGIN" \
-  --request DELETE "$OCC_URL/api/auth/service-keys/$OCC_SERVICE_KEY_ID"
+OCC_SERVICE_KEY_ID='<confirmed-key-id>'
+key_path=$(python3 -c '
+import sys
+from urllib.parse import quote
+key_id = sys.argv[1]
+if key_id == "<confirmed-key-id>" or not key_id.strip(".") or "/" in key_id:
+    raise SystemExit("Enter the confirmed key ID")
+print(quote(key_id, safe=""))
+' "$OCC_SERVICE_KEY_ID") &&
+  curl -q --globoff --fail-with-body --silent --show-error \
+    --cookie "${OCC_SESSION_COOKIE_JAR:?}" -H "Origin: $OCC_ORIGIN" \
+    -H @- <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}" \
+    --write-out '\nHTTP %{http_code}\n' \
+    --request DELETE "$OCC_URL/api/auth/service-keys/$key_path"
 ```
 
-`occ service-key revoke ID` makes the same request with a service-key file.
-Success returns HTTP `200` and `data.revoked: true`; subsequent use of the key
-returns `401`. To rotate without interrupting clients, issue a replacement to a
+With an authorized Installation service key, use `occ service-key revoke ID`.
+For the HTTP request, check for `200`, a matching `data.id` and
+`data.revoked: true`. Subsequent use of the revoked key returns `401`. To rotate without interrupting clients, issue a replacement to a
 new private file, switch the clients, verify access, then revoke the old key by
 its recorded ID. OCC does not rotate keys automatically.
 
 ## Sign in as a human administrator
 
-Use a human session for recovery, human-issued keys, and account-only APIs. For
-production, obtain the first administrator’s password through the protected
-bootstrap storage procedure. The following sends it from a file and keeps the
-session cookie in a private directory. Set `OCC_URL` to the approved HTTPS
-endpoint and `OCC_ORIGIN` as in [Requirements](#requirements); without it,
-sign-out returns `403` and the session stays live.
+For production, obtain the administrator’s password from protected bootstrap
+storage. Set `OCC_URL` and [`OCC_ORIGIN`](#requirements). Without the matching
+origin, sign-out returns `403` and the session stays live.
 
-When local startup printed an HTTPS browser console URL, set `OCC_URL` to its
-origin (`https://console.<cluster>.oce.localhost:<port>`, without `/console/`)
-and export `CURL_CA_BUNDLE` as the printed browser CA certificate file; unset it
-when finished. Do not use the loopback API URL there: sign-in returns `200`, but
-the session cookie is `Secure` and scoped to the console's domain, so curl never
-sends it to `http://127.0.0.1` and the next request returns `401`.
+For a local HTTPS console, use its printed origin
+(`https://console.<cluster>.oce.localhost:<port>`, without `/console/`).
+Export `CURL_CA_BUNDLE` with the printed CA certificate path. Unset it when
+finished. Curl can’t send the console’s Secure cookie to `http://127.0.0.1`.
+Without it the session check returns `200` with `data: null`.
+
+Start a fresh Bash shell with jq. Use the stored lowercase email and a private
+password file. Stop on errors. Keep the jar exclusive to this login.
+Password-only sign-in can omit the binding until the first session check.
 
 ```bash
+set +x
 set -o pipefail
 umask 077
-: "${OCC_URL:?Set OCC_URL to the approved HTTPS endpoint or local console origin}"
-: "${OCC_ORIGIN:?Set OCC_ORIGIN to the console origin; see Requirements}"
 export OCC_ADMIN_EMAIL='<first-admin@example.com>'
 export OCC_ADMIN_PASSWORD_FILE='/secure/occ/admin-password'
-OCC_SESSION_DIRECTORY="$(mktemp -d)"
-export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
-python3 -c 'import json, os, pathlib, sys; json.dump({"email": os.environ["OCC_ADMIN_EMAIL"], "password": pathlib.Path(os.environ["OCC_ADMIN_PASSWORD_FILE"]).read_text().rstrip("\n")}, sys.stdout)' |
-  curl --fail-with-body --silent --show-error --cookie-jar "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/api/auth/sign-in/email" -H 'Content-Type: application/json' --data-binary @- --output /dev/null
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/installation"
+
+auth_request() {
+  local status
+  status=$(curl -q --silent --show-error --output "$OCC_SESSION_DIRECTORY/reply" \
+    --write-out '%{http_code}' "$@") && [[ $status == 200 ]]
+}
+
+sign_in() {
+  [[ -z ${OCC_SESSION_DIRECTORY:-} ]] || return 1
+  unset OCC_SESSION_KEY
+  : "${OCC_URL:?}" "${OCC_ORIGIN:?}"
+  OCC_SESSION_DIRECTORY=$(mktemp -d) || return 1
+  export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
+  jq -cn --rawfile p "$OCC_ADMIN_PASSWORD_FILE" \
+    '{email: env.OCC_ADMIN_EMAIL, password: ($p | sub("\r?\n$"; ""))}' |
+    auth_request --cookie-jar "$OCC_SESSION_COOKIE_JAR" -H 'Content-Type: application/json' \
+      --data-binary @- "$OCC_URL/api/auth/sign-in/email" || return 1
+  mv -- "$OCC_SESSION_DIRECTORY/reply" "$OCC_SESSION_DIRECTORY/login" || return 1
+  verify_session
+}
+
+verify_session() {
+  local key
+  local -a binding=()
+  [[ -z ${OCC_SESSION_KEY:-} && -s ${OCC_SESSION_COOKIE_JAR:?} ]] || return 1
+  key=$(jq -ers 'select(length == 1) | .[0].data | select(.authenticated == true) |
+    if has("sessionKey") then .sessionKey | strings | select(test("^[A-Za-z0-9_-]{43}$") and length == 43)
+    else "" end' "$OCC_SESSION_DIRECTORY/login") || return 1
+  if [[ -n $key ]]; then binding=(-H @-); fi
+  auth_request --cookie "$OCC_SESSION_COOKIE_JAR" "${binding[@]}" \
+    "$OCC_URL/api/auth/session" <<<"x-occ-session-key: $key" || return 1
+  OCC_SESSION_KEY=$(jq -ers --slurpfile login "$OCC_SESSION_DIRECTORY/login" '
+    select(length == 1) | .[0].data |
+    select(.authenticated == true and .user.email == env.OCC_ADMIN_EMAIL) |
+    .sessionKey | strings | select(length == 43 and test("^[A-Za-z0-9_-]{43}$")) |
+    select(. == ($login[0].data.sessionKey // .))' "$OCC_SESSION_DIRECTORY/reply")
+}
+sign_in
 ```
 
-For local development, use the configured administrator credentials. Once
-finished, revoke the session and remove its file:
+If the first session read fails transiently, retry only `verify_session` with
+the original files. If verification remains uncertain, preserve them privately
+and contact the [account administrator](../../guides/deploy/credential-lifecycle.md#choose-the-credential-owner).
+Account-wide revocation ends other sessions too.
+
+When finished, confirm sign-out and check the unchanged cookie before cleanup.
+A missing or unsent cookie also yields `data: null`. That alone cannot prove
+revocation.
 
 ```bash
-curl --fail-with-body --silent --show-error \
-  --cookie "$OCC_SESSION_COOKIE_JAR" --cookie-jar "$OCC_SESSION_COOKIE_JAR" \
-  -H "Origin: $OCC_ORIGIN" \
-  --request POST "$OCC_URL/api/auth/sign-out" --output /dev/null
-rm -- "$OCC_SESSION_COOKIE_JAR"
-rmdir -- "$OCC_SESSION_DIRECTORY"
+check_session() {
+  auth_request --cookie "${OCC_SESSION_COOKIE_JAR:?}" -H @- \
+    "${OCC_URL:?}/api/auth/session" <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}"
+}
+
+auth_request --cookie "${OCC_SESSION_COOKIE_JAR:?}" -H @- -H "Origin: ${OCC_ORIGIN:?}" \
+  --request POST "${OCC_URL:?}/api/auth/sign-out" <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}" &&
+  jq -es 'length == 1 and .[0].data.success == true' "$OCC_SESSION_DIRECTORY/reply" >/dev/null &&
+  check_session &&
+  jq -es 'length == 1 and (.[0] | has("data") and .data == null)' "$OCC_SESSION_DIRECTORY/reply" >/dev/null &&
+  unset OCC_SESSION_KEY &&
+  rm -- "$OCC_SESSION_COOKIE_JAR" "$OCC_SESSION_DIRECTORY/login" "$OCC_SESSION_DIRECTORY/reply" &&
+  rmdir -- "$OCC_SESSION_DIRECTORY" &&
+  unset OCC_SESSION_COOKIE_JAR OCC_SESSION_DIRECTORY
 ```
+
+If revocation is uncertain, keep the files private. Run `check_session` and
+inspect `$OCC_SESSION_DIRECTORY/reply` privately after HTTP `200`. Retry only if the original session is still active.
+Never drop the binding or adopt a replacement key. If only file removal failed,
+finish local cleanup.
 
 ## Manage keys with a service administrator
 
@@ -211,21 +286,44 @@ restore grants. Editing the source Secret is not rotation. See
 
 ## Recover a lost or exposed service key
 
-If you retained the key and principal IDs, sign in as a human administrator,
-revoke the old key, then [issue a replacement](#issue-a-service-key). Otherwise,
-have an authorized administrator inspect only non-secret key metadata and IAM
-bindings to identify the key; OCC has no public key-list endpoint. Do not
-export key values, password hashes, sessions, or full table dumps.
+If you know the key and principal IDs, have an authorized administrator
+[revoke that key](#revoke-or-rotate-a-service-key), then
+[issue a replacement](#issue-a-service-key).
+
+A lost response or `503` during issuance can leave a usable key even if you
+received no ID and find no issuance audit event. OCC has no public key-list
+endpoint. Installation administration alone grants no database access.
+
+Without a confirmed ID, ask a database operator with approved read-only
+access to the affected Installation to check non-secret service-key metadata.
+Supply the principal ID, scope, name, approximate issuance time and any
+request ID. Compare the key ID, principal reference, Installation, optional
+Namespace, name and creation time with IAM bindings and available audit
+records. A name alone cannot identify the key.
+
+If access is unavailable or the evidence cannot identify one record, keep
+any output file private and stop before issuing another key. Have an
+authorized administrator revoke only a confirmed match through OCC.
+Do not export key values, password hashes, sessions or full table dumps.
+
+A `503` during revocation can occur before or after deletion. A `404` means
+OCC found no eligible record for that ID in this Installation. Neither status
+alone proves that the original request deleted the key. Verify the Installation,
+key ID and available records before deciding whether to retry.
 
 ## Issuance
 
 `POST /api/auth/service-keys` requires current IAM `administer` on the singleton
-Installation, even for a Namespace key. A key carries every grant of its
-principal, so the caller must also already hold each of that principal's grants
-at the same or a broader scope; otherwise issuance returns `403`. Agent
-`administer` counts for a delegated Agent `read_logs` grant, since both admit log
-reads. An administrator bound only to the exact Installation cannot issue a key for the
-unscoped bootstrap service administrator or for a Namespace principal. The body names an existing
+Installation, even for a Namespace key. Native IAM checks that the caller covers every current grant of the
+target principal at the same or a broader scope. Missing coverage returns
+`403` when the denial audit succeeds. Agent `administer` covers Agent
+`read_logs` because both allow log reads.
+
+An administrator bound only to the exact Installation can issue a key for a
+Namespace principal with no grants. That binding alone cannot cover grants
+on Namespace resources or the bootstrap service administrator's unscoped grants.
+
+The body names an existing
 `servicePrincipalId`, its exact `namespaceId` when scoped, and a nonblank `name`
 of 1–32 characters. Optional `expiresIn` is an integer from 86,400 to
 31,536,000 seconds (1–365 days); omission gives 30 days. Other fields are
@@ -253,7 +351,7 @@ settings; initial delivery uses the [bootstrap settings](../settings/production.
 `DELETE /api/auth/service-keys/:keyId` requires the same authority as issuance.
 It returns `200` with `data: {"id":"<key-id>","revoked":true}`. Subsequent
 requests fail across controller instances; a request already authorized can
-finish. An unknown or removed key returns `404`. Revoking an issuer’s key does
+finish. See [recovery](#recover-a-lost-or-exposed-service-key) for `404` or `503`. Revoking an issuer’s key does
 not revoke other keys issued through it or delete a principal or its bindings.
 
 HTTP issuance and revocation emit [audit events](../../guides/topics/audit-log.md)
@@ -274,5 +372,5 @@ but does not restore the deleted key.
 | Missing, invalid, expired, or revoked credential; key used for account creation or bootstrap               | `401 UNAUTHENTICATED`.                                                |
 | Missing identity or exact grant, changed principal scope, cross-Namespace request, or matching Restriction | `403 FORBIDDEN`.                                                      |
 | Unknown, Agent-owned, or incorrectly scoped principal at issuance; invalid name, lifetime, or fields       | `400 INVALID_REQUEST`.                                                |
-| Unknown or removed key at revocation                                                                       | `404 NOT_FOUND`.                                                      |
+| No eligible key for this ID in this Installation at revocation                                             | `404 NOT_FOUND`.                                                      |
 | Required authentication, IAM, or audit dependency unavailable                                              | `503 DEPENDENCY_UNAVAILABLE`; do not retry with a broader credential. |

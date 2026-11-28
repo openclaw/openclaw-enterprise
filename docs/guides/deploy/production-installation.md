@@ -275,51 +275,18 @@ directory. Sign in with `bootstrap.adminEmail` and its `initial-admin-password`.
 Its `bootstrap-client-key.json` contains only `data.key`, not issuance metadata
 or an Installation ID. For existing-Secret mode, set `OCC_BOOTSTRAP_KEY_FILE` to
 your [prepared CLI file](../../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
-This example authenticates a session copy:
+In the original Installation shell, [authenticate with the OCC CLI](../cli.md#authenticate-after-a-production-install).
+The procedure keeps a supplied file selected or prepares a temporary session
+copy. For generated inputs, it checks the original receipt, installation
+attempt and cluster before using the key.
 
-```bash
-export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
-if [ -z "${OCC_BOOTSTRAP_KEY_FILE:-}" ]; then
-  BOOTSTRAP_INPUT_DIRECTORY="$(jq -er .inputDirectory "$INSTALL_RECEIPT_DIRECTORY/bootstrap-secret.json")" || exit 1
-  export OCC_BOOTSTRAP_KEY_FILE="$BOOTSTRAP_INPUT_DIRECTORY/bootstrap-client-key.json"
-fi
-umask 077
-prepare_occ_service_key() {
-  local working_directory
-  unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
-  if [ -z "${OCC_BOOTSTRAP_KEY_FILE:-}" ] || [ -z "${OCC_URL:-}" ]; then
-    printf '%s\n' 'Set the production URL and retained bootstrap key first.' >&2
-    return 1
-  fi
-  if ! working_directory="$(mktemp -d /tmp/occ-service-key.XXXXXXXX)"; then
-    printf '%s\n' 'Could not create the working key directory; stop here.' >&2
-    return 1
-  fi
-  if ! install -m 600 "$OCC_BOOTSTRAP_KEY_FILE" "$working_directory/occ-service-key.json"; then
-    rm -f -- "$working_directory/occ-service-key.json"
-    rmdir -- "$working_directory"
-    printf '%s\n' 'Could not create the working key copy; stop here.' >&2
-    return 1
-  fi
-  if ! OCC_SERVICE_KEY_FILE="$working_directory/occ-service-key.json" occ installation get; then
-    rm -f -- "$working_directory/occ-service-key.json"
-    rmdir -- "$working_directory"
-    printf '%s\n' 'Could not authenticate; the temporary key copy was removed. Stop here.' >&2
-    return 1
-  fi
-  export OCC_SERVICE_KEY_DIRECTORY="$working_directory"
-  export OCC_SERVICE_KEY_FILE="$working_directory/occ-service-key.json"
-}
-prepare_occ_service_key
-```
-
-The authenticated response supplies the server-owned Installation `ID`.
-Before the first image update, use that ID to
-[bind upgrades to this Kubernetes Installation](production-upgrade.md#bind-the-installation-once).
-API and worker cannot read the bootstrap credentials. Keep the protected source
-because initialization does not reissue a lost key. The
-[operator cleanup](production-agents.md#end-the-operator-session) removes the
-session copy.
+Stop on failure. Troubleshoot authentication without reinstalling. After a
+successful authenticated response, use its server-owned
+Installation `ID` to [bind upgrades to this Kubernetes Installation](production-upgrade.md#bind-the-installation-once)
+before the first image update. The API and worker cannot read the bootstrap
+credentials. Keep the protected original because initialization cannot reissue a
+lost key. Use [operator cleanup](production-agents.md#end-the-operator-session)
+only for the session copy created here.
 
 After authentication, follow [Namespace and Agent deployment](production-agents.md),
 including its [model-response check](production-agents.md#verify-production-workloads).
