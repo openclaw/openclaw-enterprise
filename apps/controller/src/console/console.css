@@ -2971,9 +2971,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .agent-table :is(th, td):where(:last-child) {
   padding-inline-end: var(--space-4);
 }
-.agent-table th {
-  white-space: nowrap;
-}
 .agent-table tbody tr:last-child td {
   border-bottom: 0;
 }
@@ -2992,12 +2989,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   vertical-align: top;
   font-size: var(--text-md);
 }
-/* A set width and a one-line note, so a landing deployment read neither grows its row nor
-   re-flows the columns (finding 1488). The note adds nothing to the column's width. */
+/* Reserve space across deployment reads without crowding the Agent name in split windows. */
 .agent-table .agent-deployment::before {
   content: "";
   display: block;
-  width: 14rem;
+  width: min(14rem, 14vw);
 }
 /* With the Actions column the table has no spare width at common desktop sizes, so the version
    cell keeps one width whether it reads or shows a number: "Reading version…" wraps inside the
@@ -3040,19 +3036,17 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-/* A name with a run too long to wrap (collection.mjs marks it; a name may be 200 unbroken
-   characters) breaks anywhere within the width its ID takes, so it does not widen the table
-   (finding 1955). Other names wrap as before. */
+/* Cap unbroken names at the same width as the ID on desktop. */
 .agent-table .agent-name-unbroken {
   display: inline-block;
   max-width: 310px;
-  overflow-wrap: anywhere;
 }
 /* Name links underline on hover and focus. Revision and deployment links keep their underline. */
 .agent-table td:first-child > a {
   color: var(--color-link);
   font-size: var(--text-base);
   font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
   text-decoration-color: transparent;
 }
 .agent-table td:first-child > a:hover,
@@ -3062,6 +3056,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .agent-table .badge {
   display: inline-block;
   margin: var(--space-2) var(--space-2) 0 0;
+  white-space: normal;
 }
 .resource-row-actions {
   display: flex;
@@ -3847,9 +3842,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     font: var(--text-md) / var(--text-md--line-height) var(--font-mono);
   }
 }
-/* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
-   name (`data-label`), so nothing scrolls sideways. The header row stays for screen readers. */
-@media (max-width: 760px) {
+/* Keep each Agent's identity and labelled details together where the table has less room.
+   The header row stays for screen readers. */
+@media (max-width: 1100px) {
   .agent-table,
   .agent-table tbody {
     display: block;
@@ -3864,7 +3859,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .agent-table tbody tr {
     display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
     gap: var(--space-2) var(--space-3);
     padding: var(--space-4);
     border-bottom: 1px solid var(--color-border);
@@ -3873,19 +3867,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     border-bottom: 0;
   }
   .agent-table td {
-    grid-column: 1 / -1;
     min-width: 0;
     padding: 0;
     border-bottom: 0;
     overflow-wrap: anywhere;
   }
-  .agent-table td[data-label] {
-    display: grid;
-    grid-template-columns: subgrid;
-    align-items: baseline;
-    row-gap: var(--space-1);
-  }
   .agent-table td[data-label]::before {
+    display: block;
     content: attr(data-label);
     /* The hidden header row already names the column for screen readers. */
     content: attr(data-label) / "";
@@ -3893,6 +3881,141 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     color: var(--color-text-muted);
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
+  }
+  .agent-table .resource-id {
+    max-width: none;
+  }
+  .agent-table .agent-name-unbroken {
+    display: inline;
+  }
+}
+.agent-row-action-label {
+  display: none;
+}
+
+@media (760px < width <= 1100px) {
+  .agent-table tbody tr {
+    /* Leave room for labelled actions on narrow windows without shrinking the name on wide ones. */
+    --agent-field-width: min(25%, 7rem);
+    grid-template-columns: minmax(0, 2.5fr) minmax(var(--agent-field-width), 0.8fr) minmax(
+        var(--agent-field-width),
+        1.2fr
+      );
+    grid-template-areas:
+      "identity mode current"
+      "deployment created created"
+      "deployment actions actions";
+    grid-template-rows: auto auto minmax(min-content, 1fr);
+    row-gap: var(--space-1);
+    padding-block: var(--space-2);
+  }
+  .agent-table tbody tr:has(.agent-name-unbroken) {
+    grid-template-areas:
+      "identity identity identity"
+      "mode current current"
+      "deployment created created"
+      "deployment actions actions";
+    grid-template-rows: auto auto auto minmax(min-content, 1fr);
+  }
+  .agent-table td:first-child {
+    grid-area: identity;
+  }
+  .agent-table .agent-execution-mode {
+    grid-area: mode;
+  }
+  .agent-table .agent-current-version {
+    grid-area: current;
+  }
+  /* Keep deployment details beside the date and actions, with room for a pending read. */
+  .agent-table .agent-deployment {
+    display: grid;
+    grid-area: deployment;
+    grid-template-rows: auto auto minmax(
+        calc(2 * var(--text-sm) * var(--text-sm--line-height)),
+        auto
+      );
+    align-content: start;
+  }
+  .agent-table .agent-deployment > a {
+    justify-self: start;
+  }
+  .agent-table .agent-deployment-note {
+    overflow: visible;
+    white-space: normal;
+    margin-top: 0;
+  }
+  .agent-table .agent-created {
+    display: grid;
+    grid-area: created;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    column-gap: var(--space-2);
+  }
+  .agent-table .agent-row-actions-cell {
+    display: grid;
+    grid-area: actions;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    align-content: start;
+    column-gap: var(--space-2);
+  }
+  .agent-table .resource-row-actions {
+    min-inline-size: 0;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .agent-table :is(.agent-row-action, .icon-button-spacer) {
+    flex: none;
+    inline-size: min(100%, max(4.5rem, 5.5em));
+  }
+  .agent-table .agent-row-action {
+    scroll-margin-block: var(--space-2);
+    gap: var(--space-1);
+    min-block-size: 34px;
+    block-size: auto;
+    padding: var(--space-1);
+  }
+  .agent-row-action > svg {
+    flex: none;
+  }
+  .agent-row-action-label {
+    display: inline;
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+  /* Keep permission guidance reachable with a full-strength focus ring. */
+  .agent-table .agent-row-action:is(:disabled, [aria-disabled="true"]) {
+    color: var(--color-text-muted);
+    background: var(--color-surface-2);
+    border: 1px dashed var(--color-border-strong);
+    opacity: 1;
+  }
+  .agent-table .agent-row-action[aria-disabled="true"] > svg {
+    opacity: 1;
+  }
+  .agent-table .row-action-note {
+    grid-column: 1 / -1;
+    height: auto;
+    min-height: 1lh;
+    margin-top: var(--space-1);
+    line-height: var(--text-sm--line-height);
+    overflow: visible;
+    white-space: normal;
+  }
+}
+/* On phones, put each field beside its label and give both the full row. */
+@media (max-width: 760px) {
+  .agent-table tbody tr {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+  .agent-table td {
+    grid-column: 1 / -1;
+  }
+  .agent-table td[data-label] {
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    row-gap: var(--space-1);
   }
   /* The outcome link and its note line keep two lines reserved while the read is pending, so a
      landing read does not grow the row (finding 1488). */
@@ -3911,11 +4034,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .agent-table .resource-id {
     margin-top: var(--space-2);
-    max-width: none;
-  }
-  .agent-table .agent-name-unbroken {
-    display: inline;
-    overflow-wrap: inherit;
   }
   .agent-table .agent-deployment-note {
     margin-top: 0;

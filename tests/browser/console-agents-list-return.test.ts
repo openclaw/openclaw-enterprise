@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Request, Route } from "playwright";
+import { Check, Clean } from "typebox/value";
 
 import {
   AgentListResponse,
+  AgentReadSchema,
   AgentRevisionListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 
@@ -920,23 +922,19 @@ void test("A list left again during its rows' rereads is reused on the next retu
   await assertCompletedDeployments(page, agents);
 });
 
-// On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so
-// 2.5 columns showed and IDs broke after every character (UX plan C5). Under 760 px each Agent is
-// a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
-// 60-character names fit down to 320 px, every column name shows, IDs break only after a hyphen
-// or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
-// Two names are the longest allowed with no break in them (200 characters, one joined by no-break
-// spaces): each wraps inside its row at every width, and above 760 px within its ID's 310 px, so
-// it does not widen the table. The other names wrap as before, only between words (findings 1955,
-// 1956).
-void test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
+// Labelled rows keep each Agent's identity and details in view at split desktop and phone
+// widths. A dozen Agents fit down to 320 px, even with long names and IDs. On wide screens
+// the longest names without break opportunities wrap within the ID width.
+void test("The Agents list fits labelled rows on split desktops and phones and still opens the Agent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
+  // This word can overflow the identity column without qualifying for the long-name marker.
+  const longName = "Phone Agent 02 WORKFLOWORCHESTRATOR";
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
     // Two names are the longest allowed with no break in them: one in a single run, one joined
     // by no-break spaces, which do not let a line wrap either.
     const unbroken = index >= AGENTS - 1;
-    const name = unbroken
+    let name = unbroken
       ? index === AGENTS
         ? "W".repeat(200)
         : `W${"WWWW\u00a0".repeat(39)}WWWW`
@@ -944,6 +942,9 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
           0,
           60,
         );
+    if (index === 2) {
+      name = longName;
+    }
     // The default harness Secret is named after its Agent, so it would exceed the name limit.
     const agent = await fixture.createAgent(
       namespace.id,
@@ -967,6 +968,7 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
     agents.push({ ...agent, name });
   }
   assert.equal(required(agents[0]).name.length, 60);
+  const target = required(agents[1]);
   const columns = [
     "Agent",
     "Execution mode",
@@ -975,14 +977,34 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
     "Created",
     "Actions",
   ];
-  for (const width of [390, 360, 320, 600, 760, 761, 1024, 1440]) {
-    const desktop = width > 760;
+  for (const width of [390, 360, 320, 600, 760, 761, 920, 1024, 1100, 1101, 1440]) {
+    const wideTable = width > 1100;
     const { page } = await newPage(t, fixture, {
       browser,
-      context: { viewport: { width, height: desktop ? 900 : 844 } },
+      context: { viewport: { width, height: width > 760 ? 900 : 844 } },
     });
     // Each row keeps its height when its deployment read lands (finding 1488).
     const rows = await holdRowReads(t, page, namespace);
+    if (width === 1101) {
+      // Exercise the warning badge, keeping the real response except for this Agent's settings.
+      await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, (route) =>
+        fulfillPatchedJson(route, AgentListResponse, (body) => ({
+          ...body,
+          data: body.data.map((agent) => {
+            if (agent.id !== target.id) {
+              return agent;
+            }
+            const unreadable = AgentReadSchema.anyOf[1];
+            const metadata = Clean(unreadable, {
+              ...agent,
+              configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+            });
+            assert.ok(Check(unreadable, metadata));
+            return metadata;
+          }),
+        })),
+      );
+    }
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
     await table.getByRole("link", { name: required(agents[0]).name }).waitFor();
@@ -1045,21 +1067,30 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
         }
         const breaks = lineBreaks(id.firstChild);
         const link = firstCell.querySelector("a");
-        if (!link) {
-          throw new Error("Agent link is missing");
+        const linkText = link?.firstChild;
+        if (!link || !(linkText instanceof Text)) {
+          throw new Error("Agent link text is missing");
         }
+        // Include the actual name, ID and badge text, even when it spills out of its element.
+        const contents = document.createRange();
+        contents.selectNodeContents(firstCell);
+        const identity = contents.getBoundingClientRect();
         const name = link.getBoundingClientRect();
+        const firstLetter = document.createRange();
+        firstLetter.setStart(linkText, 0);
+        firstLetter.setEnd(linkText, 1);
         const first = firstCell.getBoundingClientRect();
+        const { paddingLeft, paddingRight } = globalThis.getComputedStyle(firstCell);
         return {
           // A name with no line-breaking space (a no-break space does not count).
           unbroken: !/[ ]/.test(link.textContent),
           name: {
+            text: link.textContent,
             width: name.width,
-            inside: name.left >= first.left - 0.5 && name.right <= first.right + 0.5,
-            breaks: lineBreaks(link.firstChild),
-            wrap: (({ display, overflowWrap }) => `${display} ${overflowWrap}`)(
-              globalThis.getComputedStyle(link),
-            ),
+            inside: identity.left >= first.left - 0.5 && identity.right <= first.right + 0.5,
+            breaks: lineBreaks(linkText),
+            firstLetterWidth: firstLetter.getBoundingClientRect().width,
+            columnWidth: firstCell.clientWidth - parseFloat(paddingLeft) - parseFloat(paddingRight),
           },
           overflows: cells.some((cell) => {
             const box = cell.getBoundingClientRect();
@@ -1068,7 +1099,11 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
           labels: cells.slice(1).map((cell) => {
             const before = globalThis.getComputedStyle(cell, "::before");
             const range = document.createRange();
-            range.selectNodeContents(cell);
+            range.selectNodeContents(
+              globalThis.innerWidth > 760 && globalThis.innerWidth <= 1100
+                ? (cell.querySelector(".resource-row-actions") ?? cell)
+                : cell,
+            );
             const content = range.getBoundingClientRect();
             const box = cell.getBoundingClientRect();
             return {
@@ -1077,7 +1112,6 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
                 before.display !== "none" &&
                 before.visibility === "visible" &&
                 before.content.startsWith(JSON.stringify(cell.dataset.label)),
-              // The value starts beside its label (760 px and under) or below it (520 and under).
               beside: content.left - box.left > 40,
               below: content.top - box.top >= 12,
             };
@@ -1146,11 +1180,7 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
       };
     });
     assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
-    // At 761 and 1024 px these rows' six columns still scroll inside their card (finding 1907),
-    // but the unbroken name makes the table no wider than its other rows do.
-    if (width !== 761 && width !== 1024) {
-      assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
-    }
+    assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
     assert.ok(
       layout.width <= layout.ordinaryWidth + 2,
       `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
@@ -1161,26 +1191,36 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
     );
     assert.equal(layout.rows.length, AGENTS);
     assert.equal(layout.rows.filter((row) => row.unbroken).length, 2, `${width}: unbroken rows`);
+    if (width === 320 || width === 1101) {
+      assert.ok(
+        required(layout.rows[0]).name.breaks.length > 0,
+        `${width}: the ordinary name wraps`,
+      );
+    }
     for (const [index, row] of layout.rows.entries()) {
       assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
-      assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
-      if (desktop && row.unbroken) {
+      assert.equal(row.name.inside, true, `${width}: row ${index} identity overflows its cell`);
+      if (wideTable && row.unbroken) {
         assert.ok(row.name.width <= 310.5, `${width}: the unbroken name is ${row.name.width} px`);
       }
       // A stacked row gives every name its full width.
-      if (width >= 600 && !desktop && row.unbroken) {
-        assert.ok(row.name.width > 400, `${width}: the unbroken name is ${row.name.width} px`);
+      if (width >= 600 && !wideTable && row.unbroken) {
+        assert.ok(
+          row.name.width + row.name.firstLetterWidth + 1 >= row.name.columnWidth,
+          `${width}: the ${row.name.width} px name does not use the ${row.name.columnWidth} px column`,
+        );
       }
       // Ordinary names wrap as they did before, only between words.
-      if (!row.unbroken) {
-        assert.equal(
-          row.name.wrap,
-          desktop ? "inline normal" : "inline anywhere",
-          `${width}: row ${index} name wrap`,
-        );
+      if (!row.unbroken && row.name.text !== longName) {
         for (const character of row.name.breaks) {
           assert.equal(character, " ", `${width}: row ${index} name breaks inside a word`);
         }
+      }
+      if (row.name.text === longName && width === 1101) {
+        assert.ok(
+          row.name.breaks.some((character) => /[a-z]/i.test(character)),
+          `${width}: the long token must wrap to leave room for the other columns`,
+        );
       }
       assert.deepEqual(
         row.labels.map(({ label }) => label),
@@ -1188,14 +1228,16 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
         `${width}: row ${index} labels`,
       );
       for (const { label, shown, beside, below } of row.labels) {
-        if (desktop) {
+        if (wideTable) {
           // The desktop table names its columns in the header row instead.
           assert.equal(shown, false, `${width}: ${label} labelled in the cell`);
         } else {
           assert.equal(shown, true, `${width}: row ${index} hides ${label}`);
+          const inlineLabel =
+            width > 520 && (width <= 760 || label === "Actions" || label === "Created");
           assert.deepEqual(
             { beside, below },
-            width > 520 ? { beside: true, below: false } : { beside: false, below: true },
+            { beside: inlineLabel, below: !inlineLabel },
             `${width}: row ${index} ${label} value overlaps its label`,
           );
         }
@@ -1217,12 +1259,24 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
           `${width}: row ${index} revision colour`,
         );
       }
-      assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
+      assert.equal(row.display, wideTable ? "table-row" : "grid", `${width}: row display`);
     }
-    assert.equal(layout.headerShown, desktop, `${width}: header row`);
+    assert.equal(layout.headerShown, wideTable, `${width}: header row`);
+    const targetLink = table.getByRole("link", { name: target.name, exact: true });
+    if (width === 1101) {
+      const targetRow = table.getByRole("row").filter({ hasText: target.name });
+      await targetRow.getByText("Saved configuration unreadable", { exact: true }).waitFor();
+      await targetLink.focus();
+      const controls = await targetRow.locator("a, button:not(:disabled)").all();
+      for (const control of controls.slice(1)) {
+        await page.keyboard.press("Tab");
+        assert.ok(await hasFocus(control));
+      }
+      assert.ok(await hasFocus(targetRow.getByRole("button", { name: `Delete ${target.name}` })));
+      assert.equal(await page.locator(".table-scroll").evaluate((node) => node.scrollLeft), 0);
+    }
     // The row's name still opens its Agent.
-    const target = required(agents[1]);
-    await table.getByRole("link", { name: target.name, exact: true }).click();
+    await targetLink.click();
     await page.waitForURL(`**/console/agents/${target.id}**`);
     await page
       .locator(settledView)
@@ -1231,9 +1285,9 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
   }
 });
 
-// A name the browser cannot wrap sets the desktop table's width unless it is marked to break
-// anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
-// and the test measures it again: each name is marked exactly when the longest run the browser
+// The marker caps the desktop width of long unbroken names at the ID width (finding 1955).
+// Each case exercises a break point Chromium was measured to use (finding 1982).
+// The test measures it again: each name is marked exactly when the longest run the browser
 // keeps on one line (spaces aside) has 21 or more characters. A hyphen-minus between ASCII digits is
 // a break ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is
 // not, nor is a hyphen-minus before most other digits or a dash that starts a word. A run of em dashes breaks only at its
@@ -1455,7 +1509,7 @@ void test("Agents list marks names with no break opportunity, hyphen and dash ru
       assert.ok(shown);
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
-      if (entry.unbroken) {
+      if (width === 1440 && entry.unbroken) {
         assert.ok(shown.width <= 310.5, `${label} the unbroken name is ${shown.width} px`);
       }
     }

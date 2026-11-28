@@ -131,7 +131,11 @@ test("the console breakpoints are the documented 520, 760 and 1100 px (design-la
   const widths = [...(consoleCss + channelsCss).matchAll(/@media([^{]*)\{/g)].flatMap(
     ([, prelude]) => {
       assert.ok(prelude !== undefined);
-      return [...prelude.matchAll(/width:\s*(\d+)px/g)].map(([, px]) => Number(px));
+      // A range such as (760px < width <= 1100px) has two boundaries.
+      const features = prelude.match(/\([^()]*\bwidth\b[^()]*\)/gi) ?? [];
+      return features.flatMap((feature) =>
+        [...feature.matchAll(/(\d+(?:\.\d+)?)px\b/gi)].map(([, px]) => Number(px)),
+      );
     },
   );
   assert.deepEqual(

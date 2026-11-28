@@ -596,6 +596,7 @@ const authoredScenarios = {
     description:
       "One Agent has unreadable saved plugin selections. Both Agents remain in the list, and the affected row shows a warning. This is simulated API data, not database recovery proof.",
     steps: [
+      "At 1101 px, Tab through the Research assistant row to Stop and Delete, then Shift+Tab back. Keep the name, ID, warning and focus outline in view together. Repeat at 1100 px, where Stop and Delete have visible captions, and at phone width.",
       "Open Research assistant and select Open draft. Its saved settings show a repair banner without editing or deployment controls.",
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],
@@ -755,11 +756,11 @@ const authoredScenarios = {
     deployed: true,
     readOnlyPermissionSummary: true,
     description:
-      "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
+      "The permission summary says this caller can neither stop nor delete these Agents. Each row makes those actions unavailable and explains why before any confirmation.",
     steps: [
-      "Narrow the desktop view until Actions is off screen. Scroll the table sideways to reach it. The sidebar and page heading stay in place.",
-      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
-      "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
+      "At 761, 920 and 1100 px, find each Agent's name, ID, labelled details and Actions without scrolling sideways. Stop and Delete appear as button captions beside their icons.",
+      "Tab to Stop and Delete, then Shift+Tab back. Each unavailable button has a dashed border and a complete focus outline. Keep the Agent name and grant note in view. Its accessible name includes the caption and Agent name; its accessible description gives the whole reason. Enter, Space or a click opens no confirmation.",
+      "Find Needs operate and delete below the actions. Hover the note for the full explanation, which names both grants and an Installation administrator.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
@@ -1154,9 +1155,10 @@ const authoredScenarios = {
     deployed: true,
     agentName: "ResearchAssistantForTheQuarterlyReleaseReviewAndSignOff".repeat(4).slice(0, 200),
     description:
-      "One Agent has the longest allowed name, 200 characters with no space. The name wraps within the width of its ID, so the other columns keep their places.",
+      "One Agent has the longest allowed name, 200 characters with no space. The name wraps without widening the table. In the split desktop layout it uses the full row width above the details.",
     steps: [
-      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+      "At 1101 px, the table does not scroll sideways, and every column shows beside the long name.",
+      "At 761, 920 and 1100 px, check that the full name wraps above the details and the ID stays visible. Tab and Shift+Tab through the row actions; keep the named Agent and the complete focus outline in view.",
       "Tab to the long name and press Enter: the Agent opens.",
     ],
   } satisfies LocalScenario,
@@ -1248,11 +1250,11 @@ const authoredScenarios = {
     bootstrapFailure: true,
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     description:
-      "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
+      "The list shows the newest visible failure beside the current version, without asserting serving health. At split desktop widths the full failure reason wraps in the row. Its title and the Agent page also give the whole text.",
     steps: [
       'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
-      "Compare the current version with the failed deployment. The failure reason uses the error color. Hover it to read the full message.",
-      "Tab between the Agent and version links. Check the highlight follows the row and the focused link has its own outline.",
+      "Compare the current version with the failed deployment. The failure reason uses the error color. At 920 px, read the full reason in the row; if another layout elides it, hover it or open the Agent page for the full message.",
+      "At 761, 920 and 1100 px, use Tab and Shift+Tab between the Agent, version links and row actions. Check that the Agent name, action caption and complete focus outline stay in view.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   } satisfies LocalScenario,

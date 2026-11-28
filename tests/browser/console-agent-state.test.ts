@@ -3753,13 +3753,27 @@ for (const width of [1440, 390]) {
   });
 }
 
+async function scrollAgentsTable(page: Page, constrain: boolean): Promise<number> {
+  const scrolledLeft = await page.locator(".table-scroll").evaluate((node, constrain) => {
+    // A redraw replaces the scroller. Limit its parent to exercise restoring a nonzero offset.
+    if (constrain && node.parentElement) {
+      node.parentElement.style.maxInlineSize = "500px";
+    }
+    node.scrollLeft = node.scrollWidth;
+    return node.scrollLeft;
+  }, constrain);
+  assert.equal(scrolledLeft > 0, constrain, "only the constrained table should scroll");
+  return scrolledLeft;
+}
+
 test("Agents list row actions stop and delete an Agent through the real API", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Row actions", { ready: true });
   const running = await fixture.createAgent(namespace.id, "Running Agent", nativeValues("run"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, running.id);
-  const draft = await fixture.createAgent(namespace.id, "Draft Agent", nativeValues("draft"));
+  const draftName = "Draft Agent for InterdepartmentalDocumentation";
+  const draft = await fixture.createAgent(namespace.id, draftName, nativeValues("draft"));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
@@ -3771,15 +3785,17 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   await stop.waitFor();
   // A new Agent is created with a stopped requested state and no version, so like Agent detail
   // its row offers no Stop until a first deploy; Delete stays available.
-  await draftRow.getByRole("button", { name: "Delete Draft Agent" }).waitFor();
-  assert.equal(await draftRow.getByRole("button", { name: "Stop Draft Agent" }).count(), 0);
+  await draftRow.getByRole("button", { name: `Delete ${draftName}` }).waitFor();
+  assert.equal(await draftRow.getByRole("button", { name: `Stop ${draftName}` }).count(), 0);
   await waitForEnabled(stop);
   // Only a stop with a selected version is labelled; a never-deployed draft reads "No current version".
   assert.equal(await draftRow.getByText("Stop requested", { exact: true }).count(), 0);
   assert.equal(await runningRow.getByText("Stop requested", { exact: true }).count(), 0);
   requests.length = 0;
 
-  // Cancelling the confirmation sends nothing and returns focus to the row's icon.
+  await page.setViewportSize({ width: 1101, height: 844 });
+  const scrolledLeft = await scrollAgentsTable(page, true);
+  // Cancelling the confirmation sends nothing and returns focus to the same visible icon.
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
   await expectConfirmationAgentId(dialog, running.id);
@@ -3791,20 +3807,6 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   await dialog.waitFor({ state: "hidden" });
   assert.equal(await stop.evaluate((node) => node.ownerDocument.activeElement === node), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-
-  // In a narrow window above the phone layout (where rows stack), the table scrolls sideways to
-  // reach Actions. Accepting a row action redraws the table, which must keep that position
-  // instead of jumping back to the names.
-  await page.setViewportSize({ width: 800, height: 844 });
-  const scrolledLeft = await page.evaluate(() => {
-    const scroller = globalThis.document.querySelector(".table-scroll");
-    if (!scroller) {
-      throw new Error("Missing table scroller");
-    }
-    scroller.scrollLeft = scroller.scrollWidth;
-    return scroller.scrollLeft;
-  });
-  assert.ok(scrolledLeft > 0, "the narrow table should scroll horizontally");
   await stop.click();
   dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
   const stopResponse = page.waitForResponse(
@@ -3880,12 +3882,15 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   const untouched = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${draft.id}`);
   assert.equal(agentState(untouched.data).status, "active");
   assert.equal(
-    await draftRow.getByRole("button", { name: "Delete Draft Agent" }).isDisabled(),
+    await draftRow.getByRole("button", { name: `Delete ${draftName}` }).isDisabled(),
     false,
   );
 });
 
-for (const action of ["Stop", "Delete"]) {
+for (const [action, width] of [
+  ["Stop", 1101],
+  ["Delete", 920],
+] as const) {
   test(`Agents list cannot confirm ${action} from a response naming a different Agent`, async (t) => {
     const { fixture, namespace } = await createReadyConsoleNamespace(t, `Uncertain ${action}`);
     const target = await fixture.createAgent(
@@ -3894,7 +3899,11 @@ for (const action of ["Stop", "Delete"]) {
       nativeValues("target"),
     );
     await fixture.seedActiveAgentRevision(namespace.id, target.id);
-    const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
+    const other = await fixture.createAgent(
+      namespace.id,
+      "Other Agent for InterdepartmentalDocumentation",
+      nativeValues("other"),
+    );
     const { page } = await newPage(t, fixture);
     await login(page, fixture, listUrl(namespace.id));
     const requests = apiRequests(page, fixture.origin);
@@ -3927,18 +3936,9 @@ for (const action of ["Stop", "Delete"]) {
 
     const targetRow = page.getByRole("row").filter({ hasText: target.name });
     const invoke = targetRow.getByRole("button", { name: `${action} ${target.name}` });
-    // A narrow window above the phone layout: the table scrolls sideways to reach Actions.
-    await page.setViewportSize({ width: 800, height: 844 });
+    await page.setViewportSize({ width, height: 844 });
     await invoke.waitFor();
-    const scrolledLeft = await page.evaluate(() => {
-      const scroller = globalThis.document.querySelector(".table-scroll");
-      if (!scroller) {
-        throw new Error("Missing table scroller");
-      }
-      scroller.scrollLeft = scroller.scrollWidth;
-      return scroller.scrollLeft;
-    });
-    assert.ok(scrolledLeft > 0, "the narrow table should scroll horizontally");
+    const scrolledLeft = await scrollAgentsTable(page, width === 1101);
     await invoke.click();
     const dialog = page.getByRole("dialog", { name: `${action} ${target.name}?` });
     await dialog
@@ -3954,8 +3954,8 @@ for (const action of ["Stop", "Delete"]) {
       `the response for ${other.name} must not change that row`,
     );
     assert.equal(await invoke.isDisabled(), true);
-    // The unknown outcome disables the icon natively (its reason is the alert above the table),
-    // so focus falls back to the Agent's name, off-screen to the left, without scrolling the table.
+    // The unknown outcome disables the icon natively. Focus falls back to the Agent's name
+    // without moving the table, and the split layout keeps the link in view.
     assert.equal(
       await invoke.evaluate((node) => {
         if (!(node instanceof HTMLButtonElement)) {
@@ -3969,6 +3969,21 @@ for (const action of ["Stop", "Delete"]) {
       (name) => globalThis.document.activeElement?.textContent === name,
       target.name,
     );
+    if (width === 920) {
+      assert.equal(
+        await targetRow.getByRole("link", { name: target.name, exact: true }).evaluate((node) => {
+          const box = node.getBoundingClientRect();
+          return (
+            box.left >= 0 &&
+            box.right <= globalThis.innerWidth &&
+            box.top >= 0 &&
+            box.bottom <= globalThis.innerHeight
+          );
+        }),
+        true,
+        "focus returned to the visible Agent name",
+      );
+    }
     assert.equal(
       await page.evaluate(() => {
         const scroller = globalThis.document.querySelector(".table-scroll");
@@ -4114,8 +4129,8 @@ test("Agents list row actions explain missing access and still report a refused 
 
   await login(page, fixture, listUrl(namespace.id), person.credentials);
   const row = page.getByRole("row").filter({ hasText: "Guarded Agent" });
-  const stop = row.getByRole("button", { name: "Stop Guarded Agent" });
-  const remove = row.getByRole("button", { name: "Delete Guarded Agent" });
+  const stop = row.getByRole("button", { name: "Stop Guarded Agent", exact: true });
+  const remove = row.getByRole("button", { name: "Delete Guarded Agent", exact: true });
 
   // A refusal that arrives while the dialog is open disables confirmation and moves focus to
   // Cancel. The redraw replaced the icon that opened the dialog, so closing it must land focus
@@ -4160,21 +4175,113 @@ test("Agents list row actions explain missing access and still report a refused 
   );
   assert.equal(await note.getAttribute("title"), bothDenied);
 
-  // On a narrow desktop the table scrolls to the icons. Their full descriptions
-  // must stay inside the table even when the actions column is off screen.
-  await page.setViewportSize({ width: 800, height: 844 });
-  await row.getByRole("link", { name: "Guarded Agent", exact: true }).focus();
-  assert.ok(
-    await page.evaluate(
-      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-    ),
-    "unavailable actions do not widen the page",
-  );
-  for (const action of [stop, remove]) {
-    await expectReachableReason(page, action, bothDenied);
-    assert.equal(await page.getByRole("dialog").count(), 0);
+  // Tab and Shift+Tab must keep the unavailable action, its reason and the same Agent in view.
+  const name = row.getByRole("link", { name: "Guarded Agent", exact: true });
+  await row.locator(".delayed-status").first().waitFor({ state: "detached" });
+  const expectActionInView = async (action: Locator, width: number, caption: string) => {
+    const state = await action.evaluate((node) => {
+      const scroller = node.closest(".table-scroll");
+      const identity = node.closest("tr")?.querySelector("td:first-child");
+      const note = node.closest("td")?.querySelector(".row-action-note [aria-hidden=true]");
+      if (!scroller || !identity || !note) {
+        throw new Error("Missing Agent identity, permission note or table");
+      }
+      const style = globalThis.getComputedStyle(node);
+      const outset = parseFloat(style.outlineWidth) + Math.max(0, parseFloat(style.outlineOffset));
+      const { left, right, top, bottom } = scroller.getBoundingClientRect();
+      const inside = (box: DOMRect, margin = 0) =>
+        box.left - margin >= Math.max(0, left) &&
+        box.right + margin <= Math.min(globalThis.innerWidth, right) &&
+        box.top - margin >= Math.max(0, top) &&
+        box.bottom + margin <= Math.min(globalThis.innerHeight, bottom);
+      const text = globalThis.document.createRange();
+      text.selectNodeContents(note);
+      // Measure the actual caption inside the button. A tooltip alone has no rendered text here.
+      const label = node.querySelector(".agent-row-action-label");
+      const actionBox = node.getBoundingClientRect();
+      let visibleCaption: string | null = null;
+      if (label && globalThis.getComputedStyle(label).visibility === "visible") {
+        const labelText = globalThis.document.createRange();
+        labelText.selectNodeContents(label);
+        const box = labelText.getBoundingClientRect();
+        if (
+          box.width > 0 &&
+          box.height > 0 &&
+          box.left >= actionBox.left &&
+          box.right <= actionBox.right &&
+          box.top >= actionBox.top &&
+          box.bottom <= actionBox.bottom
+        ) {
+          visibleCaption = label.textContent;
+        }
+      }
+      return {
+        focused: node === globalThis.document.activeElement,
+        identity: inside(identity.getBoundingClientRect()),
+        outline: node.matches(":focus-visible") && outset > 0 && inside(actionBox, outset),
+        note: inside(text.getBoundingClientRect()),
+        overflow: scroller.scrollWidth - scroller.clientWidth,
+        caption: visibleCaption,
+      };
+    });
+    assert.deepEqual(
+      state,
+      {
+        focused: true,
+        identity: true,
+        outline: true,
+        note: true,
+        overflow: 0,
+        caption: width > 760 && width <= 1100 ? caption : null,
+      },
+      `${width}: the focused ${caption} action and Agent identity should fit together`,
+    );
+  };
+  for (const width of [920, 761, 800, 1024, 1100, 1101, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    if (width === 920) {
+      // The short name and ID share the first line of cells with execution mode and version.
+      const alongside = await row.evaluate((node) => {
+        if (!(node instanceof HTMLTableRowElement)) {
+          throw new Error("Expected an Agent row");
+        }
+        const [identity, mode, version] = [...node.cells].map((cell) =>
+          cell.getBoundingClientRect(),
+        );
+        return (
+          identity &&
+          mode &&
+          version &&
+          identity.top === mode.top &&
+          mode.top === version.top &&
+          identity.right <= mode.left &&
+          mode.right <= version.left
+        );
+      });
+      assert.equal(alongside, true, "920: execution mode and current version sit beside the Agent");
+    }
+    await name.focus();
+    const controls = await row.locator("a, button:not(:disabled)").all();
+    for (const control of controls.slice(1)) {
+      await page.keyboard.press("Tab");
+      assert.ok(await hasFocus(control));
+    }
+    await expectActionInView(remove, width, "Delete");
+    await page.keyboard.press("Shift+Tab");
+    await expectActionInView(stop, width, "Stop");
+    assert.ok(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      `${width}: unavailable actions do not widen the page`,
+    );
+    if (width === 920 || width === 1440) {
+      for (const action of [stop, remove]) {
+        await expectReachableReason(page, action, bothDenied);
+        assert.equal(await page.getByRole("dialog").count(), 0);
+      }
+    }
   }
-  assert.ok(await page.locator(".table-scroll").evaluate((node) => node.scrollLeft > 0));
   assert.equal(await page.evaluate(() => globalThis.scrollX), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 

@@ -15,7 +15,12 @@ ring, including its bottom edge, is visible. Repeat at 390 px.
 1. Open **Pages / Agents / Populated**. Tab from the navigation to the Agent
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
-   edge.
+   edge. At 920 px, also check **Long unbroken name** and **Row actions
+   unavailable for this caller**. Tab and Shift+Tab to Stop and Delete: the
+   named Agent stays in view, the button captions appear in their accessible names,
+   and no focus outline is clipped. Each unavailable action keeps its dashed
+   border, visible grant note and full accessible description; activation opens
+   no confirmation.
 2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, then arrow
    through its unselected neighbors. Tab into the panel, then press Shift+Tab to
    return to the selected tab. At 390 px, check that its label and entire focus
