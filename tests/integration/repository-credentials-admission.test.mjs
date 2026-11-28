@@ -1,3 +1,4 @@
+import { retryWriteBudget } from "../helpers/write-budget-retry.ts";
 import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import { fixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
@@ -52,6 +53,8 @@ import {
 } from "../../packages/occ/src/index.ts";
 import {
   createAuthenticatedControllerRequest,
+  authenticatedHeaders,
+  signInToControllerApp,
   createTestAuthPrincipal,
 } from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
@@ -361,8 +364,27 @@ async function fixture(
       },
     });
     t.after(() => app.close());
+    const origin = "https://console.oce.localhost";
+    const session = await signInToControllerApp(app, auth, { origin });
     /** @type {AdmissionRequest} */
-    const request = await createAuthenticatedControllerRequest(app, auth);
+    const request = async (method, url, payload) => {
+      // These admission journeys make repeated writes. Honor real pre-admission
+      // refusals; the capacity suite independently asserts their exact 429 boundary.
+      const reply = await retryWriteBudget(async () => {
+        const response = await app.inject({
+          method,
+          url,
+          headers: { ...authenticatedHeaders(session), host: new URL(origin).host, origin },
+          ...(payload === undefined ? {} : { payload }),
+        });
+        return {
+          status: response.statusCode,
+          body: response.body.length === 0 ? {} : response.json(),
+          headers: new Headers({ "retry-after": String(response.headers["retry-after"] ?? "") }),
+        };
+      });
+      return { status: reply.status, ...reply.body };
+    };
     return { controller, request, app, repository };
   }
 

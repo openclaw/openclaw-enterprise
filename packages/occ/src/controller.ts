@@ -1560,6 +1560,23 @@ export class OpenClawController {
     return this.composition.setupDiscovery.discoverConfigurations(principalId, context);
   }
 
+  /** Authorize large policy requests before HTTP reads their body; admission repeats this check. */
+  async authorizeAgentSandboxPolicyWrite(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    facet: SandboxFacet,
+    operation: "save" | "apply" = "save",
+  ): Promise<void> {
+    return this.composition.sandboxPolicyOperations.authorizeAgentSandboxPolicyWrite(
+      principalId,
+      namespaceId,
+      agentId,
+      facet,
+      operation,
+    );
+  }
+
   async validateAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,

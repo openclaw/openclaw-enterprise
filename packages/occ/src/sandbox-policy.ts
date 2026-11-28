@@ -170,6 +170,20 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     return resource;
   }
 
+  async function authorizeAgentSandboxPolicyWrite(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    facet: SandboxFacet,
+    operation: "save" | "apply" = "save",
+  ): Promise<void> {
+    requireNetworkPolicyFacet(facet);
+    const resource = await authorizePolicyEdit(principalId, namespaceId, agentId);
+    if (operation === "apply") {
+      await authorize(principalId, "read", resource);
+    }
+  }
+
   async function authorizePolicyRead(principalId: string, namespaceId: string, agentId: string) {
     await authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
     await authorize(principalId, "read", policyResource(namespaceId, agentId));
@@ -945,6 +959,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
 
   return {
     sandboxDriver,
+    authorizeAgentSandboxPolicyWrite,
     validateAgentSandboxPolicy,
     getAgentSandboxPolicy,
     setAgentSandboxPolicyEditing,

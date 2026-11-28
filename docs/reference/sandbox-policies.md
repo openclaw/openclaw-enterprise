@@ -34,7 +34,7 @@ details with the error; it does not reduce them to a generic Driver refusal.
 
 ## Authority and admission
 
-User editing is disabled by default. Enabling or disabling
+Editing defaults to disabled. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
 `manage_policy` and exact-SandboxPolicy `update`. Live application also requires
@@ -42,11 +42,10 @@ SandboxPolicy `read`: it admits and returns the saved additions. When saved
 additions exist, Agent deploy and an Agent update that leaves repository bindings
 also require SandboxPolicy `read` before any refusal that names them. Reads require
 `read` on both resources. Ordinary Agent `update` does not authorize these operations.
-The editing switch is temporary until the platform Guardrails primitive owns
-these restrictions. Its controller and HTTP operation are named
-`TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`; callers must
-expect this API to change when Guardrails replaces it.
-Disabling editing preserves approved additions and previously admitted work.
+`TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing` is a temporary
+controller/HTTP operation; callers must expect replacement when Guardrails owns
+these restrictions.
+Disabling editing preserves additions and admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
 Without per-Agent network policy support, enabling editing returns HTTP 409;
 disabling it stays allowed. When the Installation selects no Sandbox Driver,
@@ -81,29 +80,36 @@ exactly; a symlink or alternate interpreter path is a different executable.
 `*.example.com` covers one DNS label, not the apex or deeper subdomains. A
 wildcard addition requires that exact wildcard in the ceiling. Port coverage may
 combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. Policy documents allow at most 32 grants and 16 ranges
-per grant. OpenShell additionally limits each grant to 1024 distinct ports.
+unsupported constraints. Ceilings and Agent additions allow 16,384 grants,
+with up to 16 ranges each; OpenShell additionally caps each grant at 1024 distinct ports.
+Preview, update and apply accept 32 MiB including JSON escaping and whitespace,
+subject to an explicit `maxBodyBytes` override. They share a replica-local,
+per-principal budget of 2 requests/second, burst 10, across Agents; exhaustion
+returns `429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before body reads.
+They also share the [early authorization budget](api-explorer.md#write-request-limits)
+with Preset and Configuration writes.
 
-Default rules, generated workspace access, model credential delivery, and Compute
-isolation remain controlled by their existing owners. Users cannot submit
-arbitrary provider policy YAML, alter defaults, share policies, or change their
-Agent/Namespace association. Policy identities use `sbp_` and the owner's UUID.
-Policies are created and removed with the Agent; there is no standalone
-create/delete or policy-reference API. Exact policy AccessBindings and
-Restrictions are removed with their policy.
+Helm stores complete trusted startup for API, worker and preflight in one Secret.
+All decoded fields must fit the [1 MiB limit](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
+Measure compact UTF-8 bytes; variable grant sizes prevent a fixed entry count.
+The 16,384-rule fixture's ceiling alone is 1,780,053 bytes and cannot fit.
+File startup proves schema capacity, not full-size Helm deployability.
+
+Default rules, workspace access, model credential delivery and Compute isolation
+retain their owners. Users cannot submit provider YAML, alter defaults, share
+policies or change ownership. Identities use `sbp_` and the Agent UUID. Agent
+lifecycle creates and removes policies and their exact IAM records; no standalone
+create/delete or policy-reference API exists.
 
 ## Desired and applied versions
 
-Saving additions requires `expectedVersion` and advances the desired policy
-version. It performs no provider mutation. Deploy explicitly to freeze selected
-Driver defaults and approved additions into a new AgentRevision;
-deployment retains its usual authorization and interruption behavior.
-**Save and apply to current revision** sends the reviewed additions, expected
-policy version and running revision in one request to the existing apply URL.
-OCC saves the new version and queues its application in one transaction. An
-empty additions list requests removal of the Agent-specific grants. Omitting
-the additions field applies the previously saved version. If the response is
-lost, refresh the policy and its application status before deciding what to do.
+Saving requires `expectedVersion`, advances the desired version and performs no
+provider mutation. Deploy explicitly to freeze defaults and additions into a new
+AgentRevision, with normal authorization and interruption behavior.
+**Save and apply to current revision** sends reviewed additions, expected version
+and running revision to the apply URL; save and enqueue are atomic. Empty additions
+remove Agent grants; omission applies the saved version. After a lost response,
+refresh policy and application status before proceeding.
 
 Live application additionally requires a supporting Driver, enabled editing, the
 expected desired version, and the exact running revision. OCC records a durable
@@ -123,9 +129,8 @@ its failed application, and audit evidence commit in one transaction; interrupti
 rolls back all three so a later worker can retry recovery. Refresh, inspect, and
 retry explicitly. Failure never triggers automatic redeployment.
 
-For a `failed` application, the Console explains the `reason`.
-The worker checks on every pass. If a check fails after sending, the Sandbox
-may enforce the rules. The worker does not resend them.
+For `failed` applications, the Console explains `reason`. The worker rechecks
+each pass; failure after sending can leave rules enforced. It does not resend.
 
 | `reason`                               | Cause and next step                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -139,19 +144,18 @@ may enforce the rules. The worker does not resend them.
 | `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
-Policy GET reports the stored active revision (`defaultsRevisionId`) and deployed policy
-version (`deployedPolicyVersion`). Check workload status separately.
-If the running replacement deployed with the saved version and no application
-targets it, skip the retry. An earlier failure can still show **Application
-unconfirmed** instead of **Deployed**.
+Policy GET reports stored `defaultsRevisionId` and `deployedPolicyVersion`;
+check workload status separately. If the running replacement deployed the saved
+version and no application targets it, skip retrying. An earlier failure can still
+show **Application unconfirmed** instead of **Deployed**.
 
-After `SANDBOX_POLICY_REVISION_CHANGED`, retry only with a ready Namespace,
-an active, running Agent and a revision that needs the rules. Deploy a stopped
-Agent only if you intend to start it.
+After `SANDBOX_POLICY_REVISION_CHANGED`, retry only for a ready Namespace,
+an active, running Agent and a revision needing the rules. Deploy a stopped
+Agent only to start it.
 
-Changing additions preserves the last confirmed live version. Revision snapshots and
-attributable audit records preserve the original admission. The Console separates read-only revision
-or Driver defaults from the ceiling and additions.
+Changing additions preserves the last confirmed live version. Revision snapshots
+and attributable audit records preserve original admission. The Console separates
+read-only revision or Driver defaults from the ceiling and additions.
 
 OpenShell changes network rules through `UpdateConfig`, using a fixed nonzero CAS
 version and request ID. It retains static filesystem/process policy and generated

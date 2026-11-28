@@ -170,6 +170,7 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
+  createSandboxNetworkGrantChecker,
 } from "./sandbox-policy.ts";
 export {
   maxRepositoryNetworkGrants,

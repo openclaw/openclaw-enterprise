@@ -25,6 +25,7 @@ import type {
 import {
   type SandboxNetworkGrant,
   validDnsHost,
+  createSandboxNetworkGrantChecker,
   SandboxNetworkGrantSchema,
 } from "./sandbox-policy.ts";
 
@@ -49,7 +50,15 @@ export function sandboxNetworkGrantsWithinCeiling(
   grants: readonly DeploymentRequestMatch[],
   ceiling: readonly DeploymentRequestMatch[],
 ): boolean {
-  return grants.every((grant) => requestCovered(grant, ceiling));
+  return grants.every(networkGrantChecker(ceiling));
+}
+
+// Request-restricted ceilings need the full request matcher; transport ceilings
+// can compile coverage once rather than rescan every rule for each addition.
+function networkGrantChecker(ceiling: readonly DeploymentRequestMatch[]) {
+  return ceiling.some((grant) => grant.requestPolicy !== undefined)
+    ? (grant: DeploymentRequestMatch) => requestCovered(grant, ceiling)
+    : createSandboxNetworkGrantChecker(ceiling);
 }
 
 /** Existing Agent grants have already passed SandboxNetworkGrantSchema and the Sandbox transport contract.
@@ -62,9 +71,10 @@ export function networkGrantAdmissionDetails(
   pointer: string,
 ): ErrorDetail[] {
   const details: ErrorDetail[] = [];
+  const allowsGrant = networkGrantChecker(ceiling);
   grants.forEach((grant, index) => {
     const path = `${pointer}/${index}`;
-    if (!requestCovered(grant, ceiling)) {
+    if (!allowsGrant(grant)) {
       details.push({
         path,
         code: "OUTSIDE_CEILING",

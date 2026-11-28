@@ -59,6 +59,7 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { retryWriteBudget } from "../helpers/write-budget-retry.ts";
 import {
   callerDenied,
   PRESET_NAME_CONFLICT,
@@ -128,8 +129,9 @@ async function createFixture(t: CleanupRegistrar, options: FixtureOptions = {}) 
   );
   const controller: unknown = fixture.controller;
   assert.ok(controller instanceof OpenClawController);
-  const request: (...args: Parameters<ConsoleFixture["request"]>) => Promise<HttpResponse> =
-    fixture.request;
+  // Shared setup may spend the write budget; retry only explicit pre-admission refusals.
+  const request = (...args: Parameters<ConsoleFixture["request"]>): Promise<HttpResponse> =>
+    retryWriteBudget(() => fixture.request(...args));
   return { ...fixture, controller, request, admin, audit, state };
 }
 
