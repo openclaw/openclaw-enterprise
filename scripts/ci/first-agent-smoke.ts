@@ -47,6 +47,7 @@ import {
   publicReadTurn,
   type RetirementNotices,
 } from "./first-agent-smoke/reader.ts";
+import { observeChannelProxyWorkspaceReads } from "./first-agent-smoke/workspace-reads.ts";
 
 export {
   STOP_PHASE_TIMEOUT_MS,
@@ -180,9 +181,21 @@ async function smoke() {
       ]),
     );
     assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");
-    await smokeStep("controlled-channel-proxy", () =>
-      proveControlledChannelProxy(stack, [codex, control], modelDirectory, smokeStep),
+    const workspaceReads = observeChannelProxyWorkspaceReads(
+      smokeStep,
+      stack,
+      codex.agent,
+      workspaceAfterStart,
     );
+    await smokeStep("controlled-channel-proxy", async () => {
+      await proveControlledChannelProxy(
+        stack,
+        [codex, control],
+        modelDirectory,
+        workspaceReads.step,
+      );
+      workspaceReads.assertComplete();
+    });
   } catch (error) {
     await diagnostics(diagnosticStack);
     throw error;
