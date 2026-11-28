@@ -47,6 +47,8 @@ Enterprise, start with [Concepts](../concepts.md) or
   installation, a Namespace, or an Agent draft.
 - [Agent revisions](agent-revisions.md): change a draft, deploy it, and inspect
   the snapshot the Agent runs.
+- [Apply an Agent from a file](agent-apply.md): keep an Agent in Git and
+  deploy it with `occ agent apply`.
 
 For setup instructions for a specific vendor or Driver, use
 [Integrations](../integrations/README.md). For installation-wide work, use
