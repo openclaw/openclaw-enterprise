@@ -12,18 +12,22 @@ Let an authorized deployer pin two existing Codex OAuth Sources in preference
 order for a dedicated Kubernetes Agent. Reuse OpenClaw account selection,
 cooldown and safe retry behavior while resolving each candidate through its OCE
 Source authority. Try the reserve only after a definitive account-availability
-failure before effects. Omission preserves the single-Source behavior.
+failure before effects. Omission preserves legacy single-Source behavior only
+for Agents that have not opted in; an opted-in redeploy must reauthorize its order.
 
 ## Motivation and scope
 
-Today OCC snapshots one Harness Source, either directly selected or pinned by
-one model credential grant. Native OpenClaw profile ordering works over
+Upstream OCC snapshots one Harness Source selected in the Agent Namespace.
+Cross-Namespace model grants are proposed separately in [#7528](https://github.com/openclaw/openclaw-enterprise/pull/7528);
+they are not a shipped prerequisite available at this RFC's base. Native OpenClaw profile ordering works over
 profiles in its own auth store; it cannot select between OCC-managed Sources.
 Operators can deploy a replacement revision manually, but cannot automatically
 handle a retryable account availability failure without changing revisions.
 
 First delivery covers dedicated Kubernetes Codex with built-in OpenAI OAuth,
-exactly two entries and identical model, effort and service tier across attempts.
+exactly two local entries and identical model, effort and service tier across attempts.
+Delegated entries are a dependent delivery: enable them only after #7528 is
+implemented and its recipient-aware custody and revocation checks are qualified.
 No new enrollment, credential import, model fallback, cross-account thread
 migration, other Harness or general routing service.
 
@@ -84,20 +88,36 @@ an implementation prerequisite, not permission to fall back to manual redeploy.
 
 ### APIs
 
-Add optional `modelCredentialOrder` to the existing Agent deploy body. It is
-an ordered pair of discriminated references: `{kind:"local", sourceId}` or
-`{kind:"delegated", sourceNamespaceId, sourceId, delegationId}`. Local namespace
-is implicit. Reject duplicates, mixing custody modes in the initial delivery,
-unsupported runtimes or Source types, and combining it with
-`modelCredentialGrant` or an explicit single Harness Source. This new opt-in
-uses a runtime-auth draft; existing draft and deploy inputs are unchanged. The
-revision exposes order metadata to authorized readers, not resolved credentials.
-No automatic provisioning or public credential-resolution endpoint.
+Add optional `modelCredentialOrder` to the Agent deploy body. First delivery
+accepts an ordered pair of `{kind:"local", sourceId}` references; namespace is
+implicit. Reject delegated entries until the implemented #7528 contract can
+reauthorize each exact Source/grant/recipient at admission and effect. That later
+capability may accept `{kind:"delegated", sourceNamespaceId, sourceId, delegationId}`.
+Reject mixed custody modes, unsupported runtimes or Source types, and combining
+an ordered input with an explicit single Harness Source (or `modelCredentialGrant`
+once that separate input ships). The revision exposes order metadata, not credentials.
+
+Reject duplicate Source references **and duplicate effective quota identities**.
+Use trusted provider account/quota metadata, never caller labels or Source IDs,
+to establish distinct budgets. Missing or ambiguous quota-scope evidence refuses
+opt-in; two enrollments of the same account cannot manufacture a reserve budget.
+The runtime's cooldown identity must follow that effective quota identity too.
+Provider quota scope remains a prerequisite to qualify, not an assumed email match.
+
+An opted-in Agent uses a runtime-auth draft. Its supported Console deploy caller
+must explicitly carry forward the last selected ordered references and perform
+fresh authorization; do not copy resolved secrets or old grant generations.
+Omitting the order after opt-in is rejected before creating a revision. A caller
+must select a normal single Source explicitly to leave ordered mode; no silent
+runtime-only revision without inference. Never-opted-in Agents preserve their
+existing omitted-field behavior. No automatic provisioning or public
+credential-resolution endpoint.
 
 ### IAM
 
 No new actions. Check the existing deploy authority and the applicable individual
-Source permissions or preauthorized same-owner Agent grants for both entries.
+Source permissions for both local entries. Delegated delivery additionally requires
+the implemented #7528 same-owner Agent-grant checks for both entries.
 A revision alone creates no entitlement. Revocation or loss of eligibility must
 prevent further use under existing fencing; never rebind an old revision to a
 replacement grant.
@@ -134,12 +154,23 @@ provider boundary; do not exhaust a real account to force failure.
 
 | Case                                                                                                | Observable result                                                                                                                                        |
 | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Omitted field; legacy revision                                                                      | Existing single Source, projection and response unchanged.                                                                                               |
+| Omitted field; never-opted-in legacy revision                                                       | Existing single Source, projection and response unchanged.                                                                                               |
 | Healthy primary                                                                                     | Real response using first eligible Source only; selection and session preference follow native policy.                                                   |
 | Definite pre-effect primary unavailability                                                          | One reserve attempt and one completed response with the exact same model, effort and tier; native cooldown prevents repeated exhausted-primary attempts. |
 | Primary recovery                                                                                    | Cooldown expiry restores eligibility under native ordering, without forcing an unnecessary account switch in a healthy session.                          |
 | Permission/ownership denial, revoked or stale grant, unknown outcome, partial output or tool effect | No reserve, no duplicate execution, no cross-account thread reuse; terminal or interrupted state observable.                                             |
 | Concurrent attempts; wrong Agent/revision; unsupported runtime                                      | No account context bleed or credential resolution outside the admitted attempt; unsupported runtime rejects at admission.                                |
+
+Additional regular-workflow acceptance:
+
+- Two Source IDs for the same effective quota identity, or unknown quota scope:
+  admission refused and no revision created; cooldown cannot be bypassed by reenrollment.
+- Console Configuration edit followed by redeploy on an opted-in Agent: selected
+  order is carried explicitly, reauthorized and still serves inference. Omitted
+  order is refused before admission; explicit single-Source selection exits opt-in.
+- Before #7528 ships, delegated entries are refused. After it ships, exercise both
+  delegated entries end to end: exact recipients, owner equality, grant generations,
+  independent revocation and stale-grant refusal, without falling back on denial.
 
 Capture redacted attempt rank, Source/grant reference, phase and outcome,
 effective provider/model/effort/tier and terminal receipt. Qualify both accounts
