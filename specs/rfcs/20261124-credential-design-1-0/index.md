@@ -140,6 +140,7 @@ Repository grants permit Read or Read/write Git. GitHub enforces repository and 
 Companions preserve earlier decisions, including the Codex held-launcher release fence.
 
 - [TokenService cutover contract](tokenservice-cutover-contract.md) and the [original client registration, custody, and rotation proposal](client-registration-and-custody.md)
+- Proposed [private Client custody receipts](client-custody-receipts.md)
 - [OAuth client selection and consent](oauth-client-associations.md)
 - [OAuth endpoint authority](../20261125-oauth-endpoint-authority.md) supersedes the earlier client endpoint binding.
 - [Initial OAuth grant scopes and renewal](../0027-agent-oauth-connections/contracts.md#client-authentication-and-account-custody)
