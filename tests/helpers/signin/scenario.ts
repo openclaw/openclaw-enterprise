@@ -12,11 +12,11 @@ import {
 } from "../production-rehearsal-custody.ts";
 import { rehearsalPlane } from "../staging-upgrade-return.ts";
 import { signinAdmission } from "./admission.ts";
-import { fixtureClock } from "./clock.mjs";
+import { fixtureClock } from "./clock.ts";
 import { controllerCut } from "./controller-cut.ts";
 import { fixtureFetch, retainedCatalog } from "./custody-probes.ts";
 import { tcpControlCommand, tcpProbeCommand } from "./network-probe.ts";
-import { runtimeProof } from "./runtime.mjs";
+import { runtimeProof } from "./runtime.ts";
 import type { providerDns } from "./dns.ts";
 import type { operatorExecutor } from "./operator.ts";
 import type { readStagedSignin } from "./staged.ts";
@@ -289,10 +289,7 @@ export async function rehearseSignin({
     kubeconfig: localCluster.selection.kubeconfigPath,
     context: localCluster.selection.kubernetesContext,
   });
-  const runtime: {
-    assertNodeContainersStopped: (previous: readonly ControllerPod[]) => Promise<void>;
-    completedHistory: (image: Fixture["images"][Target]) => Promise<void>;
-  } = runtimeProof({
+  const runtime = runtimeProof({
     localCluster,
     custody,
     namespace: system,
@@ -762,13 +759,9 @@ export async function rehearseSignin({
       .map((p) => [p.metadata.uid, p.metadata.resourceVersion] as const)
       .sort(([a], [b]) => a.localeCompare(b));
   const initialPolicies = await policySnapshot();
-  const clock: Pick<Fixture, "readerUpperMs" | "waitUntilReaderPast"> & {
-    verifiedSkewMs: () => Promise<unknown>;
-    lastObservation: () => unknown;
-    close: () => Promise<void>;
-  } = await fixtureClock({ kube, pods, custody, localCluster });
+  const clock = await fixtureClock({ kube, pods, custody, localCluster });
   const verifiedSkewMs: Fixture["verifiedSkewMs"] = async () => {
-    const skew: unknown = await clock.verifiedSkewMs();
+    const skew = await clock.verifiedSkewMs();
     assert(typeof skew === "number", "invalid fixture clock skew");
     return skew;
   };
@@ -903,7 +896,7 @@ export async function rehearseSignin({
         const old = await cut.stopAndDrain(from);
         await fence.drained(from);
         target = undefined;
-        const clockObservation: unknown = clock.lastObservation();
+        const clockObservation = clock.lastObservation();
         await record("Sign-in controller drain", {
           from,
           clock: clockObservation,
