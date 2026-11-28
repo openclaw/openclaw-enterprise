@@ -114,6 +114,7 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   pluginCapabilities?: { driver: unknown };
   policyState?: string;
   revisionHistory?: number;
+  revisionHistoryRecoversOnReread?: true;
   unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: ReturnType<typeof candidateDeploymentError>;
@@ -233,6 +234,10 @@ export function createAgentLifecycle(
     scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
       ? null
       : selectedRevisionId;
+  const historyRecoveryRevisionId = scenario.revisionHistoryRecoversOnReread
+    ? activeRevisionId
+    : null;
+  let historyRecoverySelectionApplied = false;
   let agentReadCount = 0;
   let agentListReadCount = 0;
   const agent: StoredAgent = {
@@ -240,7 +245,12 @@ export function createAgentLifecycle(
     namespaceId,
     name: scenario.agentName ?? "Research assistant",
     status: scenario.deleting ? "deleting" : "active",
-    desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
+    desiredRuntimeState:
+      scenario.stopped || historyRecoveryRevisionId !== null
+        ? "stopped"
+        : scenario.deployed
+          ? "running"
+          : "stopped",
     configurationId: config.id,
     executionMode: "dedicated",
     gatewayManagedMode: true,
@@ -260,7 +270,9 @@ export function createAgentLifecycle(
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    ...(activeRevisionId === null ? {} : { activeRevisionId }),
+    ...(activeRevisionId === null || historyRecoveryRevisionId !== null
+      ? {}
+      : { activeRevisionId }),
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -647,6 +659,7 @@ export function createAgentLifecycle(
       });
       return response(next, 202);
     }
+    const unreadableRevisionId = id === seedAgentId ? historyRecoveryRevisionId : null;
     if (suffix === "/revisions" && method === "GET") {
       if (scenario.latestDeploymentReadStatus) {
         return error(scenario.latestDeploymentReadStatus);
@@ -654,12 +667,22 @@ export function createAgentLifecycle(
       if (scenario.latestDeploymentReadDelay) {
         await new Promise((resolve) => setTimeout(resolve, scenario.latestDeploymentReadDelay));
       }
+      if (unreadableRevisionId !== null && !historyRecoverySelectionApplied) {
+        // The opening history reply is lost after this fixture sees the request.
+        // The next Agent read observes a version selected elsewhere.
+        historyRecoverySelectionApplied = true;
+        saved.activeRevisionId = unreadableRevisionId;
+        saved.desiredRuntimeState = "running";
+      }
       // Summaries, newest first, one page at a time; a cursor continues below a revision.
       const limit = Number(url.searchParams.get("limit") ?? scenario.revisionPageSize ?? 50);
       const cursor = url.searchParams.get("cursor");
       const before = cursor ? Number(cursor.slice("v1.".length)) : Infinity;
       const remaining = [...revisions.values()]
-        .filter((item) => item.agentId === id && item.revision < before)
+        .filter(
+          (item) =>
+            item.agentId === id && item.id !== unreadableRevisionId && item.revision < before,
+        )
         .sort((left, right) => right.revision - left.revision);
       const page = remaining.slice(0, limit);
       return response(
@@ -692,7 +715,7 @@ export function createAgentLifecycle(
     }
     if (suffix.startsWith("/revisions/") && method === "GET") {
       const revision = revisions.get(suffix.split("/")[2] ?? "");
-      if (!revision || revision.agentId !== id) {
+      if (!revision || revision.agentId !== id || revision.id === unreadableRevisionId) {
         return error(404, "NOT_FOUND", "The requested platform resource was not found.");
       }
       if (

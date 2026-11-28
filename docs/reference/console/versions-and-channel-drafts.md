@@ -1,8 +1,7 @@
 # Inspect Agent detail, versions, and channel drafts
 
-This page details the Agent detail page of the [platform console](../console.md):
-tabs and drafts, deployment details, diagnostics, authentication, versions, and the
-Slack channel editor with its Credential Source selectors.
+Use the Agent page of the [platform console](../console.md) to edit drafts,
+inspect deployments and versions, and select Credential Sources for Slack.
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
@@ -35,7 +34,11 @@ saving and deployment until you can [reload the saved settings](../../guides/con
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected for service** shows `activeRevisionId`, a selected pointer, not serving health.
 **Viewing version** chooses the draft or a saved version without deploying it.
-**Load older versions** adds the next page and keeps the viewed version.
+**Load older versions** keeps your selection. If a page fails to load, retry.
+After a Stop request, **Current version** shows the number once listed.
+If no page lists it, Stop says you cannot read it.
+A successful reread clears the initial warning and keeps your edits. If asked to
+reload the draft, save and reopen it before deploying. History alone does not enable deployment.
 **Deployment** contains the newest readable deployment activity, the viewed
 version's record, and diagnostics. These panels keep polling across tabs.
 Pending work, startup warnings, and incomplete cleanup also show an attention

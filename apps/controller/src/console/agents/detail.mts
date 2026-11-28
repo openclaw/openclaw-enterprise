@@ -1042,9 +1042,14 @@ export async function renderAgentDetail(
   let agentUpdates = 0;
   // When the last Agent state was applied, on the document's performance clock.
   let agentUpdatedAt = Number.NEGATIVE_INFINITY;
+  // Every revision summary listed so far, from the newest page and from older pages the viewer
+  // asked for. Summaries never change, and a revision appears once however pages shift.
+  const listedRevisions = new Map<string, Revision>();
   let visibleRevisions: Revision[] = [];
-  // True once the readable version list loaded; until then nothing counts as hidden.
-  let visibleRevisionsLoaded = false;
+  function currentListedRevision() {
+    return currentRevisionId === undefined ? undefined : listedRevisions.get(currentRevisionId);
+  }
+  let latestRevisionResult: RevisionResult | null = null;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
   let configureRepositories =
@@ -1295,8 +1300,7 @@ export async function renderAgentDetail(
     !servingProjectionPending &&
     currentRuntimeState === "running" &&
     Boolean(currentRevisionId) &&
-    (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
-      currentAgent.executionMode) === "dedicated";
+    (currentListedRevision()?.harness?.mode ?? currentAgent.executionMode) === "dedicated";
   function syncHarnessRead(refresh?: ForegroundAgentRecheck | "replacement-failed") {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
     if (wanted === harnessRequested && (wanted === null || !refresh)) {
@@ -1381,7 +1385,7 @@ export async function renderAgentDetail(
       !currentRevisionId &&
       !(
         currentRuntimeState === "stopped" &&
-        (!visibleRevisionsLoaded || visibleRevisions.length > 0)
+        (latestRevisionResult?.status !== "fulfilled" || visibleRevisions.length > 0)
       );
     const badge = liveServingBadge;
     setText(
@@ -1496,12 +1500,10 @@ export async function renderAgentDetail(
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
   function unlisted(revisionId: string | undefined) {
-    return (
-      visibleRevisionsLoaded &&
-      Boolean(revisionId) &&
-      revisionId !== "draft" &&
-      !visibleRevisions.some((revision) => revision.id === revisionId)
-    );
+    if (!revisionId || revisionId === "draft") {
+      return false;
+    }
+    return latestRevisionResult?.status === "fulfilled" && !listedRevisions.has(revisionId);
   }
   function revisionHidden(revisionId: string | undefined) {
     // Until every page is loaded, an unlisted version may simply be older than those shown.
@@ -1542,14 +1544,19 @@ export async function renderAgentDetail(
       selectionConfirmedAfterSuccess && latestDeploymentStatus === "succeeded",
     );
   }
-  // The current version as the page names it: its number, those words, else its short ID.
+  function versionLabel(id: string) {
+    const revision = listedRevisions.get(id);
+    if (revision) {
+      return `v${revision.revision}`;
+    }
+    return id === currentRevisionId ? (unreadableCurrentLabel() ?? undefined) : undefined;
+  }
   function currentVersionLabel() {
-    const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
-    return current
-      ? `v${current.revision}`
-      : (unreadableCurrentLabel() ?? shortId(currentRevisionId ?? ""));
+    const id = currentRevisionId ?? "";
+    return versionLabel(id) ?? shortId(id);
   }
   function renderCurrentVersion() {
+    stopPanel.setVersionLabel(versionLabel);
     setText(currentVersionValue, currentRevisionId ? currentVersionLabel() : "None");
     setText(
       currentVersionNote,
@@ -1570,7 +1577,6 @@ export async function renderAgentDetail(
         : "Deploy a new version to start this Agent again.",
     );
   }
-  renderCurrentVersion();
   // Stop changes only the runtime state and the current version, so update the page in place.
   // Reloading it collapsed the version detail, moved the reader and dropped focus (finding 1419).
   const stopPanel = createAgentStop(
@@ -1584,6 +1590,7 @@ export async function renderAgentDetail(
     // refocus reread still in flight, cannot lift it (finding 2966), as on the Agents list.
     () => permissionsRereads,
   );
+  renderCurrentVersion();
   const deletion = createAgentDeletion(
     context,
     path,
@@ -2337,7 +2344,6 @@ export async function renderAgentDetail(
   let acceptActivity: ((record: AgentDeploymentStatusWire) => void) | undefined;
   let activityRevisionId: string | null | undefined;
   let detailLoadFinished = false;
-  let latestRevisionResult: RevisionResult | null = null;
   let latestDeploymentStatus: DeploymentOutcome | null = null;
   let latestDeploymentUnavailable = false;
   let latestDeploymentReadError: unknown = null;
@@ -2353,14 +2359,11 @@ export async function renderAgentDetail(
   let agentRereadFailed = false;
   let versionRecord: ReturnType<typeof createVersionDeploymentEvidence> | null = null;
   const revisionsPromise = readRevisionPage(request, path).then(revisionsForPage);
-  // Every revision summary listed so far, from the newest page and from older pages the viewer
-  // asked for. Summaries never change, and a revision appears once however pages shift.
-  const listedRevisions = new Map<string, Revision>();
   // Whether an older page was loaded, and the cursor for the next one (null once complete).
   let olderPageLoaded = false;
   let olderCursor: string | null = null;
   let olderLoading = false;
-  let olderError: unknown = null;
+  let olderErrorMessage: string | null = null;
   // The newest revision with its saved settings, read only when a check needs them.
   let latestRevisionDetail: AgentRevisionRead | null = null;
   let latestRevisionDetailReading: string | null = null;
@@ -2554,7 +2557,7 @@ export async function renderAgentDetail(
       ...(selected !== "draft" &&
       currentRevisionId &&
       selected !== currentRevisionId &&
-      visibleRevisions.some((revision) => revision.id === currentRevisionId)
+      listedRevisions.has(currentRevisionId)
         ? [
             button(
               "View current version",
@@ -2571,7 +2574,7 @@ export async function renderAgentDetail(
       return;
     }
     for (const option of chooser.options) {
-      const revision = visibleRevisions.find((revision) => revision.id === option.value);
+      const revision = listedRevisions.get(option.value);
       if (!revision) {
         continue;
       }
@@ -2627,7 +2630,8 @@ export async function renderAgentDetail(
         element("option", { value: revision.id }, `v${revision.revision}`),
       ),
     );
-    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
+    const viewed = listedRevisions.get(selected);
+    if (selected !== "draft" && !viewed) {
       chooser.append(
         element(
           "option",
@@ -2664,7 +2668,6 @@ export async function renderAgentDetail(
     if (older) {
       trackRevisionControl(older);
     }
-    const viewed = revisions.find((revision) => revision.id === selected);
     let viewing = "Saved draft for a future deployment";
     if (selected !== "draft") {
       viewing = viewed ? displayDate(viewed.createdAt) : "";
@@ -2683,8 +2686,8 @@ export async function renderAgentDetail(
         element("span", { className: "agent-version-date" }, viewing),
       ),
       element("p", { className: "agent-version-context" }, versionContext()),
-      ...(olderError
-        ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
+      ...(olderErrorMessage !== null
+        ? [statusBlock("danger", null, `Older versions unavailable. ${olderErrorMessage}`)]
         : []),
       ...(revisionResult.status === "rejected"
         ? [
@@ -2906,7 +2909,7 @@ export async function renderAgentDetail(
     await servingReread;
     const serving =
       currentRuntimeState === "running" && currentRevisionId !== selected
-        ? visibleRevisions.find(({ id }) => id === currentRevisionId)
+        ? currentListedRevision()
         : undefined;
     if (!context.isCurrent() || deleting || !serving) {
       return null;
@@ -3098,7 +3101,7 @@ export async function renderAgentDetail(
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
     const neutral = latestDeploymentStatus === "superseded" || latestDeploymentStatus === "stopped";
-    const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+    const current = currentListedRevision();
     const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
     // The caller cannot read the current version, so it may be newer than every version shown.
     const currentHidden = currentRevisionId !== latest.id && revisionHidden(currentRevisionId);
@@ -3319,7 +3322,7 @@ export async function renderAgentDetail(
       return;
     }
     olderLoading = true;
-    olderError = null;
+    olderErrorMessage = null;
     if (latestRevisionResult) {
       renderOverview(latestRevisionResult, viewedSnapshot);
     }
@@ -3341,7 +3344,7 @@ export async function renderAgentDetail(
         context.onExpired();
         return;
       }
-      olderError = error;
+      olderErrorMessage = message(error);
     } finally {
       olderLoading = false;
     }
@@ -3353,30 +3356,23 @@ export async function renderAgentDetail(
 
   function renderOverview(revisionResult: RevisionResult, snapshot: Snapshot | null) {
     latestRevisionResult = revisionResult;
-    const newest = revisionResult.status === "fulfilled" ? revisionResult.value.revisions : [];
+    const page = revisionResult.status === "fulfilled" ? revisionResult.value : null;
     // Until an older page is loaded, the newest page's cursor says whether older ones exist.
     // After that the older pages' own cursor continues, so a refresh never loses the place.
-    if (!olderPageLoaded && revisionResult.status === "fulfilled") {
-      olderCursor = revisionResult.value.nextCursor;
+    if (!olderPageLoaded && page) {
+      olderCursor = page.nextCursor;
     }
-    for (const revision of newest) {
+    for (const revision of page?.revisions ?? []) {
       listedRevisions.set(revision.id, revision);
     }
     const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
-    visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     const mostRecent = revisions[0];
     const activityChanged = activityRevisionId !== (mostRecent?.id ?? null);
     if (activityChanged) {
       selectionConfirmedAfterSuccess = false;
     }
-    stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
-    const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
-    // A current version the caller cannot read keeps the page's words, not its ID (finding D791).
-    stopPanel.setVersionLabel(
-      (id) =>
-        labels.get(id) ?? (id === currentRevisionId ? unreadableCurrentLabel() : null) ?? undefined,
-    );
+    stopPanel.setNoReadableVersions(page ? revisions.length === 0 : null);
     renderCurrentVersion();
     nativeAdmin.updateTarget();
     renderVersions(revisions, snapshot, revisionResult);
@@ -3507,12 +3503,7 @@ export async function renderAgentDetail(
         nextActivity ??
         element(
           "section",
-          // With no versions the card would repeat the facts' "No readable deployments", so it
-          // stays out of the way of the draft's next step (UX spec 3.7).
-          {
-            className: "agent-card deployment-status",
-            hidden: revisionResult.status !== "rejected",
-          },
+          { className: "agent-card deployment-status" },
           element("h2", {}, "Deployment activity"),
           element(
             "p",
@@ -3536,9 +3527,12 @@ export async function renderAgentDetail(
       );
       versionRecord?.render();
     }
+    // A settled read can change the fallback while there is still no visible activity revision.
+    if (!mostRecent) {
+      setHidden(activityPanel, revisionResult.status !== "rejected");
+    }
     renderLatestDeployment();
     refreshDeployControls();
-    return revisions;
   }
 
   async function loadOverview() {
@@ -4514,7 +4508,10 @@ export async function renderAgentDetail(
           // A check that settles within 250 ms never shows this text, as for credential access.
           setDelayedText(deployStatus, "", CHECKING_COMPUTE_CONFIGURATION);
         } else if (revisionResult.status !== "fulfilled") {
-          deployMessage = "Version history is required before deploying this new version.";
+          deployMessage =
+            latestRevisionResult?.status === "fulfilled"
+              ? "Version history loaded. Reload this draft before deploying."
+              : "Version history is required before deploying this new version.";
         } else if (!agent.harnessAuth) {
           deployMessage =
             "Select a harness authentication source in Credentials before deployment.";
@@ -4752,8 +4749,7 @@ export async function renderAgentDetail(
       setStep(checklistSteps[2], false, requestedDestination());
     }
     refreshDeployControls = updateDeployControls;
-    const previousRevision =
-      visibleRevisions.find((revision) => revision.id === currentRevisionId) ?? visibleRevisions[0];
+    const previousRevision = currentListedRevision() ?? visibleRevisions[0];
     const retainedHarnessRevision =
       previousRevision?.harness?.overrides === undefined ? undefined : previousRevision;
     const harnessChoice = element(

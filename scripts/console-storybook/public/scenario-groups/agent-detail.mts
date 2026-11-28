@@ -59,6 +59,7 @@ type AgentDetailScenario = {
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  revisionHistoryRecoversOnReread?: true;
   unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
@@ -3041,6 +3042,21 @@ export function createAgentDetailScenarios({
         ],
         gap: "Simulated UI state only; this preview does not prove a live stop or the screen reader announcement.",
       },
+      stopFeedbackCurrentVersionPagination: {
+        ...hiddenCurrentLogsPage,
+        name: "Stopped Agent with an unreadable current version",
+        path: `${candidateVersion}&tab=configuration`,
+        stopped: true,
+        candidateDeploymentStatus: "failed",
+        revisionPageSize: 1,
+        description:
+          "A stopped Agent retains a current version the viewer cannot read. Its two readable versions load one page at a time.",
+        steps: [
+          'Under Configuration, find the Stop Agent region. Its Current version initially reads "Version" followed by the short ID.',
+          'Choose Load older versions. After the last page, Current version reads "A version you cannot read" and focus returns to Viewing version.',
+        ],
+        gap: "This preview simulates the Stop status and read permissions.",
+      },
       deploymentSucceeded: {
         group: "Pages/Agent detail",
         name: "New version activated",
@@ -3845,6 +3861,55 @@ export function createAgentDetailScenarios({
           "Confirm Deploy new version stays unavailable and explains that version history is required before deploying.",
         ],
         gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
+      },
+      olderVersionPageRejected: {
+        group: "Pages/Agent detail",
+        name: "Older version page rejects with null",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        revisionPageSize: 1,
+        rules: [
+          {
+            method: "GET",
+            suffix: "/revisions",
+            queryParam: "cursor",
+            once: true,
+            rejectWithNull: true,
+          },
+        ],
+        description:
+          "The first older-page GET rejects with JavaScript null and no HTTP status. The initial history page loads normally, and the next cursor GET uses the normal fixture response.",
+        steps: [
+          "At desktop and 390-pixel widths, confirm v2 is selected and v1 has not loaded.",
+          "Choose Load older versions. Confirm Older versions unavailable appears, v2 remains selected, and Load older versions remains available.",
+          "Choose Load older versions again. Confirm the warning clears, v1 appears in Viewing version, and v2 remains selected.",
+        ],
+        gap: "Simulated JavaScript rejection through the production Console. This does not prove a normal browser network failure, backend persistence, or deployment.",
+      },
+      revisionHistoryRecovery: {
+        group: "Pages/Agent detail",
+        name: "Revision history recovers on return",
+        path: `${draft}&tab=deployment`,
+        deployed: true,
+        revisionHistoryRecoversOnReread: true,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions",
+            lostAnswer: true,
+            once: true,
+          },
+        ],
+        description:
+          "The opening version-history request loses its reply. On tab return, the Agent read finds a newly selected version that the history list cannot show.",
+        steps: [
+          "Open the preview in its own tab. On Deployment, confirm the activity warning is visible and Deploy new version is unavailable because version history is required.",
+          "Switch to another browser tab and return. Confirm Deployment stays selected on the same draft. The activity warning clears and the version chooser reports No readable versions.",
+          "Confirm Deploy new version is still unavailable and the Console says Version history loaded. Reload this draft before deploying.",
+          "Use the Console’s Refresh in this preview to reopen the draft. Confirm the empty history and that the reload guidance clears. A browser reload resets the story and repeats the opening failure.",
+        ],
+        gap: "Simulated API responses demonstrate the draft and deployment controls.",
       },
       deployDenied: {
         group: "Pages/Agent detail",
