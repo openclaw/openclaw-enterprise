@@ -29,6 +29,7 @@ import {
   createExchangeOrigin,
   createStaticEgressExchange,
 } from "./static-egress-exchange.ts";
+import { metadataSourceFields } from "./static-egress-metadata.ts";
 import { Check } from "typebox/value";
 import { NamespaceSchema } from "../../packages/contracts/src/api/resources.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
@@ -912,14 +913,7 @@ export function protectedMetadataFixture(t, options = {}) {
       const source = await app.controller.createCredentialSource(app.principal.id, {
         namespaceId: namespace.id,
         name: "Protected repository metadata",
-        type: "credential-free-repository-metadata",
-        config: {
-          origin,
-          repository_id: "7311",
-          repository: "fixture/credential-free",
-          agent_id: agent.id,
-          authority: "execution",
-        },
+        ...metadataSourceFields({ origin, agentId: agent.id }),
       });
       const bound = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
         body: {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { metadataSourceFields } from "../helpers/static-egress-metadata.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { computeFixturePorts, present } from "./repository-runtime-material-fixture.ts";
 import { publicReaderAdmission } from "./repository-runtime-material-public-reader-fixture.ts";
@@ -54,14 +55,7 @@ test("a historical protected credential-free Source projects no inference tools 
       const source = await app.controller.createCredentialSource(app.principal.id, {
         namespaceId: namespace.id,
         name: "identity-only",
-        type: "credential-free-repository-metadata",
-        config: {
-          origin,
-          repository_id: "7311",
-          repository: "fixture/credential-free",
-          agent_id: agent.id,
-          authority: "execution",
-        },
+        ...metadataSourceFields({ origin, agentId: agent.id }),
       });
       const bound = await app.updateAgent(namespace.id, agent.id, {
         configurationId: agent.configurationId,
