@@ -5,8 +5,8 @@ rfc: index.md
 # RBAC delivery and qualification
 
 Read the [current-source and release-scope amendment](index.md#current-source-amendment--2026-09-24)
-before applying this original proposal. This plan is deferred past 0.x; the
-requirements below are not implementation acceptance. The 0.x scope is
+before applying the original proposal. The broader delivery plan is deferred
+past 0.x. The 0.x scope is
 [Agent access](../0010-agent-access.md#delivery-checkpoints) checkpoints 1-2.
 
 **Post-0.x.** The [selected proposal](index.md) is complete only when
@@ -14,6 +14,31 @@ ordinary people can use personal and team Agents through both channels with the
 required content, repository and withdrawal controls. These completion criteria are
 not 0.x requirements. An earlier checkpoint may be useful without completing that
 scope.
+
+## Agent-deletion audit qualification
+
+Submit the [Driver contract amendment](index.md#agent-deletion-audit-proposal)
+for human review before implementation. The IAM/State owner must confirm the
+read boundary and identify the implementation owner. Resolve any applicable hold
+before implementation. The deferred RBAC program still requires RFC approval
+first.
+
+Exercise the authorized HTTP Agent deletion with the normal limited PostgreSQL
+application role. Assert HTTP `202` and check the accepted audit event against
+IDs and policy records captured independently during fixture setup. Cover exact
+Agent, revision and SandboxPolicy targets in both scopes, including a Group
+subject. Include one binding found through both its exact target and the Agent's
+ServicePrincipal, and a binding found only through the ServicePrincipal. Check
+that each audit field contains the expected records in ID order, with each
+binding listed once and empty fields omitted.
+
+Run the normal ControllerWorker against the PostgreSQL queue. Observe its claim
+and the completion event. Verify that the recorded rows are gone and that a
+retained Agent's policy, unrelated broad bindings and kind-wide Restrictions
+survive and were absent from the audit. Preserve the active-target and ServicePrincipal writer refusals and
+the existing transaction, audit-failure and unknown-commit checks. Exercise exact
+kind and ID matching, empty and repeated IDs, ordering and closed-view behavior
+through the actual PostgreSQL and memory readers.
 
 ## Increments and qualification
 

@@ -107,6 +107,44 @@ administrator or credential-mutation grant. Create the Agent without repositorie
 grant its known ServicePrincipal exact source-use and repository-use permissions,
 then assign repositories.
 
+## Agent-deletion policy inventory
+
+The [Agent-deletion audit proposal](index.md#agent-deletion-audit-proposal)
+adds the following read to `IAMPolicyReadRepository`.
+
+```ts
+listAccessBindingsTargeting(
+  resourceKind: ResourceKind,
+  resourceIds: readonly string[],
+): Promise<readonly Readonly<AccessBinding>[]>;
+```
+
+The reader matches both the resource kind and an exact resource ID across
+Installation and Namespace scopes. It returns immutable AccessBindings with
+their stored identity or Group subject and optional Namespace. Each matching
+binding appears once in ID order, even when the input repeats an ID. An empty
+ID list returns an immutable empty array. An untargeted binding has no exact
+resource match. Namespace collections use `listAccessBindings(namespaceId)`
+to return bindings in the requested Namespace.
+
+PostgreSQL reads its own bindings within the original State transaction.
+Memory reads the bindings it owns in that State unit. The platform read view
+and write unit bind the reader to their existing lifetimes. Once the original
+unit closes, calls through that reader fail. During Agent deletion, the
+reader inventories policy at acceptance time. Existing authorization,
+locking and worker checks govern the deletion.
+
+In the authorized deletion transaction, OCC resolves the stored Agent, its
+revisions and, when present, its SandboxPolicy by Agent and Namespace. OCC uses
+their stored IDs for the exact-target reads. It adds the Namespace bindings
+whose identity subject is the Agent's ServicePrincipal, deduplicates the union
+by binding ID and projects the existing audit records in ID order.
+
+OCC uses the existing all-scope Restriction reader for the same exact targets
+and records Restrictions in ID order. Memory State continues to return no
+Restrictions because it stores and removes none. OCC includes each existing
+audit field only when its list is nonempty.
+
 ## Policy administration
 
 OCC exposes the catalog and proposed `readPolicy`, `applyChange` and

@@ -11,7 +11,10 @@ status_note: "Deferred past 0.x; retained as direction, not an accepted release 
 
 **Status:** Direction; deferred past 0.x — not an MVP requirement.
 
-The 0.x scope is [Agent access](../0010-agent-access.md#delivery-checkpoints) checkpoints 1-2 (share with existing people; enroll without grants); everything in this package is later direction.
+The 0.x scope is [Agent access](../0010-agent-access.md#delivery-checkpoints)
+checkpoints 1-2 (share with existing people; enroll without grants). The original
+RBAC program remains deferred. See the [Agent-deletion audit proposal](#agent-deletion-audit-proposal)
+for the proposed correction to the existing deletion flow.
 
 **Owner:** OCC authorization and Agent invocation.
 
@@ -49,6 +52,21 @@ is a separate, trusted full-admin entry path. It does not establish the narrow
 content or per-operation guarantees proposed here. The remaining diagrams,
 milestones and withdrawal bounds are unqualified design requirements, not proof
 of current behavior.
+
+## Agent-deletion audit proposal
+
+The accepted Agent deletion audit lists the policy that State expects to remove
+at completion. The current inventory misses Installation-scoped
+AccessBindings because it reads only the Agent's Namespace. Its target list
+also omits the Agent's SandboxPolicy.
+
+This amendment proposes an [exact-target AccessBinding read](interfaces.md#agent-deletion-policy-inventory)
+on the existing State transaction. OCC uses it to find bindings to the Agent,
+its revisions and its persisted SandboxPolicy. It combines those results with
+bindings that name the Agent's ServicePrincipal as subject and records each
+binding once. The proposal covers the audit inventory for the existing deletion
+flow. The [delivery criteria](delivery.md#agent-deletion-audit-qualification)
+describe the evidence required to qualify it.
 
 ## Problem and proposal
 
