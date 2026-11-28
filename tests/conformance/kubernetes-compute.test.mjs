@@ -141,6 +141,7 @@ import {
   checkSlackCredentialBindings,
   checkPodModelCredentialPlacement,
   checkStoppedRevisionCredentialCleanup,
+  createStagedCredentialRegistration,
 } from "./kubernetes-credential-delivery-cases.ts";
 import {
   checkDedicatedPredecessorPolicyRetirement,
@@ -748,31 +749,11 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
       return { state: "starting" };
     },
   };
-  const proxy = {
-    id: sandbox.id,
-    implementation: sandbox.implementation,
-    capability: "credential_proxy_delivery",
-    async deployProxy() {
-      return {};
-    },
+  const owner = createStagedCredentialRegistration(sandbox, {
     async configureDeployment() {
       assert.fail("Worker configures the credential binding");
     },
-    async getDeploymentStatus() {
-      return { state: "ready" };
-    },
-    async removeDeployment() {},
-  };
-  const owner = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
+  });
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver: sandbox,
     credentialDeliveryRegistration: owner,
@@ -809,7 +790,7 @@ async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat 
       },
       executionAdmission: { version: 8, mode: "standalone" },
       credentialDeployment: {
-        proxyDriverId: proxy.id,
+        proxyDriverId: owner.ref.id,
         driver: owner.ref,
         networkAccessPolicy: {
           allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
@@ -925,29 +906,9 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         requirements = context.requirements;
         throw captured;
       });
-      const proxy = {
-        id: sandbox.id,
-        implementation: sandbox.implementation,
-        capability: "credential_proxy_delivery",
-        async deployProxy() {
-          return {};
-        },
+      const registration = createStagedCredentialRegistration(sandbox, {
         async configureDeployment() {},
-        async getDeploymentStatus() {
-          return { state: "ready" };
-        },
-        async removeDeployment() {},
-      };
-      const registration = {
-        ref: {
-          id: sandbox.id,
-          implementation: sandbox.implementation,
-          configurationId: "a".repeat(64),
-        },
-        require(capability) {
-          return capability === "sandbox" ? sandbox : proxy;
-        },
-      };
+      });
       const auth = {
         method: "credential_source",
         sourceId: "cs_model",
@@ -1051,7 +1012,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
               repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
             },
             credentialDeployment: {
-              proxyDriverId: proxy.id,
+              proxyDriverId: registration.ref.id,
               driver: registration.ref,
               bindings: [model, repository],
               networkAccessPolicy: { allowed: [modelRequest, ...repositoryRequests] },
@@ -1286,33 +1247,14 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       return { state: "starting" };
     },
   };
-  const proxy = {
-    id: sandbox.id,
-    implementation: sandbox.implementation,
-    capability: "credential_proxy_delivery",
-    async deployProxy() {
-      return {};
-    },
+  const registration = createStagedCredentialRegistration(sandbox, {
     async configureDeployment() {
       assert.fail("Worker owns credential configuration");
-    },
-    async getDeploymentStatus() {
-      return { state: "ready" };
     },
     async removeDeployment(_context, removal) {
       removals.push(removal);
     },
-  };
-  const registration = {
-    ref: {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandbox : proxy;
-    },
-  };
+  });
   const harnessAuth = stagedAuth;
   const modelSource = {
     ...pluginSource,
@@ -1369,7 +1311,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
       },
       executionAdmission: { version: 8, mode: "standalone" },
       credentialDeployment: {
-        proxyDriverId: proxy.id,
+        proxyDriverId: registration.ref.id,
         driver: registration.ref,
         networkAccessPolicy: {
           allowed: [
@@ -1431,19 +1373,18 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     driver.withdrawCredentialSource(revision, { ...pluginSource, namespaceId: "other" }, signal),
     { code: "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT" },
   );
+  assert.deepEqual(removals, []);
+  const removal = { targetRef: target, bindingRefs: [pluginBinding.bindingRef] };
   const withdrawn = { sourceId: pluginSource.id, state: "revoked" };
   assert.deepEqual(
     await driver.withdrawCredentialSource(revision, pluginSource, signal),
     withdrawn,
   );
+  assert.deepEqual(removals, [removal]);
   assert.deepEqual(
     await driver.withdrawCredentialSource(revision, pluginSource, signal, { recheck: true }),
     withdrawn,
   );
-  const removal = {
-    targetRef: target,
-    bindingRefs: [pluginBinding.bindingRef],
-  };
   assert.deepEqual(removals, [removal, removal]);
 
   // The trusted Worker omits the withdrawn optional binding on the next reconciliation.
@@ -1569,10 +1510,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       state.providerPod = undefined;
     },
   };
-  const proxyDriver = {
-    id: sandboxDriver.id,
-    implementation: sandboxDriver.implementation,
-    capability: "credential_proxy_delivery",
+  const selectedOwner = createStagedCredentialRegistration(sandboxDriver, {
     async deployProxy() {
       events.push("deploy-proxy");
       return {};
@@ -1602,17 +1540,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
         throw boundRemovalFailure;
       }
     },
-  };
-  const selectedOwner = {
-    ref: {
-      id: sandboxDriver.id,
-      implementation: sandboxDriver.implementation,
-      configurationId: "a".repeat(64),
-    },
-    require(capability) {
-      return capability === "sandbox" ? sandboxDriver : proxyDriver;
-    },
-  };
+  });
   const context = {
     harnessAuth: auth,
     workspaceSetup: {
@@ -1641,7 +1569,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     },
     executionAdmission: { version: 8, mode: "standalone" },
     credentialDeployment: {
-      proxyDriverId: proxyDriver.id,
+      proxyDriverId: selectedOwner.ref.id,
       driver: selectedOwner.ref,
       networkAccessPolicy: {
         allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
@@ -1784,6 +1712,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   workspaceRefused = true;
   assert.equal((await prepare()).runtimeFailure.code, "WORKSPACE_SETUP_REFUSED");
   workspaceRefused = false;
+  const prepareStart = events.length;
   const prepared = await prepare();
   assert.equal(prepared.preparedForCredentialActivation, true);
   assert.ok(events.includes("workspace-setup"), "the ready Sandbox must initialize its workspace");
@@ -1798,9 +1727,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.ok(events.indexOf("network-status") < events.indexOf("apply-network"));
   assert.ok(events.indexOf("apply-network") < events.indexOf("proxy-ready"));
   assert.ok(events.indexOf("apply-network") < events.lastIndexOf("prepare-launch"));
-  assert.ok(events.indexOf("workspace-setup") < events.lastIndexOf("prepare-launch"));
-  assert.ok(events.lastIndexOf("network-status") < events.lastIndexOf("prepare-launch"));
-  assert.ok(events.lastIndexOf("proxy-status") < events.lastIndexOf("prepare-launch"));
+  const prepareEvents = events.slice(prepareStart);
+  const launch = prepareEvents.indexOf("prepare-launch");
+  for (const event of ["workspace-setup", "network-status", "proxy-status"]) {
+    const observed = prepareEvents.lastIndexOf(event);
+    assert.ok(observed >= 0, `successful preparation must record ${event}`);
+    assert.ok(observed < launch, `${event} must precede launch`);
+  }
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
   assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   assert.equal(events.filter((event) => event === "provision-idle").length, 1);
@@ -1873,6 +1806,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   // retains only the target ID so a later ordinary Stop can retry the removal.
   const targetName = driver.credentialDeploymentTargetName(revision);
   boundRemovalFailure = new Error("bound Proxy removal failed");
+  const stopStart = events.length;
   await assert.rejects(
     withYieldingComputeStop(() => driver.stopRevision(revision)),
     /bound Proxy removal failed/,
@@ -1880,9 +1814,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
   assert.deepEqual(removedTarget, targetRef);
   assert.equal(read("ConfigMap", targetName).data.sandboxId, targetRef.sandboxId);
-  assert.ok(events.lastIndexOf("sandbox-cleanup") < events.lastIndexOf("remove-bound"));
+  const cleanup = events.lastIndexOf("sandbox-cleanup");
+  assert.ok(cleanup >= stopStart, "this stop must clean up the Sandbox");
+  assert.ok(cleanup < events.indexOf("remove-bound", stopStart), "cleanup must precede removal");
   boundRemovalFailure = undefined;
+  removedTarget = undefined;
   await withYieldingComputeStop(() => driver.stopRevision(revision));
+  assert.deepEqual(removedTarget, targetRef);
   assert.equal(objects.has(key("ConfigMap", targetName)), false);
 });
 

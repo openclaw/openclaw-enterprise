@@ -1,9 +1,11 @@
 import type {
   AgentRevision,
   ComputeRevisionContext,
+  CredentialProxyDriver,
   HarnessAuthSnapshot,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
+  SandboxDriver,
   SecretBindings,
 } from "../../packages/contracts/src/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
@@ -46,6 +48,43 @@ type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfigurati
 type Deployment = Awaited<
   ReturnType<InstanceType<KubernetesSdk["AppsV1Api"]>["readNamespacedDeployment"]>
 >;
+
+type StagedProxyCalls = Pick<
+  CredentialProxyDriver,
+  "deployProxy" | "getDeploymentStatus" | "removeDeployment"
+>;
+
+export function createStagedCredentialRegistration<
+  Sandbox extends Pick<SandboxDriver, "id" | "implementation">,
+>(
+  sandbox: Sandbox,
+  overrides: Partial<StagedProxyCalls> & {
+    configureDeployment(
+      ...args: Parameters<CredentialProxyDriver["configureDeployment"]>
+    ): Promise<void>;
+  },
+) {
+  const { id, implementation } = sandbox;
+  const proxy = {
+    id,
+    implementation,
+    capability: "credential_proxy_delivery" as const,
+    async deployProxy() {
+      return {};
+    },
+    async getDeploymentStatus(): ReturnType<CredentialProxyDriver["getDeploymentStatus"]> {
+      return { state: "ready" };
+    },
+    async removeDeployment() {},
+    ...overrides,
+  };
+  return {
+    ref: { id, implementation, configurationId: "a".repeat(64) },
+    require(capability: "sandbox" | "credential_proxy_delivery") {
+      return capability === "sandbox" ? sandbox : proxy;
+    },
+  };
+}
 
 export function checkExactAccountTokenEgress() {
   const driver = createKubernetesComputeDriver(
