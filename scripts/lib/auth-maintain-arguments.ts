@@ -6,6 +6,7 @@ Commands:
   reset-recovery-password --password-file <path> --writers-stopped
   purge-sessions [--user <userId>] --writers-stopped
   deactivate [--purge-disabled] --writers-stopped
+  link-oidc --mapping-file <path> (--dry-run | --writers-stopped)
 Connects with OCC_MIGRATION_DATABASE_URL. Stop the API and worker first;
 --writers-stopped is verified against the database, not trusted.`;
 
@@ -30,6 +31,7 @@ export type AuthMaintainArguments = Readonly<
   | { command: "reset-recovery-password"; mutating: true; passwordFile: string }
   | { command: "purge-sessions"; mutating: true; userId?: string }
   | { command: "deactivate"; mutating: true; purgeDisabled?: true }
+  | { command: "link-oidc"; mutating: boolean; mappingFile: string }
 >;
 
 const COMMANDS = {
@@ -44,6 +46,12 @@ const COMMANDS = {
   },
   "purge-sessions": { values: ["--user"], flags: [], positional: false, mutating: true },
   deactivate: { values: [], flags: ["--purge-disabled"], positional: false, mutating: true },
+  "link-oidc": {
+    values: ["--mapping-file"],
+    flags: ["--dry-run"],
+    positional: false,
+    mutating: true,
+  },
 } satisfies Record<string, CommandSpecification>;
 
 /** Every command, a fixed list: a failed run logs its command as a code. */
@@ -95,7 +103,11 @@ export function parseAuthMaintainArguments(args: readonly string[]): AuthMaintai
       throw new AuthMaintainUsageError(`Unsupported argument for ${command}: ${argument}.`);
     }
   }
-  if (spec.mutating && !flags.has("--writers-stopped")) {
+  const dryRun = flags.has("--dry-run");
+  if (dryRun && flags.has("--writers-stopped")) {
+    throw new AuthMaintainUsageError("Choose either --dry-run or --writers-stopped.");
+  }
+  if (spec.mutating && !dryRun && !flags.has("--writers-stopped")) {
     throw new AuthMaintainUsageError(
       `${command} changes authentication state; stop the API and worker and pass --writers-stopped.`,
     );
@@ -131,6 +143,12 @@ export function parseAuthMaintainArguments(args: readonly string[]): AuthMaintai
         command,
         mutating: true,
         ...(values["--user"] === undefined ? {} : { userId: values["--user"] }),
+      });
+    case "link-oidc":
+      return Object.freeze({
+        command,
+        mutating: !dryRun,
+        mappingFile: nonEmpty(values["--mapping-file"], "--mapping-file"),
       });
     case "deactivate":
       return Object.freeze({

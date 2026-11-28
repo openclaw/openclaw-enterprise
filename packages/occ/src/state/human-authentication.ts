@@ -127,6 +127,37 @@ function isExternalIdentityConflict(error: unknown): boolean {
   );
 }
 
+/** Shared write after the caller has validated attachment authority inside its transaction. */
+export async function attachExternalAuthenticationMethod(
+  state: PostgresPlatformState,
+  unit: PlatformUnitOfWork,
+  userId: string,
+  providerId: string,
+  subject: string,
+): Promise<string> {
+  const methodId = randomUUID();
+  try {
+    await state.queryInTransaction(
+      unit,
+      `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
+       VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+      [methodId, subject, providerId, userId],
+    );
+  } catch (error) {
+    if (isExternalIdentityConflict(error)) {
+      throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
+    }
+    throw error;
+  }
+  await state.queryInTransaction(
+    unit,
+    `UPDATE occ.human_authentication_accounts SET version = version + 1, changed_at = clock_timestamp() WHERE user_id = $1`,
+    [userId],
+  );
+  await state.queryInTransaction(unit, `DELETE FROM occ.session WHERE user_id = $1`, [userId]);
+  return methodId;
+}
+
 /** A validated password account whose hash was computed before the State transaction. */
 export interface PreparedPasswordAccount {
   readonly id: string;
@@ -1390,26 +1421,13 @@ export class PostgresHumanAuthentication {
         }
         return { methodId: existing.id as string, created: false };
       }
-      const methodId = randomUUID();
-      try {
-        await this.query(
-          unit,
-          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only) VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-          [methodId, subject, providerId, userId],
-        );
-      } catch (error) {
-        // A concurrent attach of the same identity committed first.
-        if (isExternalIdentityConflict(error)) {
-          throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
-        }
-        throw error;
-      }
-      await this.query(
+      const methodId = await attachExternalAuthenticationMethod(
+        this.state,
         unit,
-        `UPDATE occ.human_authentication_accounts SET version = version + 1, changed_at = clock_timestamp() WHERE user_id = $1`,
-        [userId],
+        userId,
+        providerId,
+        subject,
       );
-      await this.query(unit, `DELETE FROM occ.session WHERE user_id = $1`, [userId]);
       await this.audit(unit, "authentication.method.attach", actor.principalId, {
         userId,
         methodId,

@@ -175,6 +175,7 @@ export function requiresWritersStopped() {
     ["reset-recovery-password", "--password-file", "/secret"],
     ["purge-sessions"],
     ["deactivate", "--purge-disabled"],
+    ["link-oidc", "--mapping-file", "/private/mapping.json"],
   ]) {
     assert.throws(
       () => parseAuthMaintainArguments(args),
@@ -247,6 +248,7 @@ export async function logsFailedCommands({ maintain }: AuthMaintainRunner) {
     ],
     "purge-sessions": ["purge-sessions", "--writers-stopped"],
     deactivate: ["deactivate", "--purge-disabled", "--writers-stopped"],
+    "link-oidc": ["link-oidc", "--mapping-file", "/private/path-argument", "--writers-stopped"],
   };
   assert.deepEqual(Object.keys(valid), AUTH_MAINTAIN_COMMANDS);
   for (const [command, args] of Object.entries(valid)) {

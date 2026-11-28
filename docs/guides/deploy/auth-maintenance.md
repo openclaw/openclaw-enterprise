@@ -2,14 +2,15 @@
 
 Use `pnpm auth:maintain` when external sign-in (Google or OIDC) needs a change the online API
 cannot make: the recovery administrator is locked out, an account was never
-enrolled, sessions must be ended at once, or the Installation must return to
-password-only sign-in. `purge-sessions` also works on a password-only
+enrolled, accounts with an existing external identity need an OIDC identity,
+sessions must be ended at once, or the Installation must return to password-only sign-in. `purge-sessions` also works on a password-only
 Installation. The command ships in the controller image and connects with the
 migration credential, never the application credential. To run it from a release
 checkout instead, first run `pnpm install --frozen-lockfile` in the checkout root.
 
 The [authentication reference](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-owns the profile's rules; this page is the operator procedure.
+defines the profile rules. The [maintenance flow](../../flows/external-sign-in-maintenance.md)
+traces how the command checks and commits an import.
 
 ## Choose the operation
 
@@ -20,6 +21,7 @@ owns the profile's rules; this page is the operator procedure.
 | `enrol <userId> --writers-stopped`                                 | An account exists but is not enrolled (for example, an older controller created it after activation). Requires the account's Principal and exactly one password; the account's sessions are ended.                                                                      |
 | `reset-recovery-password --password-file <path> --writers-stopped` | The recovery administrator lost the password. Reads the new password (12 to 128 characters; one trailing newline is ignored) and ends the recovery account's sessions.                                                                                                  |
 | `purge-sessions [--user <userId>] --writers-stopped`               | End every session, or one account's sessions. Service keys are not affected.                                                                                                                                                                                            |
+| `link-oidc --mapping-file <path> (--dry-run \| --writers-stopped)` | Attach OIDC identities to enrolled accounts that already have external sign-in methods. See [Link existing external accounts to OIDC](#link-existing-external-accounts-to-oidc).                                                                                        |
 | `deactivate [--purge-disabled] --writers-stopped`                  | Return to password-only sign-in. See [Deactivate](#deactivate-external-sign-in).                                                                                                                                                                                        |
 
 Every change writes an audit event attributed to `maintenance:<database role>`.
@@ -44,6 +46,51 @@ JSON line to stdout for exit codes `0`, `2`, and `3`. Diagnostics go to stderr.
 | `3`  | A precondition refused the operation (`reason` in the output, for example `DISABLED_ACCOUNTS` or `ACTIVATION_REFUSED`). Nothing changed. |
 | `1`  | Configuration, credential, or database failure.                                                                                          |
 | `64` | Invalid arguments, rejected before configuration or database access.                                                                     |
+
+## Link existing external accounts to OIDC
+
+Use trusted identity-provider export or provisioning records to verify each
+pairing from the existing provider and subject to the subject issued to the
+destination OIDC client. Use the exact recorded identifiers and the current
+authentication account version. Email and display names can change and must never
+be used to establish a pairing. Source and destination providers must differ.
+Each source identity must be an identity-only sign-in method on a distinct
+enabled, enrolled account.
+
+Use a private regular UTF-8 JSON file with mode `0600` or `0400`, at most
+256 KiB, with 1 to 500 entries. Set `OCC_AUTH_OIDC_ISSUER` and
+`OCC_AUTH_OIDC_CLIENT_ID` to the destination values. The command requires the
+migration role and these two provider settings. Run the import commands below
+from a release checkout with access to the database.
+
+| Field                        | Value                                                                                                                                                                                                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `operationId`                | A new lowercase version 4 UUID. Keep it with the mapping through verification.                                                                                                                                                                                                                                     |
+| `installationId`             | The Installation ID from `auth:maintain status`.                                                                                                                                                                                                                                                                   |
+| `sourceProviderId`           | The exact provider ID stored on the source sign-in methods. Password methods are ineligible.                                                                                                                                                                                                                       |
+| `oidcIssuer`, `oidcClientId` | The exact destination issuer and client ID, including any issuer trailing slash.                                                                                                                                                                                                                                   |
+| `entries`                    | Objects with `sourceSubject` (the exact stored external subject), `oidcIssuer` (the destination issuer for the entry), `oidcSubject` (the subject issued to this client), and `expectedVersion` (the account version just read, as a positive integer). Each source subject and each OIDC subject can appear once. |
+
+```bash
+pnpm auth:maintain link-oidc --mapping-file /secure/occ/oidc-links.json --dry-run
+pnpm auth:maintain link-oidc --mapping-file /secure/occ/oidc-links.json --writers-stopped
+```
+
+The dry run works while the API and worker are running. A result of
+`"status":"ready"` reports how many accounts pass the checks in its database
+snapshot. The second command requires [stopped writers](#stop-every-writer)
+and repeats the checks before writing. It adds all the OIDC methods in one
+transaction, advances the affected accounts' versions, and ends their sessions.
+The batch preserves accounts, Principals, role grants, existing sign-in
+methods, and the recovery designation. A subsequent OIDC sign-in applies the configured Group enrollment
+policy.
+
+An `"applied"` result includes the operation ID, mapping digest, and account
+count. If the reply is lost, run the same mapping with `--dry-run` to check
+for its receipt. `"already-applied"` reports that the operation committed.
+Use the normal account read or sign-in flow to check current state after
+later changes. A different mapping with the same operation ID is refused.
+Correct a refused mapping before preparing a new operation ID.
 
 ## Stop every writer
 
