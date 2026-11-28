@@ -6,6 +6,7 @@ import {
   validPluginDriverIdentity,
   type Agent,
   type AgentRevision,
+  type AgentNetworkProxy,
   type BackendRef,
   type ComputeDriver,
   type Configuration,
@@ -15,7 +16,6 @@ import {
   type Namespace,
   type PluginApprovers,
   type PluginDesiredSelection,
-  type RepositoryBindingRequest,
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
@@ -37,7 +37,6 @@ import {
 } from "./deployment-work-status.ts";
 import { driverOperation } from "./driver-operation.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
-import { normalizedRepositoryAccess } from "./repository-credential-validation.ts";
 import type { createRepositoryPolicyOperations } from "./repository-policy.ts";
 import { lockNamespace } from "./resource-scope.ts";
 import type { createProvisioningRequests } from "./agent-provisioning-requests.ts";
@@ -201,7 +200,7 @@ interface ProvisioningWorkerDependencies {
   readonly backendId: (ref: BackendRef | undefined) => string | null;
   readonly repository: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
-    "repositoryBindingSelections"
+    "repositorySettings"
   >;
   readonly hasConfigurationDriver: () => boolean;
   readonly configuration: Pick<ConfigurationOperations, "selectedDriver">;
@@ -1058,23 +1057,21 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
   function savedAgentOptions(
     namespaceId: string,
     plan: Readonly<Record<string, unknown>>,
-  ): Pick<Agent, "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess"> {
+  ): Pick<Agent, "plugins" | "pluginApprovers" | "repositoryAccess"> {
     const plugins = normalizeAgentPlugins(
       plan.plugins as Readonly<Record<string, PluginDesiredSelection>> | undefined,
     );
     const pluginApprovers = normalizeAgentPluginApprovers(
       plan.pluginApprovers as PluginApprovers | undefined,
     );
-    const repositoryBindings = dependencies.repository.repositoryBindingSelections(
+    const repositoryAccess = dependencies.repository.repositorySettings(
       namespaceId,
-      plan.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
+      plan.repositoryAccess,
       "saved",
     );
-    const repositoryAccess = normalizedRepositoryAccess(plan.repositoryAccess, repositoryBindings);
     return {
       ...(plugins === undefined ? {} : { plugins }),
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
-      ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
       ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
     };
   }
@@ -1208,6 +1205,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
             : {}),
           executionMode: plan.executionMode,
           gatewayManagedMode: plan.gatewayManagedMode,
+          ...(plan.networkProxy === undefined ? {} : { networkProxy: plan.networkProxy }),
           ...options,
           ...(validPluginDriverIdentity(planRecord.pluginDriver)
             ? { pluginDriver: planRecord.pluginDriver }
@@ -1240,6 +1238,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           ? {}
           : { secretBindings: plan.configuration.secretBindings }),
         harnessAuth: plan.harnessAuth,
+        ...(plan.networkProxy === undefined ? {} : { networkProxy: plan.networkProxy }),
       });
       await dependencies.ensureAgentOperateGrants(state, namespace.id, agent, grantSources);
       return commitProvisioningCheckpoint(state, claim, {
@@ -1387,14 +1386,23 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     input: {
       readonly secretBindings?: SecretBindings;
       readonly harnessAuth: HarnessAuthBinding | null;
+      readonly networkProxy?: AgentNetworkProxy;
     },
   ): Promise<readonly (SecretReference | CredentialSourceReference)[]> {
     const ids = new Set<string>();
+    const sourceIds = new Set<string>();
     for (const binding of Object.values(input.secretBindings ?? {})) {
-      ids.add(binding.source.id);
+      if (binding.source.kind === "secret") {
+        ids.add(binding.source.id);
+      } else {
+        sourceIds.add(binding.source.id);
+      }
     }
     if (isSecretHarnessAuth(input.harnessAuth)) {
       ids.add(input.harnessAuth.source.id);
+    }
+    if (input.networkProxy?.credentialSecretId !== undefined) {
+      ids.add(input.networkProxy.credentialSecretId);
     }
     const sources: (SecretReference | CredentialSourceReference)[] = [];
     for (const id of ids) {
@@ -1405,10 +1413,10 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       sources.push({ kind: "secret", namespaceId, id: secret.id });
     }
     if (input.harnessAuth?.method === "credential_source") {
-      const source = await state.credentialSources.lockCredentialSource(
-        namespaceId,
-        input.harnessAuth.sourceId,
-      );
+      sourceIds.add(input.harnessAuth.sourceId);
+    }
+    for (const id of sourceIds) {
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, id);
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("Agent provisioning credential source is unavailable.");
       }

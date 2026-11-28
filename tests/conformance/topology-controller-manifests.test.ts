@@ -14,6 +14,7 @@ test("controller topology keeps API-only fixture inputs separate from the worker
       authSecret: "inert-fixture",
       controller: { apiAccount: "controller-api", account: "controller-worker" },
       controllerImage: "example.invalid/controller:test",
+      controlPlaneAuditEnabled: true,
       databaseAddress: "192.0.2.11",
       databaseServiceName: "topology-db",
       inClusterDatabaseUrl: new URL("postgresql://topology-db:5432/fixture"),
@@ -29,6 +30,7 @@ test("controller topology keeps API-only fixture inputs separate from the worker
       nativeAdminDomain: "agents.example.invalid",
       nativeAdminEnabled: true,
       platformNamespace: "controller-topology",
+      installationSecretNamespace: "topology-private",
       workerOptions: {
         pollIntervalMs: 20,
         leaseDurationMs: 5000,
@@ -66,10 +68,28 @@ test("controller topology keeps API-only fixture inputs separate from the worker
   assert.notEqual(workerLabels, labels);
 
   assert.ok(apiContainer.env.some(({ name }) => name === "OCC_AUTH_BASE_URL"));
+  for (const container of [apiContainer, worker]) {
+    assert.deepEqual(
+      container.env.find(({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE"),
+      {
+        name: "OCC_INSTALLATION_SECRET_NAMESPACE",
+        value: "topology-private",
+      },
+    );
+    assert.deepEqual(
+      container.env.find(({ name }) => name === "OCC_CONTROL_PLANE_AUDIT_ENABLED"),
+      {
+        name: "OCC_CONTROL_PLANE_AUDIT_ENABLED",
+        value: "true",
+      },
+    );
+  }
   assert.deepEqual(
     worker.env.map(({ name }) => name),
     [
       "NODE_ENV",
+      "OCC_INSTALLATION_SECRET_NAMESPACE",
+      "OCC_CONTROL_PLANE_AUDIT_ENABLED",
       "OCC_CONFIG_PATH",
       "OCC_DATABASE_URL",
       "OCC_GATEWAY_API_KEY_PATH",

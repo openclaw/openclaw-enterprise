@@ -17,7 +17,10 @@ const { NAME_MAX_CHARACTERS, NAME_PATTERN, namespaceNameProblem } =
 const { SECRET_NAME_MAX_CHARACTERS, suggestedSecretName } = await importConsoleModule(
   "agents/secret-picker.mjs",
 );
-const { SECRET_VALUE_MAX_BYTES, secretValueProblem } = await importConsoleModule("secrets.mjs");
+const {
+  CREDENTIAL_VALUE_MAX_BYTES: SECRET_VALUE_MAX_BYTES,
+  credentialValueProblem: secretValueProblem,
+} = await importConsoleModule("credential-value.mjs");
 const { workspaceFileProblem } = await importConsoleModule("agents/workspace.mjs");
 
 test("the console's Namespace name rule is the API's Name rule", () => {

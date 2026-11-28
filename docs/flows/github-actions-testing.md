@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-22 10:45"
-last_updated_session: "authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e"
+updated: "2026-11-26 09:22"
+last_updated_session: "authoring-run/c0252158-2b99-4167-b929-2fb7bb342dbc"
 ---
 
 # GitHub Actions testing flow
@@ -37,7 +37,7 @@ graph TD
   K --> G
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
-  L --> R["Full CI coverage result"]
+  L --> R["CI coverage for selected lanes"]
   C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
   P -->|scheduled tick skips admission| D["Finish without suite jobs"]
   P -->|eligible| V["Acquire execution lock and revalidate"]
@@ -104,12 +104,16 @@ cadence and receipts under lock. Cooldown skips coverage lookup.
 Scheduled GETs share one 502/503/504 retry. `Retry-After` or zero quota suppresses it.
 “Scheduled preflight diagnostic” shows stage and allowlisted HTTP codes.
 Reruns require [fresh approved dispatch](../testing/ci/configuration.md#environments)
-(dispatcher, team, environment). Slack serializes per channel/app. Installation
-and Skipper Git serialize per branch.
+(dispatcher, team, environment). Slack Live runs one job at a time across the repository.
+Local Kubernetes Installation and Skipper Git each run one job at a time per branch.
 
 First-attempt `all` reuses results accepted by `scripts/ci/full-integration-reuse.ts:validateResults`.
 Otherwise lanes run fresh.
-QA awaits Slack despite failure, stops on cancellation, and requires selected results.
+
+After preflight succeeds, installation QA and Slack Live can run in parallel on `main`.
+When Release OCE selects a commit with `source_sha`, both jobs use the Slack Live
+queue. Either can run first. Neither starts if the run is already cancelled.
+The aggregate requires [both results when both jobs are selected](../testing/ci/full-integration.md#scenarios).
 
 Migration and application suites own separate PostgreSQL servers. Kubernetes
 fixture lanes each own a cluster and PostgreSQL server. The shared action
@@ -167,19 +171,17 @@ Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
-`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Preparation
-requires an actual workspace write and denied write to a container-writable
-outside path before publishing the selected Localhost profile to the live suite.
-Native runtime-image tests trust a dynamic Codex Docker seccomp profile only when
-`OPENCLAW_ENTERPRISE_CI_STATE` records the exact prepared
-`cluster.codexDockerSeccompProfile` path and SHA. A self-hashed profile without
-that state is not CI proof; the standalone fallback remains the pinned reviewed
-manual profile. Production node provisioning remains outside CI ownership; see
-[Codex sandbox setup](../guides/deploy/codex-sandbox.md).
+`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Before publishing
+the Localhost profile to the live suite, preparation must confirm a write inside the
+workspace succeeds and a write to a container-writable path outside it is denied.
+Native runtime-image tests require the exact `cluster.codexDockerSeccompProfile`
+path and SHA in `OPENCLAW_ENTERPRISE_CI_STATE` for dynamic profiles.
+Standalone runs fall back to the reviewed, pinned manual profile.
+[Operators provision production nodes](../guides/deploy/codex-sandbox.md).
 
-`scripts/ci/staging-qualification.ts:prepare-signin` binds verified publications
-to the reviewed v3 inputs and catalog; [staging qualification](../release/staging-qualification.md)
-owns credential isolation and historical-pair limits.
+`scripts/ci/staging-qualification.ts:prepare-signin` checks both sources before
+pulling images and rechecks them when creating the
+[sign-in plan](../release/staging-qualification.md#prepare-a-controller-pair).
 
 ### 3. Execute and account for actual cases
 
@@ -199,17 +201,16 @@ credentials. `scripts/k3d` scopes preparation with `--selected-file`.
 
 The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
-HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
+HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denials retain an allowlisted category. Plugin failures retain an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restarts, exit codes and allowlisted reasons.
 
-`skipper-release.ts:runSkipperOperation` projects captured Skipper errors. After
-failed installed proof, the workflow invokes `skipper-failure-receipt.ts` to publish
-the wrapper's [checkpoints](../testing/ci/full-integration.md#results-and-limits).
+`skipper-release.ts:runSkipperOperation` projects captured errors. After failed installed proof, `skipper-failure-receipt.ts` publishes wrapper
+[checkpoints](../testing/ci/full-integration.md#results-and-limits).
 
-`scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
-categories; `scripts/ci/run-tests.ts:runFile` adds lane and file labels. Installation ordinals
-and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof),
-not live logs. Readers bound partial records; parent byte limits apply first.
-Markers and separators stay out of failure tails. Timing and case accounting remain separate.
+`openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle categories.
+`runFile` adds lane/file labels. [File receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof)
+retain installation ordinals and millisecond offsets outside live logs. Parent
+byte limits precede partial-record bounds. Failure tails omit markers and
+separators. Timing and case accounting differ.
 
 Skips and TODOs fail required-case checks. Coverage requires actual cases and
 final reporter output. Results retain failure, timeout, and cleanup outcomes.
@@ -263,8 +264,8 @@ Root hooks allow two seconds for reports (immediate on cleanup failure), with a
 
 `scripts/ci/runner-aggregate.ts:aggregateGroup` checks SHA, ownership, jobs and execution.
 Reused lanes retain separate owners; fresh lanes retain matrix parents.
-`scripts/ci/cleanup.ts:main` records final cleanup; missing state cannot clear failure.
-Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
+`scripts/ci/cleanup.ts:main` records final cleanup. Complete mode retains its
+journal until cleanup. Confirmed loss stops automatic cleanup for reconciliation. Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
 requires every lane's required cleanup to pass. Later delivery failures
 keep checks red; missing artifacts cannot qualify.
 `ssh-host` needs a [disposable host](../testing/ssh.md#ssh-raw-hosts).
@@ -292,7 +293,15 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-26 09:22: Correct QA and Slack job ordering after preflight. (authoring-run/c0252158-2b99-4167-b929-2fb7bb342dbc - c388219bf7ca532d031a8c49c83029c135cc6a55)
+
+- 2026-11-24 23:19: Label the CI result by the lanes selected. (authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76 - 59e36d118540fd64ed43d8feddbcd9599604afd7)
+
+- 2026-11-24 22:18: Check sign-in compatibility before pulls. (authoring-run/6f832bfe-362b-4a10-a2c9-6d2e71f33bd5 - e74f86b18a839cd2b7b6d82a1c43b960f50b5f01)
+
 - 2026-11-22 10:45: Trace the shared parent-side command supervisor. (authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e - 427e14ba93239035c9cc7445dcf19710d72bab67)
+
+- 2026-11-20 17:14: Trace journal loss. (authoring-run/afe48f49-5009-4789-a0b2-7fa6818bb815 - acbfc35811e8929485813bbd315f5d12f71a4028)
 
 - 2026-11-19 19:23: Retry reads and report failures. (authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954 - ebcbd2f60535c36b3a9b63847a2d052363cd29a6)
 
@@ -384,33 +393,5 @@ awaits an approved resource ledger.
 - 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
 
 - 2026-11-10 12:53: Trace cache observations. (authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594 - dd7a47c0e1d7428068bdc79d311ceb07fbea767f)
-
-- 2026-11-10 10:38: Reconcile builder reuse and live progress documentation. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 280ae7e6db4b38b68bd76bd7aefdd7d874d28bbd)
-
-- 2026-11-10 10:19: Trace portable, bounded OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 1af8c3c4f21c6fe1c8b36ef9545e9e4754e74de6)
-
-- 2026-11-10 10:07: Preserve the builder and epoch for full OpenShell source-build tests. (authoring-run/0c79fd33-2fb7-4114-a408-f08f34d1048d - ce80e6a6b254add076625a1087d098327370672c)
-
-- 2026-11-10 09:09: Document qualified registry-tool reuse and APT setup deadlines in the preparation flow. (authoring-run/dc4064e9-3291-42b3-aaf2-9c36fb81f1a6 - 49e3f601c762f94c8d7b97f594c4a342986d68bd)
-
-- 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
-
-- 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
-
-- 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
-
-- 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
-
-- 2026-11-06 09:03: Validate lane identity before attributing outcomes from matrix results. (authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88 - 048b2cd25cc59087bcb2551fce03a39eef023340)
-
-- 2026-11-04 10:07: Consolidate Full Integration policy and bound the cutover proof routes. (authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60 - 2628dba73edd44e4980711129e48fb7842828019)
-
-- 2026-11-03 01:07: Bind staging tests to release source. (authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06 - d2fc28e1d6d70292e462956cedef0dae9281c48c)
-
-- 2026-11-02 23:56: Trace staging authentication. (authoring-run/5817dfd2-487d-44bc-a2f7-2d57659ea0fc - db2cc11c4fd767c47394d680ef46bf26e1202fbc)
-
-- 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
-
-- 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
 
 [GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

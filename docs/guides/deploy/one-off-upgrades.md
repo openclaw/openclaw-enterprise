@@ -59,8 +59,10 @@ installed Helm values and external Installation YAML; do not regenerate them
 from an example profile. The helper checks both against the live release.
 
 Review **current saved Agent drafts**. Stop followed by Deploy creates a new
-Agent revision from that draft, including unpublished edits. Agent identities,
-credentials, and supported workspace state follow ordinary
+Agent revision from that draft, including unpublished edits. Review the draft
+together with the Harness overrides requested by the revision running before
+Stop. Deploy reuses those overrides, and the candidate controller validates them
+at admission. Agent identities, credentials, and workspace state follow ordinary
 [Stop and resume](../../reference/agents/deployment.md#stop-and-resume) semantics.
 Settle deployments, pending Stops, and Agent deletions under the old controller.
 Previously stopped Agents stay stopped. Do not delete Agents for this procedure.
@@ -168,8 +170,11 @@ Existing dependencies retain their owner; disabled channels skip provisioning.
 
 ### Run the transition
 
-Use a controller image built from `SOURCE_REVISION`. Keep runtime images unchanged;
-this transition deploys current drafts without retaining historical Harness overrides.
+Use the controller image and `occ` binary built from `SOURCE_REVISION`.
+Pass `--occ /path/to/occ` if a different binary is on your PATH. For an
+enabled transition with running Agents, the script checks whether the CLI
+can recover every selected revision's requested Harness overrides before
+submitting a Stop. Keep runtime images unchanged.
 Use the [image-upgrade options](production-upgrade-command.md) for broker selection
 when repository credentials require a qualified controller/broker pair.
 
@@ -186,11 +191,27 @@ scripts/upgrade-channel-egress run \
 ```
 
 Add `--preflight-only` and use a separate fresh evidence directory for a rehearsal.
-It creates temporary readiness probes and startup/migration Jobs, then cleans them;
-it does not stop Agents or OCC. A successful rehearsal is not execution proof.
+It creates temporary readiness probes and startup/migration Jobs, then cleans
+them. It does not stop Agents or OCC and does not run the Configuration or revision
+checks at the Stop boundary. A successful rehearsal is not execution proof.
 
-Execution records the complete original running-Agent set before the first Stop.
-It waits for each asynchronous Stop to clear the active revision under the old
+Execution records the complete original running-Agent set. Before submitting
+any Stop, it checks that every original revision needed for redeployment can
+supply its requested Harness overrides. It also reads each Agent's current saved
+Configuration. If enabled Slack settings reference a public Namespace Secret
+binding, the script refuses before it stops any Agent. Stop the affected Slack
+Agents under the old controller and start a fresh upgrade attempt. After the
+upgrade, select the qualified OCC
+TokenService with Kubernetes Compute, recreate their credentials as Credential
+Sources, update their Slack Configuration bindings, and deploy them yourself.
+The script does not import the old Secret values.
+
+A readable revision must contain an
+overrides object, including an explicit `{}` when none were requested. For
+unreadable saved settings, the exact revision's Harness summary must establish
+the recorded overrides or that none were recorded. If a check fails, inspect
+the CLI, revision access and saved Harness evidence before resuming. The script
+waits for each asynchronous Stop to clear the active revision under the old
 controller. It then checks the expected inventory changes, stops OCC writers,
 runs the selected migration mode, updates the Installation and Helm release, and
 checks authenticated access to the same Installation. Finally, it deploys the
@@ -207,10 +228,11 @@ Keep the original evidence, journal, and attempt paths while the outcome is
 unresolved. `$EVIDENCE_DIRECTORY/before-values.yaml` holds the original captured
 Helm values. Do not restore an older journal from backup. Use the same command,
 checkout, inputs, and evidence with `--resume` only after inspecting actual
-cluster state. Completed operations are not repeated. The script checks that
-Agents still select their recorded new revisions.
-While both OCC writers are quiesced, it validates the recorded Stop inventory
-instead of calling the offline API.
+cluster state. Completed operations are not repeated. Before another Stop on a
+partial journal, the script checks all original revisions still needed for redeployment,
+including Agents already stopped. Earlier Stops remain recorded if a check fails.
+The script checks that Agents still select their recorded new revisions. While
+both OCC writers are quiesced, it validates the recorded Stop inventory offline.
 For database mode `separate`, repeat the same one-off `run` command with
 `--migration-apply-only` after exit 3, without `--resume`. It applies and verifies
 the original Installation's database through the shared guarded Jobs. Then repeat
@@ -231,7 +253,8 @@ from a missing response or missing completion marker.
 
 After completion, verify a model turn, channel delivery, OCC directory lookup,
 and allowed/denied egress for the affected Agents. Successful deployment status
-alone does not prove a Slack exchange or model execution.
+alone does not prove a Slack exchange or model execution. For manually stopped
+Slack Agents, first recreate their Sources and deploy their updated Configurations.
 
 After verification succeeds, stage the updated `--values` file at
 `$ATTEMPT_DIRECTORY/values.yaml` and `$INPUT_DIRECTORY/installation.yaml` as a

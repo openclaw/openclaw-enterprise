@@ -18,6 +18,9 @@ The helper exits **3** after stopping both writers and before submitting Helm.
 Before maintenance, use the
 [migration compatibility check](production-upgrade-command.md#check-database-migration-compatibility)
 to check the selected image against the deployed release's migration history.
+If guarded preflight reports `MIGRATION_HISTORY_UNSUPPORTED`, preserve the
+database and choose an image verified against its current history. A previous
+release may no longer support the database after a migration.
 
 ## Apply and verify the prepared migration
 

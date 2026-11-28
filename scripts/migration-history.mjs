@@ -147,6 +147,36 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 89 && completedCount > 89) {
     return "preNativeGitDelivery";
   }
+  if (count === 90 && completedCount > 90) {
+    return "preAgentNetworkProxy";
+  }
+  if (count === 91 && completedCount > 91) {
+    return "preAgentNetworkProxyAdmission";
+  }
+  if (count === 92 && completedCount > 92) {
+    return "preAgentRepositoryApiLimits";
+  }
+  if (count === 93 && completedCount > 93) {
+    return "preTokenServiceSourceBackendRef";
+  }
+  if (count === 94 && completedCount > 94) {
+    return "preTokenServiceCredentialSources";
+  }
+  if (count === 95 && completedCount > 95) {
+    return "preNamespaceGitHubAppClients";
+  }
+  if (count === 96 && completedCount > 96) {
+    return "preOAuthEndpointAuthority";
+  }
+  if (count === 97 && completedCount > 97) {
+    return "preSharedGitSourceRepositoryGrants";
+  }
+  if (count === 98 && completedCount > 98) {
+    return "preGatewayStartupCredentials";
+  }
+  if (count === 99 && completedCount > 99) {
+    return "preNativeGitHubPullRequestPublication";
+  }
   if (count === completedCount) {
     return "completed";
   }

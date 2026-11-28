@@ -2,7 +2,7 @@ import type { OpenClawConfigurationDocument } from "./index.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { deepFreeze } from "@openclaw-enterprise/utils";
-import { SecretId, ServiceAccountId } from "./api/common.ts";
+import { CredentialSourceId, SecretId, ServiceAccountId } from "./api/common.ts";
 import { isAllowedSecretBindingDestination } from "./secret-bindings.ts";
 import {
   PresetValidationError,
@@ -91,12 +91,16 @@ function validateCredentials(
       ? missing.every((type: string) => type === "string")
       : Check(schema, value);
   };
-  const reference = (original: unknown, value: unknown): boolean =>
+  const reference = (
+    original: unknown,
+    value: unknown,
+    kind: "secret" | "credential_source" = "secret",
+  ): boolean =>
     hasFields(original, ["kind", "namespaceId", "id"]) &&
     isRecord(value) &&
-    scalar(original.kind, value.kind, Type.Literal("secret")) &&
+    scalar(original.kind, value.kind, Type.Literal(kind)) &&
     scalar(original.namespaceId, value.namespaceId, Type.Literal(namespaceId)) &&
-    scalar(original.id, value.id, SecretId);
+    scalar(original.id, value.id, kind === "secret" ? SecretId : CredentialSourceId);
   const bindings = template.configuration?.secretBindings;
   if (bindings !== undefined) {
     if (!isRecord(bindings) || Object.keys(bindings).length > 64) {
@@ -119,7 +123,8 @@ function validateCredentials(
           binding,
           Object.hasOwn(binding, "delivery") ? ["source", "delivery"] : ["source"],
         ) ||
-        !reference(binding.source, value.source) ||
+        (!reference(binding.source, value.source) &&
+          !reference(binding.source, value.source, "credential_source")) ||
         (Object.hasOwn(binding, "delivery") &&
           (!hasFields(binding.delivery, ["type"]) ||
             !isRecord(value.delivery) ||

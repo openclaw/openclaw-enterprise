@@ -10,6 +10,12 @@ Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes clust
 
 ## Before you start
 
+<!-- GitHub uses this name. The expanded step supplies the matching ID on the site. -->
+
+<a name="2-install-openshell-and-bootstrap-occ"></a>
+
+GitHub omits steps. [Preview locally](../../local-preview.md#start-the-preview).
+
 <Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
 Use separate pools (`oce-role=control`, `oce-role=agents`) and encrypted RWO storage with `WaitForFirstConsumer`.

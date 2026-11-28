@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -13,11 +14,39 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
+# Keep these reference forms aligned with packages/occ/src/channel-secret-bindings.ts.
+ENV_REFERENCE = re.compile(r"\$(\$)?\{([A-Z_][A-Z0-9_]*)(?::-[^${}]*)?\}")
+SLACK_CREDENTIAL_FIELDS = (("appToken",), ("botToken",), ("signingSecret",),
+                           ("userToken",), ("relay", "authToken"))
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def slack_credential_references(slack):
+    """Find Source-only credential bindings on an enabled Slack channel and its active accounts."""
+    targets = [slack]
+    accounts = slack.get("accounts")
+    if isinstance(accounts, dict):
+        targets.extend(account for account in accounts.values()
+                       if isinstance(account, dict) and account.get("enabled") is not False)
+    for target in targets:
+        for field in SLACK_CREDENTIAL_FIELDS:
+            value = target
+            for key in field:
+                value = value.get(key) if isinstance(value, dict) else None
+            if isinstance(value, dict) and value.get("source") == "env" and isinstance(value.get("id"), str):
+                yield value["id"]
+            elif isinstance(value, str):
+                for match in ENV_REFERENCE.finditer(value):
+                    escaped, name = match.groups()
+                    if escaped is None:
+                        yield name
+                shorthand = re.fullmatch(r"\$([A-Z][A-Z0-9_]{0,127})", value.strip())
+                if shorthand:
+                    yield shorthand.group(1)
 
 
 def require_private_regular_file(info):
@@ -244,8 +273,8 @@ def lifecycle(action, args):
     original = json.loads((directory / "inventory/restart-preflight.json").read_text())
     journal = directory / "channel-agent-operations.json"
     base = [args.occ, "--output", "json", "--timeout-seconds", str(args.timeout_seconds)]
-    def occ(*tail):
-        return json.loads(command([*base, *tail]))
+    def occ(*tail, failure_hint=""):
+        return json.loads(command([*base, *tail], failure_hint=failure_hint))
     def agent_state(target):
         agent = occ("--namespace", target["namespaceId"], "agent", "get", target["agentId"])
         require(agent.get("id") == target["agentId"] and agent.get("namespaceId") == target["namespaceId"],
@@ -293,11 +322,53 @@ def lifecycle(action, args):
         print("Recorded Agent Stops and the pre-quiescence inventory are confirmed.")
         return
     for target in state["targets"]:
+        require(target[action] != "sending", f"{action} outcome is unknown for Agent {target['agentId']}; inspect Agent revision history, deployment status and audit records. Do not resubmit automatically. Preserve this journal for manual recovery.")
+    def check_retained_overrides(target):
+        ns, agent_id, revision_id = target["namespaceId"], target["agentId"], target["originalRevisionId"]
+        receipt = occ("--namespace", ns, "agent", "revision", agent_id, revision_id, "--check-retain-harness-overrides",
+                      failure_hint=f". Harness override retention check failed for Agent {agent_id} revision {revision_id}; verify access to the original revision and use an OCC CLI that supports the check")
+        require(isinstance(receipt, dict) and receipt.get("canRetainHarnessOverrides") is True and
+                receipt.get("namespaceId") == ns and receipt.get("agentId") == agent_id and receipt.get("id") == revision_id,
+                f"Harness override retention was not confirmed for Agent {agent_id} revision {revision_id}")
+
+    def check_slack_source_bindings(target):
+        ns, agent_id = target["namespaceId"], target["agentId"]
+        agent = agent_state(target)
+        configuration_id = agent.get("configurationId")
+        require(isinstance(configuration_id, str) and configuration_id,
+                f"Agent {agent_id} does not name a readable Configuration; no additional Agent was stopped")
+        configuration = occ("--namespace", ns, "configuration", "get", configuration_id,
+                            failure_hint=f". Cannot check Slack bindings for Agent {agent_id}; no additional Agent was stopped")
+        require(isinstance(configuration, dict) and configuration.get("id") == configuration_id and
+                configuration.get("namespaceId") == ns and configuration.get("kind") == "agent" and
+                isinstance(configuration.get("values"), dict),
+                f"Configuration identity or settings were not confirmed for Agent {agent_id}; no additional Agent was stopped")
+        channels = configuration["values"].get("channels")
+        slack = channels.get("slack") if isinstance(channels, dict) else None
+        if not isinstance(slack, dict) or slack.get("enabled") is False:
+            return
+        bindings = configuration.get("secretBindings", {})
+        require(isinstance(bindings, dict),
+                f"Slack bindings were not readable for Agent {agent_id}; no additional Agent was stopped")
+        for name in slack_credential_references(slack):
+            binding = bindings.get(name)
+            source = binding.get("source") if isinstance(binding, dict) else None
+            require(not (isinstance(source, dict) and source.get("kind") == "secret"),
+                    f"Agent {agent_id} has an enabled Slack credential bound to a public Namespace Secret; no additional Agent was stopped. Stop that Agent under the old controller and start a fresh upgrade attempt. After the upgrade, select the qualified OCC TokenService with Kubernetes Compute, recreate its credentials as Credential Sources, update its Slack Configuration bindings, and deploy it")
+
+    if action == "stop":
+        # An earlier completed Stop can still need its original revision for Deploy.
+        for target in state["targets"]:
+            if target["deploy"] != "complete":
+                check_retained_overrides(target)
+        for target in state["targets"]:
+            if target["deploy"] != "complete":
+                check_slack_source_bindings(target)
+    for target in state["targets"]:
         ns, agent_id = target["namespaceId"], target["agentId"]
         if target[action] == "complete":
             confirm_completed(target)
             continue
-        require(target[action] != "sending", f"{action} outcome is unknown for Agent {agent_id}; inspect Agent revision history, deployment status and audit records. Do not resubmit automatically. Preserve this journal for manual recovery.")
         if target[action] == "unsent":
             agent = agent_state(target)
             require(agent["status"] == "active", "recorded Agent is no longer active; manual recovery required")
@@ -305,10 +376,13 @@ def lifecycle(action, args):
                 require(agent.get("activeRevisionId") == target["originalRevisionId"] and agent["desiredRuntimeState"] == "running", "Agent changed since inventory; Stop was not submitted")
             else:
                 require(agent["desiredRuntimeState"] == "stopped" and not agent.get("activeRevisionId"), "recorded Agent is not fully stopped; Deploy was not submitted")
+                # Deploy reads the original revision before its request. Check that read
+                # first, so a read failure leaves this Deploy unsent and resumable.
+                check_retained_overrides(target)
             target[action] = "sending"
             save(journal, state)
-            response = occ("--namespace", ns, "agent", action, agent_id,
-                           *(["--if-active-revision", target["originalRevisionId"]] if action == "stop" else []))
+            revision_flag = "--if-active-revision" if action == "stop" else "--retain-harness-overrides"
+            response = occ("--namespace", ns, "agent", action, agent_id, revision_flag, target["originalRevisionId"])
             if action == "stop":
                 require(response.get("id") == agent_id and response.get("namespaceId") == ns and response.get("desiredRuntimeState") == "stopped", "Stop response is uncertain; inspect Agent state before manual recovery")
                 target["stopResponse"] = response

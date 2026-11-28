@@ -7,6 +7,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
 import {
+  channelProxyDeploymentStep,
+  isChannelProxyDeployment,
   log,
   minute,
   observeAgentStop,
@@ -15,6 +17,8 @@ import {
   run,
   waitFor,
   type AgentStopState,
+  type ChannelProxyDeployment,
+  type ChannelProxyDeploymentTiming,
   type RunOptions,
 } from "./process.ts";
 import {
@@ -63,14 +67,59 @@ async function cliJson(stack: SmokeStack, args: string[]): Promise<unknown> {
   return result;
 }
 
+// Record the first paired poll that sees each signal. A previous attempt's
+// code does not describe how the Worker spent the elapsed time.
+function deploymentWaitObserver(
+  context: ChannelProxyDeployment | undefined,
+  now = () => performance.now(),
+) {
+  if (!isChannelProxyDeployment(context)) {
+    return;
+  }
+  const started = now();
+  const seen = new Set<string>();
+  const first = (signal: string, elapsed: number) => {
+    if (seen.has(signal)) {
+      return;
+    }
+    seen.add(signal);
+    log(`${context} wait observed ${signal} elapsedMs=${elapsed}`);
+  };
+  return (deployment: unknown, active: boolean, succeeded: boolean) => {
+    try {
+      const elapsed = Math.round(now() - started);
+      if (active) {
+        first("active-revision", elapsed);
+      }
+      if (succeeded) {
+        first("deployment-succeeded", elapsed);
+      }
+      const progress = wireField(deployment, "progress");
+      const attempt = progress == null ? undefined : wireField(progress, "lastAttempt");
+      const code = attempt == null ? undefined : wireField(attempt, "code");
+      switch (code) {
+        case "PREDECESSOR_STOP_YIELDED":
+        case "REVISION_INCOMPLETE":
+        case "WORKSPACE_NODE_PENDING":
+        case "WORKSPACE_NODE_BINDING_PENDING":
+          first(code, elapsed);
+      }
+    } catch {
+      // A diagnostic failure must not change the outcome of the poll.
+    }
+  };
+}
+
 // A deployment must settle at succeeded with its revision active; a failed
 // status fails the smoke at once. Serving is proven separately by a model turn.
-async function waitForDeployment(
-  stack: SmokeStack,
+export async function waitForDeployment(
+  stack: Pick<SmokeStack, "namespaceId" | "api">,
   agentId: string,
   revisionId: string | undefined,
   label: string,
+  options: Parameters<typeof waitFor>[3] & { context?: ChannelProxyDeployment } = {},
 ) {
+  const observe = deploymentWaitObserver(options.context, options.now);
   const base = `/namespaces/${stack.namespaceId}/agents/${agentId}`;
   await waitFor(
     `${label} revision ${revisionId}`,
@@ -85,12 +134,16 @@ async function waitForDeployment(
           `${label}: deployment failed ${JSON.stringify(wireField(deployment, "error"))}`,
         );
       }
+      const active = wireField(agent, "activeRevisionId");
+      const succeeded = status === "succeeded";
+      observe?.(deployment, revisionId !== undefined && active === revisionId, succeeded);
       return {
-        done: status === "succeeded" && wireField(agent, "activeRevisionId") === revisionId,
-        state: { deployment: status, active: wireField(agent, "activeRevisionId") },
+        done: succeeded && active === revisionId,
+        state: { deployment: status, active },
       };
     },
     10 * minute,
+    options,
   );
 }
 
@@ -130,11 +183,86 @@ export interface GatewayPod {
   pod: string;
 }
 
+interface SubmittedAgentRevision {
+  readonly id: string;
+  readonly createdAt: unknown;
+}
+
+function revisionTimestamp(value: unknown): number | undefined {
+  // Local Setup serializes PostgreSQL revision times as UTC ISO strings with milliseconds.
+  if (typeof value !== "string" || value.length !== 24) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : undefined;
+}
+
+function podTimestamp(value: unknown): number | undefined {
+  // Kubernetes core/v1 Pod times use UTC with whole-second resolution.
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  // Date.parse can normalize invalid calendar dates.
+  if (Number.isFinite(parsed) && new Date(parsed).toISOString() === `${value.slice(0, -1)}.000Z`) {
+    return parsed;
+  }
+  return undefined;
+}
+
+function podConditionTimestamp(pod: Pod, type: "PodScheduled" | "Ready") {
+  const matches = pod.status?.conditions?.filter((condition) => condition?.type === type);
+  const condition = matches?.length === 1 ? matches[0] : undefined;
+  return condition?.status === "True" ? podTimestamp(condition.lastTransitionTime) : undefined;
+}
+
+function podInterval(start: number | undefined, end: number | undefined): number | undefined {
+  if (start === undefined || end === undefined) {
+    return undefined;
+  }
+  const elapsed = end - start;
+  return elapsed >= 0 && elapsed <= 60 * minute ? elapsed : undefined;
+}
+
+function logGatewayPodIntervals(pod: Pod, context: ChannelProxyDeployment) {
+  const created = podTimestamp(pod.metadata.creationTimestamp);
+  const scheduled = podConditionTimestamp(pod, "PodScheduled");
+  const containerStatuses = pod.status?.containerStatuses;
+  const gateways = Array.isArray(containerStatuses)
+    ? containerStatuses.filter((container) => container?.name === "gateway")
+    : [];
+  const gateway = gateways.length === 1 ? gateways[0] : undefined;
+  const started =
+    gateway?.restartCount === 0 &&
+    gateway.lastState?.terminated == null &&
+    gateway.state?.waiting == null &&
+    gateway.state?.terminated == null
+      ? podTimestamp(gateway.state?.running?.startedAt)
+      : undefined;
+  const ready = gateway?.ready === true ? podConditionTimestamp(pod, "Ready") : undefined;
+
+  // Ready is the latest recorded transition in this sample. These intervals do
+  // not measure the deployment's wall time or the old Pod's retirement.
+  const intervals = [
+    ["createdToScheduledMs", podInterval(created, scheduled)],
+    ["scheduledToGatewayStartMs", podInterval(scheduled, started)],
+    ["gatewayStartToLatestPodReadyMs", podInterval(started, ready)],
+  ] as const;
+  const fields = intervals.flatMap(([name, elapsed]) =>
+    elapsed === undefined ? [] : [`${name}=${elapsed}`],
+  );
+  if (fields.length > 0) {
+    log(`${context}: sampled gateway Pod intervals ${fields.join(" ")}`);
+  }
+}
+
 export async function readyGateway(
   stack: LocalSetup,
   agentId: string,
-  revisionId: string,
+  revision: string | SubmittedAgentRevision,
+  context?: ChannelProxyDeployment,
 ): Promise<GatewayPod> {
+  const revisionId = typeof revision === "string" ? revision : revision.id;
   const pods = await agentPods(stack, agentId);
   // Same revision match as scripts/first-agent-model.ts: the gateway Pod
   // mounts its revision's configuration ConfigMap.
@@ -150,7 +278,33 @@ export async function readyGateway(
     1,
     `expected one Ready gateway Pod for ${revisionId}, found ${gateways.length} of ${pods.length} Agent Pods`,
   );
-  const { namespace, name } = gateways[0]!.metadata;
+  const gateway = gateways[0]!;
+  const { namespace, name } = gateway.metadata;
+  if (
+    isChannelProxyDeployment(context) &&
+    gateway.metadata.labels?.["openclaw.dev/agent"] === agentId
+  ) {
+    try {
+      logGatewayPodIntervals(gateway, context);
+    } catch {
+      // Optional timing data must never change gateway selection or its outcome.
+    }
+    if (typeof revision !== "string") {
+      try {
+        // PostgreSQL and the Kubernetes API server can disagree about wall time.
+        // Pod creation is recorded to whole seconds and may be for a replacement.
+        const elapsed = podInterval(
+          revisionTimestamp(revision.createdAt),
+          podTimestamp(gateway.metadata.creationTimestamp),
+        );
+        if (elapsed !== undefined) {
+          log(`${context}: revisionToPodCreationMs=${elapsed}`);
+        }
+      } catch {
+        // An unavailable sample must not change the readiness result.
+      }
+    }
+  }
   return { namespace, pod: name };
 }
 
@@ -233,6 +387,35 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
+}
+
+export async function checkCodexWorkspaceFile(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  content: string,
+  { write = false } = {},
+) {
+  const name = "USER.md";
+  const path = `/namespaces/${stack.namespaceId}/agents/${agent.id}/workspace/files/${name}`;
+  // The API client can include the request path and server error in exceptions.
+  // Report only the operation, including when the outcome of a write is unknown.
+  if (write) {
+    try {
+      await stack.api("PUT", path, { content });
+    } catch {
+      throw new Error("Codex workspace file write could not be confirmed");
+    }
+  }
+  let file: unknown;
+  try {
+    file = await stack.api("GET", path);
+  } catch {
+    throw new Error("Codex workspace file read failed");
+  }
+  assert.ok(
+    file != null && wireField(file, "name") === name && wireField(file, "content") === content,
+    "Codex workspace file did not match the expected edit",
+  );
 }
 
 export async function readLogs(stack: SmokeStack, agent: SmokeAgent, source: "gateway" | "agent") {
@@ -359,18 +542,39 @@ export async function stopAgent(stack: SmokeStack, agent: SmokeAgent) {
   }
 }
 
-export async function deployAgent(stack: SmokeStack, agent: SmokeAgent): Promise<string> {
-  const revision = await cliJson(stack, ["agent", "deploy", agent.id]);
-  const revisionId = wireField(revision, "id") as string | null | undefined;
-  assert.match(revisionId ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
-  await waitForDeployment(stack, agent.id, revisionId!, agent.label);
-  const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
-  assert.equal(
-    wireField(current, "desiredRuntimeState"),
-    "running",
-    `${agent.label}: not running after deploy`,
+export async function deployAgent(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  timing?: ChannelProxyDeploymentTiming,
+): Promise<string> {
+  return (await deployAgentRevision(stack, agent, timing)).id;
+}
+
+export async function deployAgentRevision(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  timing?: ChannelProxyDeploymentTiming,
+): Promise<SubmittedAgentRevision> {
+  const measure = channelProxyDeploymentStep(timing);
+  const revision = await measure("submit", async () => {
+    const revision = await cliJson(stack, ["agent", "deploy", agent.id]);
+    const id = wireField(revision, "id") as string | null | undefined;
+    assert.match(id ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
+    return { id: id!, createdAt: wireField(revision, "createdAt") };
+  });
+  const options = timing && { context: timing.context };
+  await measure("wait", () =>
+    waitForDeployment(stack, agent.id, revision.id, agent.label, options),
   );
-  return revisionId!;
+  await measure("verify", async () => {
+    const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
+    assert.equal(
+      wireField(current, "desiredRuntimeState"),
+      "running",
+      `${agent.label}: not running after deploy`,
+    );
+  });
+  return revision;
 }
 
 export async function runFirstAgent(stack: SmokeStack, modelCredential: string) {

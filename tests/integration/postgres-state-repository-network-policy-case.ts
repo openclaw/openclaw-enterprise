@@ -1,4 +1,5 @@
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import pg from "pg";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -8,6 +9,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import {
+  admitRepositoryNetworkPolicy,
   type AgentRevision,
   type ComputeDriver,
   type SandboxDriver,
@@ -41,8 +43,8 @@ function storedRevisionWriter(pool: PolicyApp["pool"], originalId: string) {
 }
 
 function snapshotPolicy(grants: readonly RepositoryNetworkGrant[]) {
-  const version = 1 as const;
-  return { version, grants, identity: JSON.stringify({ version, grants }) };
+  const ceiling = grants.map(({ repository, access }) => ({ repository, access }));
+  return admitRepositoryNetworkPolicy(grants, ceiling)!;
 }
 
 async function verifyLiveApplicationSnapshot(
@@ -247,10 +249,42 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   );
 
   const grants: readonly RepositoryNetworkGrant[] = [
-    { repository: "example/project-a", access: "read" },
-    { repository: "example/project-b", access: "write" },
+    {
+      repository: "example/project-a",
+      access: "read",
+      apiLimits: { pull_requests: "read", issues: "write", default: "none" },
+    },
+    {
+      repository: "example/project-b",
+      access: "write",
+      apiLimits: { issues: "read", pull_requests: "none" },
+    },
+    { repository: "example/project-c", access: "write", apiLimits: { default: "none" } },
+    { repository: "example/project-d", access: "read" },
   ];
   const desired = { ...original, version: original.version + 1, repositoryNetworkPolicy: grants };
+  // Direct writers must use the same resource levels as the API.
+  for (const fields of [
+    { apiActions: { allow: [] } },
+    { apiLimits: null },
+    { apiLimits: {} },
+    { apiLimits: [] },
+    { apiLimits: { issues: null } },
+    { apiLimits: { default: "read" } },
+    { apiLimits: { issues: "create" } },
+    { apiLimits: { pull_requests: true } },
+    { apiLimits: { issues: "write", other: "none" } },
+  ]) {
+    const invalid = { ...desired, repositoryNetworkPolicy: [{ ...grants[0], ...fields }] };
+    await assert.rejects(
+      pool.query("UPDATE occ.sandbox_policies SET version=$2, document=$3 WHERE id=$1", [
+        desired.id,
+        desired.version,
+        JSON.stringify(invalid),
+      ]),
+      { code: "23514", constraint: "sandbox_policies_document_valid" },
+    );
+  }
   await assert.rejects(
     savePolicy({ ...desired, version: original.version }, original.version),
     ScopeViolationError,
@@ -336,6 +370,23 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
 
   const marker = { repositoryNetworkPolicyVersion: admitted.version };
   const storedAdmission = { ...scopedUnprotectedRevision.executionAdmission, ...marker };
+  // A revision cannot drop the API limits from its grants or its identity.
+  const unfiltered = snapshotPolicy(
+    grants.map(({ repository, access }) => ({ repository, access })),
+  );
+  for (const repositoryNetworkPolicy of [
+    unfiltered,
+    { ...admitted, identity: unfiltered.identity },
+  ]) {
+    await assert.rejects(
+      insertStoredRevision(nextRevision, {
+        sandbox_driver_id: baseSnapshot.driverId,
+        sandbox_policy: { ...baseSnapshot, repositoryNetworkPolicy },
+        execution_admission: storedAdmission,
+      }),
+      { code: "23514" },
+    );
+  }
   // The storage-only marker must never become part of the public execution admission.
   await assert.rejects(
     createRevision({ ...scopedUnprotectedRevision, executionAdmission: storedAdmission }),
@@ -555,7 +606,9 @@ async function policyEditor({ deployAgent, inject, state, pool }: PolicyApp) {
   assert.equal(enabled.statusCode, 200, enabled.body);
 
   const original = await stored();
-  const grants = [{ repository: "example/project", access: "write" }] as const;
+  const grants = [
+    { repository: "example/project", access: "write", apiLimits: { issues: "read" } },
+  ] as const;
   const read = async () => (await view()).policy;
   const seed = async () => {
     // Begin with a policy persisted by an installation supporting grant creation.
@@ -924,17 +977,31 @@ export async function verifyScopedDeploymentTransition(
 }
 
 async function createScopedDeployment(fixture: PolicyApp) {
-  const { inject, state } = fixture;
+  const { controller, inject, state } = fixture;
   const starter = await fixture.deployAgent("setup");
   const { namespace, secretRef } = starter;
   const root = "/namespaces/" + namespace.id;
   const config = await inject("GET", root + "/configurations/" + starter.agent.configurationId);
   assert.equal(config.statusCode, 200);
-  const credential = await inject("POST", root + "/secrets", {
+  const store = controller.selectedDriver("secret").privateSecrets;
+  assert.ok(store);
+  const ownerId = "policy-source-owner";
+  const instanceId = await controller.activateTokenServiceInstance(ownerId, "policy-fixture-store");
+  const owner = new OCCTokenServiceDriver(
+    ownerId,
+    controller.installation.id,
+    store,
+    instanceId,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  const credential = await inject("POST", root + "/credential-sources", {
     name: "synthetic-channel",
-    value: "synthetic",
+    type: "static",
+    secret: "xoxb-synthetic-channel",
   });
-  assert.equal(credential.statusCode, 201);
+  assert.equal(credential.statusCode, 201, credential.body);
   const source = credential.json().data.ref;
   const bound = await inject("POST", root + "/configurations", {
     kind: "agent",
@@ -983,7 +1050,7 @@ export async function verifyChannelPolicyHandoff(
       await writer.query("SET LOCAL lock_timeout = '10s'");
       await writer.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespace.id]);
       await writer.query(
-        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','secret',$3,'deny')",
+        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','credential_source',$3,'deny')",
         ["restriction-" + randomUUID(), namespace.id, source.id],
       );
       await writer.query("COMMIT");
@@ -1103,7 +1170,9 @@ export async function verifyDeploymentAuthorityAfterWait(
       return rowCount === 1 || undefined;
     });
     const [action, kind, id] =
-      boundary === "channel" ? ["operate", "secret", source.id] : ["deploy", "agent", agent.id];
+      boundary === "channel"
+        ? ["operate", "credential_source", source.id]
+        : ["deploy", "agent", agent.id];
     await writer.query(
       `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
        VALUES ($1, $2, $3, $4, $5, 'deny')`,

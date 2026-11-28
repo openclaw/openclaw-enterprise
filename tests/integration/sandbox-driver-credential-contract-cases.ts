@@ -3,7 +3,7 @@ import test from "node:test";
 import type { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   ConfigurationValidationError as SharedConfigurationValidationError,
-  type CredentialSource,
+  type LegacyCredentialSource,
 } from "../../packages/contracts/src/index.ts";
 import {
   CredentialSourceRegistrationConfigError,
@@ -40,18 +40,18 @@ export function registerSandboxCredentialContractCases({
       config: { ...endpoint, env_var },
     });
     const { namespace, signal } = context("cs_00000000-0000-4000-8000-000000000000");
-    const sourceContext = (source: CredentialSource) => ({ namespace, source, signal });
-    const input = (source: CredentialSource, token = "t0ken") => ({
+    const sourceContext = (source: LegacyCredentialSource) => ({ namespace, source, signal });
+    const input = (source: LegacyCredentialSource, token = "t0ken") => ({
       type: source.type,
       config: source.config,
       secrets: { token },
     });
-    const revisionContext = (sources: CredentialSource[]) => gateway.revisionContext(sources);
-    const providerOf = (source: CredentialSource) =>
+    const revisionContext = (sources: LegacyCredentialSource[]) => gateway.revisionContext(sources);
+    const providerOf = (source: LegacyCredentialSource) =>
       [...gateway.providers.values()].find(
         ({ labels }) => labels["openclaw.dev/credential-source-id"] === source.id,
       );
-    const register = (driver: OpenShellCredentialGatewayDriver, source: CredentialSource) =>
+    const register = (driver: OpenShellCredentialGatewayDriver, source: LegacyCredentialSource) =>
       assertCredentialSourceReady(driver.registerSource(sourceContext(source), input(source)));
     return { bearer, input, providerOf, register, revisionContext, sourceContext };
   }
@@ -237,7 +237,7 @@ export function registerSandboxCredentialContractCases({
     const deployed = bearer("cs_00000000-0000-4000-8000-000000000102", "DEPLOYED_TOKEN");
     await register(driver, updated);
     await register(driver, deployed);
-    const profileOf = (source: CredentialSource) => {
+    const profileOf = (source: LegacyCredentialSource) => {
       const provider = providerOf(source);
       assert.ok(provider);
       return requiredProfile(profiles, provider.type);

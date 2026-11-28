@@ -18,11 +18,14 @@ const prerequisiteMessages = [
   "OCC_TEST_OPENSHELL_HELM must point at the Helm binary used to install the namespace-scoped OpenShell gateway.",
 ];
 const deploymentFailed = "OpenShell revision deployment failed.";
+const unsupportedDriverOption =
+  "Installation configuration contains an unsupported option under drivers. Check the Installation configuration reference for supported Driver entries.";
 const teardownFailed = "OpenShell plugin installation fixture teardown failed.";
 const timedOut = "OpenShell plugin installation child timed out; child details withheld.";
 const failureMessages = [
   ...prerequisiteMessages,
   deploymentFailed,
+  unsupportedDriverOption,
   "final native process must discover the installed selection (ERR_ASSERTION)",
   "removed selection must not remain enabled (ERR_ASSERTION)",
   "OpenShell plugin installation assertion failed (ERR_ASSERTION)",
@@ -43,7 +46,10 @@ function canonicalCategories(value: string): string {
   return canonical === value ? canonical : "";
 }
 
-function failureMessage(value: unknown): string | DeploymentFailure {
+function failureMessage(
+  value: unknown,
+  progress: PluginStage | undefined,
+): string | DeploymentFailure {
   const error = record(value);
   // Unwrap only Node's test failure, never arbitrary application cause payloads.
   const cause = error.code === "ERR_TEST_FAILURE" ? record(error.cause) : error;
@@ -68,6 +74,16 @@ function failureMessage(value: unknown): string | DeploymentFailure {
       };
     }
     return deploymentFailed;
+  }
+  // Installation's closed() validator names the rejected key. Report only the fixed guidance.
+  if (
+    progress?.stage === "installation" &&
+    progress.outcome === "failed" &&
+    cause.name === "Error" &&
+    cause.code === undefined &&
+    /^drivers contains unsupported option [\w-]+\.$/u.test(message)
+  ) {
+    return unsupportedDriverOption;
   }
   if (cause.code === "ERR_ASSERTION") {
     const prerequisite = prerequisiteMessages.find((summary) => message === summary);
@@ -168,7 +184,7 @@ export default async function* reporter(source: AsyncIterable<{ type: string; da
       if (data.name === pluginInstallCase && data.nesting === 0) {
         const error = record(record(data.details).error);
         if (error.failureType !== "hookFailed") {
-          primary ??= failureMessage(error);
+          primary ??= failureMessage(error, progress);
         }
       }
     }

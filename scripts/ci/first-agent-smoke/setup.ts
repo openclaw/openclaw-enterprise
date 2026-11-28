@@ -35,6 +35,9 @@ export function createApi(origin: string, key: string): Api {
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
         headers: {
+          // This smoke rolls the API Deployment. Do not retain a NodePort connection
+          // to a Pod that can be removed during the next rollout.
+          connection: "close",
           "x-api-key": key,
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
@@ -199,7 +202,14 @@ export interface Pod {
   };
   status?: {
     phase?: string;
-    conditions?: { type: string; status: string }[];
+    conditions?: { type: string; status: string; lastTransitionTime?: unknown }[];
+    containerStatuses?: {
+      name: string;
+      ready?: boolean;
+      restartCount?: number;
+      state?: { running?: { startedAt?: unknown }; waiting?: unknown; terminated?: unknown };
+      lastState?: { terminated?: unknown };
+    }[];
   };
 }
 
@@ -302,10 +312,12 @@ export async function routeModelProvider(
     journey = "PROBE_PUBLIC_READ_JOURNEY",
     cleanup = [],
     credentialDigests,
+    slackStandIn = false,
   }: {
     journey?: string;
     cleanup?: (() => Promise<unknown>)[];
     credentialDigests?: Record<string, string>;
+    slackStandIn?: boolean;
   } = {},
 ) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
@@ -348,6 +360,7 @@ export async function routeModelProvider(
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
     `${journey}=1`,
+    ...(slackStandIn ? ["--env", "PROBE_SLACK_STANDIN=1"] : []),
     // With digests, the stand-in answers only these credentials and names each caller.
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",
@@ -375,6 +388,7 @@ export async function routeModelProvider(
     modelAddress,
     platformNamespace: stack.state.platformNamespace,
     serverFile: "oce-first-agent-smoke.server",
+    additionalHosts: slackStandIn ? ["slack.com", "wss-primary.slack.com"] : [],
   });
 }
 
@@ -384,6 +398,8 @@ interface ModelEvent {
   text?: string;
   caller?: string;
   transport?: string;
+  method?: string;
+  peer?: string;
 }
 
 export async function modelEvents(): Promise<ModelEvent[]> {

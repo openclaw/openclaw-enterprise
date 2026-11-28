@@ -18,13 +18,18 @@ covers the lanes selected for that change, not every registered integration.
 ## Trigger
 
 The workflow runs on pull requests, pushes to `main`, merge groups, and manual
-dispatch. Documentation-only pull requests and verified, forward main pushes
-run static checks. Main pushes compare the complete `before` to `after` range
-using the policy from `before`; missing history, forced pushes, or a policy that
-does not support push selection run the ordinary lane matrix. Recognized
-test-only pull requests select affected lanes, including TypeScript test checks.
-Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
-that require successful CI for that source.
+dispatch. CI skips all test lanes only for allowlisted docs-only pull requests
+and verified forward docs-only pushes to `main`. Static checks still run.
+For pushes to `main`, CI compares the complete `before` to `after` range using
+the policy from `before`. CI runs all ordinary lanes if history is missing,
+the push is forced, or the policy does not support push selection.
+
+Under the [CI selection rules](../../../scripts/ci/impact.ts), a pull request
+limited to eligible tests can include allowlisted docs and matching edits to
+existing lane manifests. CI selects the lanes that own those tests and adds
+`Checks and Conformance 2` for TypeScript tests.
+For other changes, CI Impact selects `full` mode and runs all ordinary lanes.
+A failed CI run for a push to `main` blocks standalone container and CLI publication for that commit.
 
 For a main push that modifies one registered test, the `CI main test advisory v2`
 notice in `CI Impact` can list the predicted lanes and the verified before and
@@ -38,8 +43,10 @@ CI. Mixing an RFC image with runtime or tooling changes also selects full CI.
 
 ## Scenarios
 
-`pr-safe` runs the selected matrix jobs below; `runtime-image-fixture` runs
-separately. If selection cannot be verified, CI runs every ordinary lane.
+`image-lanes` runs the selected `images-*` jobs after Shared Runtime Image
+succeeds. `pr-safe` runs the other selected matrix jobs. `runtime-image-fixture`
+runs separately.
+If selection cannot be verified, CI runs every ordinary lane.
 
 | Tests                                                                           | What is verified                                                                                                                                                                      | GitHub jobs and manifests                                                                                                                                                                                                                                                                                                                               |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

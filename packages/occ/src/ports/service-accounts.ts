@@ -6,6 +6,10 @@ export interface ServiceAccountReadRepository {
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount> | undefined>;
   listServiceAccounts(namespaceId: string): Promise<readonly Readonly<ServiceAccount>[]>;
+  findServiceAccountByCredentialSource(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<Readonly<ServiceAccount> | undefined>;
   findServiceAccountBackendBinding(
     namespaceId: string,
     serviceAccountId: string,

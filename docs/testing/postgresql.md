@@ -94,6 +94,14 @@ Cleanup verifies each regular journal's fresh owner identity, path and lane;
 preexisting, replaced or symlinked journals are refused. Direct local runs use
 fresh private paths and an after-hook with the same Docker prerequisites.
 
+## Connection refused during setup
+
+If `lifecycle.phases.prepare.error.reason` is `postgres-connection-refused`,
+the runner could not open the initial PostgreSQL session. Confirm that cleanup
+passed. Check that the runner can reach the container’s published loopback
+port from its network namespace. Keep the port bound to `127.0.0.1`.
+After you correct the connection, start a new attempt.
+
 ## Subnet pool exhaustion
 
 Complete lifecycle results record `docker-subnet-exhausted` in `lifecycle.phases.prepare.error.reason`.
@@ -123,10 +131,9 @@ host and start with a fresh run directory.
 
 ## Other PostgreSQL suites
 
-Run `pnpm db:up` from one checkout and reuse its PostgreSQL service on port 55432
-for standalone tests. Run the Compose setup commands from that checkout and
-create fresh disposable databases on the shared development server. Use the
-isolated workflow above for version-worker tests and full CI lanes.
+Run `pnpm db:up` and the Compose setup commands from one checkout. Use its service
+on port 55432 to create fresh disposable databases for standalone tests.
+Version-worker tests and full CI lanes require [isolated preparation](#version-worker-tests).
 
 The bootstrap test creates an Installation. Give it a fresh migrated database
 with no Installation. The [Kubernetes HTTP fixture](kubernetes.md#kubernetes-http-fixture)
@@ -162,6 +169,16 @@ live gateway. Four optional Configuration cases also require
 `OCC_TEST_KUBERNETES_CONFIGURATION=1` and a configured live Kubernetes Driver.
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
 version-worker tests and therefore require prepared ownership.
+
+The standalone platform-state command skips the guarded receipt case. Use
+[prepared ownership](ci/run-lanes.md#run-a-complete-local-attempt):
+
+```sh
+corepack pnpm exec node scripts/ci/run-tests.ts run postgres-platform --lifecycle complete \
+  --attempt "$HOME/oce-postgres-guarded-attempt-1" \
+  --file tests/integration/postgres-platform-state.test.ts \
+  --test-name 'PostgreSQL guarded first deployment persists one private receipt and one reconcile work'
+```
 
 ## OIDC human sign-in
 
@@ -290,6 +307,76 @@ Agent workloads, external OAuth exchange or model turns. Candidate images must
 support both the saved-connection APIs and configured IAM startup policy exercised
 by these cases. Each case removes its containers and database on completion,
 including assertion failure.
+
+### Check a recovery controller before maintenance
+
+The API tests can pass even if the released controller's migrator refuses the
+upgraded history. To screen a recovery image, keep the candidate fixed and
+select the recovery image and revision as the released controller above.
+Run the whole file with `--lifecycle complete`. If you use
+`--controller-compatibility-results` for the upgrade, supply the report for the
+**installed** controller and candidate.
+
+Set `REPORT` to the trusted recovery run's final `result.json`. Obtain both
+image digests and the full test checkout commit (`RUNNER_SHA`) independently
+of the report. Supply distinct digests in the form `sha256:<64 lowercase hex digits>`.
+
+```sh
+python3 scripts/upgrade-evidence.py recovery-history \
+  "$REPORT" "$RECOVERY_DIGEST" "$CANDIDATE_DIGEST" "$RUNNER_SHA"
+```
+
+Exit 0 requires passing API cases for that pair, successful preparation, run
+and cleanup, and one `released-controller-history` measurement of `current`.
+If the measurement is missing, repeat qualification with a runner that records
+it. If the migrator rejects the history, qualify a different recovery image.
+
+This check reads a local report. Before rollout, check the recovery image against
+the Installation's upgraded history and [verify that an acknowledged write
+survives controller return](populated-controller-return.md).
+
+### Rehearse an in-place controller switch
+
+Use the [populated controller return setup](populated-controller-return.md#prepare-the-cluster-and-images)
+with a fresh, exclusive k3d cluster. Stage all fixture and controller images,
+including the recovery image, in Docker and k3d. The recovery image must meet the
+same digest and source checks as the other controllers. Its digest and source
+commit must differ from the upgraded candidate's. Keep the release checkouts
+clean and use absolute paths.
+
+Keep the ordinary rehearsal environment file free of recovery variables. Supply
+them only for this opt-in trial.
+
+```sh
+OCC_TEST_PRODUCTION_TUI_REHEARSAL=in-place \
+OCC_TEST_REHEARSAL_RECOVERY_IMAGE="$RECOVERY_IMAGE" \
+OCC_TEST_REHEARSAL_RECOVERY_SOURCE="$RECOVERY_SOURCE" \
+  node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
+```
+
+To check Console sessions, set `OCC_TEST_PRODUCTION_TUI_BROWSER=1` for this
+in-place run. On Linux, provide `certutil` and sandboxed Chromium. Set
+`OCC_TEST_BROWSER_EXECUTABLE` to use an installed browser. Each image must
+serve its source revision in the Console HTML's `occ-build-revision` meta element.
+
+With one login, verify saved Agents in four tabs at each switch. Keep one open,
+load one fresh, delay the third tab's entry and delay the fourth tab's imports.
+Compare the delayed entry and Agent detail module with the fresh tab.
+Local HTTPS tests compatibility across a switch. It cannot establish continuous availability.
+
+Require a pass without skips. The test performs an ordinary controller-only
+forward upgrade. After the candidate acknowledges an Agent draft save, it checks
+the recovery migrator against the upgraded history and uses the same candidate
+tooling and chart to switch to the recovery controller. It verifies the exact
+draft readback on the same upgraded database without restoring an archive or
+running Helm rollback. The interrupted and ordinary archive modes remain unchanged.
+This trial does not qualify model execution or a production rollout.
+
+For recovery-history screening, use recovery as the released controller and the
+upgraded image as candidate. A separate optional production return compatibility
+report reverses that pair. The upgraded controller is now installed and the
+recovery image is the candidate. Supply that report to the return command's
+`--controller-compatibility-results` option.
 
 ## Azure workload-identity connections
 

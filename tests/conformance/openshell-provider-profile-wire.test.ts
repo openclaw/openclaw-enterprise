@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-image.ts";
 import { directGitLaunchVerifier, traceDirectGitBootstrap } from "../helpers/finite-git-agent.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { ensureOpenShellProviderProfile } from "../../apps/controller/src/backends/openshell.ts";
@@ -47,6 +48,17 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
     | "foreign-owner"
     | "different-command"
     | "ready" = "pending";
+  // One change to what the Gateway reports in the ready state. The supervisor's own
+  // Provider report stays READY, so only the policy readback can refuse it.
+  let departure: {
+    readonly authored?: Record<string, unknown>;
+    readonly effective?: Record<string, unknown>;
+    readonly config?: Record<string, unknown>;
+    readonly activeVersion?: number;
+    readonly sandboxId?: string;
+    readonly networkProcess?: string;
+    readonly admission?: Record<string, unknown>;
+  } = {};
   const generation = {
     attachment_epoch: "installed-attachment",
     provider_env_revision: "3",
@@ -72,7 +84,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
         version: 1,
         filesystem,
         process: { run_as_user: "1000", run_as_group: "1000" },
-        network_policies: { [rule.name]: rule },
+        network_policies: { [rule.name]: rule, ...departure.authored },
       },
     },
   });
@@ -136,7 +148,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
         };
       };
       methods.GetSandboxPolicyStatus = () => ({
-        active_version: 2,
+        active_version: departure.activeVersion ?? 2,
         revision: { version: 2, status: 2, policy: policy() },
       });
       methods.GetSandboxConfig = () => {
@@ -154,8 +166,10 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
           policy_hash: generation.policy_hash,
           policy: {
             ...policy(),
+            ...departure.effective,
             network_policies: {
               [layer]: { name: layer },
+              ...departure.authored,
               [rule.name]: {
                 ...rule,
                 endpoints: rule.endpoints.map((endpoint) => ({
@@ -166,12 +180,13 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
               },
             },
           },
+          ...departure.config,
         };
       };
       methods.GetSandbox = () => ({
         sandbox: {
           metadata: {
-            id: sandboxId,
+            id: departure.sandboxId ?? sandboxId,
             name: sandbox,
             workspace,
             labels:
@@ -187,7 +202,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
             ...(mode === "different-command" && { command: ["/bin/false"] }),
           },
           status: {
-            main_process_instance_id: "installed-network",
+            main_process_instance_id: departure.networkProcess ?? "installed-network",
             configuration_activated: mode !== "unactivated",
             configuration_admission: {
               state: 2,
@@ -196,6 +211,7 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
               policy_hash: generation.policy_hash,
               provider_env_revision: generation.provider_env_revision,
               config_revision: generation.config_revision,
+              ...departure.admission,
             },
           },
         },
@@ -269,6 +285,75 @@ test("direct Git bootstrap reports missing readiness and a mismatched loaded sel
   const ready = trace.summary(binding, sandboxId, rule);
   assert.equal(ready.sandbox?.configurationMatches, true);
   assert.equal(ready.sandbox?.launchPolicyMatches, false);
+
+  const observeWith = (next: typeof departure) => {
+    departure = next;
+    // The launch verifier is bound to the launch that carries the authored rules.
+    return provider.observe(
+      binding,
+      sandboxId,
+      t.signal,
+      undefined,
+      directGitLaunchVerifier(launch()),
+    );
+  };
+  const inspected = {
+    host: "sibling.example.test",
+    port: 443,
+    protocol: "rest",
+    rules: [{ allow: { method: "GET", path: "/status" } }],
+  };
+  const { protocol: _protocol, ...uninspected } = inspected;
+  const sibling = { name: "sibling", binaries: [{ path: "/usr/bin/curl" }] };
+  const beside = (endpoint: Record<string, unknown>) => ({
+    authored: { sibling: { ...sibling, endpoints: [endpoint] } },
+  });
+  // An inspected literal destination beside the Git rule passes the readback. Each refusal
+  // below therefore follows from its one change, not from the presence of a sibling.
+  assert.equal((await observeWith(beside(inspected)))?.credentialState, "bootstrap");
+  for (const [label, next] of Object.entries({
+    // Stock can relay SQL without inspecting the stream, so the route could carry Git.
+    "an SQL relay beside the Git rule": beside({ ...inspected, protocol: "sql" }),
+    "a sibling without an inspected protocol": beside(uninspected),
+    "a sibling that skips TLS termination": beside({
+      ...inspected,
+      tls: "NETWORK_TLS_MODE_SKIP",
+    }),
+    "a wildcard sibling host": beside({ ...inspected, host: "*.example.test" }),
+    "a second GitHub host": beside({ ...inspected, host: "uploads.github.com" }),
+    "a sibling pinned to an address": beside({ ...inspected, allowed_ips: ["192.0.2.1"] }),
+    "a sibling that admits uninspected credentials": beside({
+      ...inspected,
+      allow_uninspected_credentials: true,
+    }),
+    "an authored rule under a Provider layer name": {
+      authored: {
+        _provider_authored: { ...sibling, name: "_provider_authored", endpoints: [inspected] },
+      },
+    },
+    "an effective process identity that differs from the source": {
+      effective: { process: { run_as_user: "0", run_as_group: "0" } },
+    },
+    "a Gateway-global policy source": { config: { policy_source: 2 } },
+    "a Gateway-global policy version": { config: { global_policy_version: 1 } },
+    "an effective config of another policy version": { config: { version: 3 } },
+    "a source revision that is not the active one": { activeVersion: 3 },
+    "another effective policy hash": { config: { policy_hash: "other-policy-hash" } },
+    "another Provider environment revision": { config: { provider_env_revision: "119" } },
+    "another Provider attachment": { config: { provider_attachment_epoch: "other" } },
+    "a validation mode that does not fail closed": {
+      config: { policy_validation_failure_mode: "fail_open" },
+    },
+    "a replacement Sandbox under the same name": { sandboxId: "replacement-sandbox-id" },
+    "another network supervisor process": { networkProcess: "other-network" },
+    "an admission of another policy hash": { admission: { policy_hash: "other-policy-hash" } },
+  } satisfies Record<string, typeof departure>)) {
+    await t.test(`policy readback refuses ${label}`, async () => {
+      assert.equal(await observeWith(next), undefined);
+    });
+  }
+  // No refusal is retained: the unchanged ready state passes again.
+  assert.equal((await observeWith({}))?.credentialState, "bootstrap");
 });
 
 test("the Sandbox wire policy binds exact Git routes to an endpointless Provider", async (t) => {
@@ -755,4 +840,118 @@ test("reconciles a Workspace provider profile without replaying a failed write",
   await assert.rejects(reconcile("Unapplied profile"), /UpdateProviderProfiles did not update/);
   assert.deepEqual(calls.splice(0), ["read", "update:9", "read"]);
   assert.equal(stored?.display_name, "Concurrent matching profile");
+});
+
+test("stock Supervisor readiness pins the Pod and its container", async (t) => {
+  const digest = "sha256:" + "a".repeat(64);
+  const configDigest = "sha256:" + "b".repeat(64);
+  const otherDigest = "sha256:" + "c".repeat(64);
+  const expected = {
+    sandboxId: "sandbox",
+    sandboxUid: "sandbox-uid",
+    image: `registry.example/supervisor@${digest}`,
+    digests: [digest, configDigest],
+  };
+  const pod = {
+    metadata: {
+      uid: "pod-uid",
+      name: "supervisor",
+      labels: {
+        "openshell.ai/boundary-role": "supervisor",
+        "openshell.ai/boundary-pair": "pair",
+      },
+      annotations: { "openshell.ai/sandbox-id": expected.sandboxId },
+      ownerReferences: [{ kind: "Sandbox", uid: expected.sandboxUid }],
+    },
+    spec: { containers: [{ name: "supervisor", image: expected.image }] },
+  };
+  const running = {
+    name: "supervisor",
+    ready: true,
+    imageID: `containerd://${configDigest}`,
+    containerID: "containerd://owned",
+    state: { running: {} },
+  };
+  const ready = { ...pod, status: { phase: "Running", containerStatuses: [running] } };
+  const pending = {
+    ...pod,
+    status: {
+      phase: "Pending",
+      containerStatuses: [
+        { name: "supervisor", ready: false, state: { waiting: { reason: "ContainerCreating" } } },
+      ],
+    },
+  };
+  const noRead = async () =>
+    assert.fail("must check the initial identity and image before reading");
+  await t.test("waits for the selected container's ready status and runtime digest", async (t) => {
+    let reads = 0;
+    const readPod = async (signal: AbortSignal) => {
+      assert.equal(signal.aborted, false);
+      reads++;
+      return ready;
+    };
+    assert.deepEqual(await waitForStockSupervisor(pending, readPod, expected, t.signal), running);
+    assert.equal(reads, 1);
+    assert.deepEqual(await waitForStockSupervisor(ready, noRead, expected, t.signal), running);
+  });
+  await t.test("rejects a wrong requested or resolved image before readiness", async (t) => {
+    await assert.rejects(
+      waitForStockSupervisor(
+        { ...pending, spec: { containers: [{ name: "supervisor", image: "other" }] } },
+        noRead,
+        expected,
+        t.signal,
+      ),
+      /must select the verified stock image/,
+    );
+    const wrongImage = {
+      ...ready,
+      status: {
+        ...ready.status,
+        containerStatuses: [{ ...running, ready: false, imageID: otherDigest }],
+      },
+    };
+    await assert.rejects(
+      waitForStockSupervisor(wrongImage, noRead, expected, t.signal),
+      /running supervisor image must match/,
+    );
+  });
+  await t.test("refuses a replaced Pod or restarted container during the wait", async (t) => {
+    await assert.rejects(
+      waitForStockSupervisor(
+        pending,
+        async () => ({ ...ready, metadata: { ...pod.metadata, uid: "replacement" } }),
+        expected,
+        t.signal,
+      ),
+      /supervisor Pod UID changed/,
+    );
+    const starting = {
+      ...ready,
+      status: { ...ready.status, containerStatuses: [{ ...running, ready: false }] },
+    };
+    const replacement = {
+      ...ready,
+      status: {
+        ...ready.status,
+        containerStatuses: [{ ...running, containerID: "containerd://replacement" }],
+      },
+    };
+    await assert.rejects(
+      waitForStockSupervisor(starting, async () => replacement, expected, t.signal),
+      /supervisor container identity changed/,
+    );
+  });
+  await t.test("reports the last waiting reason when startup does not finish", async (t) => {
+    await assert.rejects(
+      waitForStockSupervisor(pending, noRead, expected, t.signal, 25),
+      /did not become ready within 25 ms \(phase=Pending, reason=ContainerCreating/,
+    );
+    const cancellation = new Error("cancelled fixture");
+    await assert.rejects(
+      waitForStockSupervisor(pending, noRead, expected, AbortSignal.abort(cancellation)),
+      (error) => error === cancellation,
+    );
+  });
 });

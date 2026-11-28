@@ -6,6 +6,9 @@ from the reviewed release checkout root after completing the
 Use the [chart procedure](production-upgrade.md#apply-other-installation-changes)
 for protected Installation settings.
 
+The offline plan rejects [preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+because their chart omits the initialization Job. Manage their database upgrades separately.
+
 Create an owner-only JSON profile outside the checkout. Set `context` to the
 name of a kubeconfig context whose cluster has an HTTPS `server` URL. Keep
 the kubeconfig in an owner-only regular file under a directory protected
@@ -15,7 +18,7 @@ Relative paths for the kubeconfig, rendered Installation, and CLI resolve from
 the profile directory. Relative expert paths resolve from the release checkout.
 
 For a published release, open the approved, successful
-[Enterprise Containers run](published-images.md#check-publication-and-source)
+[image publication run](published-images.md#check-publication-and-source)
 for the checkout commit on `main`. In the run's artifacts, select
 `container-publication-<run-id>-<attempt>` for the approved attempt. Extract it
 into a fresh directory. Confirm that `runId`, `attempt`, and `sourceSha` in
@@ -101,9 +104,31 @@ your approved upgrade procedure and credential policy.
 
 When you select candidate files or other expert options, pass the same options
 after `--` to `plan` and `apply`. Review the deployment effects and image digests
-before you approve. Plan, apply, and preflight refuse changes to protected
+before you approve. Schedule a maintenance window even if Agent
+revisions stay the same and the database is current. Deployment stops the OCC API and Worker.
+
+If the plan redeploys an Agent with a dedicated Codex Harness, pause workspace
+writes before you [verify each edit](upgrade-baseline.md#record-agent-data).
+A baseline hash for one file cannot verify the others. If you cannot verify an
+edit, postpone the upgrade and keep the original Gateway Pod running. It may
+hold the only copy. Keep writes paused until you verify the edits through the
+replacement Gateway. If the original Pod is already gone, keep the upgrade
+paused until an authorized operator recovers and verifies any missing edits.
+
+Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
+
+With `--controller-compatibility-results FILE`, `plan` and a new `apply` check the
+PostgreSQL report against the selected controller image before approval. If
+validation fails, rerun [controller qualification](../../testing/postgresql.md#released-controller-compatibility)
+for the installed and selected images. Retry with the passing report. Live
+preflight still checks the installed image against the report.
+
+Even a passing report can show that the released controller rejected the
+upgraded migration history. The preview warns you if any check reports that
+result. [Test recovery](production-upgrade-recovery.md) before maintenance,
+even if the preview shows no warning.
 
 Before the first `apply` or `preflight`,
 [bind the Installation Secret](production-upgrade.md#bind-the-installation-once).
@@ -158,7 +183,8 @@ paths. After completion, [verify the release](production-upgrade.md#verify-the-r
 ### Continue after a separate database migration
 
 If `apply` reports a separate database migration pause and exits with status
-**3**, the API and worker are stopped. Helm submission waits for verified
+**3**, confirm both writers are stopped. Exit status alone does not confirm
+the pause. Helm submission waits for verified
 migration history. Keep the maintenance window active, other writers and
 autoscalers fenced, and the original evidence in place.
 

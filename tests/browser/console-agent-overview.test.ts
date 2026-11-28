@@ -9,7 +9,7 @@ import {
   deploymentFailureStep,
 } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import {
   createProviderSandboxDriver,
@@ -29,6 +29,7 @@ import {
   fileBrowser,
   grantSecretOperate,
   holdRequests,
+  inViewport,
   login,
   nativeValues,
   newPage,
@@ -56,6 +57,7 @@ import {
   openDeploymentActivity as legacyOpenDeploymentActivity,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
+import { responseTo } from "./console-action-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 import {
@@ -1271,6 +1273,119 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
   }
 });
 
+for (const state of ["lost", "running"] as const) {
+  test(`A failed replacement rechecks the selected Sandbox once when it is ${state}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+    const { fixture, namespace, agent, revision, sandbox } = await sandboxOverviewFixture(t);
+    const pending = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser });
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const statusUrl = `${agentUrl}/harness-status`;
+    const statusPath = new URL(statusUrl).pathname;
+    const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+    await page.route(recordUrl, (route) =>
+      route.fulfill(deploymentStatusResponse(pending, { status: "queued" })),
+    );
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
+    );
+    await trackSettledFetches(page);
+    await page.clock.install();
+    sandbox.state.harness = { state: "running" };
+    const initial = nextOverviewRead(page, statusUrl);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"),
+    );
+    const activity = await expectDeploymentOutcome(page, "Queued");
+    const serving = liveServing(page);
+    const running = "Sandbox running.";
+    assert.deepEqual(await sandboxObservation(await initial), [revision.id, "running"]);
+    await serving.getByText(running, { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+    const refresh = activity.getByRole("button", { name: "Refresh deployment" });
+    async function readDeployment(via: "poll" | "refresh") {
+      const response = nextOverviewRead(page, recordUrl);
+      if (via === "refresh") {
+        await refresh.click();
+      } else {
+        await page.clock.runFor(DEPLOYMENT_POLL_MS);
+      }
+      assert.equal((await response).status(), 200);
+      await waitForIdleFetches(page);
+    }
+    await readDeployment("poll");
+    assert.equal(await settledFetches(page, statusPath), 1, "unchanged poll");
+
+    // A dedicated replacement can stop v1 before failing to start v2. Selection alone
+    // cannot tell us whether v1 lost its Sandbox, and a running Sandbox cannot prove serving.
+    if (state === "lost") {
+      sandbox.state.harness = { state, code: "SANDBOX_STOPPED" };
+    }
+    await routeFailedListing(page, fixture, namespace, agent, pending);
+    await routeFailedRecord(page, fixture, namespace, agent, pending);
+    const reread = nextOverviewRead(page, agentUrl);
+    const observation = nextOverviewRead(page, statusUrl);
+    await readDeployment(state === "lost" ? "poll" : "refresh");
+    const response = await reread;
+    assert.equal(response.status(), 200);
+    const fresh = record(record(await response.json()).data);
+    assert.equal(fresh.activeRevisionId, revision.id);
+    assert.equal(fresh.desiredRuntimeState, "running");
+    await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+    assert.equal(await settledFetches(page, statusPath), 2, "recheck v1 after v2 fails");
+    assert.deepEqual(await sandboxObservation(await observation), [revision.id, state]);
+    const note = state === "lost" ? "Deploy a new version." : running;
+    await serving.getByText(note, { exact: true }).waitFor();
+    assert.equal(
+      await serving.locator(".badge").textContent(),
+      state === "lost" ? "Sandbox lost" : "May be offline",
+    );
+
+    await openDeploymentActivity(page);
+    await readDeployment("refresh");
+    assert.equal(await settledFetches(page, statusPath), 2, "the same failure needs no new read");
+  });
+}
+
+test("A failed replacement on the first version list supersedes an earlier Sandbox read", async (t) => {
+  const { fixture, namespace, agent, revision, sandbox } = await sandboxOverviewFixture(t);
+  const replacement = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const statusUrl = `${agentUrl}/harness-status`;
+  await routeFailedListing(page, fixture, namespace, agent, replacement);
+  await routeFailedRecord(page, fixture, namespace, agent, replacement);
+  sandbox.state.harness = { state: "running" };
+  const initial = await holdRequests(t, page, statusUrl, { once: true, afterServer: true });
+  // The replacement interrupts the Sandbox between the two entry reads.
+  await page.route(
+    (url) => url.origin + url.pathname === `${agentUrl}/revisions`,
+    async (route) => {
+      await initial.requested;
+      sandbox.state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+      await route.fallback();
+    },
+  );
+  await trackSettledFetches(page);
+  const fresh = nextOverviewRead(page, statusUrl);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  assert.deepEqual(await sandboxObservation(required(await initial.requested)), [
+    revision.id,
+    "running",
+  ]);
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  assert.deepEqual(await sandboxObservation(await fresh), [revision.id, "lost"]);
+  const serving = liveServing(page);
+  await serving.getByText("Sandbox lost", { exact: true }).waitFor();
+  initial.release();
+  await waitForIdleFetches(page);
+  assert.equal(await serving.locator(".badge").textContent(), "Sandbox lost");
+});
+
 test("Refocus refreshes the same Sandbox and preserves the open draft", async (t) => {
   const setup = await sandboxOverviewFixture(t);
   const { fixture, namespace, agent, revision, sandbox } = setup;
@@ -1325,6 +1440,7 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
     "one Sandbox GET after admission",
   );
 
+  assert.equal(await serving.getByText("Sandbox running.", { exact: true }).isVisible(), false);
   const lost = nextOverviewRead(page, statusUrl);
   await page.getByText("Still checking…", { exact: true }).waitFor();
   await refocusSandboxOverview(page);
@@ -1348,6 +1464,18 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
   );
   assert.deepEqual(reads.slice().sort(), [agentUrl, permissionsUrl, statusUrl].sort());
 
+  // Keep the warning and recovery step visible until the same version's next read settles.
+  const repeated = await holdRequests(t, page, statusUrl, { once: true, afterServer: true });
+  const stillLost = nextOverviewRead(page, statusUrl);
+  await refocusSandboxOverview(page);
+  await repeated.requested;
+  assert.ok(await serving.getByText("Sandbox lost", { exact: true }).isVisible());
+  assert.ok(await serving.getByText("Deploy a new version.", { exact: true }).isVisible());
+  repeated.release();
+  assert.deepEqual(await sandboxObservation(await stillLost), [revision.id, "lost"]);
+  await waitForReadmittedSandbox(page);
+  assert.equal(await serving.locator(".badge").textContent(), "Sandbox lost");
+
   const unavailable = await holdRequests(t, page, statusUrl, {
     once: true,
     fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sandbox status unavailable."),
@@ -1361,6 +1489,10 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
   await waitForReadmittedSandbox(page);
   assert.equal(await editor.inputValue(), draft);
 
+  // A fresh running observation must also clear a confirmed loss directly.
+  await refocusSandboxOverview(page);
+  await serving.getByText("Sandbox lost", { exact: true }).waitFor();
+  await waitForReadmittedSandbox(page);
   const recovered = nextOverviewRead(page, statusUrl);
   sandbox.state.harness = { state: "running" };
   await refocusSandboxOverview(page);
@@ -1648,11 +1780,11 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   await recovery.getByRole("link", { name: "Open Credentials", exact: true }).waitFor();
 });
 
-// Open Configuration leads to the Configuration editor. A Configuration save needs Configuration
+// Recovery opens the Configuration draft. Saving it needs Configuration
 // update and Secret operate on each Secret the Configuration binds, not an Agent update or the
 // Harness authentication Secret it checks, so recovery follows the Configuration's own answer
 // (finding 2450). Its label says "Open draft" only when that editor is read-only.
-test("Recovery's Open Configuration follows whether the caller may edit the Configuration", async (t) => {
+test("Recovery offers Open Configuration draft when the caller may edit the Configuration", async (t) => {
   const { fixture, namespace } = await readyNamespace(t, "Configuration recovery", runtimeLogs());
   const bound = await fixture.createSecret(namespace.id, "Configuration token", "bound-value");
   const agent = await fixture.createAgent(
@@ -1667,6 +1799,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   // Configuration save would pass; an Agent update would fail on the Harness API key Secret.
   const member = await fixture.createNamespaceMember("configuration-recovery", namespace.id, [
     ...AGENT_READ,
+    ["read_logs", "agent"],
     ["update", "agent"],
     ["update", "configuration"],
   ]);
@@ -1719,12 +1852,15 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
       (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
     );
 
+  // Log text and runtime status share a tab. Either grant makes the shortcut useful.
   let answer = await shown();
+  assert.equal(answer.readLogs, true);
+  assert.equal(answer.operate, false);
   assert.equal(answer.configurationUpdate, true);
   assert.equal(answer.configurationSecretsOperate, true);
   assert.equal(answer.agentSourcesOperate, false);
   assert.equal(answer.deploy, false);
-  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  assert.deepEqual(await links(), ["Open Configuration draft", "Open v1 Logs"]);
   await recovery
     .getByText("Ask someone with deploy access to redeploy this Agent.", { exact: false })
     .waitFor();
@@ -1732,7 +1868,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   role.permissions.push({ action: "deploy", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, true);
-  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  assert.deepEqual(await links(), ["Open Configuration draft", "Open v1 Logs"]);
   await recovery.getByText("then redeploy this Agent.", { exact: false }).waitFor();
 
   // Without operate on the bound Secret every Configuration save is refused, so the editor is
@@ -1761,22 +1897,95 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.agentSourcesOperate, true);
   await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
   assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
+  role.permissions = without("read_logs", "agent");
+  answer = await shown();
+  assert.equal(answer.readLogs, false);
+  assert.equal(answer.operate, false);
+  const draft = recovery.getByRole("link", { name: "Open draft", exact: true });
+  await draft.waitFor();
+  assert.deepEqual(await links(), ["Open draft"]);
+  assert.equal(await draft.getAttribute("class"), "button button--primary");
+  const askForLogs = recovery.getByText(
+    "Ask someone with log access to check the failed version’s logs.",
+    { exact: false },
+  );
+  await askForLogs.waitFor();
+
   role.permissions = without("deploy", "agent");
+  role.permissions.push({ action: "operate", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, false);
-  assert.deepEqual(await links(), ["Open v1 Logs"]);
+  assert.equal(answer.operate, true);
+  assert.equal(answer.readLogs, false);
+  const shortcut = recovery
+    .getByRole("link", { name: /\bv1\b/ })
+    .and(page.locator('[href*="tab=logs"]'));
+  assert.equal(await shortcut.isVisible(), true);
+  assert.equal((await links()).length, 1);
   await recovery
     .getByText(
       "Ask a Configuration editor to choose a model this account can use. Someone with deploy access must then redeploy this Agent.",
       { exact: false },
     )
     .waitFor();
-  await recovery.getByRole("link", { name: "Open v1 Logs" }).click();
-  await page.getByText(LOG_TEXT_DENIED).waitFor();
-  await recovery
-    .getByText("Ask someone with log access to check the failed version’s logs.", { exact: false })
-    .waitFor();
-  assert.deepEqual(await links(), []);
+  // A local text skip must still let the operator return to the failed version's status.
+  role.permissions.push({ action: "deploy", resourceKind: "agent" });
+  await page.clock.install();
+  await shown();
+  await draft.waitFor();
+  const requests = apiRequests(page, fixture.origin);
+  const statusUrl = `${fixture.origin}${path}/deployments/${failed.id}/runtime`;
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  const visitStatus = async () => {
+    assert.equal(await shortcut.isVisible(), true, "the operator can return to v1 status");
+    assert.deepEqual((await links()).slice(1), ["Open draft"]);
+    const status = page.waitForResponse(statusUrl);
+    await shortcut.press("Enter");
+    assert.equal((await status).status(), 200);
+    await page.locator(".runtime-pod").first().waitFor();
+    await page.getByText(LOG_TEXT_DENIED).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await versionChooser(page).inputValue(), failed.id);
+    for (const name of ["Follow", "Refresh logs", "Download"]) {
+      assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true);
+    }
+  };
+  await visitStatus();
+  await configuration.press("Enter");
+  await waitForIdleFetches(page);
+  await visitStatus();
+  assert.deepEqual(await links(), ["View v1 runtime status in Logs", "Open draft"]);
+  assert.equal(await askForLogs.isVisible(), true);
+
+  // A real refusal on the next poll withdraws only the status shortcut, even before
+  // the permission summary can report the revocation.
+  const poll = await holdRequests(t, page, statusUrl, { once: true });
+  await page.clock.fastForward(10_000);
+  await poll.requested;
+  await shortcut.press("Tab");
+  const focusedDraft = required(await draft.elementHandle());
+  const draftHref = required(await draft.getAttribute("href"));
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
+  const permissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`);
+  restrict(fixture.policy, "operate", "agent", { namespaceId: namespace.id, resourceId: agent.id });
+  const refused = page.waitForResponse(statusUrl);
+  poll.release();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(/runtime status is no longer shown/).waitFor();
+  assert.deepEqual(await links(), ["Open draft"]);
+  assert.ok(
+    await focusedDraft.evaluate((node) => node.matches(":focus-visible")),
+    "withdrawing the status shortcut keeps keyboard focus on Open draft",
+  );
+  assert.equal(await draft.getAttribute("class"), "button button--primary");
+  assert.equal(await draft.getAttribute("href"), draftHref);
+  permissions.release();
+  await waitForIdleFetches(page);
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
+  await configuration.press("Enter");
+  await waitForIdleFetches(page);
+  assert.deepEqual(await links(), ["Open draft"]);
+  assert.ok(!requests.some(({ path }) => path.includes("/runtime/logs")));
 });
 
 test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
@@ -1995,18 +2204,6 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   // v1 keeps serving; the v2 redeploy failed.
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, revision);
-  // Log text has its own grant (read_logs); this reader's log read is denied.
-  await page.route(new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`), (route) =>
-    route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "FORBIDDEN", message: "Access denied." },
-        meta: { requestId: "req_test_recovery_logs" },
-      }),
-    }),
-  );
-
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
@@ -2015,7 +2212,20 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
       { exact: true },
     )
     .waitFor();
+  // Revoke log access after the permission check, before the Controller handles the read.
+  const logPath = new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`);
+  const held = await holdRequests(t, page, logPath, { once: true, method: "GET" });
+  const refused = page.waitForResponse(logPath);
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
+  await held.requested;
+  restrict(fixture.policy, "read_logs", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  held.release();
+  const response = await refused;
+  assert.equal(response.status(), 403);
+  assert.equal(record(record(await response.json()).error).code, "FORBIDDEN");
   await page.getByText(LOG_TEXT_DENIED).waitFor();
 
   // The denial updates the recovery at once: it says who can check the logs instead of
@@ -2025,20 +2235,29 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     { exact: true },
   );
   await askForLogs.waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
+    "Open Configuration draft",
+  ]);
   // Leaving Logs for another tab of the same version keeps that.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
-  const configuration = recovery.getByRole("link", { name: "Open Configuration" });
+  assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
+    "Open Configuration draft",
+  ]);
+  const configuration = recovery.getByRole("link", {
+    name: "Open Configuration draft",
+    exact: true,
+  });
   assert.equal(await configuration.getAttribute("class"), "button button--primary");
 
   // A later visit in this page session starts without the Logs link too.
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Denied logs" }).click();
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
-  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+  await configuration.waitFor();
+  assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
+    "Open Configuration draft",
+  ]);
 });
 
 // When a failed newer version replaced the running one, the replacement sentence overrode the
@@ -2130,7 +2349,7 @@ test("Recovery waits for the caller's permission answer before offering the draf
     await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
     "button button--primary",
   );
-  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+  await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).waitFor();
 });
 
 test("Recovery offers no draft link when the caller's permission answer fails", async (t) => {
@@ -2400,6 +2619,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "CREDENTIAL_SOURCE_UNAVAILABLE",
       "CREDENTIAL_WITHDRAWN",
       "EGRESS_PROVIDER_UNAVAILABLE",
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
       "HARNESS_AUTH_REQUIRED",
       "HARNESS_AUTH_SOURCE_UNAVAILABLE",
       "INVALID_ACTIVE_REVISION",
@@ -3004,10 +3224,11 @@ const focusedTab = (page: Page) =>
 // window stayed at the top, under the banner, while the draft sat 1110-3168 px below the fold, so
 // the link looked dead (finding 1586). Every way the link opens its tab now brings it into view and
 // focuses it: the draft already open below, another tab of the draft, and another version.
+const editorLabel = "Open Configuration draft";
 for (const c of [
-  { name: "the open draft", entry: "draft", tab: "configuration", label: "Open Configuration" },
-  { name: "another draft tab", entry: "draft", tab: "plugins", label: "Open Configuration" },
-  { name: "another version", entry: "active", tab: "configuration", label: "Open Configuration" },
+  { name: "the open draft", entry: "draft", tab: "configuration", label: editorLabel },
+  { name: "another draft tab", entry: "draft", tab: "plugins", label: editorLabel },
+  { name: "another version", entry: "active", tab: "configuration", label: editorLabel },
   {
     name: "another version without update",
     entry: "active",
@@ -3053,7 +3274,7 @@ for (const c of [
             : detailUrl(fixture, namespace.id, agent.id, "draft", c.tab);
       await login(page, fixture, url);
       const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-      const open = recovery.getByRole("link", { name: c.label });
+      const open = recovery.getByRole("link", { name: c.label, exact: true });
       await open.waitFor();
       await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
@@ -3085,6 +3306,97 @@ for (const c of [
       await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
       await page.waitForFunction(versionDetailInView);
       assert.equal(await focusedTab(page), "Configuration");
+
+      if (c.entry === "active" && c.update !== false) {
+        // Forward should resume the scrolled editor where Back left it. An offscreen
+        // page heading would send the next keystroke back to the top of the page.
+        const view = page.locator(settledView);
+        await view.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+        const editor = view.getByLabel("Configuration JSON", { exact: true });
+        const original = required(await editor.elementHandle());
+        const draft = `${await editor.inputValue()} `;
+        await page.keyboard.press("Control+End");
+        await page.keyboard.insertText(" ");
+        await page.keyboard.press("Shift+ArrowLeft");
+        await nextFrames(page);
+        const place = () =>
+          original.evaluate((node) => {
+            if (!(node instanceof HTMLTextAreaElement)) {
+              throw new Error("Expected the Configuration textarea");
+            }
+            const { top, bottom, left, right } = node.getBoundingClientRect();
+            return {
+              focused: node.matches(":focus-visible"),
+              inView:
+                top < globalThis.innerHeight &&
+                bottom > 0 &&
+                left < globalThis.innerWidth &&
+                right > 0,
+              selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+              scrollTop: node.scrollTop,
+            };
+          });
+        const before = await place();
+        assert.ok(before.focused && before.inView && before.scrollTop > 0);
+        assert.deepEqual(before.selection, [draft.length - 1, draft.length, "backward"]);
+        assert.equal(await editor.inputValue(), draft);
+
+        const sessionUrl = `${fixture.origin}/api/auth/session`;
+        const sessionRead = { once: true, method: "GET", afterServer: true };
+        const account = page.locator(":is(.account-toggle, .topbar-avatar):visible");
+        for (const timing of ["ordinary", "tab return", "focus moved"]) {
+          await page.goBack();
+          await view.getByRole("heading", { name: "Configuration snapshot" }).waitFor();
+          await nextFrames(page);
+          assert.deepEqual(await page.locator("h1:focus").allTextContents(), ["Recovery Agent"]);
+
+          if (timing === "ordinary") {
+            await page.goForward();
+          } else {
+            // The first successful read is still held when returning to the tab starts its own.
+            const forward = await holdRequests(t, page, sessionUrl, sessionRead);
+            await page.goForward();
+            assert.equal((await forward.requested)?.status(), 200);
+            const resumed = await holdRequests(t, page, sessionUrl, sessionRead);
+            // Chrome can report focus on the holding heading on either side of visibilitychange.
+            // Exercise both event orders across the two existing viewport cases.
+            await page.evaluate((focusFirst) => {
+              const refocus = () =>
+                document.activeElement?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+              if (focusFirst) {
+                refocus();
+              }
+              document.dispatchEvent(new Event("visibilitychange"));
+              if (!focusFirst) {
+                refocus();
+              }
+            }, viewport.width === 390);
+            assert.equal((await resumed.requested)?.status(), 200);
+            if (timing === "focus moved") {
+              await account.focus();
+              assert.equal(await account.evaluate((node) => node === document.activeElement), true);
+            }
+            const delivered = responseTo(page, "GET", sessionUrl);
+            resumed.release();
+            assert.equal((await delivered).status(), 200);
+            forward.release();
+          }
+
+          await editor.waitFor();
+          await nextFrames(page);
+          assert.equal(await editor.inputValue(), draft);
+          const returned = await place();
+          if (timing === "focus moved") {
+            assert.equal(await account.evaluate((node) => node === document.activeElement), true);
+            assert.equal(await inViewport(account), true);
+            assert.equal(returned.focused, false);
+            assert.deepEqual(returned.selection, before.selection);
+          } else {
+            assert.equal(returned.focused, true, "Forward restores focus to the draft editor");
+            assert.deepEqual(returned, before);
+          }
+        }
+      }
     });
   }
 }
@@ -3102,7 +3414,7 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" });
+    .getByRole("link", { name: "Open Configuration draft", exact: true });
   await open.waitFor();
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   // A modified or middle click (open in a new tab or window) is left to the browser.
@@ -3163,7 +3475,7 @@ async function pendingDeploy(
   const { page } = await newPage(t, fixture, { browser, context: { viewport } });
   await trackSettledFetches(page);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
-  const open = async (outcome = "In progress", tab = "access") => {
+  const open = async (outcome = "In progress", tab = "access", heldReadPath?: string) => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, tab));
     await expectDeploymentOutcome(page, outcome, { reveal: false });
@@ -3171,10 +3483,120 @@ async function pendingDeploy(
     if (tab === "access") {
       await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     }
-    await waitForIdleFetches(page);
+    await waitForIdleFetches(page, { except: heldReadPath });
   };
   return { page, recordUrl, agent, pending, open };
 }
+
+test("Unchanged deployment polls preserve selected Draft readiness text", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { page, recordUrl, pending, open } = await pendingDeploy(
+    t,
+    { width: 1440, height: 900 },
+    "Draft readiness",
+  );
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
+  let statusCode = 200;
+  await page.route(recordUrl, async (route, request) => {
+    if (request.method() !== "GET") {
+      return route.fallback();
+    }
+    await route.fulfill(statusCode === 200 ? record : unavailable);
+  });
+  await open("Queued", "configuration");
+  await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
+  const actions = page.locator(".agent-draft-actions .card-actions");
+  const status = actions.getByRole("status");
+  const deploy = actions.getByRole("button", { name: "Deploy new version" });
+  const queued = "v2 was queued at the last check.";
+  const running = "v2 was in progress at the last check.";
+  await page.locator(settledView).waitFor();
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  await waitForEnabled(deploy);
+  await waitForIdleFetches(page);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  assert.equal(await status.textContent(), queued);
+  assert.equal(await deploy.isEnabled(), true);
+  assert.equal(await deploy.getAttribute("aria-description"), queued);
+
+  const poll = async (expectedStatus: number) => {
+    statusCode = expectedStatus;
+    const read = page.waitForResponse(
+      (result) => result.url() === recordUrl && result.request().method() === "GET",
+    );
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    assert.equal((await read).status(), expectedStatus);
+    await waitForIdleFetches(page);
+  };
+  record = deploymentStatusResponse(pending, { status: "running" });
+  await poll(200);
+  assert.equal(await status.textContent(), running);
+  assert.equal(await deploy.isEnabled(), true);
+  assert.equal(await deploy.getAttribute("aria-description"), running);
+
+  await status.selectText();
+  const selection = () => page.evaluate(() => globalThis.getSelection()?.toString());
+  assert.equal(await selection(), running);
+
+  for (const expectedStatus of [200, 503]) {
+    await poll(expectedStatus);
+    assert.equal(await status.textContent(), running);
+    assert.equal(await deploy.getAttribute("aria-description"), running);
+    assert.equal(
+      await selection(),
+      running,
+      `Draft readiness text remains selected after a ${expectedStatus} deployment read`,
+    );
+  }
+
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  const editor = page.locator("#configuration-json");
+  await editor.fill(`${await editor.inputValue()}\n`);
+  await status.filter({ hasText: CONFIGURATION_EDITS_PENDING }).waitFor();
+  assert.equal(await deploy.isEnabled(), false);
+  assert.equal(await deploy.getAttribute("aria-description"), null);
+});
+
+test("Draft shows deployment in progress for the selected version until it completes", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace } = await readyNamespace(t, "Selected deployment");
+  const agent = await fixture.createAgent(namespace.id, "Selected Deployment", nativeValues("v1"));
+  // The worker can select the version for service before activation finishes.
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  await page.clock.install();
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id);
+  let deployment = deploymentStatusResponse(revision, { status: "running" });
+  await page.route(recordUrl, (route) => route.fulfill(deployment));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  await expectDeploymentOutcome(page, "In progress", { reveal: false });
+  await page.getByText("Current version · read-only admitted snapshot.", { exact: true }).waitFor();
+  await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
+
+  const actions = page.locator(".agent-draft-actions .card-actions");
+  const status = actions.getByRole("status");
+  const deploy = actions.getByRole("button", { name: "Deploy new version" });
+  const running = "v1 was in progress at the last check.";
+  await waitForEnabled(deploy);
+  await waitForIdleFetches(page);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  assert.equal(await status.textContent(), running);
+  assert.equal(await deploy.getAttribute("aria-description"), running);
+
+  deployment = deploymentStatusResponse(revision, { status: "succeeded" });
+  const read = responseTo(page, "GET", recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await expectDeploymentOutcome(page, "Completed", { reveal: false });
+  await status.filter({ hasText: /^Ready to deploy\.$/ }).waitFor();
+  assert.equal(await deploy.getAttribute("aria-description"), null);
+});
 
 // A deploy in progress rewrote the deployment record and diagnostics on every 5 s poll, about half
 // of them unchanged, and moved Share Agent twice: down when the first attempt was recorded and
@@ -3621,6 +4043,419 @@ for (const viewport of [
   });
 }
 
+test("Workspace preserves focus on Deployment when the first version activates", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, "First deployment", "Workspace");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  await trackSettledFetches(page);
+  let outcome: DeploymentResponseOptions["status"] = "queued";
+  await page.route(recordUrl, (route) =>
+    route.fulfill(deploymentStatusResponse(pending, { status: outcome })),
+  );
+
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "workspace"));
+  await page.locator(settledView).waitFor();
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  const strip = page.getByRole("tablist", { name: "Agent configuration views" });
+  const deployment = strip.getByRole("tab", { name: "Deployment", exact: true });
+  const panel = page.getByRole("tabpanel", { name: "Workspace files" });
+  const heading = panel.getByRole("heading", { name: "Workspace files", exact: true });
+  const before = required(await heading.elementHandle());
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await strip.evaluate((node) => node.scrollIntoView({ block: "center", inline: "nearest" }));
+  await strip.getByRole("tab", { name: "Workspace files" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await nextFrames(page);
+
+  const expectDeploymentFocus = async () => {
+    assert.equal(await panel.isVisible(), true);
+    assert.equal(await strip.getByRole("tab", { selected: true }).textContent(), "Workspace files");
+    assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+    assert.equal(
+      await deployment.evaluate((node) => node.matches(":focus")),
+      true,
+      "Deployment keeps focus while Workspace files is selected",
+    );
+    assert.equal(await strip.locator('[role="tab"][tabindex="0"]').textContent(), "Deployment");
+  };
+  await expectDeploymentFocus();
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+  // Only the worker outcome is modeled. The Agent read sees the fixture's real selection.
+  await fixture.activateRevision(namespace.id, agent.id, pending.id);
+  outcome = "succeeded";
+  const read = responseTo(page, "GET", recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await page.waitForFunction((node) => !node.isConnected, before);
+  await before.dispose();
+  await heading.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  await expectDeploymentFocus();
+
+  // Enter goes to the browser's current focus. Pressing it on a locator would move focus first.
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("tabpanel", { name: "Deployment", exact: true })
+    .getByText("Recorded outcome: Completed", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getAttribute("aria-selected"), "true");
+  assert.equal(new URL(page.url()).searchParams.get("revision"), pending.id);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "deployment");
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A failed deployment keeps a parked click on its Deployment tab", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { page, recordUrl, pending, open } = await pendingDeploy(
+    t,
+    { width: 920, height: 900 },
+    "Parked Deployment tab",
+  );
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  await page.route(recordUrl, (route) => route.fulfill(record));
+  const permissionsUrl = new URL("../permissions", recordUrl);
+  const permissions = await holdRequests(t, page, permissionsUrl.href, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+  await open("Queued", "configuration", permissionsUrl.pathname);
+  assert.equal(required(await permissions.requested).status(), 200);
+  const tabs = page.getByRole("tablist", { name: "Agent configuration views", exact: true });
+  const configuration = tabs.getByRole("tab", { name: "Configuration", exact: true });
+  const deployment = tabs.getByRole("tab", { name: "Deployment", exact: true });
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  const notice = page.locator(".agent-deployment-attention");
+  const queuedNotice = notice.getByText("A deployment is queued or in progress.", { exact: true });
+  await queuedNotice.waitFor();
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await deployment.hover();
+  assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  assert.equal(await configuration.getAttribute("aria-selected"), "true");
+
+  // The poll delivers the failure before the permissions response can show recovery.
+  record = deploymentStatusResponse(pending, {
+    status: "failed",
+    error: persistedDeploymentError("EXECUTION_ADMISSION_UNAVAILABLE"),
+  });
+  const read = page.waitForResponse(
+    (response) => response.url() === recordUrl && response.request().method() === "GET",
+  );
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await versionChooser(page)
+    .locator("option:checked")
+    .filter({ hasText: /^v2 · Failed$/ })
+    .waitFor({ state: "attached" });
+  await waitForIdleFetches(page, { except: permissionsUrl.pathname });
+  assert.equal(await settledFetches(page, permissionsUrl.pathname), 0);
+  assert.equal(await recovery.isVisible(), false);
+  assert.equal(await queuedNotice.isVisible(), false);
+  const interimFailure = notice.getByText("The latest visible deployment failed.", { exact: true });
+  const showedInterimFailure = await interimFailure.isVisible();
+
+  permissions.release();
+  const failure = recovery.getByRole("heading", { name: "v2 deployment failed", exact: true });
+  await failure.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  assert.equal(await configuration.getAttribute("aria-selected"), "true");
+
+  // A locator click would find and scroll to the moved tab, hiding a missed physical click.
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await deployment.getAttribute("aria-selected"),
+    "true",
+    "the original click still opens Deployment after the failure appears",
+  );
+  assert.equal(showedInterimFailure, true, "the notice shows the failure while permissions load");
+  assert.equal(await focusedTab(page), "Deployment");
+  const panel = page.getByRole("tabpanel", { name: "Deployment", exact: true });
+  await panel.getByText("Recorded outcome: Failed", { exact: true }).waitFor();
+  assert.equal(await versionChooser(page).inputValue(), pending.id);
+  assert.equal(await failure.isVisible(), true);
+});
+
+async function queuedReplacement(
+  t: TestContext,
+  namespaceName: string,
+  agentName: string,
+  draftValues?: Parameters<Fixture["updateConfiguration"]>[2],
+) {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, namespaceName, agentName);
+  const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  if (draftValues) {
+    await fixture.updateConfiguration(namespace.id, agent.configurationId, draftValues);
+  }
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  await page.route(recordUrl, (route) => route.fulfill(record));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, current.id, "configuration"),
+  );
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+
+  const pausePoll = async () => {
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  };
+  const poll = async () => {
+    const response = responseTo(page, "GET", recordUrl);
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    assert.equal((await response).status(), 200);
+  };
+  const completeReplacement = async () => {
+    // Let the worker outcome paint before the slower Agent read reports that v2 replaced v1.
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const reread = await holdRequests(t, page, agentUrl, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    });
+    await fixture.activateRevision(namespace.id, agent.id, pending.id, current.id);
+    record = deploymentStatusResponse(pending, { status: "succeeded" });
+    await poll();
+    assert.equal(required(await reread.requested).status(), 200);
+    await expectDeploymentOutcome(page, "Completed", { reveal: false });
+
+    return async function showHistoricalSnapshot() {
+      reread.release();
+      await page.clock.resume();
+      await page.getByText(/^Historical version · read-only admitted snapshot\./).waitFor();
+      await waitForIdleFetches(page);
+      await nextFrames(page);
+      assert.equal(await versionOption(page, 2).textContent(), "v2 · Selected for service");
+    };
+  };
+  return { fixture, namespace, agent, page, current, writes, pausePoll, poll, completeReplacement };
+}
+
+test("A parked click opens Deployment after a replacement succeeds", async (t) => {
+  const { page, current, writes, pausePoll, completeReplacement } = await queuedReplacement(
+    t,
+    "Replacement",
+    "Parked tab",
+  );
+
+  // The reader scrolls, then rests the pointer just inside Deployment's top edge.
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await page.mouse.move(720, 675);
+  await page.mouse.wheel(0, 120);
+  await page.waitForFunction(() => globalThis.scrollY === 120);
+  const box = required(await deployment.boundingBox());
+  const point = { x: Math.floor(box.x + box.width / 2), y: Math.ceil(box.y) + 6 };
+  await page.mouse.move(point.x, point.y);
+  await nextFrames(page);
+  const hitsDeployment = () =>
+    deployment.evaluate(
+      (node, { x, y }) => node.contains(globalThis.document.elementFromPoint(x, y)),
+      point,
+    );
+  assert.equal(await hitsDeployment(), true);
+  await pausePoll();
+  const showHistoricalSnapshot = await completeReplacement();
+  assert.equal(
+    await hitsDeployment(),
+    true,
+    "the pointer still hits Deployment before the refresh",
+  );
+  await showHistoricalSnapshot();
+
+  // A locator click would follow the tab if it moved out from under the pointer.
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await deployment.getAttribute("aria-selected"),
+    "true",
+    "the parked click opens Deployment",
+  );
+  await page.getByRole("tabpanel", { name: "Deployment", exact: true }).waitFor();
+  assert.equal(await versionChooser(page).inputValue(), current.id);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), current.id);
+  await waitForIdleFetches(page);
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A parked click opens Draft credentials after a replacement succeeds", async (t) => {
+  const draftValues = nativeValues("v2", { providerModel: "gpt-5.1" });
+  const { fixture, namespace, agent, page, current, writes, pausePoll, poll, completeReplacement } =
+    await queuedReplacement(t, "Reading v1", "Draft link", draftValues);
+  const configuration = page.getByRole("tabpanel", { name: "Configuration", exact: true });
+  const link = configuration.getByRole("link", { name: "Draft credentials", exact: true });
+  const currentNotice = page.getByText("Current version · read-only admitted snapshot.", {
+    exact: true,
+  });
+  await currentNotice.waitFor();
+  await page.evaluate(() => globalThis.document.fonts.ready);
+
+  // The reader scrolls to the snapshot and rests the pointer at the center of the link.
+  await link.evaluate((node) =>
+    node.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }),
+  );
+  assert.ok((await page.evaluate(() => globalThis.scrollY)) > 0);
+  const box = required(await link.boundingBox());
+  const point = { x: Math.floor(box.x + box.width / 2), y: Math.floor(box.y + box.height / 2) };
+  await page.mouse.move(point.x, point.y);
+  await nextFrames(page);
+  const hitsCredentials = () =>
+    link.evaluate(
+      (node, { x, y }) => node.contains(node.ownerDocument.elementFromPoint(x, y)),
+      point,
+    );
+  assert.equal(await hitsCredentials(), true);
+
+  await pausePoll();
+  await poll();
+  await page.clock.resume();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  assert.equal(await hitsCredentials(), true, "an unchanged poll keeps the link under the pointer");
+
+  await pausePoll();
+  const showHistoricalSnapshot = await completeReplacement();
+  assert.equal(await currentNotice.isVisible(), true);
+  assert.equal(await hitsCredentials(), true, "completion keeps the link under the pointer");
+  await showHistoricalSnapshot();
+  assert.equal(await versionChooser(page).inputValue(), current.id);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), current.id);
+
+  // A locator click would follow a moved link. Use the pointer parked before both polls.
+  const parkedPointHitsLink = await hitsCredentials();
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    parkedPointHitsLink,
+    true,
+    "the historical snapshot keeps Draft credentials under the pointer",
+  );
+
+  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  await page.waitForURL(
+    (url) =>
+      url.origin === draft.origin &&
+      url.pathname === draft.pathname &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("revision") === "draft" &&
+      url.searchParams.get("tab") === "credentials",
+  );
+  // The address changes before the draft mounts. Wait for the draft-only Credentials control.
+  const settled = page.locator(settledView);
+  await settled
+    .getByRole("tabpanel", { name: "Credentials", exact: true })
+    .getByRole("button", { name: "Save authentication source", exact: true })
+    .waitFor();
+  assert.equal(await versionChooser(page).inputValue(), "draft");
+  assert.equal(
+    await page.getByRole("tab", { name: "Credentials", selected: true, exact: true }).count(),
+    1,
+  );
+  await waitForIdleFetches(page);
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A slow return to retained Draft credentials keeps the wait in view", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Draft return", "Retained draft");
+  const { revision: historical } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, historical.id);
+  const viewport = { width: 390, height: 844 };
+  await page.setViewportSize(viewport);
+  await trackSettledFetches(page);
+
+  // Follow the same link twice so the second visit rechecks a previously opened draft.
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, historical.id, "configuration"),
+  );
+  const settled = page.locator(settledView);
+  const link = settled.getByRole("link", { name: "Draft credentials", exact: true });
+  const save = settled.getByRole("button", { name: "Save authentication source", exact: true });
+  await link.click();
+  await save.waitFor();
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await versionChooser(page).selectOption(historical.id);
+  await link.waitFor();
+  await waitForIdleFetches(page);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await link.focus();
+  await link.evaluate((node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  const scrollY = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrollY > 0, "the reader has scrolled to the snapshot link");
+
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const checking = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+  const original = required(await link.elementHandle());
+  const linkTop = required(await original.boundingBox()).y;
+  const slowRead = { method: "GET", once: true, afterServer: true };
+  const hold = await holdRequests(t, page, agentUrl, slowRead);
+  try {
+    await page.keyboard.press("Enter");
+    assert.equal(required(await hold.requested).status(), 200);
+    await checking.waitFor();
+    assert.equal(await checking.count(), 1);
+    assert.ok(
+      await original.evaluate((node) => node.isConnected && node.closest("[inert]") !== null),
+    );
+    assert.equal(await save.count(), 0);
+
+    // A status above the viewport still matches Playwright's visible check. Measure its text.
+    const bounds = await checking.evaluate((node) => {
+      const text = node.ownerDocument.createRange();
+      text.selectNodeContents(node);
+      const { left, top, right, bottom } = text.getBoundingClientRect();
+      return { left, top, right, bottom };
+    });
+    const { left, top, right, bottom } = bounds;
+    assert.ok(
+      left >= 0 &&
+        right > left &&
+        right <= viewport.width &&
+        top >= 0 &&
+        bottom > top &&
+        bottom <= viewport.height,
+      `the full waiting message must be in the viewport: ${JSON.stringify(bounds)}`,
+    );
+    assert.ok(
+      Math.abs(required(await original.boundingBox()).y - linkTop) < 1,
+      "the link stays in place",
+    );
+    assert.equal(await page.evaluate(() => globalThis.scrollY), scrollY);
+  } finally {
+    hold.release();
+  }
+
+  await save.waitFor();
+  await waitForIdleFetches(page);
+  await page.waitForFunction(versionDetailInView);
+  assert.equal(await checking.count(), 0);
+  assert.equal(await versionChooser(page).inputValue(), "draft");
+  assert.equal(await focusedTab(page), "Credentials");
+  assert.deepEqual(writeRequests(requests), []);
+});
+
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
 // sat under the open Deployment details, below the fold at 1440, and the failure's error showed
@@ -3852,7 +4687,7 @@ test("A recovery link left before its page opens does not scroll a later visit",
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" });
+    .getByRole("link", { name: "Open Configuration draft", exact: true });
   await open.waitFor();
   await settled.waitFor();
   const agentRead = await holdRequests(
@@ -3922,7 +4757,7 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
   await page.evaluate(() => globalThis.scrollTo(0, 0));
   await page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" })
+    .getByRole("link", { name: "Open Configuration draft", exact: true })
     .click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
@@ -4719,6 +5554,92 @@ for (const viewport of [
     assert.equal(await deploy.isDisabled(), true);
   });
 }
+
+test("Viewing version matches the Configuration snapshot when revisiting a queued version", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Saved versions", "Picker Agent", {
+    recordOperations: true,
+  });
+  const { revision: first } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("v2", { providerModel: "gpt-5.1" }),
+  );
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const operator = await fixture.createNamespaceMember("version-operator", namespace.id, [
+    ...AGENT_READ,
+    ["operate", "agent"],
+  ]);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.id, "configuration"),
+    operator.credentials,
+  );
+
+  const chooser = versionChooser(page);
+  const snapshot = page.locator(settledView).getByRole("tabpanel", { name: "Configuration" });
+  const checkVersion = async (id: string, model: string) => {
+    await snapshot.getByText(model, { exact: true }).waitFor();
+    // Leaving during a read rebuilds the page on return and hides a stale picker.
+    await waitForIdleFetches(page);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), id);
+    assert.equal(await chooser.inputValue(), id);
+  };
+  const heading = page.getByRole("heading", { name: "Picker Agent", exact: true });
+  const back = page.getByRole("link", { name: "← Agents", exact: true });
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  const hasFocus = (control: Locator) => control.evaluate((node) => node.matches(":focus-visible"));
+  const openQueuedVersion = async (control: Locator, ...keys: string[]) => {
+    const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions/${second.id}`;
+    const read = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    await chooser.press("ArrowUp");
+    assert.equal((await read.requested)?.status(), 200);
+    assert.ok(await hasFocus(heading));
+    for (const key of keys) {
+      await page.keyboard.press(key);
+    }
+    assert.ok(await hasFocus(control));
+    read.release();
+    await checkVersion(second.id, "openai/gpt-5.1");
+    assert.deepEqual(
+      await control.evaluate((node) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return {
+          focused: node.matches(":focus-visible"),
+          inView: top >= 0 && bottom <= innerHeight,
+        };
+      }),
+      { focused: true, inView: true },
+    );
+  };
+
+  await checkVersion(first.id, "openai/gpt-4.1");
+  const destination = await back.getAttribute("href");
+  await openQueuedVersion(back, "Shift+Tab");
+  assert.equal(await back.getAttribute("href"), destination);
+  const queuedPicker = required(await chooser.elementHandle());
+  const namespaceSelect = page.getByRole("combobox", { name: "Namespace", exact: true });
+  for (const [control, ...keys] of [
+    [copy, "Tab"],
+    [namespaceSelect, "Tab", "Tab"],
+  ] as const) {
+    // Leave the header above the viewport but keep the picker in view.
+    await chooser.focus();
+    await page.mouse.wheel(0, 240);
+    await page.waitForFunction(
+      (button) => button.getBoundingClientRect().bottom < 0,
+      required(await copy.elementHandle()),
+    );
+    assert.ok(await chooser.evaluate((node) => node.getBoundingClientRect().top >= 0));
+    await page.keyboard.press("ArrowDown");
+    await checkVersion(first.id, "openai/gpt-4.1");
+    assert.ok(await hasFocus(heading));
+    await openQueuedVersion(control, ...keys);
+    assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  }
+});
 
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),
 // and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now

@@ -797,13 +797,12 @@ function assertManagedRevision(
   return firstAgentPriorPatPolicy(values, record, revision.id, priorRevisionId);
 }
 
-function assertManagedCredentialSource(source: Fields, record: Fields, secret: Fields) {
+function assertManagedCredentialSource(source: Fields, record: Fields) {
   if (
     source.name !== record.credentialSourceName ||
-    source.type !== (record.authMethod === "codex_pat" ? "codex-pat" : "openai") ||
-    !isDeepStrictEqual(source.secrets, {
-      [record.authMethod === "codex_pat" ? "access_token" : "api_key"]: secret.ref,
-    }) ||
+    source.type !== "static" ||
+    fields(source.config ?? {}, "provider_preset").provider_preset !==
+      (record.authMethod === "codex_pat" ? "codex-pat" : "openai") ||
     source.state !== "ready"
   ) {
     throw new Error("The recorded CredentialSource does not belong to this local first-agent run.");
@@ -851,6 +850,84 @@ async function ensureModelCredentialGrant(
   if (exact === undefined) {
     await api("POST", `${base}/iam/access-bindings`, expected);
   }
+}
+
+async function saveOpenShellModelNetwork(
+  api: ReturnType<typeof createFirstAgentApi>,
+  kubectl: Awaited<ReturnType<typeof loadLocalInstallation>>["kubectl"],
+  agentPath: string,
+  authMethod: AuthMethod,
+) {
+  const path = `${agentPath}/sandbox-policy/networking`;
+  const view = await objectResponse(api, "policy", "GET", path);
+  const policy = fields(view.policy, "version");
+  const nodes = fields(
+    parseJson(await kubectl("get", "nodes", "-o", "json"), "Local nodes"),
+    "items",
+  );
+  const architectures = new Set(
+    (Array.isArray(nodes.items) ? nodes.items : []).map((node) => {
+      const info = fields(
+        fields(fields(node, "status").status, "nodeInfo").nodeInfo,
+        "architecture",
+      );
+      return info.operatingSystem === "linux" ? info.architecture : undefined;
+    }),
+  );
+  const architecture = architectures.values().next().value;
+  if (architectures.size !== 1 || (architecture !== "amd64" && architecture !== "arm64")) {
+    throw new Error(
+      "The OpenShell First Agent requires a single supported Linux node architecture.",
+    );
+  }
+  const codexPackage = architecture === "amd64" ? "-linux-x64/" : "-linux-arm64/";
+  const hosts =
+    authMethod === "codex_pat" ? ["auth.openai.com", "chatgpt.com"] : ["api.openai.com"];
+  const applies = (grant: Fields, host: string) =>
+    grant.host === host &&
+    typeof grant.binary === "string" &&
+    grant.binary.includes(codexPackage) &&
+    grant.binary.endsWith("/bin/codex") &&
+    Array.isArray(grant.ports) &&
+    grant.ports.some((port) => {
+      const range = fields(port, "from");
+      return (
+        typeof range.from === "number" &&
+        range.from <= 443 &&
+        typeof range.to === "number" &&
+        range.to >= 443
+      );
+    });
+  if (!Array.isArray(policy.additions) || !Array.isArray(view.ceiling)) {
+    throw new Error("Could not read the Agent's approved OpenShell network policy.");
+  }
+  const additions = [...policy.additions];
+  for (const host of hosts) {
+    if (additions.some((grant) => applies(fields(grant, "binary"), host))) {
+      continue;
+    }
+    const approved = view.ceiling
+      .map((grant) => fields(grant, "binary"))
+      .filter((grant) => applies(grant, host) && grant.requestPolicy === undefined);
+    if (approved.length !== 1) {
+      throw new Error(
+        `The Local Setup ceiling must approve one Codex executable for ${host}:443. Check the OpenShell network settings.`,
+      );
+    }
+    additions.push({
+      id: text(approved[0]!.id),
+      binary: text(approved[0]!.binary),
+      host,
+      ports: [{ from: 443, to: 443 }],
+    });
+  }
+  if (additions.length === policy.additions.length) {
+    return;
+  }
+  if (view.editingEnabled !== true) {
+    await api("PATCH", `${path}/editing`, { enabled: true });
+  }
+  await api("PUT", path, { expectedVersion: policy.version, additions });
 }
 
 async function withRecord<T>(
@@ -923,6 +1000,28 @@ async function waitFor<T>(description: string, operation: () => Promise<T>, time
 
 function progress(message: string) {
   process.stderr.write(`${message}\n`);
+}
+
+function pendingDeploymentReason(progress: unknown): string | undefined {
+  if (typeof progress !== "object" || progress === null || !("lastAttempt" in progress)) {
+    return;
+  }
+  switch (errorCode(progress.lastAttempt)) {
+    case "REVISION_INCOMPLETE":
+      return "was waiting for the Agent runtime to become ready";
+    case "WORKSPACE_NODE_PENDING":
+      return "was waiting for the workspace node to connect to the gateway";
+    case "WORKSPACE_NODE_BINDING_PENDING":
+      return "was waiting for the gateway to apply the workspace node binding";
+    case "REVISION_IMAGE_PULL_FAILED":
+      return "could not pull a container image for this Agent. Ask an Installation administrator to check the image reference and the cluster's registry access";
+    case "REVISION_UNSCHEDULABLE":
+      return "found that the cluster could not schedule this Agent's Pods";
+    case "NAMESPACE_POD_QUOTA_EXCEEDED":
+      return "found that the Namespace's Pod quota was full. Stop an unused Agent you own in this Namespace or ask an Installation administrator to raise the quota";
+    case "PREDECESSOR_STOP_YIELDED":
+      return "was waiting for the previous gateway to stop";
+  }
 }
 
 async function main(options: Options) {
@@ -1119,33 +1218,13 @@ async function main(options: Options) {
       }
     }
 
-    let suppliedKey: string | undefined;
-    if (!record.secretId) {
-      record.secretId = await findFirstAgentSecret(
-        local.database,
-        databaseInput(namespace.id),
-        databaseInput(record.secretName),
-      );
-      if (!record.secretId) {
-        suppliedKey = await modelKey(authMethod);
-        progress("Saving the model credential in the local platform Secret...");
-        const secret = await objectResponse(api, "id", "POST", `${base}/secrets`, {
-          name: record.secretName,
-          value: suppliedKey,
-        });
-        record.secretId = secret.id;
-      }
-      await save(record);
-    }
-    const secret = await objectResponse(api, "name", "GET", `${base}/secrets/${record.secretId}`);
-    if (secret.name !== record.secretName) {
-      throw new Error("The recorded Secret does not belong to this local first-agent run.");
-    }
-
-    let credentialSource: Fields | undefined;
-    if (record.sandboxDriver === "openshell") {
+    const resourceKind = record.sandboxDriver === "openshell" ? "credential_source" : "secret";
+    let enrolled = false;
+    let modelCredential: Fields;
+    let directModelKey: string | undefined;
+    if (resourceKind === "credential_source") {
       const sources = await api("GET", `${base}/credential-sources`);
-      credentialSource = record.credentialSourceId
+      const source = record.credentialSourceId
         ? findFields(sources, "sources", "id", ({ id }) => id === record.credentialSourceId)
         : findFields(
             sources,
@@ -1153,40 +1232,71 @@ async function main(options: Options) {
             "name",
             ({ name }) => name === record.credentialSourceName,
           );
-      if (record.credentialSourceId && credentialSource === undefined) {
+      if (source === undefined && record.credentialSourceId) {
         throw new Error(
-          "This Agent's CredentialSource was removed after the helper created it. Choose a new name.",
+          "The model Source was removed. Run first-Agent with a new Agent name and enroll the credential through TokenService.",
         );
       }
-      if (credentialSource === undefined) {
-        progress("Registering the model credential with the OpenShell gateway...");
-        credentialSource = await objectResponse(api, "name", "POST", `${base}/credential-sources`, {
+      if (source === undefined) {
+        progress("Enrolling the model credential in TokenService...");
+        modelCredential = await objectResponse(api, "name", "POST", `${base}/credential-sources`, {
           name: record.credentialSourceName,
-          type: record.authMethod === "codex_pat" ? "codex-pat" : "openai",
-          secrets: { [record.authMethod === "codex_pat" ? "access_token" : "api_key"]: secret.ref },
+          type: "static",
+          config: { provider_preset: authMethod === "codex_pat" ? "codex-pat" : "openai" },
+          secret: await modelKey(authMethod),
         });
+        enrolled = true;
+      } else {
+        modelCredential = source;
       }
-      assertManagedCredentialSource(credentialSource, record, secret);
-      if (!record.credentialSourceId) {
-        record.credentialSourceId = credentialSource.id;
+      assertManagedCredentialSource(modelCredential, record);
+      record.credentialSourceId = modelCredential.id;
+      await save(record);
+    } else {
+      if (!record.secretId) {
+        record.secretId = await findFirstAgentSecret(
+          local.database,
+          databaseInput(namespace.id),
+          databaseInput(record.secretName),
+        );
+        if (!record.secretId) {
+          progress("Saving the model credential in the local platform Secret...");
+          directModelKey = await modelKey(authMethod);
+          const secret = await objectResponse(api, "id", "POST", `${base}/secrets`, {
+            name: record.secretName,
+            value: directModelKey,
+          });
+          record.secretId = secret.id;
+          enrolled = true;
+        }
         await save(record);
+      }
+      modelCredential = await objectResponse(
+        api,
+        "name",
+        "GET",
+        `${base}/secrets/${record.secretId}`,
+      );
+      if (modelCredential.name !== record.secretName) {
+        throw new Error("The recorded Secret does not belong to this local first-agent run.");
       }
     }
 
-    if (options.replaceKey && suppliedKey === undefined) {
-      suppliedKey = await modelKey(authMethod);
+    if (options.replaceKey && !enrolled) {
+      const value = await modelKey(authMethod);
       progress("Replacing the saved model credential...");
-      await api("PATCH", `${base}/secrets/${record.secretId}`, { value: suppliedKey });
-      if (credentialSource !== undefined) {
-        progress("Updating the OpenShell gateway's model credential...");
-        credentialSource = await objectResponse(
+      if (resourceKind === "credential_source") {
+        modelCredential = await objectResponse(
           api,
           "name",
           "PATCH",
-          `${base}/credential-sources/${credentialSource.id}`,
-          {},
+          `${base}/credential-sources/${modelCredential.id}`,
+          { secret: value },
         );
-        assertManagedCredentialSource(credentialSource, record, secret);
+        assertManagedCredentialSource(modelCredential, record);
+      } else {
+        directModelKey = value;
+        await api("PATCH", `${base}/secrets/${modelCredential.id}`, { value });
       }
       record.previousRevisionId = record.revisionId ?? agent?.activeRevisionId;
       delete record.revisionId;
@@ -1225,13 +1335,8 @@ async function main(options: Options) {
       expectedConfiguration = await ensureManagedConfiguration(agent);
     }
     const agentPath = `${base}/agents/${agent.id}`;
-    if (credentialSource === undefined) {
-      progress("Authorizing the Agent to use its exact model Secret...");
-      await ensureModelCredentialGrant(api, base, agent, secret, "secret");
-    } else {
-      progress("Authorizing the Agent to use its exact model CredentialSource...");
-      await ensureModelCredentialGrant(api, base, agent, credentialSource, "credential_source");
-    }
+    progress("Authorizing the Agent to use its exact model credential...");
+    await ensureModelCredentialGrant(api, base, agent, modelCredential, resourceKind);
     const credentials = await objectResponse(
       api,
       "transportConfigured",
@@ -1265,6 +1370,9 @@ async function main(options: Options) {
         );
         assertManagedConfiguration(beforeDeploy, record, expectedConfiguration);
         await checkProvisioning();
+        if (local.sandboxDriver === "openshell") {
+          await saveOpenShellModelNetwork(api, local.kubectl, agentPath, authMethod);
+        }
         progress("Deploying the Agent to local Kubernetes...");
         const revision = await objectResponse(api, "configuration", "POST", `${agentPath}/deploy`);
         assertManagedRevision(revision, record, expectedConfiguration);
@@ -1300,6 +1408,7 @@ async function main(options: Options) {
     }
     await followNewestRevision();
     progress("Waiting for the selected revision and Kubernetes gateway...");
+    let lastWaitReason: string | undefined;
     await waitFor("the Agent revision to become active", async () => {
       const [observedValue, deploymentValue] = await Promise.all([
         api("GET", agentPath),
@@ -1318,6 +1427,7 @@ async function main(options: Options) {
           "REVISION_SUPERSEDED" &&
         (await followNewestRevision())
       ) {
+        lastWaitReason = undefined;
         return false;
       }
       if (deployment.status === "failed") {
@@ -1332,6 +1442,13 @@ async function main(options: Options) {
             "The Codex runtime's managed permission policy is incompatible with this deployment. Review the configured sandbox, permission profile, and approval reviewer with your policy administrator before deploying again.";
         }
         throw new Error(`The Agent deployment failed${code}. ${advice}`);
+      }
+      if (deployment.status === "queued" || deployment.status === "running") {
+        const reason = pendingDeploymentReason(deployment.progress);
+        if (reason !== undefined && reason !== lastWaitReason) {
+          progress(`The last deployment attempt ${reason}.`);
+          lastWaitReason = reason;
+        }
       }
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });
@@ -1355,7 +1472,7 @@ async function main(options: Options) {
           });
       },
       prompt: options.prompt,
-      apiKey: suppliedKey,
+      apiKey: directModelKey,
       // Only embedded OpenClaw calls the model from the Gateway. Dedicated Codex keeps the
       // model credential in its Codex Pod or OpenShell Sandbox, never in the Gateway.
       expectProviderKey: record.harness === "openclaw",

@@ -34,22 +34,12 @@ as the reason Dedicated OpenClaw is disabled.
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
-   Review defaults and choose a model Secret.
+   Review defaults and choose the model credential.
    **Start with default Preset** loads `default-codex`. **Start without Preset** skips Presets.
-3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
-   **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
-   and **OpenClaw**. Anthropic offers only Embedded **OpenClaw**. OpenAI OpenClaw
-   starts Embedded unless a Sandbox Driver provisions Dedicated (**Runtime details**).
-   For Codex, choose **OpenAI API key**, **Service Accounts**, or **ChatGPT
-   OAuth** ([experimental](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)).
-   OpenClaw uses provider API keys. Get an
-   [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
-   token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
-   Unless a Preset binds one or you use ChatGPT OAuth, choose or create a Secret.
-   Wait for the access check. Changing provider or method clears your choice.
-   No model is preselected. Choose a starter model or **Enter model ID manually**.
-   **Choose a model from the list** keeps listed models and other settings.
-   Reselect unlisted IDs when you return.
+3. Give the Agent a unique Namespace name. Choose **Provider** and **Harness**. OpenAI offers Dedicated **Codex** by default and **OpenClaw**; Anthropic requires Embedded **OpenClaw**. OpenClaw normally starts Embedded, which uses a Secret. For Source reuse, choose Dedicated under **Runtime details** when supported.
+   Codex accepts an [OpenAI API key](https://platform.openai.com/api-keys), a PAT from [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**, or [experimental ChatGPT OAuth](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login). OpenClaw accepts provider API keys.
+   When Source authentication is supported, use **Model credential** to select a saved Source, choose **Add new credential…** for an API key or PAT, or choose **Sign in with OAuth** for a new Codex login. Saved Sources must be readable, ready, in this Namespace, and match the API-key/PAT preset or built-in Codex OAuth consent. Template OAuth cannot authenticate a model. Saving requires exact Source `operate`; a new credential or sign-in creates a Source and saves a draft for later deployment. Changing provider or method clears the choice. Other supported configurations use the Namespace Secret picker.
+   No model is preselected. Choose a starter model or **Enter model ID manually**. Returning to the list preserves listed models and other settings; reselect an unlisted ID.
 4. Check Installation, credential, and runtime model support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
    unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Advanced settings** → **Reset template** replaces them.
@@ -68,6 +58,7 @@ as the reason Dedicated OpenClaw is disabled.
    **Apply channel settings** stages settings and bindings. **Cancel** discards selections.
    Configuration stores settings and Secret bindings. The Agent stores plugin selections.
    After creation, you can supply Slack credentials on the Agent's **Credentials** tab.
+   See [Gateway channel proxy](../../guides/deploy/channel-egress.md#select-an-agent-proxy).
 7. Optionally configure plugins or open **Advanced settings** for Configuration JSON
    and **Workspace files**. Presets prefill overrides. Omitted files use OpenClaw
    defaults. Clear a field to submit an empty file. The browser submits LF
@@ -91,30 +82,30 @@ for rejected or uncertain writes.
 
 For Codex plugins, open **Configure plugins**. With the
 [OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),
-you can browse and select supported plugins without a discovery token. Their tool
-inventory and account access are unknown. In hosted mode, select **Service Accounts** with
-**Codex** and choose a PAT Secret, or enter a token under **Plugin discovery token
-(optional)**. **Previous page** and **Next page** fetch hosted pages; **Filter this
-page** filters locally. PAT catalog search is unavailable.
+you can browse and select supported plugins without a discovery credential. Their
+tool inventory and account access are unknown. For a hosted catalog, complete
+Codex sign-in or [enroll a service account token](../../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
+as a TokenService Source. **Previous page** and **Next page** fetch hosted pages.
+**Search plugins** queries the catalog. **Filter configured plugins** filters saved selections locally.
 Select a plugin to load tools, then **Add**. Use toggles and **Tool policy** for
 overrides. **Configured plugins** includes selections from other pages. **Done** closes the modal;
 **Create Agent** saves changes.
 
-[Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) requires
-permission to use any selected Secret. The server reads its value without returning
-it to the browser. Credential, provider, and Harness changes clear results; **Plugin
+Hosted [discovery](../../flows/agent-plugins.md#credential-scoped-discovery) requires
+`credential_source:operate` on the selected Source. The server resolves the
+credential through TokenService. Credential, provider, and Harness changes clear results. **Plugin
 selections JSON** preserves selections separately from Configuration. Check permissions
 or outbound access on failure, then retry. Editing follows installation capabilities
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
-Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. Binding a Secret needs Secret `operate` on it, so each Secret
-menu lists a readable Secret without it disabled, with the reason. A new Secret has no `operate`
-grant, so where a readable Secret is denied, a Preset's **Create new Secret** is disabled too. With a selected Credential Gateway, supported
-Dedicated creation registers the selected Secret as a model
-[Credential Source](../credential-sources.md), then provisions with that source.
-The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.
-Authentication methods outside the selected gateway catalog remain unavailable.
+The Console submits a new static [Credential Source](../credential-sources.md) directly
+to the selected TokenService through OCC. Creating it requires CredentialSource `create`;
+binding it requires `operate`. Source reads return metadata, not the credential value.
+Guided provisioning does not yet accept managed Sources, so this choice saves a draft.
+For Secret-backed authentication, each Secret menu disables a readable Secret if the caller
+lacks Secret `operate`. A new Secret has no `operate` grant, so a Preset's **Create new Secret**
+is disabled when that access is denied. Credential values stay out of Configuration JSON,
+Agent responses, and browser storage.
 
 Presets preselect their authentication method or retain saved bindings.
 Method-only Presets require a model Secret. Bound API-key and Service Accounts
@@ -136,13 +127,9 @@ The starter list proves neither runtime compatibility nor provider acceptance.
 Optional model discovery requires Namespace Agent `create`, sends credentials
 upstream without saving them, and lists Codex models for `codex_pat`.
 
-Configure Helm `api.modelDiscoveryCidrs` with provider IPv4 `/32` hosts, then
-upgrade. This grants only API Pods TCP 443 egress; Harness rules are unchanged.
-Destinations: `api.openai.com` (OpenAI API key), `api.anthropic.com` (Anthropic),
-or `auth.openai.com` plus `chatgpt.com` (`codex_pat`). Defaults grant none.
-Operators must refresh addresses when DNS changes, or supply a cluster-specific
-FQDN policy. Standard NetworkPolicy cannot match DNS names or distinguish
-services sharing an IP.
+Model discovery uses the API's unrestricted control-plane egress. Verify API Pod
+DNS and HTTPS connectivity to the selected provider. Harness networking remains
+subject to its separate Sandbox policy.
 
 Failures distinguish credential/model-list rejection, rate limits, connectivity,
 and invalid responses. Errors include request IDs, never upstream response bodies.
@@ -157,7 +144,7 @@ provider acceptance or runtime readiness. See
 
 Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
-If model/Slack Secret grants fail after Agent creation,
+If a legacy model Secret grant fails after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 The same action is safe if the Console saved the Agent but could not confirm its service
 principal. It checks the saved Agent before granting access, without creating another Agent.
@@ -180,13 +167,10 @@ resends the original request. A refused retry of a confirmed failure names the
 reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-**Check credential registration** looks up the source without retrying writes.
-An empty result preserves any known refusal and the saved Secret. Resolve the refusal,
-then select **Create Agent** to retry the same name/references; uniqueness fences late commits.
-Give your operator the request ID if the outcome is unclear.
-**Remove failed credential registration** deletes a source left
-`registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
-registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+If Source creation is uncertain, open **Credentials** and refresh Credential Sources. If absent, ask the owner to inspect custody before retrying.
+The Console clears the entered key and does not repeat the write automatically. If a later
+Agent save fails after Source creation succeeds, retry in the same form to reuse that Source.
+See the [provisioning flow](../../flows/agent-provisioning.md) for Secret-backed provisioning.
 
 If the first deployment fails with valid Agent and version IDs, follow the linked
 version's recovery guidance even without an error message. A stopped or superseded
@@ -224,7 +208,7 @@ Combine approved repositories and Slack on one Codex Dedicated Agent with
 
 ## Initial runtime credentials
 
-Select model authentication and bind Slack tokens as Namespace Secrets. When
+Select model authentication and bind Slack tokens as Credential Sources. When
 Compute requires them, OCC creates missing transport credentials before saving the first
 version; supported Dedicated provisioning does so during creation.
 Neither path creates the selected `harnessAuth` model credential or channel tokens.
@@ -249,16 +233,12 @@ retries reread status. After a lost deployment reply, read version
 history. Created Secrets remain after later storage or audit failure. Missing
 credentials after an earlier Agent revision require investigation, not regeneration.
 
-On the **Credentials** tab, Slack token fields use the same Secret picker as
-creation; [Channel Secrets](../../guides/console/channels-and-credentials.md#channel-secrets)
-lists the save requirements. The browser never reads saved token values.
-
-Saving writes only Configuration `secretBindings` and exact IAM bindings for
-the changed Secret references. It reuses only Roles with the required permission
-set. Unchanged token bindings are preserved.
-Tokens are never stored in local storage, URLs, or native Configuration values.
-A stored channel Secret confirms storage and binding only; it does not prove
-provider acceptance, runtime readiness, or a channel connection.
+On the **Credentials** tab, Slack fields select ready static Credential Sources.
+[Channel credentials](../../guides/console/channels-and-credentials.md#channel-credentials)
+lists the save requirements. Saving writes canonical Source references in Configuration
+`secretBindings` and preserves unchanged bindings. Deploy admission delegates exact Source use
+to the Agent service principal. The browser never reads saved values. A saved binding does not
+prove provider acceptance, runtime readiness, or a channel connection.
 
 <span id="deploy-a-saved-draft"></span>
 
@@ -267,7 +247,7 @@ provider acceptance, runtime readiness, or a channel connection.
 ## Deploy a new version
 
 Open **Open draft** and select **Deploy new version** after storing
-credentials, saving channel Secret bindings, and selecting harness authentication.
+credentials, saving channel Credential Source bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
 deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
 not redeploy or roll back viewed snapshots. Each accepted deployment creates a new

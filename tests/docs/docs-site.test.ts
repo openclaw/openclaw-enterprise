@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, open, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -59,19 +59,19 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
-  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
   const quickstart = "snippets/openshell-quickstart";
-  const guides = [
-    ["deploy/local-setup", "configure-installation"],
-    ["integrations/codex-plugins", "inspect-linear-transcript"],
-  ] as const;
-  for (const [guide, script] of guides) {
-    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
-    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
-    if (guide === "deploy/local-setup") {
-      assert.ok(html.includes(`install -m 600 docs/${quickstart}/${script}.mts`));
-    }
-  }
+  const published = join(root, "dist/docs");
+  const localSetup = await readFile(
+    join(published, "guides/deploy/local-setup/index.html"),
+    "utf8",
+  );
+  assert.ok(localSetup.includes(`install -m 600 docs/${quickstart}/configure-installation.mts`));
+  const codexPlugins = await readFile(
+    join(published, "guides/integrations/codex-plugins/index.html"),
+    "utf8",
+  );
+  assert.ok(codexPlugins.includes(`href="/${quickstart}/inspect-linear-transcript.mjs"`));
+  // Preserve executable JavaScript downloads at their bookmarked URLs.
   for (const script of [
     "configure-installation",
     "inspect-linear-transcript",
@@ -84,7 +84,6 @@ test("docs build renders every authored page and preserves repository ownership"
     assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
   }
   const quickstartAssets = "assets/openshell-quickstart";
-  const published = join(root, "dist/docs");
   for (const script of ["chat", "verify-github-installation"]) {
     const asset = join(published, quickstartAssets, script + ".mjs");
     execFileSync(process.execPath, ["--check", asset], { encoding: "utf8" });
@@ -94,12 +93,17 @@ test("docs build renders every authored page and preserves repository ownership"
     join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
     "utf8",
   );
-  const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
-  assert.ok(enrollment.includes(`href="/${verifier}"`));
-  assert.ok(enrollment.includes(`installation_check=docs/${verifier}`));
+  // Existing enrollment bookmarks must lead to the guide for Source-backed Git access.
   assert.ok(
-    enrollment.includes(`installation_check:-docs/${quickstart}/verify-github-installation.mts`),
+    enrollment.includes(
+      'rel="canonical" href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',
+    ),
   );
+  const repositoryFlow = await readFile(
+    join(published, "flows/agent-repository-credentials/index.html"),
+    "utf8",
+  );
+  assert.ok(repositoryFlow.includes(`href="/${quickstartAssets}/verify-github-installation.mjs"`));
 
   // Run the shipped staging command from both trees. The published shell must copy
   // the historical download and use the same staged filename when sending a turn.
@@ -180,6 +184,125 @@ test("docs build renders every authored page and preserves repository ownership"
   assert.match(workloads, /<figure\b[^>]*data-mermaid=/);
   const asset = await readFile(join(root, "dist/docs/assets/lobster-mech-transparent.png"));
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");
+});
+
+test("docs build confines Snippet includes to the docs root", async (t) => {
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-snippets-", {
+    logo: true,
+  });
+  const page = join(fixture, "docs/README.md");
+  const includes = join(fixture, "docs/includes");
+  const outside = join(fixture, "docs-outside");
+  await mkdir(includes);
+  await mkdir(outside);
+  await writeFile(join(includes, "ordinary.txt"), "**Included Markdown**\n");
+  await symlink("ordinary.txt", join(includes, "inside-link.txt"), "file");
+  await writeFile(join(outside, "sentinel.txt"), "outside-snippet-sentinel\n");
+  await symlink(join(outside, "sentinel.txt"), join(includes, "escape.txt"), "file");
+  await writeFile(
+    join(includes, "literal.txt"),
+    ['import Example from "./example.mdx";', '<Snippet file="escape.txt" />', "```"].join("\n"),
+  );
+  await writeFile(
+    page,
+    [
+      "# Snippets",
+      '<Snippet src="includes/inside-link.txt" />',
+      '<Snippet file="includes/escape.txt" />',
+      '<Snippet file="includes/literal.txt" lang="text" />',
+      "",
+    ].join("\n\n"),
+  );
+  const build = buildDocs(fixture);
+  assert.ifError(build.error);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.match(html, /<strong>Included Markdown<\/strong>/);
+  assert.match(html, /import Example from &quot;\.\/example\.mdx&quot;;<\/span>/);
+  assert.match(html, /&lt;Snippet file=&quot;escape\.txt&quot; \/&gt;<\/span>/);
+  assert.ok(html.includes('data-line="3">```</span>'));
+  assert.doesNotMatch(html, /outside-snippet-sentinel/);
+
+  await writeFile(page, '# Snippets\n\n<Snippet file="includes/escape.txt" lang="text" />\n');
+  const escapedCode = buildDocs(fixture, "--check");
+  assert.ifError(escapedCode.error);
+  assert.equal(escapedCode.status, 1, escapedCode.stderr || escapedCode.stdout);
+  assert.match(
+    escapedCode.stderr,
+    /Code snippet outside the documentation root in .*README\.md: includes\/escape\.txt/,
+  );
+  assert.doesNotMatch(escapedCode.stderr + escapedCode.stdout, /outside-snippet-sentinel/);
+});
+
+test("docs build bounds code-fence selections to rendered lines", async (t) => {
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-code-lines-", {
+    logo: true,
+  });
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    [
+      "# Code lines",
+      "",
+      "```text {4-3,1,3} focus=3-2",
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "```",
+      "",
+      "```text highlight=2-1000000 focus=999999-1000000",
+      "plain",
+      "bounded",
+      "last",
+      "```",
+      "",
+    ].join("\n"),
+  );
+  const build = buildDocs(fixture);
+  assert.ifError(build.error);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.deepEqual(
+    [...html.matchAll(/<span class="(code-line[^"]*)" data-line="(\d+)">([^<]*)<\/span>/g)].map(
+      ([, classes, line, content]) => [classes, line, content],
+    ),
+    [
+      ["code-line is-highlighted is-dimmed", "1", "first"],
+      ["code-line", "2", "second"],
+      ["code-line is-highlighted", "3", "third"],
+      ["code-line is-highlighted is-dimmed", "4", "fourth"],
+      ["code-line", "1", "plain"],
+      ["code-line is-highlighted", "2", "bounded"],
+      ["code-line is-highlighted", "3", "last"],
+    ],
+  );
+});
+
+test("docs build ignores unsafe code-fence line numbers", async (t) => {
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-unsafe-lines-", {
+    logo: true,
+  });
+  const unsafe = "9007199254740992";
+  const nonFinite = "9".repeat(310);
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    [
+      "# Code lines",
+      "",
+      "```text " + `highlight=${unsafe}-${unsafe},1-${unsafe},2 focus=1-${nonFinite},2.5`,
+      "first",
+      "second",
+      "```",
+      "",
+    ].join("\n"),
+  );
+  // buildDocs runs the real renderer in a subprocess with a 30-second timeout.
+  const build = buildDocs(fixture);
+  assert.ifError(build.error);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.match(html, /<span class="code-line" data-line="1">first<\/span>/);
+  assert.match(html, /<span class="code-line is-highlighted" data-line="2">second<\/span>/);
 });
 
 test("docs validation rejects broken links, anchors and navigation through the CLI", async (t) => {

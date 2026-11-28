@@ -3,10 +3,11 @@ import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.ts";
 import {
+  apiRequests,
   detailUrl,
   hasFocus,
   holdRequests,
@@ -430,6 +431,222 @@ test("Back after switching Namespace keeps the shown page until the return is ad
   assert.equal(await scope.textContent(), "Namespace · First scope");
   assert.equal(await visibleView.getByText(secondRow, { exact: true }).count(), 0);
 });
+
+async function shiftTabToNavigation(page: Page, toggle: Locator) {
+  for (let step = 0; step < 4 && !(await hasFocus(toggle)); step++) {
+    await page.keyboard.press("Shift+Tab");
+  }
+  assert.ok(await hasFocus(toggle), "Shift+Tab reached the closed navigation toggle");
+}
+
+for (const [mode, title] of Object.entries({
+  tab: "Switching Namespace from Agent details keeps the destination header and keyboard focus",
+  stay: "Switching Namespace from Agent details restores the remembered row without a Tab",
+  again: "Switching Namespace twice updates the empty header before the second list arrives",
+  phone: "Switching Namespace keeps focus on Open navigation while the phone list loads",
+  back: "Interrupting Back across Namespaces hides the previous Agent and restores the remembered row",
+  foreground:
+    "Returning to the tab during Back across Namespaces keeps focus on the reopened Agent",
+  foregroundPhone:
+    "Returning to the tab during Back across Namespaces keeps focus on Open navigation at phone width",
+})) {
+  test(title, async (t) => {
+    const { page, fixture } = await signedOutPage(t);
+    const foregroundPhone = mode === "foregroundPhone";
+    const foreground = mode === "foreground" || foregroundPhone;
+    if (mode === "phone" || foregroundPhone) {
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
+    if (mode === "phone") {
+      await page.clock.install();
+    }
+    const createScope = async (name: string) => {
+      const scope = namespaceResource(await fixture.createNamespace(name, { ready: true }));
+      const agent = agentResource(
+        await fixture.createAgent(scope.id, `${name} Agent`, nativeValues("v1")),
+      );
+      return { id: scope.id, name, agent };
+    };
+    const east = await createScope("East");
+    const west = await createScope("West");
+    const westList = `/console/agents?namespace=${west.id}`;
+    await login(page, fixture, westList);
+    const requests = apiRequests(page, fixture.origin);
+    const main = page.getByRole("main");
+    const picker = main.getByRole("combobox", { name: "Namespace", exact: true });
+    const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+    const view = page.locator(settledView);
+    const row = (agent: Agent) => view.getByRole("link", { name: agent.name, exact: true });
+    const agentsHeading = main.getByRole("heading", { name: "Agents", level: 1, exact: true });
+    const eastTitle = main.getByRole("heading", { name: east.agent.name, level: 1 });
+    const eastIdentity = async () => ({
+      eastIdVisible: await main.getByText(east.agent.id, { exact: true }).isVisible(),
+      copyIdVisible: await main.getByRole("button", { name: "Copy Agent ID" }).isVisible(),
+    });
+    const noEastIdentity = { eastIdVisible: false, copyIdVisible: false };
+
+    // Open West from its settled row so the list has a real keyboard return target.
+    await row(west.agent).waitFor();
+    await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+    await row(west.agent).press("Enter");
+    await agentShown(page);
+    await waitForEnabled(picker);
+    await picker.press("ArrowUp");
+    await page.waitForURL(`**/console/agents?namespace=${east.id}`);
+    await row(east.agent).press("Enter");
+    await agentShown(page);
+    await waitForEnabled(picker);
+    await eastTitle.waitFor();
+    assert.deepEqual(await eastIdentity(), { eastIdVisible: true, copyIdVisible: true });
+
+    if (mode === "phone") {
+      await pauseClock(page);
+    }
+    const options = { once: true, method: "GET", afterServer: true };
+    const session = await holdRequests(t, page, SESSION, options);
+    const returnsToDetail = mode === "back" || foreground;
+    if (returnsToDetail) {
+      await page.evaluate(() => globalThis.history.go(-2));
+      await page.waitForURL(detailUrl(fixture, west.id, west.agent.id).href);
+    } else {
+      await picker.press("ArrowDown");
+      await page.waitForURL(`**${westList}`);
+    }
+    assert.equal((await session.requested)?.status(), 200);
+    assert.ok(await picker.isDisabled());
+    assert.equal(await picker.locator("option:checked").textContent(), "West");
+    if (returnsToDetail) {
+      assert.deepEqual(
+        await eastIdentity(),
+        noEastIdentity,
+        "West detail admission hides the previous Agent",
+      );
+      assert.equal(await eastTitle.isVisible(), false);
+    }
+    if (foreground) {
+      assert.ok(await hasFocus(agentsHeading), "Back focuses the pending heading");
+      // A visibility gain starts a fresh admission while Back's successful reply is held.
+      const resumed = await holdRequests(t, page, SESSION, options);
+      await page.evaluate(() => globalThis.document.dispatchEvent(new Event("visibilitychange")));
+      assert.equal((await resumed.requested)?.status(), 200);
+      const focusedClosedToggle = toggle.and(page.locator('[aria-expanded="false"]:focus-visible'));
+      if (foregroundPhone) {
+        assert.ok(await hasFocus(agentsHeading), "The recheck keeps focus on the pending heading");
+        await shiftTabToNavigation(page, toggle);
+        assert.ok(
+          await focusedClosedToggle.isVisible(),
+          "The closed toggle has visible focus while held",
+        );
+      }
+      const delivered = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+      resumed.release();
+      assert.equal((await delivered).status(), 200);
+
+      const header = main.locator(".page-header");
+      const westTitle = header.getByRole("heading", {
+        name: west.agent.name,
+        level: 1,
+        exact: true,
+      });
+      await agentShown(page);
+      await header.getByText(west.agent.id, { exact: true }).waitFor();
+      assert.equal(await picker.inputValue(), west.id);
+      assert.equal(await eastTitle.isVisible(), false);
+      assert.equal(await main.getByText(east.agent.id, { exact: true }).isVisible(), false);
+      if (foregroundPhone) {
+        assert.ok(
+          await focusedClosedToggle.isVisible(),
+          "The closed navigation toggle keeps visible focus after West settles",
+        );
+        await page.keyboard.press("Tab");
+        const avatar = page.getByRole("button", {
+          name: `Account: ${fixture.credentials.name}`,
+          exact: true,
+        });
+        assert.ok(await hasFocus(avatar), "The next Tab reaches the account avatar");
+      } else {
+        assert.ok(await hasFocus(westTitle), "The settled West Agent heading keeps focus");
+        await page.keyboard.press("Tab");
+        const refresh = header.getByRole("button", { name: "Refresh", exact: true });
+        assert.ok(await hasFocus(refresh), "The first Tab reaches the West Agent's Refresh button");
+      }
+      assert.deepEqual(
+        requests.filter(({ method }) => method !== "GET" && method !== "HEAD"),
+        [],
+      );
+      session.release();
+      return;
+    }
+
+    const westRead = `${fixture.origin}/namespaces/${west.id}/agents`;
+    const list = await holdRequests(t, page, westRead, options);
+    if (mode === "back") {
+      // Interrupt the detail admission before the session held above can return.
+      await page.goBack();
+      await page.waitForURL(`**${westList}`);
+    } else {
+      assert.deepEqual(
+        {
+          ...(await eastIdentity()),
+          agentsHeadingFocused:
+            (await agentsHeading.isVisible()) && (await hasFocus(agentsHeading)),
+        },
+        { eastIdVisible: false, copyIdVisible: false, agentsHeadingFocused: true },
+        "West is selected while its access is checked",
+      );
+      assert.equal(await eastTitle.isVisible(), false);
+      session.release();
+    }
+
+    assert.equal((await list.requested)?.status(), 200);
+    await waitForEnabled(picker);
+    assert.equal(await picker.inputValue(), west.id);
+    assert.equal(await eastTitle.isVisible(), false);
+    assert.deepEqual(await eastIdentity(), noEastIdentity);
+    if (mode !== "back") {
+      assert.ok(await hasFocus(agentsHeading), "The destination heading keeps temporary focus");
+    }
+    const destination = mode === "again" ? east : west;
+    const other = mode === "again" ? west : east;
+    let pendingList = list;
+    let expectedFocus = row(destination.agent);
+    if (mode === "again") {
+      // West has no rows on screen yet, so there is no West scope to preserve.
+      pendingList = await holdRequests(t, page, agentsRead(east), options);
+      await picker.press("ArrowUp");
+      assert.equal((await pendingList.requested)?.status(), 200);
+      await waitForEnabled(picker);
+      assert.equal(await picker.inputValue(), east.id);
+      assert.equal(await main.locator(".scope").textContent(), "Namespace · East");
+      assert.ok(await hasFocus(agentsHeading));
+      list.release();
+    } else if (mode === "tab") {
+      await page.keyboard.press("Tab");
+      assert.ok(await hasFocus(picker), "Tab moved focus to the admitted picker");
+      expectedFocus = picker;
+    } else if (mode === "phone") {
+      await shiftTabToNavigation(page, toggle);
+      await page.clock.runFor(1000);
+      assert.equal(await main.getByText("Loading…", { exact: true }).isVisible(), true);
+      assert.ok(await hasFocus(toggle), "Showing the loading message kept focus on the toggle");
+      expectedFocus = toggle;
+    }
+    const delivered = responseTo(
+      page,
+      "GET",
+      `${fixture.origin}/namespaces/${destination.id}/agents`,
+    );
+    session.release();
+    pendingList.release();
+    assert.equal((await delivered).status(), 200);
+    await row(destination.agent).waitFor();
+    assert.equal(await main.locator(".scope").textContent(), `Namespace · ${destination.name}`);
+    assert.equal(await row(other.agent).count(), 0);
+    assert.ok(await hasFocus(expectedFocus), `Expected focus on ${expectedFocus}`);
+    const writes = requests.filter(({ method }) => method !== "GET" && method !== "HEAD");
+    assert.deepEqual(writes, []);
+  });
+}
 
 test("Back to a retained Agent page after access was revoked never shows the cached page", async (t) => {
   const { fixture, page } = await signedOutPage(t);

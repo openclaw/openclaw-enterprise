@@ -9,7 +9,7 @@ import { createServer, type Socket } from "node:net";
 // stdin, holding its pipes, a final bash line, or hanging until killed. The code under
 // test still starts every command as a real process and owns its timeouts, signals and
 // pipes; only the fake's logic runs in the test process, so a command costs a bash
-// start instead of a node start. Used by ci-prepare-fixture-command.ts and dev-up.mjs.
+// start instead of a node start. Used by ci-prepare-fixture-command.ts and dev-up.ts.
 //
 // Any local user can connect to a loopback port, so the two sides authenticate each
 // other with per-server random tokens that only the fixture's private (0700) shims hold:

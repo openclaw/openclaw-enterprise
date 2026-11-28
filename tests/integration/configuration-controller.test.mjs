@@ -34,7 +34,7 @@ import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { bindRole } from "../helpers/iam-grants.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -152,11 +152,12 @@ async function sharedApp(withCompute, withConfiguration, computeImplementation) 
     }),
   });
   const auditSink = forwarder({}, () => running.auditSink);
+  const platformState = new InMemoryPlatformState({ auditSink });
   let controller;
   const app = createControllerApp({
     createController(installation) {
       controller = new OpenClawController(installation, {
-        state: new InMemoryPlatformState({ auditSink }),
+        state: platformState,
         recordOperations: false,
       });
       return controller;
@@ -217,7 +218,7 @@ async function sharedApp(withCompute, withConfiguration, computeImplementation) 
     body: { name: "Configuration integration" },
   });
   assert.equal(installed.status, 201);
-  return { app, principal, identities, roles, bindings, controller, grant };
+  return { app, principal, identities, roles, bindings, controller, platformState, grant };
 }
 
 let namespaces = 0;
@@ -2815,6 +2816,58 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       const preset = JSON.parse(await readFile(file, "utf8"));
       const saved = await request(context.app, "POST", context.presets, { body: preset });
       assert.equal(saved.status, 201, `${file}: ${JSON.stringify(saved.body)}`);
+      if (file.pathname.endsWith("/slack-team-preset.json")) {
+        const modelSecretId = `sec_${randomUUID()}`;
+        const slackAppSourceId = `cs_${randomUUID()}`;
+        const slackBotSourceId = `cs_${randomUUID()}`;
+        // Preview uses the same renderer as the Console. It must retain model Secret
+        // authentication while producing explicit Source delivery bindings for Slack.
+        const preview = renderPresetTemplate(saved.body.data.template, {
+          name: "Slack team",
+          namespaceId: context.namespace.id,
+          model: "gpt-5",
+          modelSecretId,
+          slackAppSourceId,
+          slackBotSourceId,
+          slackOwnerId: "U0123456789",
+          slackChannelId: "C0123456789",
+        });
+        assert.deepEqual(preview.agent.harnessAuth.source, {
+          kind: "secret",
+          namespaceId: context.namespace.id,
+          id: modelSecretId,
+        });
+        assert.deepEqual(preview.configuration.secretBindings, {
+          SLACK_APP_TOKEN: {
+            source: {
+              kind: "credential_source",
+              namespaceId: context.namespace.id,
+              id: slackAppSourceId,
+            },
+            delivery: { type: "env" },
+          },
+          SLACK_BOT_TOKEN: {
+            source: {
+              kind: "credential_source",
+              namespaceId: context.namespace.id,
+              id: slackBotSourceId,
+            },
+            delivery: { type: "env" },
+          },
+        });
+        // Preset save still refuses a Source paired with a Secret ID or a foreign Namespace.
+        for (const [label, field, value] of [
+          ["wrong-id-kind", "id", modelSecretId],
+          ["foreign-namespace", "namespaceId", `ns_${randomUUID()}`],
+        ]) {
+          const invalid = structuredClone(preset);
+          invalid.name = `slack-team-${label}`;
+          invalid.template.configuration.secretBindings.SLACK_BOT_TOKEN.source[field] = value;
+          const refused = await request(context.app, "POST", context.presets, { body: invalid });
+          assert.equal(refused.status, 400, `${label}: ${JSON.stringify(refused.body)}`);
+          assert.equal(refused.body.error.code, "INVALID_REQUEST");
+        }
+      }
     }
   });
 });

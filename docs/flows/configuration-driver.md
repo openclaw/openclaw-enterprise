@@ -1,23 +1,20 @@
 ---
 created: 2026-08-19
-updated: "2026-11-20"
-last_updated_session: "authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea"
+updated: "2026-11-26"
+last_updated_session: "authoring-run/a081fbd2-5a18-464b-a8e2-3c90fbbda8ce"
 ---
 
 # Configuration Driver and Agent Revision Flow
 
 ## Overview
 
-Authenticated API requests create, read, replace, or delete exact Namespace-owned
-native OpenClaw configuration documents through the selected bundled or installed
-Configuration Driver. The bundled Kubernetes implementation persists each
+Authenticated API requests manage Namespace-owned native OpenClaw configuration documents through the selected Configuration Driver. The bundled Kubernetes implementation persists each
 document in a tenant-owned ConfigMap.
 Each Configuration requires immutable `kind: "agent"` and a server-managed
 generation; documents preserve unresolved inline SecretRefs without interpreting
 them. Agent deployment authorizes the separate Secret bindings, applies any
 selected Sandbox Driver transformation, and saves the validated values in the
-Agent revision. Configuration identity, kind, generation, and Secret
-references are recorded separately. This flow stops when OCC persists that
+Agent revision. Identity, generation, and exact credential references are recorded separately. This flow stops when OCC persists that
 version and hands off workload reconciliation; the selected Compute Driver
 then owns the Agent gateway, while worker execution and secret resolution remain
 outside this flow's scope.
@@ -229,6 +226,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 00:44: Include Gateway Source references and selected owner in Configuration admission. (authoring-run/a081fbd2-5a18-464b-a8e2-3c90fbbda8ce - b120ae9c861223e56109dd28f477efa28866ad4d)
 
 - 2026-11-20 16:35: Update OCC Configuration operation source pointers. (authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea - 81cdb33c3d2d2ba64dfd783b0216b5dbcfebe395)
 - 2026-11-13 12:50: Retain validated Configuration and Driver identities. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)

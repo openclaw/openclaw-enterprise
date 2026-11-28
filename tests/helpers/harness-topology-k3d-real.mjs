@@ -19,6 +19,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
@@ -27,7 +28,7 @@ import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
   signInWithEmailPassword,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.ts";
 import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
@@ -38,6 +39,7 @@ import {
 import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
 import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
+import { protectedText } from "./qa-secrets.ts";
 import {
   assertGatewayModelTurn,
   createKubernetesInstallationConfiguration,
@@ -61,7 +63,7 @@ import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.ts";
-import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
+import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.ts";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -145,11 +147,61 @@ const {
   databaseUrl,
 });
 
-async function validatePrerequisites() {
+// Cases in one file share an Installation and its Source registrations. Keep the
+// private store until every case has stopped its controllers and retired its Pods.
+const installationSecretNamespaces = new Set();
+after(async () => {
+  for (const namespace of installationSecretNamespaces) {
+    await kubectl(
+      "delete",
+      "namespace",
+      namespace,
+      "--ignore-not-found=true",
+      "--wait=true",
+      "--timeout=120s",
+    );
+  }
+});
+
+/**
+ * Resolve the exact model credential before creating Kubernetes resources. The credential
+ * remains in a closure so fixture diagnostics and object inspection cannot enumerate it.
+ * @param {"embedded" | "dedicated"} mode
+ * @param {string} harnessId
+ * @param {{method: "codex_pat", tokenFile: string} | undefined} selection
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+async function resolveTopologyModelAuthentication(mode, harnessId, selection, env = process.env) {
+  if (selection !== undefined) {
+    assert.ok(selection?.method === "codex_pat", "Unsupported topology model authentication.");
+    assert.ok(
+      mode === "dedicated" && harnessId === "codex",
+      "Codex PAT authentication requires a dedicated Codex Harness.",
+    );
+    assert.ok(
+      env.OCC_TEST_CODEX_OPENAI_BASE_URL === undefined,
+      "Codex PAT authentication cannot select an OpenAI API-key endpoint.",
+    );
+    const value = await protectedText(selection.tokenFile, "Codex service-account PAT");
+    return Object.freeze({
+      method: "codex_pat",
+      environmentName: "CODEX_ACCESS_TOKEN",
+      credential: () => value,
+    });
+  }
+  const value = env.OPENAI_API_KEY;
   assert.ok(
-    process.env.OPENAI_API_KEY,
+    value,
     "OPENAI_API_KEY is required: an actual production provider turn cannot be mocked or skipped.",
   );
+  return Object.freeze({
+    method: "api_key",
+    environmentName: "OPENAI_API_KEY",
+    credential: () => value,
+  });
+}
+
+async function validatePrerequisites() {
   if (process.env.OCC_TEST_GATEWAY_ROUTING_REAL === "1") {
     assert.match(
       controllerImage ?? "",
@@ -447,6 +499,7 @@ async function startInClusterControllers(
     authBaseURL,
     controller,
     controllerImage: selectedControllerImage = controllerImage,
+    controlPlaneAuditEnabled,
     databaseUrl: selectedDatabaseUrl = databaseUrl,
     controllerPort,
     databaseAddress,
@@ -455,6 +508,7 @@ async function startInClusterControllers(
     nativeAdminEnabled,
     oidc,
     platformNamespace,
+    installationSecretNamespace,
     workerOptions,
     workspaceGateway,
   },
@@ -482,6 +536,7 @@ async function startInClusterControllers(
       authSecret,
       controller,
       controllerImage: selectedControllerImage,
+      controlPlaneAuditEnabled,
       databaseAddress,
       databaseServiceName,
       inClusterDatabaseUrl,
@@ -497,6 +552,7 @@ async function startInClusterControllers(
       nativeAdminDomain,
       nativeAdminEnabled,
       platformNamespace,
+      installationSecretNamespace,
       workerOptions,
       workspaceGateway,
     });
@@ -782,8 +838,9 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     configuration.drivers.compute.configuration.gatewayRouting = options.gatewayRouting;
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
-  if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channelEgress = slack.channelEgress;
+  const channelEgress = slack?.channelEgress ?? options.channelEgress;
+  if (channelEgress !== undefined) {
+    configuration.drivers.compute.configuration.runtime.channelEgress = channelEgress;
   }
   return configuration;
 }
@@ -826,7 +883,7 @@ function assertNoSecretMaterial(value, secrets, description) {
 
 function secretApiProtectedValues(topology, extra = []) {
   return [
-    process.env.OPENAI_API_KEY,
+    topology.protectedModelCredential(),
     topology.secretApi?.initialProbeValue,
     topology.secretApi?.initialPeerProbeValue,
     topology.secretApi?.initialSharedProbeValue,
@@ -904,6 +961,23 @@ async function createApiSecret(request, namespaceId, name, value) {
   return response.data;
 }
 
+async function createApiStaticSource(request, namespaceId, name, value) {
+  const response = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+    name,
+    type: "static",
+    secret: value,
+  });
+  assertNoSecretMaterial(response, [value], "Credential Source create must not return its value");
+  assert.equal(response.status, 201, `Credential Source create failed (${response.error?.code})`);
+  assert.equal(response.data.state, "ready");
+  assert.deepEqual(response.data.ref, {
+    kind: "credential_source",
+    namespaceId,
+    id: response.data.id,
+  });
+  return response.data;
+}
+
 async function updateApiSecret(request, namespaceId, secret, value) {
   const response = await request("PATCH", `/namespaces/${namespaceId}/secrets/${secret.id}`, {
     value,
@@ -929,23 +1003,29 @@ async function expectApiFailureWithoutSecret(request, method, path, body, secret
   return response;
 }
 
-async function grantSecretOperate(pool, namespaceId, subjectId, secretId) {
-  const roleId = `role-secret-operate-${randomUUID()}`;
-  const bindingId = `binding-secret-operate-${randomUUID()}`;
+async function grantCredentialOperate(
+  pool,
+  namespaceId,
+  subjectId,
+  resourceId,
+  resourceKind = "secret",
+) {
+  const roleId = `role-${resourceKind}-operate-${randomUUID()}`;
+  const bindingId = `binding-${resourceKind}-operate-${randomUUID()}`;
   await pool.query(
     "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, $2, $3, $4::jsonb)",
     [
       roleId,
       namespaceId,
-      "Secret operate",
-      JSON.stringify([{ action: "operate", resourceKind: "secret" }]),
+      `${resourceKind} operate`,
+      JSON.stringify([{ action: "operate", resourceKind }]),
     ],
   );
   await pool.query(
     `INSERT INTO occ.iam_access_bindings
      (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-     VALUES ($1, $2, $3, $4, 'secret', $5)`,
-    [bindingId, namespaceId, subjectId, roleId, secretId],
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [bindingId, namespaceId, subjectId, roleId, resourceKind, resourceId],
   );
 }
 
@@ -967,41 +1047,43 @@ async function createDefaultUserRequest({ adminRequest, requestFactory }) {
 }
 
 /**
- * The caller's deploy gave the Agent's ServicePrincipal operate on exactly the Secret the caller
- * can operate, audited as the caller. A Default user can operate it because it created it and
- * owns it, so its Owner bindings on the Agent and Secret are checked too.
+ * The caller's deploy gave the Agent's ServicePrincipal operate on exactly the credential the
+ * caller can operate, audited as the caller. A Default user's Owner bindings are checked too.
  */
-async function assertDeployGrant(pool, { namespaceId, agent, secretId, callerId, owner }) {
+async function assertDeployGrant(
+  pool,
+  { namespaceId, agent, resourceId, callerId, owner, resourceKind = "secret" },
+) {
   if (owner) {
     const owned = await pool.query(
       `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
         WHERE namespace_id = $1 AND identity_subject_id = $2 AND role_id = 'role_config_owner'
           AND resource_id = ANY($3::text[])
         ORDER BY resource_kind`,
-      [namespaceId, callerId, [agent.id, secretId]],
+      [namespaceId, callerId, [agent.id, resourceId]],
     );
     assert.deepEqual(owned.rows, [
       { resource_kind: "agent", resource_id: agent.id },
-      { resource_kind: "secret", resource_id: secretId },
+      { resource_kind: resourceKind, resource_id: resourceId },
     ]);
   }
   const grant = await pool.query(
     `SELECT identity_subject_id, resource_kind, resource_id FROM occ.iam_access_bindings
       WHERE id = $1`,
-    [`binding_${agent.id}_${secretId}_operate`],
+    [`binding_${agent.id}_${resourceId}_operate`],
   );
   assert.deepEqual(grant.rows, [
     {
       identity_subject_id: agent.servicePrincipalId,
-      resource_kind: "secret",
-      resource_id: secretId,
+      resource_kind: resourceKind,
+      resource_id: resourceId,
     },
   ]);
   const audit = await pool.query(
     `SELECT actor_id, details->>'agentId' AS agent_id FROM occ.audit_events
       WHERE action = 'openclaw.iam.access_bindings.create' AND resource_id = $1
         AND details->>'reason' = 'agent_deploy'`,
-    [secretId],
+    [resourceId],
   );
   assert.deepEqual(audit.rows, [{ actor_id: callerId, agent_id: agent.id }]);
 }
@@ -1013,6 +1095,7 @@ async function createSecretAssignmentCallerRequest({
   installation,
   namespaceId,
   baseURL,
+  sourceCredentials = false,
 }) {
   const identifier = randomUUID();
   const credentials = {
@@ -1046,6 +1129,9 @@ async function createSecretAssignmentCallerRequest({
       resourceKind: "agent",
     })),
     { action: "read", resourceKind: "agent_revision" },
+    ...(sourceCredentials
+      ? ["create", "read"].map((action) => ({ action, resourceKind: "credential_source" }))
+      : []),
   ];
 
   const client = await pool.connect();
@@ -1280,6 +1366,7 @@ function registerProductionTopologyCleanups(context, operations) {
  * @param {{appToken: string, botToken: string, [key: string]: unknown} | undefined} [slack]
  */
 async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
+  assert.ok(slack === undefined || mode === "dedicated", "Slack requires a dedicated Gateway.");
   // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
   const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
   const controllerImage =
@@ -1289,6 +1376,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const databaseUrl = options.databaseUrl ?? process.env.OCC_TEST_DATABASE_URL;
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
+  const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
   if (mode === "dedicated") {
     assert.match(
       controllerImage ?? "",
@@ -1296,6 +1384,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       "Dedicated storage requires the imported controller image for node enrollment through routing.",
     );
   }
+  const modelAuthentication = await resolveTopologyModelAuthentication(
+    mode,
+    harnessId,
+    options.modelAuthentication,
+  );
+  const modelCredential = modelAuthentication.credential();
   const kubeconfig = await validatePrerequisites();
   const identifier = randomUUID();
   let credentials =
@@ -1413,23 +1507,31 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
   ]);
 
-  if (slack !== undefined) {
-    assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
-    Object.assign(
-      slack,
-      await installManagedChannelEgressFixture({
-        ...(options.channelEgressCapacity === undefined
-          ? {}
-          : { listenerCapacity: options.channelEgressCapacity }),
-        controller,
-        namespace: platformNamespace,
-        controllerImage,
-        workspaceGateway,
-        resource,
-        kubectl,
-        applyManifest,
-      }),
-    );
+  let managedChannelEgress;
+  if (slack !== undefined || options.channelEgress !== undefined) {
+    assert.ok(workspaceGateway, "Channel egress topology requires the production Gateway");
+    const installed = await installManagedChannelEgressFixture({
+      ...(options.channelEgressCapacity === undefined
+        ? {}
+        : { listenerCapacity: options.channelEgressCapacity }),
+      ...(options.channelEgress?.upstreamProxies === undefined
+        ? {}
+        : { upstreamProxies: options.channelEgress.upstreamProxies }),
+      ...(options.channelEgress?.proxyTrust === undefined
+        ? {}
+        : { proxyTrust: options.channelEgress.proxyTrust }),
+      controller,
+      namespace: platformNamespace,
+      controllerImage,
+      workspaceGateway,
+      resource,
+      kubectl,
+      applyManifest,
+    });
+    managedChannelEgress = installed.channelEgress;
+    if (slack !== undefined) {
+      Object.assign(slack, installed);
+    }
   }
   const directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
   const startupPath = join(directory, "api-installation.yaml");
@@ -1445,8 +1547,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
+          ...(managedChannelEgress === undefined ? {} : { channelEgress: managedChannelEgress }),
         },
   );
+  if (slack !== undefined) {
+    workerConfiguration.drivers.token_service = { id: "occ", configuration: {} };
+  }
   // Cases share an Installation, so keep its policy after the Default user case
   // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
   workerConfiguration.iam = defaultUsersIAM();
@@ -1658,6 +1764,46 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     createdFreshInstallation = true;
   }
 
+  const installationSecretNamespace =
+    slack !== undefined
+      ? `oce-installation-secrets-${hash(`${new URL(databaseUrl).pathname}/${activeInstallation.id}`)}`
+      : undefined;
+  if (installationSecretNamespace !== undefined) {
+    const firstUse = !installationSecretNamespaces.has(installationSecretNamespace);
+    if (firstUse) {
+      await kubectl("create", "namespace", installationSecretNamespace);
+      installationSecretNamespaces.add(installationSecretNamespace);
+    }
+    // Match the production chart's private custody roles. Each case gets its
+    // own bindings because its controller ServiceAccounts live in a new Namespace.
+    for (const [component, account, verbs] of [
+      ["api", controller.apiAccount, "get,create,update,delete"],
+      ["worker", controller.account, "get,delete"],
+    ]) {
+      const role = `occ-${component}-installation-secrets`;
+      if (firstUse) {
+        await kubectl(
+          "create",
+          "role",
+          role,
+          "--namespace",
+          installationSecretNamespace,
+          `--verb=${verbs}`,
+          "--resource=secrets",
+        );
+      }
+      await kubectl(
+        "create",
+        "rolebinding",
+        `${role}-${hash(identifier)}`,
+        "--namespace",
+        installationSecretNamespace,
+        `--role=${role}`,
+        `--serviceaccount=${platformNamespace}:${account}`,
+      );
+    }
+  }
+
   if (oidc !== undefined) {
     // External sign-in activates the guarded profile with a real, existing recovery
     // account. Its account ID is distinct from the IAM principal used for grants.
@@ -1679,11 +1825,13 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       databaseAddress,
       controllerPort: options.controllerPort,
+      controlPlaneAuditEnabled: options.controlPlaneAuditEnabled,
       events,
       nativeAdminDomain: nativeAdmin.domain,
       nativeAdminEnabled: nativeAdmin.enabled,
       oidc,
       platformNamespace,
+      installationSecretNamespace,
       workerOptions,
       workspaceGateway,
     });
@@ -1728,7 +1876,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       const response = await controllerRequest(...args);
       assertNoSecretMaterial(
         response,
-        [process.env.OPENAI_API_KEY, workspaceGateway.apiKey],
+        [modelCredential, workspaceGateway.apiKey],
         "workspace-files controller response must not expose credentials",
       );
       return response;
@@ -1870,6 +2018,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   });
 
   let secretApi;
+  let slackSources;
   {
     const secretAssignmentCaller =
       options.defaultUser === true
@@ -1881,40 +2030,22 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
             installation: activeInstallation,
             namespaceId,
             baseURL: controllerAuthBaseURL,
+            sourceCredentials: slack !== undefined,
           });
     request = secretAssignmentCaller.request;
     secretAssignmentPrincipalId = secretAssignmentCaller.principalId;
 
     // Namespace-scoped Secrets are provisioned once the Namespace is ready, before any Agent exists.
-    const modelSecret = await createApiSecret(
-      request,
-      namespaceId,
-      "model-key",
-      process.env.OPENAI_API_KEY,
-    );
+    const modelSecret = await createApiSecret(request, namespaceId, "model-key", modelCredential);
     secretApi = { assignmentPrincipalId: secretAssignmentPrincipalId, model: modelSecret };
     if (slack !== undefined) {
       const slackAppValue = slack.appToken;
       const slackBotValue = slack.botToken;
-      const slackAppSecret = await createApiSecret(
-        request,
-        namespaceId,
-        "slack-app-token",
-        slackAppValue,
-      );
-      const slackBotSecret = await createApiSecret(
-        request,
-        namespaceId,
-        "slack-bot-token",
-        slackBotValue,
-      );
-      secretApi = {
-        ...secretApi,
-        slackApp: slackAppSecret,
-        slackBot: slackBotSecret,
-        slackAppValue,
-        slackBotValue,
+      slackSources = {
+        app: await createApiStaticSource(request, namespaceId, "slack-app-token", slackAppValue),
+        bot: await createApiStaticSource(request, namespaceId, "slack-bot-token", slackBotValue),
       };
+      Object.assign(secretApi, { slackAppValue, slackBotValue });
     }
     if (includeSecretProbes) {
       const initialProbeValue = `secret-rotation-initial-${randomUUID()}`;
@@ -1990,9 +2121,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         `/namespaces/${namespaceId}/agents/${ungranted.agent.id}`,
         {
           configurationId: ungranted.agent.configurationId,
-          harnessAuth: { method: "api_key", source: unownedSecret.ref },
+          harnessAuth: { method: modelAuthentication.method, source: unownedSecret.ref },
         },
-        [process.env.OPENAI_API_KEY, unownedValue],
+        [modelCredential, unownedValue],
         "Harness auth assignment without exact actor Secret operate",
       );
       assert.equal(actorDenied.status, 403);
@@ -2001,8 +2132,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       await Promise.all(
         [
           secretApi.model,
-          secretApi.slackApp,
-          secretApi.slackBot,
           secretApi.probe,
           secretApi.peerProbe,
           secretApi.sharedProbe,
@@ -2011,13 +2140,37 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         ]
           .filter(Boolean)
           .map((secret) =>
-            grantSecretOperate(observerPool, namespaceId, secretAssignmentPrincipalId, secret.id),
+            grantCredentialOperate(
+              observerPool,
+              namespaceId,
+              secretAssignmentPrincipalId,
+              secret.id,
+            ),
           ),
       );
+      if (slackSources !== undefined) {
+        await Promise.all(
+          Object.values(slackSources).map((source) =>
+            grantCredentialOperate(
+              observerPool,
+              namespaceId,
+              secretAssignmentPrincipalId,
+              source.id,
+              "credential_source",
+            ),
+          ),
+        );
+      }
     }
   }
 
-  const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
+  let slackBindings = {};
+  if (slack !== undefined) {
+    slackBindings = {
+      SLACK_APP_TOKEN: secretBinding(slackSources.app.ref),
+      SLACK_BOT_TOKEN: secretBinding(slackSources.bot.ref),
+    };
+  }
   const secretBindings = {
     ...(includeSecretProbes
       ? {
@@ -2025,12 +2178,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           [sharedSecretRotationProbe]: secretBinding(secretApi.sharedProbe.ref),
         }
       : {}),
-    ...(slack === undefined
-      ? {}
-      : {
-          SLACK_APP_TOKEN: secretBinding(secretApi.slackApp.ref),
-          SLACK_BOT_TOKEN: secretBinding(secretApi.slackBot.ref),
-        }),
+    ...slackBindings,
   };
   const selectedNativeOptions =
     workspaceGateway === undefined
@@ -2081,6 +2229,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     mode,
     secretApi.model.ref,
     secretBindings,
+    modelAuthentication.method,
   );
   const modelReference = template.variables.model.default;
   const presetsPath = `/namespaces/${namespaceId}/presets`;
@@ -2092,6 +2241,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const presetPath = `${presetsPath}/${preset.data.id}`;
   const selectedPreset = await adminRequest("GET", presetPath);
   assert.equal(selectedPreset.status, 200, JSON.stringify(selectedPreset.error));
+  assert.equal(selectedPreset.data.template.agent.harnessAuth.method, modelAuthentication.method);
   const launch = renderPresetTemplate(selectedPreset.data.template, {
     name: `production-${mode}-${randomUUID()}`,
     secretId: secretApi.model.ref.id,
@@ -2172,7 +2322,10 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       configurationId: configuration.data.id,
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
-    assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
+    assert.deepEqual(agent.data.harnessAuth, {
+      method: modelAuthentication.method,
+      source: secretApi.model.ref,
+    });
     await assertPresetIndependent(configuration);
     const provisionedGatewayPassword = await provisionAgentTransportSecret(
       directory,
@@ -2208,13 +2361,16 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       version: "1.0.0",
       mode,
       overrides: {},
-      configuration: {
-        modelProvider: {
-          protocol: fixtureProvider.protocol,
-          baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
-          supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
-        },
-      },
+      configuration:
+        modelAuthentication.method === "codex_pat"
+          ? {}
+          : {
+              modelProvider: {
+                protocol: fixtureProvider.protocol,
+                baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
+                supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
+              },
+            },
     }),
     "deployed Harness descriptor must match the fixture's configured or default model provider",
   );
@@ -2225,7 +2381,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     ["AgentRevision", deployed],
   ]) {
     assert.equal(
-      JSON.stringify(response).includes(process.env.OPENAI_API_KEY),
+      JSON.stringify(response).includes(modelCredential),
       false,
       `the production ${description} response must never contain provider credential bytes`,
     );
@@ -2248,19 +2404,25 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   // Guided provisioning deploys as the administrator through the worker, which writes its own
   // grants; only the caller's own deploy writes these.
   if (!options.provisionNativeAdmin) {
-    for (const secret of [
-      secretApi.model,
-      secretApi.slackApp,
-      secretApi.slackBot,
-      secretApi.probe,
-      secretApi.sharedProbe,
-    ].filter(Boolean)) {
+    for (const secret of [secretApi.model, secretApi.probe, secretApi.sharedProbe].filter(
+      Boolean,
+    )) {
       await assertDeployGrant(observerPool, {
         namespaceId,
         agent: persistedAgent,
-        secretId: secret.ref.id,
+        resourceId: secret.ref.id,
         callerId: secretAssignmentPrincipalId,
         owner: options.defaultUser === true,
+      });
+    }
+    for (const source of Object.values(slackSources ?? {})) {
+      await assertDeployGrant(observerPool, {
+        namespaceId,
+        agent: persistedAgent,
+        resourceId: source.id,
+        callerId: secretAssignmentPrincipalId,
+        owner: options.defaultUser === true,
+        resourceKind: "credential_source",
       });
     }
   }
@@ -2274,12 +2436,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.deepEqual(observedRevision.data.secretBindings, secretApi.configuration.secretBindings);
   }
   assert.equal(
-    JSON.stringify(events).includes(process.env.OPENAI_API_KEY),
+    JSON.stringify(events).includes(modelCredential),
     false,
     "production worker evidence must never contain provider credential bytes",
   );
   assert.equal(
-    JSON.stringify(await resources("configmaps", placement)).includes(process.env.OPENAI_API_KEY),
+    JSON.stringify(await resources("configmaps", placement)).includes(modelCredential),
     false,
     "production ConfigMaps must never contain provider credential bytes",
   );
@@ -2327,43 +2489,46 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   assert.ok(gatewayPod, "production execution must start the exact Agent-owned real gateway");
   const harnessPod = pods.find((pod) => workloadRole(pod) === "agent");
   const modelStorage = await storedSecret(observerPool, namespaceId, secretApi.model.id);
-  await assertModelRuntimeProjection(harnessPod ?? gatewayPod, modelStorage);
-  if (mode === "dedicated") {
+  await assertModelRuntimeProjection(
+    harnessPod ?? gatewayPod,
+    modelStorage,
+    modelAuthentication.environmentName,
+  );
+  if (modelAuthentication.method === "codex_pat") {
+    assert.ok(harnessPod, "A Codex PAT deployment requires its dedicated Harness Pod.");
+    const harnessEnvironment =
+      harnessPod.spec.containers.find(({ name }) => name === "agent")?.env ?? [];
+    assert.equal(harnessEnvironment.filter(({ name }) => name === "CODEX_ACCESS_TOKEN").length, 1);
     assert.equal(
-      gatewayPod.spec.containers
-        .find(({ name }) => name === "gateway")
-        ?.env?.some(({ name }) => name === "OPENAI_API_KEY") ?? false,
-      false,
+      harnessEnvironment.find(({ name }) => name === "CODEX_LOGIN_MODE")?.value,
+      "codex_pat",
+    );
+    assert.ok(
+      ![...(harnessPod.spec.containers ?? []), ...(harnessPod.spec.initContainers ?? [])].some(
+        (container) => (container.env ?? []).some(({ name }) => name === "OPENAI_API_KEY"),
+      ),
+      "A Codex PAT Harness must not receive an OpenAI API key.",
+    );
+  }
+  if (mode === "dedicated") {
+    assert.ok(
+      ![...(gatewayPod.spec.containers ?? []), ...(gatewayPod.spec.initContainers ?? [])].some(
+        (container) =>
+          (container.env ?? []).some(({ name }) =>
+            ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name),
+          ),
+      ),
+      "The Gateway must not receive a Harness model credential.",
     );
   }
   if (slack !== undefined) {
-    const slackAppStorage = await storedSecret(observerPool, namespaceId, secretApi.slackApp.id);
-    const slackBotStorage = await storedSecret(observerPool, namespaceId, secretApi.slackBot.id);
     const gatewayContainer = gatewayPod.spec.containers[0];
-    for (const [name, source] of [
-      ["SLACK_APP_TOKEN", slackAppStorage],
-      ["SLACK_BOT_TOKEN", slackBotStorage],
-    ]) {
+    for (const name of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
       const ref = gatewayContainer.env.find((entry) => entry.name === name).valueFrom.secretKeyRef;
-      if (mode === "dedicated") {
-        assert.equal(source.backendRef.namespaceName, gatewayPlacement);
-        assertRequiredSecretKeyRef(ref, {
-          name: source.backendRef.name,
-          key: source.backendRef.key,
-        });
-      } else {
-        const projected = await resource("secret", ref.name, gatewayPlacement);
-        const original = await resource(
-          "secret",
-          source.backendRef.name,
-          source.backendRef.namespaceName,
-        );
-        assert.equal(
-          projected.data[ref.key] === original.data[source.backendRef.key],
-          true,
-          "only the admitted channel key must reach the embedded runtime",
-        );
-      }
+      assertRequiredSecretKeyRef(ref, {
+        name: `gateway-secrets-${hash(agent.data.id)}-${hash(deployed.data.id)}`,
+        key: name,
+      });
     }
     if (harnessPod !== undefined) {
       assert.equal(
@@ -2400,7 +2565,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     "the admitted revision must retain its original model reference",
   );
   const expectedGatewayModel =
-    mode === "dedicated" && harnessId === "codex"
+    mode === "dedicated" && harnessId === "codex" && modelAuthentication.method === "api_key"
       ? `codex/openai-compatible/${providerModel}`
       : modelReference;
   await assertGatewayEffectiveDefaultModel(
@@ -2469,11 +2634,14 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   return {
     mode,
     harnessId: topologyHarnessId,
+    modelAuthenticationMethod: modelAuthentication.method,
+    protectedModelCredential: modelAuthentication.credential,
     placement,
     gatewayPlacement,
     namespaceId,
     installation: activeInstallation,
     platformNamespace,
+    channelEgress: managedChannelEgress,
     gatewayImage,
     workspaceGateway,
     get controllerApiPod() {
@@ -2530,11 +2698,13 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         databaseUrl,
         databaseAddress,
         controllerPort: port,
+        controlPlaneAuditEnabled: options.controlPlaneAuditEnabled,
         events,
         nativeAdminDomain: nativeAdmin.domain,
         nativeAdminEnabled: nativeAdmin.enabled,
         oidc,
         platformNamespace,
+        installationSecretNamespace,
         workerOptions,
         workspaceGateway,
       });
@@ -2582,6 +2752,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     },
     observerPool,
     secretApi,
+    slackSources,
   };
 }
 
@@ -2732,7 +2903,7 @@ async function assertActualModelTurn(topology) {
       gatewayUrl: topology.gatewayUrl,
       gatewayPassword: topology.gatewayPassword,
       nonce,
-      secrets: [process.env.OPENAI_API_KEY],
+      secrets: [topology.protectedModelCredential()],
     });
     if (topology.mode === "dedicated" && process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
       // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
@@ -2852,7 +3023,7 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology, options =
   await Promise.all(
     [topology.secretApi.assignmentPrincipalId, topology.persistedAgent.servicePrincipalId].map(
       (principalId) =>
-        grantSecretOperate(topology.observerPool, namespaceId, principalId, invalidSecret.id),
+        grantCredentialOperate(topology.observerPool, namespaceId, principalId, invalidSecret.id),
     ),
   );
   const rebound = await topology.request("PATCH", agentPath, {
@@ -4306,6 +4477,10 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     // There is deliberately no second chat.send: only native startup recovery can
     // admit the continuation whose final answer this observer waits for.
     const description = `automatic interrupted-turn completion after ${replacement}`;
+    const countMessages = (history, role, text) =>
+      history.messages.filter(
+        (message) => message.role === role && messageText(message).trim() === text,
+      ).length;
     let lastObservation = () => "history=unavailable";
     const recovered = await waitFor(
       () => `${description} (${lastObservation()})`,
@@ -4318,10 +4493,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         const { session } = await gatewayCall(topology, "sessions.describe", {
           key: interrupted.sessionKey,
         });
-        const hasAnswer = (nonce) =>
-          history.messages.some(
-            (message) => message.role === "assistant" && messageText(message).trim() === nonce,
-          );
+        const hasAnswer = (nonce) => countMessages(history, "assistant", nonce) > 0;
         lastObservation = () => {
           const answered = hasAnswer(interrupted.nonce);
           const restarted = history.messages.some(
@@ -4330,57 +4502,80 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
           const queued = queuedNonce === undefined ? "none" : hasAnswer(queuedNonce);
           const active =
             typeof session.hasActiveRun === "boolean" ? session.hasActiveRun : "unknown";
-          return `active=${active} restart=${restarted} answer=${answered} queuedAnswer=${queued}`;
+          const sameSession = history.sessionId === interrupted.sessionId;
+          return `active=${active} sameSession=${sameSession} restart=${restarted} answer=${answered} queuedAnswer=${queued}`;
         };
         return !session.hasActiveRun && hasAnswer(interrupted.nonce) ? history : undefined;
       },
     );
-    assert.equal(
-      recovered.sessionId,
-      interrupted.sessionId,
-      "recovery must retain session identity",
-    );
-    assert.equal(
-      recovered.messages.filter(
-        (message) => message.role === "user" && messageText(message).trim() === interrupted.prompt,
-      ).length,
-      1,
-      "recovery must not resubmit the original user input",
-    );
-    assert.equal(
-      recovered.messages.filter((message) => message.__openclaw?.continuation?.source === "restart")
-        .length,
-      1,
-      "native startup must admit one restart continuation",
-    );
-    assert.equal(
-      recovered.messages.filter(
-        (message) =>
-          message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
-      ).length,
-      1,
-      "the interrupted task must deliver one final result",
-    );
-    assert.equal(
-      await readFileInPod(
+    async function assertRecoveredTurn(history) {
+      assert.ok(
+        history.sessionId === interrupted.sessionId,
+        "recovery must retain session identity",
+      );
+      assert.equal(
+        countMessages(history, "user", interrupted.prompt),
+        1,
+        "recovery must not resubmit the original user input",
+      );
+      assert.equal(
+        history.messages.filter((message) => message.__openclaw?.continuation?.source === "restart")
+          .length,
+        1,
+        "native startup must admit one restart continuation",
+      );
+      assert.equal(
+        countMessages(history, "assistant", interrupted.nonce),
+        1,
+        "the interrupted task must deliver one final result",
+      );
+      const ledgerContents = await readFileInPod(
         topology.placement,
         topology.harnessPod.metadata.name,
         interrupted.ledger,
-      ),
-      "started\n",
-      "continuation must inspect the retained effect without repeating it",
-    );
+      );
+      assert.ok(
+        ledgerContents === "started\n",
+        "continuation must inspect the retained effect without repeating it",
+      );
+    }
+    await assertRecoveredTurn(recovered);
     if (queuedNonce !== undefined) {
       // Stop shuts down the workload; deployment admits eligible native continuation.
       // The follow-up was accepted before Stop and must not require another user send.
-      await assertConversation(topology, interrupted.sessionKey, queuedNonce);
-      finished.push([
+      await waitForGatewayHistory(
+        topology,
         interrupted.sessionKey,
-        await gatewayCall(topology, "chat.history", {
-          sessionKey: interrupted.sessionKey,
-          limit: 100,
-        }),
-      ]);
+        "the queued reply to finish after explicit stop",
+        async (history) => {
+          if (countMessages(history, "assistant", queuedNonce) === 0) {
+            return undefined;
+          }
+          const { session } = await gatewayCall(topology, "sessions.describe", {
+            key: interrupted.sessionKey,
+          });
+          return session.hasActiveRun === false ? history : undefined;
+        },
+      );
+      const finalHistory = await gatewayCall(topology, "chat.history", {
+        sessionKey: interrupted.sessionKey,
+        limit: 100,
+      });
+      // A replay during follow-up processing can invalidate the earlier recovery check.
+      await assertRecoveredTurn(finalHistory);
+      assert.equal(
+        finalHistory.messages.filter(
+          (message) => message.role === "user" && messageText(message).includes(queuedNonce),
+        ).length,
+        1,
+        "the recovered session must contain one queued user input",
+      );
+      assert.equal(
+        countMessages(finalHistory, "assistant", queuedNonce),
+        1,
+        "the queued turn must deliver one exact result",
+      );
+      finished.push([interrupted.sessionKey, finalHistory]);
     } else {
       finished.push([interrupted.sessionKey, recovered]);
     }
@@ -5354,14 +5549,14 @@ function assertRequiredSecretKeyRef(actual, expected, message) {
   assert.equal(optional ?? false, false, message);
 }
 
-async function assertModelRuntimeProjection(pod, storage) {
-  const ref = pod.spec.containers[0].env.find(({ name }) => name === "OPENAI_API_KEY")?.valueFrom
+async function assertModelRuntimeProjection(pod, storage, environmentName = "OPENAI_API_KEY") {
+  const ref = pod.spec.containers[0].env.find(({ name }) => name === environmentName)?.valueFrom
     ?.secretKeyRef;
   const agentId = pod.metadata.labels["openclaw.dev/agent"];
   const revisionId = pod.metadata.labels["openclaw.dev/revision"];
   assertRequiredSecretKeyRef(ref, {
     name: `harness-secrets-${hash(agentId)}-${hash(revisionId)}`,
-    key: "OPENAI_API_KEY",
+    key: environmentName,
   });
   const [runtime, source] = await Promise.all([
     resource("secret", ref.name, pod.metadata.namespace),
@@ -5512,7 +5707,7 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     "embedded",
     `secret-api-cross-agent-${randomUUID()}`,
   );
-  await grantSecretOperate(
+  await grantCredentialOperate(
     topology.observerPool,
     namespace.data.id,
     topology.secretApi.assignmentPrincipalId,
@@ -5565,13 +5760,13 @@ async function assertMissingBackendSecretBindingFailsBounded(context, topology) 
     missing.agent.id,
   );
   await Promise.all([
-    grantSecretOperate(
+    grantCredentialOperate(
       topology.observerPool,
       topology.agent.namespaceId,
       topology.secretApi.assignmentPrincipalId,
       secret.id,
     ),
-    grantSecretOperate(
+    grantCredentialOperate(
       topology.observerPool,
       topology.agent.namespaceId,
       missingAgent.servicePrincipalId,
@@ -5699,19 +5894,19 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     agent.data.id,
   );
   await Promise.all([
-    grantSecretOperate(
+    grantCredentialOperate(
       topology.observerPool,
       topology.agent.namespaceId,
       persistedAgent.servicePrincipalId,
       topology.secretApi.model.id,
     ),
-    grantSecretOperate(
+    grantCredentialOperate(
       topology.observerPool,
       topology.agent.namespaceId,
       persistedAgent.servicePrincipalId,
       topology.secretApi.peerProbe.id,
     ),
-    grantSecretOperate(
+    grantCredentialOperate(
       topology.observerPool,
       topology.agent.namespaceId,
       persistedAgent.servicePrincipalId,
@@ -6053,7 +6248,7 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
   await Promise.all(
     [topology.secretApi.assignmentPrincipalId, topology.persistedAgent.servicePrincipalId].map(
       (principalId) =>
-        grantSecretOperate(
+        grantCredentialOperate(
           topology.observerPool,
           topology.agent.namespaceId,
           principalId,
@@ -6335,13 +6530,13 @@ async function assertLegacyModelSecretBindingDenied(topology) {
     "dedicated-model-denied",
     value,
   );
-  await grantSecretOperate(
+  await grantCredentialOperate(
     topology.observerPool,
     topology.agent.namespaceId,
     topology.persistedAgent.servicePrincipalId,
     secret.id,
   );
-  await grantSecretOperate(
+  await grantCredentialOperate(
     topology.observerPool,
     topology.agent.namespaceId,
     topology.secretApi.assignmentPrincipalId,
@@ -7004,13 +7199,18 @@ async function assertRoutedWorkspaceModelTurn(topology, connection, marker) {
   const turn = await connection.requestModelTurn(marker);
   assertNoSecretMaterial(
     turn.content,
-    [topology.gatewayPassword, topology.workspaceGateway.apiKey, process.env.OPENAI_API_KEY],
+    [
+      topology.gatewayPassword,
+      topology.workspaceGateway.apiKey,
+      topology.protectedModelCredential(),
+    ],
     "workspace-file model proof must not expose credentials",
   );
 }
 
 export {
   arrangeProductionTopology,
+  resolveTopologyModelAuthentication,
   productionTopologyCleanupOrder,
   registerProductionTopologyCleanups,
   assertActualModelTurn,

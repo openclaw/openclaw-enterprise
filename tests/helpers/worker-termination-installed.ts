@@ -177,6 +177,7 @@ async function observeInstalledWorker(
   f: InstalledWorkerFixture,
   readLogs: ReadObservabilityLogs,
   children: Shutdown[],
+  getCollectorBinary: () => Promise<string>,
 ) {
   const directory = join(f.directory, "worker-observer");
   await mkdir(directory, { mode: 0o700 });
@@ -187,7 +188,7 @@ async function observeInstalledWorker(
   if (process.env.OCC_KUBECTL_BIN) {
     await symlink(process.env.OCC_KUBECTL_BIN, join(directory, "kubectl"));
   }
-  const collectorBinary = await workerObserverCollectorBinary(directory);
+  const collectorBinary = await getCollectorBinary();
   const start = (command: string, args: string[], env: NodeJS.ProcessEnv = {}) => {
     const child = spawn(command, args, {
       env: { PATH: process.env.PATH, HOME: directory, ...env },
@@ -344,10 +345,16 @@ export async function verifyInstalledWorkerRestarts(
   f: InstalledWorkerFixture,
   readLogs: ReadObservabilityLogs,
   kind: WorkerKind,
+  getCollectorBinary: () => Promise<string>,
 ) {
   const children: Shutdown[] = [];
   try {
-    const { records, pod } = await observeInstalledWorker(f, readLogs, children);
+    const { records, pod } = await observeInstalledWorker(
+      f,
+      readLogs,
+      children,
+      getCollectorBinary,
+    );
     let running = workerStatus(pod, kind);
     const initial = running.restartCount;
     if (kind === "restartable-init") {

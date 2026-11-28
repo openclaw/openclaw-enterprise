@@ -440,6 +440,9 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             resource: "deployments",
             name: "openclaw-enterprise-worker",
           });
+          if (state.channelStopCase) {
+            log("worker-patch-access-review");
+          }
           if (state.reviewUnavailable) {
             return fail(1, "private self-review diagnostic");
           }
@@ -1105,31 +1108,51 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         }
       } else if (args.includes("scale") || args.includes("patch")) {
         const component = servingComponent(args);
+        const preview = args.includes("--dry-run=server");
+        if (preview) {
+          if (state.channelStopCase) {
+            log("writer-preview-" + component);
+          }
+          assert.ok(args.includes("patch"));
+          assert.ok(args.includes("deployment/openclaw-enterprise-" + component));
+          assert.equal(fileArg("--namespace"), "system");
+          assert.equal(fileArg("--context"), "selected");
+          assert.equal(fileArg("--output"), "jsonpath={.spec.replicas}");
+          assert.equal(state[component], 1);
+          if (component === "worker") {
+            appendFileSync(join(root, "worker-patch-previews"), "worker\n");
+          }
+        } else if (state.channelStopCase && args.includes("patch")) {
+          log("writer-patch-" + component);
+        }
         if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
           return fail(1, "Forbidden: cannot patch the worker Deployment");
         }
-        if (take("fail-scale-" + component)) {
+        if (!preview && take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
           }
           return fail(9);
         }
-        // Simulate another actor between the helper's GET and its mutation. Keep
-        // scale support so the same scenario demonstrates the unguarded baseline.
         const identities = record((state.deploymentIdentities ??= {}), "Deployment identity table");
         const identity = record(
           (identities[component] ??= { uid: component + "-deployment-uid", resourceVersion: "1" }),
           "selected Deployment identity",
         );
-        if (component === "worker" && take("replace-worker-before-scale")) {
-          identity.uid = "replacement-worker-uid";
-          identity.resourceVersion = "2";
-          state.worker = 1;
+        if (!preview) {
+          // Apply the other actor's change only at the live patch so the case
+          // exercises a conflict even after a successful preview.
+          if (component === "worker" && take("replace-worker-before-scale")) {
+            identity.uid = "replacement-worker-uid";
+            identity.resourceVersion = "2";
+            state.worker = 1;
+          }
+          if (component === "worker" && take("edit-worker-before-scale")) {
+            identity.resourceVersion = String(Number(identity.resourceVersion) + 1);
+          }
+          save();
         }
-        if (component === "worker" && take("edit-worker-before-scale")) {
-          identity.resourceVersion = "2";
-        }
-        save();
+        const priorReplicas = state[component];
         if (args.includes("patch")) {
           assert.equal(fileArg("--type"), "json");
           const patch: unknown = JSON.parse(readFileSync(requiredArg("--patch-file"), "utf8"));
@@ -1159,14 +1182,43 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             typeof replicas === "number" && Number.isSafeInteger(replicas) && replicas >= 0,
             "expected a nonnegative replica count",
           );
+          const denyAdmission =
+            component === "worker" ? state.denyWorkerAdmission : state.denyApiAdmission;
+          if (replicas === 0 && denyAdmission) {
+            const writer = component === "worker" ? "Worker" : "API";
+            return fail(1, `admission webhook "writer-policy.test" denied the ${writer} stop`);
+          }
+          if (preview) {
+            if (component !== "worker" || !take("empty-worker-patch-preview")) {
+              const nonzero = component === "worker" && take("nonzero-worker-patch-preview");
+              out(String(nonzero ? state.worker : replicas));
+            }
+            return io.exit(0);
+          }
           Object.assign(identity, document.metadata);
           state[component] = replicas;
         } else {
           state[component] = 0;
         }
         identity.resourceVersion = String(Number(identity.resourceVersion) + 1);
+        if (state[component] !== priorReplicas) {
+          identity.generation =
+            journalInteger(identity.generation ?? 1, "Deployment generation", 1) + 1;
+        }
         save();
         log("scale-" + component);
+        if (component === "worker" && args.includes("--output")) {
+          assert.equal(
+            fileArg("--output"),
+            'jsonpath={.metadata.uid}{"\\t"}{.metadata.generation}{"\\t"}{.spec.replicas}',
+          );
+          out([identity.uid, identity.generation, state[component]].join("\t"));
+        }
+        // Persist the stop before dropping the final acknowledgement. The client
+        // can receive response bytes and still see a failed command.
+        if (component === "worker" && take("lost-worker-stop-response")) {
+          return fail(9);
+        }
       } else if (args.includes("replace")) {
         const secret: unknown = JSON.parse(await io.readInput());
         if (state.denyInstallationUpdate) {
@@ -1314,12 +1366,13 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           );
         } else {
           const identity = optionalField(state.deploymentIdentities, component);
+          const generation = optionalField(identity, "generation") ?? 1;
           out({
             metadata: {
               name: "openclaw-enterprise-" + component,
               uid: optionalField(identity, "uid") ?? component + "-deployment-uid",
               resourceVersion: optionalField(identity, "resourceVersion") ?? "1",
-              generation: optionalField(identity, "generation") ?? 1,
+              generation,
               labels: {
                 "app.kubernetes.io/instance": state.release,
                 "app.kubernetes.io/component": component,
@@ -1333,7 +1386,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               },
             },
             status: {
-              observedGeneration: 1,
+              observedGeneration: generation,
               replicas: 1,
               updatedReplicas: 1,
               availableReplicas: 1,
@@ -1490,6 +1543,38 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             ],
           });
         } else {
+          if (
+            state.api === 0 &&
+            state.worker === 0 &&
+            args.includes(
+              `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${state.release}`,
+            ) &&
+            take("edit-stopped-api-after-drain")
+          ) {
+            // Another actor updates the stopped API Deployment's spec without starting Pods.
+            const api = record(field(state.deploymentIdentities, "api"), "API Deployment identity");
+            api.generation = journalInteger(api.generation, "API Deployment generation", 1) + 1;
+            api.resourceVersion = String(Number(api.resourceVersion) + 1);
+            save();
+          }
+          if (
+            state.api === 0 &&
+            state.worker === 0 &&
+            args.includes(
+              `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${state.release}`,
+            ) &&
+            take("drift-worker-generation-after-drain")
+          ) {
+            // Another actor edits the stopped Worker Deployment's spec without starting Pods.
+            const worker = record(
+              field(state.deploymentIdentities, "worker"),
+              "Worker Deployment identity",
+            );
+            worker.generation =
+              journalInteger(worker.generation, "Worker Deployment generation", 1) + 1;
+            worker.resourceVersion = String(Number(worker.resourceVersion) + 1);
+            save();
+          }
           out({
             items:
               initialization && state.initActive
@@ -1499,6 +1584,11 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
                   : [],
           });
         }
+      } else if (
+        args.includes("get") &&
+        args.includes("deployments,statefulsets,pods,persistentvolumeclaims")
+      ) {
+        out({ items: state.workloadInventory ?? [] });
       } else if (args.includes("get")) {
         out({ items: [] });
       } else if (args.includes("exec") && args.includes("/sys/fs/cgroup/memory.max")) {
@@ -1622,6 +1712,82 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       }
     } else if (tool === "occ") {
       if (
+        state.channelStopCase &&
+        args.includes("agent") &&
+        args.includes("revision") &&
+        args.includes("--check-retain-harness-overrides")
+      ) {
+        // The channel helper checks access to the original revision before Stop and Deploy.
+        assert.deepEqual(args.slice(4), [
+          "--namespace",
+          "ns_test",
+          "agent",
+          "revision",
+          "agt_test",
+          "rev_old",
+          "--check-retain-harness-overrides",
+        ]);
+        out({
+          namespaceId: "ns_test",
+          agentId: "agt_test",
+          id: "rev_old",
+          canRetainHarnessOverrides: true,
+        });
+      } else if (state.channelStopCase && args.includes("agent") && args.includes("stop")) {
+        log("channel-agent-stop");
+        assert.deepEqual(args.slice(0, 3), ["--output", "json", "--timeout-seconds"]);
+        assert.match(args[3] ?? "", /^[1-9][0-9]*$/u);
+        assert.deepEqual(args.slice(4), [
+          "--namespace",
+          "ns_test",
+          "agent",
+          "stop",
+          "agt_test",
+          "--if-active-revision",
+          "rev_old",
+        ]);
+        assert.equal(state.api, 1);
+        assert.equal(state.channelAgentStopped, undefined);
+        const identities = record(state.deploymentIdentities, "Deployment identities");
+        const api = record(identities.api, "API Deployment identity");
+        const worker = record(identities.worker, "worker Deployment identity");
+        // Status updates can advance the resource versions while Stop is pending.
+        api.resourceVersion = "2";
+        worker.resourceVersion = "2";
+        if (state.channelStopCase === "worker-zero") {
+          state.worker = 0;
+          worker.generation = 2;
+        } else if (state.channelStopCase === "worker-uid") {
+          worker.uid = "replacement-worker-uid";
+        } else if (state.channelStopCase === "worker-generation") {
+          worker.generation = 2;
+        } else if (state.channelStopCase === "api-generation") {
+          api.generation = 2;
+        }
+        if (state.channelStopCase === "late-worker-access-denial") {
+          state.denyWorkerPatch = true;
+        } else if (state.channelStopCase === "late-worker-admission-denial") {
+          state.denyWorkerAdmission = true;
+        }
+        state.channelAgentStopped = true;
+        save();
+        if (state.channelStopCase === "unknown-agent-stop") {
+          return fail(9, "Stop response lost after the Agent stopped");
+        }
+        out({ id: "agt_test", namespaceId: "ns_test", desiredRuntimeState: "stopped" });
+      } else if (state.channelStopCase && args.includes("agent") && args.includes("get")) {
+        assert.equal(fileArg("--namespace"), "ns_test");
+        assert.equal(args.at(-1), "agt_test");
+        out({
+          id: "agt_test",
+          namespaceId: "ns_test",
+          status: "active",
+          name: "Mail triage",
+          configurationId: "cfg_agt_test",
+          desiredRuntimeState: state.channelAgentStopped ? "stopped" : "running",
+          activeRevisionId: state.channelAgentStopped ? null : (state.activeRevision ?? "rev_old"),
+        });
+      } else if (
         state.continuity &&
         args.includes("agent") &&
         (args.includes("get") || args.includes("runtime"))
@@ -1683,11 +1849,15 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
                     {
                       id: "agt_test",
                       status: "active",
-                      desiredRuntimeState: "running",
+                      desiredRuntimeState: state.channelAgentStopped ? "stopped" : "running",
                       executionMode: "embedded",
-                      activeRevisionId: "rev_old",
                       deploymentInProgress: false,
-                      repositoryWorkerRestart: "reverification-supported",
+                      ...(state.channelAgentStopped
+                        ? {}
+                        : {
+                            activeRevisionId: "rev_old",
+                            repositoryWorkerRestart: "reverification-supported",
+                          }),
                     },
                   ]
                 : [],
@@ -1756,6 +1926,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const id = args[args.length - 1];
         out({
           id,
+          namespaceId: fileArg("--namespace"),
           kind: "agent",
           values: optionalField(state.configurationValues, String(id)) ?? {},
         });
@@ -1783,6 +1954,9 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         delete state.nextDeployment;
         if (status === "succeeded") {
           state.activeRevision = id;
+          if (state.channelStopCase) {
+            state.channelAgentStopped = false;
+          }
         }
         const deployment = [fileArg("--namespace"), agentId, id].join("/");
         if (state.deployments == null) {
@@ -1797,7 +1971,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         if (take("lost-agent-response")) {
           return fail(9);
         }
-        out({ id });
+        out(state.channelStopCase ? { id, agentId, namespaceId: fileArg("--namespace") } : { id });
       } else if (args.includes("agent") && args.includes("get")) {
         out({
           id: "agt_test",

@@ -3,9 +3,9 @@ import test from "node:test";
 import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 
-test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
+test("MCP discovery reads tool names using one pinned authenticated session", async () => {
   const url = "https://tools.example/api/mcp/v1";
-  const token = "fixture-mcp-discovery-token";
+  const token = "fixture:mcp-discovery-token";
   const calls: string[] = [];
   const result = await listManagedMcpToolNames(url, token, undefined, {
     async resolveHost(host) {
@@ -79,10 +79,20 @@ test("managed MCP discovery reads tool names using one pinned authenticated sess
   );
 });
 
-test("managed MCP discovery refuses private DNS answers and redirects", async () => {
+test("MCP discovery refuses unsafe bearer values, private DNS answers, and redirects", async () => {
   const url = "https://tools.example/api/mcp/v1";
   const token = "fixture-mcp-discovery-token";
   let attempted = false;
+  await assert.rejects(
+    listManagedMcpToolNames(url, "fixture\r\ntoken", undefined, {
+      async resolveHost() {
+        attempted = true;
+        return [];
+      },
+    }),
+    { reason: "invalid_response" },
+  );
+  assert.equal(attempted, false);
   await assert.rejects(
     listManagedMcpToolNames(url, token, undefined, {
       resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],

@@ -2,16 +2,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  cp,
-  lstat,
-  mkdir,
-  readdir,
-  readFile,
-  readlink,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
+import { cp, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readOpenclawSource } from "./lib/openclaw-source.ts";
@@ -40,11 +40,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "stock-codex-0.164.0-dependency-pin.patch",
-    sha256: "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
-  },
-  {
-    file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
+    sha256: "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
@@ -52,14 +48,18 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
+    sha256: "f74c60e4fb562e5528fad7fed32a77d26639dbfed4ab97f5d115bc0a822764b1",
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+    sha256: "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
+  },
+  {
+    file: "openclaw-http-chat-input.patch",
+    sha256: "5a90575bfe5c44b76dab5c68d2ab21f219c2e66dc2b3d3d7660da2f70b1b2087",
   },
 ];
-const runtimePaths = [
+const runtimePaths = new Set([
   "dist",
   "node_modules",
   "package.json",
@@ -67,32 +67,13 @@ const runtimePaths = [
   "pnpm-workspace.yaml",
   "patches",
   "scripts",
-  "node-version.mjs",
-  "node-sqlite.mjs",
-  "node-sqlite-capabilities.mjs",
-  "runtime-process-bootstrap.generated.mjs",
-  "runtime-process-scripts.generated.mjs",
-  "standalone-runtime-profile.mjs",
-  "node-runtime-update.mjs",
-  "node-runtime-recovery.mjs",
-  "node-runtime-env.mjs",
-  "cli-invocation.mjs",
-  "cli-parent-lifetime.mjs",
-  "cli-root-options.mjs",
-  "gateway-prewarm.mjs",
-  "gateway-run-argv.mjs",
-  "gateway-shutdown-budget.mjs",
-  "node-host-launcher.mjs",
-  "node-compile-cache.mjs",
-  "worker-heap-flag.mjs",
-  "openclaw.mjs",
   "extensions",
   "skills",
   "docs",
   "LICENSE",
   "README.md",
   "THIRD_PARTY_NOTICES.md",
-];
+]);
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const codexPlatformByArchitecture = {
   x64: {
@@ -206,11 +187,18 @@ async function writeRuntimeInventory(
   { pruneSourceAssets = false } = {},
 ): Promise<string> {
   const inventory: RuntimeAsset[] = [];
-  async function walk(relative = "") {
-    for (const name of (await readdir(join(root, relative))).sort()) {
+  function walk(relative = ""): void {
+    const entries = readdirSync(join(root, relative), { withFileTypes: true });
+    entries.sort((left, right) => {
+      if (left.name === right.name) {
+        return 0;
+      }
+      return left.name < right.name ? -1 : 1;
+    });
+    for (const entry of entries) {
+      const { name } = entry;
       const path = join(relative, name);
       const absolute = join(root, path);
-      const info = await lstat(absolute);
       const sourceAsset = path.startsWith("extensions/") || path.startsWith("docs/");
       if (
         pruneSourceAssets &&
@@ -219,24 +207,37 @@ async function writeRuntimeInventory(
           name === "__tests__" ||
           (path.startsWith("docs/") && /\.(?:png|jpe?g|webp)$/i.test(name)))
       ) {
-        await rm(absolute, { recursive: true });
-      } else if (info.isSymbolicLink()) {
-        inventory.push({ path, link: await readlink(absolute) });
-      } else if (info.isDirectory()) {
-        await walk(path);
-      } else if (info.isFile()) {
-        inventory.push({
-          path,
-          size: info.size,
-          mode: info.mode & 0o777,
-          sha256: hash(await readFile(absolute)),
-        });
+        rmSync(absolute, { recursive: true });
+      } else if (entry.isSymbolicLink()) {
+        inventory.push({ path, link: readlinkSync(absolute) });
+      } else if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.isFile()) {
+        // Refuse final-component symlinks and avoid blocking if a FIFO replaced the file.
+        const fd = openSync(
+          absolute,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        );
+        try {
+          const info = fstatSync(fd);
+          if (!info.isFile()) {
+            throw new Error(`Unsupported runtime asset: ${path}`);
+          }
+          inventory.push({
+            path,
+            size: info.size,
+            mode: info.mode & 0o777,
+            sha256: hash(readFileSync(fd)),
+          });
+        } finally {
+          closeSync(fd);
+        }
       } else {
         throw new Error(`Unsupported runtime asset: ${path}`);
       }
     }
   }
-  await walk();
+  walk();
   await mkdir(output, { recursive: true });
   const contents = `${JSON.stringify(inventory)}\n`;
   await writeFile(join(output, "contents.json"), contents);
@@ -375,10 +376,31 @@ async function packageRuntime(root: string, output: string, manifestPath: string
   if (process.env.GIT_COMMIT !== source.commit) {
     throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
   }
+  const { files, packageManager } = await readJsonObject(join(root, "package.json"));
+  if (!Array.isArray(files)) {
+    throw new Error("Expected a files array in the OpenClaw package.json");
+  }
+  if (packageManager !== undefined && typeof packageManager !== "string") {
+    throw new Error("Expected a package manager name and version in package.json");
+  }
+  // Upstream declares its launcher modules in files. Add only literal root filenames.
+  const publishedModules = new Set(
+    files.filter(
+      (name: unknown): name is string =>
+        typeof name === "string" && name.endsWith(".mjs") && !/[^\w.-]/.test(name),
+    ),
+  );
+  const rootEntries = await readdir(root, { withFileTypes: true });
+  if (
+    !publishedModules.has("openclaw.mjs") ||
+    !rootEntries.some((entry) => entry.name === "openclaw.mjs" && entry.isFile())
+  ) {
+    throw new Error("Expected openclaw.mjs in the OpenClaw source root and package.json files");
+  }
   // Preserve runtime templates and help text; omit upstream development/QA trees.
-  for (const name of await readdir(root)) {
-    if (!runtimePaths.includes(name)) {
-      await rm(join(root, name), { recursive: true, force: true });
+  for (const entry of rootEntries) {
+    if (!runtimePaths.has(entry.name) && !(entry.isFile() && publishedModules.has(entry.name))) {
+      await rm(join(root, entry.name), { recursive: true, force: true });
     }
   }
   for (const name of ["assets", "images", ".generated", ".i18n", "refactor", "releases"]) {
@@ -386,10 +408,6 @@ async function packageRuntime(root: string, output: string, manifestPath: string
   }
   await pruneUnusedDependencies(root);
   const contents = await writeRuntimeInventory(root, output, { pruneSourceAssets: true });
-  const { packageManager } = await readJsonObject(join(root, "package.json"));
-  if (packageManager !== undefined && typeof packageManager !== "string") {
-    throw new Error("Expected a package manager name and version in package.json");
-  }
   await writeFile(
     join(output, "provenance.json"),
     `${JSON.stringify(

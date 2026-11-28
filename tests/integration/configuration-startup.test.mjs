@@ -2,7 +2,6 @@ import {
   assertChatGPTStartupMetadata,
   checkNativeRepositoryStartup,
   checkProtectedRepositoryWorker,
-  checkRepositoryLifecycle,
   checkRepositoryResolution,
   prepareRepositoryFiles,
   createChatGPTInstallation,
@@ -192,14 +191,17 @@ async function repositoryInstallation(t) {
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
 
-for (const mode of ["native", "selected-blocked", "selected"]) {
-  test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
-    await checkRepositoryLifecycle(t, mode, fixture, {
-      native: async () => (await repositoryInstallation(t)).configuration,
-      proxy: credentialProxyInstallation,
-    });
-  });
-}
+test("Installation rejects the retired protected GitHub metadata signer setting", async (t) => {
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+    custodyKeyPath: "/nonexistent/fixture-custody.key",
+  };
+  const path = await fixture(t, configuration);
+  await assert.rejects(
+    loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
+    /preparedGitHub/,
+  );
+});
 
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
   const { configuration, registry, registrySource } = await repositoryInstallation(t);

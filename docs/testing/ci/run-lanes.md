@@ -149,17 +149,17 @@ gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100
       {id, name, expired, expires_at, digest, size_in_bytes, workflow_run}'
 ```
 
-Require one image artifact and, for the small download below, one receipt artifact,
-with `expired: false`, a future `expires_at`, and
-`workflow_run.id` / `workflow_run.head_sha` matching the selected run and source.
-Record both artifact IDs and digests. These artifacts expire after **one day**;
-an absent or expired artifact cannot satisfy this lookup. The API `digest`
-identifies the downloaded artifact ZIP, not the image manifest. If the separate
-receipt upload is missing, the image archive also contains `receipt.json`; inspect
-it during a separately verified image transfer.
+CI keeps the runtime archive for **one day** and uploads a separate receipt for
+**seven days**. If you saved `runtime.tar` locally, you can still check its digest
+after the archive expires. A job that needs the expired archive must rerun the
+producer. If the separate receipt upload failed, the image artifact also
+includes `receipt.json` while that artifact remains available.
 
-Download only the small receipt into a fresh directory to inspect the platform
-and image identities before transferring the image:
+For each artifact you download, require exactly one match for the selected attempt.
+Check that `expired` is `false`, `expires_at` is in the future, and
+`workflow_run.id` and `workflow_run.head_sha` match the selected run and source.
+Record the artifact ID and ZIP digest. To inspect the receipt without downloading
+the image, use a fresh directory.
 
 ```bash
 RECEIPT_DIR="$(mktemp -d)"
@@ -171,12 +171,13 @@ jq '{sourceSha, runId, producerAttempt, platform, archiveSha256,
 
 Compare `sourceSha` with the intended Enterprise commit, `runId` with `RUN_ID`,
 `producerAttempt` with the successful `PRODUCER_ATTEMPT`, and `platform` with the
-local target platform. Its `archiveSha256` covers `runtime.tar`. Discovery and a matching receipt
-alone do not verify downloaded image bytes, native behavior or installed
-acceptance. The existing runtime-artifact helper accepts only same-workflow
-consumers; there is no supported local import command. Do not set `GITHUB_*`
-variables to bypass that check. Retain this evidence when planning separately
-verified local reuse or a source build. For release-qualified image transfer,
+local target platform. Compare the SHA-256 of your saved `runtime.tar` with
+`archiveSha256`. A match verifies the archive bytes. It cannot tell you which
+image a job ran or whether that image works on your installation.
+
+The runtime artifact helper accepts only same-workflow consumers. Do not set
+`GITHUB_*` variables to bypass that check. There is no supported local import
+command. For release-qualified image transfer,
 follow [native image checks](../../release/containers.md#check-native-images-without-publication).
 
 ## Results and cleanup
@@ -282,6 +283,13 @@ the next test phase. Cancellation still fails the attempt. Preparation and tests
 share a 30-minute deadline unless `CI_RUNNER_DEADLINE_MS` supplies an absolute Unix
 millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowance
 (default 120 seconds). This mode does not promise immediate interruption.
+
+After preparation succeeds, complete mode keeps `state.json` until final cleanup,
+including when the journal has no resources. If the expected journal disappears,
+the result reports `cleanup-state-missing` and `reconciliation-required`. The
+runner stops automatic cleanup after it confirms the loss. Retain the attempt
+directory and reconcile the ownership and status of remaining resources before
+acting. Preparation can fail before creating a journal.
 
 A timeout, lost phase result or unconfirmed process termination produces
 `reconciliation-required` and prevents a later cleanup phase. Command owners stop

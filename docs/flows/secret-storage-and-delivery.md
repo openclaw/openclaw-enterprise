@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-21
-last_updated_session: authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f
+updated: 2026-11-26
+last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -99,9 +99,9 @@ operator recovery.
 
 `privateSecretStore` applies the same conditional removal to confirmed but
 refused OAuth-client creates. OCC keeps the hidden registration and selected
-Driver until `cleanupOAuthClients` confirms deletion or absence. Ordinary private
+Driver until `cleanupCredentialClients` confirms deletion or absence. Ordinary private
 ownership checks and unknown SQL outcomes remain unchanged. See
-[private registration behavior](../reference/drivers/kubernetes-secret.md#installation-private-oauth-client-secrets).
+[private custody](../reference/drivers/kubernetes-secret.md#tokenservice-private-custody).
 
 Secret mutations share the 12-second Kubernetes budget of
 [Configuration writes](configuration-driver/persistence-and-revisions.md).
@@ -158,12 +158,11 @@ Embedded OpenClaw uses `sandboxDriver: "none"`. OpenShell requires `--harness co
 `--control-ui` requires OpenShell.
 `loadLocalInstallation` uses the recorded Unix socket and clears inherited Docker
 TLS settings before Compose queries the controller port and PostgreSQL service.
-Local Setup saves its authenticated Installation ID in private state. Before
-provisioning, the tool checks that ID against OCC and reads only `data.key` from
-the credential file. It creates the Secret, Configuration, and named Agent through
-the OCC HTTP API. New Agents default to
-`openai/gpt-6-astra`; `OPENCLAW_FIRST_AGENT_MODEL` accepts an authorized plain model
-ID. Reruns retain that choice and reject conflicts.
+First Agent verifies the recorded Installation ID and reads `data.key` from
+the service-key file. It enrolls the credential and creates the Configuration
+and Agent through OCC. The default is `openai/gpt-6-astra`. Set
+`OPENCLAW_FIRST_AGENT_MODEL` to an authorized plain model ID before the first
+run. Reruns reject conflicts with the recorded choice.
 
 Without OpenShell, the tool grants the Agent's returned `servicePrincipalId`
 exact `secret:operate` through Namespace IAM operations. The server resolves the
@@ -171,10 +170,12 @@ caller from its key, authorizes through IAM, and audits mutations. Reruns reuse
 exact bindings and verify Role permissions, including a Role left by a failed
 binding. Database access only reads existing Secret metadata.
 
-With OpenShell, it registers an `openai` or `codex-pat` CredentialSource and grants
-the Agent exact `credential_source:operate`, not Secret access, through IAM.
-`--replace-key` updates the Secret and requests a Credential Gateway reread before
-deployment. The private record prevents Harness or Sandbox Driver changes on reruns.
+With OpenShell, it registers a static TokenService Source using the `openai`
+or `codex-pat` preset and grants exact `credential_source:operate`. The
+`--replace-key` option PATCHes the existing Source with the replacement value.
+TokenService commits it and notifies Credential Proxy. Without OpenShell,
+the helper updates its Namespace Secret. The private record prevents Harness
+or Sandbox Driver changes on reruns.
 `scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
 process umask. An existing lock stops the command before record access or
@@ -249,10 +250,8 @@ preparation alone is not proof that the replacement runtime is ready.
 Kubelet obtains the bytes and creates the process environment. OpenClaw resolves
 its existing `{ source: "env", provider, id }` reference. This is the handoff to
 the native consumer, not a new OpenClaw provider or OCC text-substitution engine.
-Native channel credentials follow these same admitted bindings. No legacy
-per-Agent channel Secret injects additional values. Dedicated gateways receive
-channel bytes; the dedicated Harness receives only its separately admitted model
-authentication. Embedded channel credentials remain unsupported.
+Slack uses [Gateway Source bindings](../reference/drivers/kubernetes-compute/gateway-credentials.md).
+Compute stages each revision's copy only for the dedicated Gateway. Embedded channels are unsupported.
 
 The trusted worker reads canonical sources and manages Harness runtime projections; workload
 ServiceAccounts have no Secret API verbs. A trusted workload writer can still
@@ -285,8 +284,7 @@ A Harness Pod recreation reads its existing DP projection; it does not deliver
 current source values. This remains true when the Configuration and Secret reference
 are unchanged.
 
-Dedicated Gateway infrastructure restarts read canonical channel Secrets
-directly. Failed cutover does not restore old source values. Revoking `operate`
+Gateway Pod restarts reuse that copy. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
 [deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
@@ -337,6 +335,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-26 10:21: Describe Slack Source delivery separately from remaining Namespace Secret bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 3733308f3a1a47555563c351f97f5113c8993091)
 - 2026-11-21 16:05: Allow simple formatting in assistant nonce proof. (authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f - ff770f5bef21b30cc12018e776add31a606d6f0d)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

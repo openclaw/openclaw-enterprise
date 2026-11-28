@@ -11,8 +11,8 @@ last_verified: "2026-11-04"
 
 First Agent Smoke installs the Kubernetes platform from images built from the checkout
 and exercises embedded OpenClaw and dedicated Codex Agents. It uses a simulated
-model provider, so it tests deployment, chat, logs, and stop/start without proving access to a
-real model service.
+model provider, so it tests deployment, chat, logs, stop/start, and saved workspace edits
+without proving access to a real model service.
 
 <a id="when-it-runs"></a>
 
@@ -32,7 +32,7 @@ See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) fo
 artifact verification and rerun behavior.
 
 The job is outside `CI Required`, so its failure does not fail that merge gate.
-A failed main-push CI workflow can still block container and CLI publication,
+A failed main-push CI workflow can still block standalone container and CLI publication,
 which require successful CI for their source.
 
 ## Scenarios
@@ -46,7 +46,7 @@ it does not use a suite manifest.
 | Create an embedded OpenClaw Agent and a dedicated Codex Agent; send chat requests. | Both Agents return the expected simulated-provider response.                                                                                                                              | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
 | Read gateway logs and dedicated Agent logs through the CLI.                        | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
 | Withdraw public Git reader access and deploy a revision without that access.       | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
-| Stop and start both Agents, then chat again.                                       | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
+| Write and read Codex `USER.md`, then stop and start both Agents.                   | Stopped Pods terminate and new revisions start. Before another write, the Codex file matches the saved edit. A new edit also reads back exactly, and both Agents can chat.                | `checkCodexWorkspaceFile`, `stopAgent`, `deployAgent`, and `chatTurn`.              |
 
 <a id="run-it"></a>
 
@@ -91,6 +91,37 @@ Inspect the **Build checkout images** and **Install, deploy, chat, stop and star
 steps. The script prints named stages, timing, assertions, and failure diagnostics.
 An image build alone is not a passing lifecycle check. Verify that the run
 completes, including cleanup, before reporting success.
+
+Search for `wait observed` and the deployment label. Each line
+records the first poll that sees `deployment-succeeded`, `active-revision`, or
+a selected previous-attempt code. The selected codes are
+`PREDECESSOR_STOP_YIELDED`, `REVISION_INCOMPLETE`, `WORKSPACE_NODE_PENDING`, and
+`WORKSPACE_NODE_BINDING_PENDING`. `elapsedMs` is the time since the wait started.
+Each poll reads the deployment and Agent separately, so the responses are not an
+atomic snapshot. The wait completes when the same poll reports deployment status
+`succeeded` and the intended revision in the Agent's `activeRevisionId`. A
+previous-attempt code describes an earlier report, not the current cause of
+delay. These observations have polling granularity. They do not measure phase
+durations or prove that the Agent can serve requests.
+
+If a channel proxy deployment is slow, find its `wait` time in the log. Look
+for `sampled gateway Pod intervals` with the same deployment label. The three
+intervals cover creation to scheduling, scheduling to Gateway container start,
+and container start to the latest time the Pod became Ready. Values are in
+milliseconds. The Pod timestamps have whole-second precision and can come from
+different clocks. The test reads the selected Pod after deployment and omits
+intervals it cannot measure. A failed deployment can have no sample. The
+intervals exclude work before Pod creation and can extend past the deployment
+wait if readiness changed again.
+
+Search for `revisionToPodCreationMs` under the
+same deployment label. It estimates the time from creation of the Agent revision
+in PostgreSQL to creation of the sampled Gateway Pod. This excludes request
+processing before the revision was recorded. The Pod can be a replacement, and
+its timestamp has whole-second precision. The two clocks can also differ.
+You cannot use this interval alone to measure queue time or downtime.
+The test omits the line if either timestamp is missing or invalid, or if the
+difference is negative or longer than 60 minutes.
 
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.

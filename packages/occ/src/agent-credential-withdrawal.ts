@@ -1,9 +1,8 @@
-import {
-  revisionCredentialSourceSnapshot,
-  type Agent,
-  type AgentRevision,
-  type CredentialWithdrawal,
-  type CredentialWithdrawalStatus,
+import type {
+  Agent,
+  AgentRevision,
+  CredentialWithdrawal,
+  CredentialWithdrawalStatus,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -77,7 +76,7 @@ export async function credentialWithdrawalCompanionRevisions(
   return companions;
 }
 
-/** The revision was admitted with the source, as its Harness authentication or in its list. */
+/** The revision was admitted with the Source for a Harness, Proxy, or Gateway binding. */
 function revisionHoldsCredentialSource(
   revision: Readonly<AgentRevision>,
   credentialSourceId: string,
@@ -85,7 +84,10 @@ function revisionHoldsCredentialSource(
   return (
     (revision.harnessAuth.method === "credential_source" &&
       revision.harnessAuth.sourceId === credentialSourceId) ||
-    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
+    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId) ||
+    Object.values(revision.secretBindings ?? {}).some(
+      ({ source }) => source.kind === "credential_source" && source.id === credentialSourceId,
+    )
   );
 }
 
@@ -144,15 +146,6 @@ export function createAgentCredentialWithdrawal(dependencies: WithdrawalDependen
         );
       }
       const revision = await activeCredentialSourceRevision(state, agent, input);
-      // TODO: Allow staged withdrawal when exact delivery revocation and retry are supported.
-      if (
-        revisionCredentialSourceSnapshot(revision, input.credentialSourceId)
-          ?.tokenServiceInstanceId !== undefined
-      ) {
-        throw new ResourceStateConflictError(
-          "Withdrawal of a staged TokenService credential source is not supported. Complete Agent Stop to retire the revision.",
-        );
-      }
       const withdrawal = await requestRevisionCredentialWithdrawal(
         state,
         principalId,

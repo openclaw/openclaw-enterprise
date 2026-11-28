@@ -20,6 +20,7 @@ import { appendFile, readFile, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { proveControlledChannelProxy } from "./first-agent-smoke/channel-proxy.ts";
 import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.ts";
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
@@ -32,6 +33,7 @@ import {
 } from "./first-agent-smoke/setup.ts";
 import {
   chatTurn,
+  checkCodexWorkspaceFile,
   createCodexAgent,
   deployAgent,
   readLogs,
@@ -132,7 +134,7 @@ async function smoke() {
         modelDirectory,
         process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
           process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        { credentialDigests },
+        { credentialDigests, slackStandIn: true },
       ),
     );
     const [embedded, codex, control] = await initialAdmissions({
@@ -151,6 +153,10 @@ async function smoke() {
       await readLogs(stack, codex.agent, "gateway");
       await readLogs(stack, codex.agent, "agent");
     });
+    const workspaceBeforeStop = `<!-- First Agent Smoke before stop ${randomUUID()} -->\n`;
+    await step("write and read Codex workspace before stop", () =>
+      checkCodexWorkspaceFile(stack, codex.agent, workspaceBeforeStop, { write: true }),
+    );
     await smokeStep("stop-agents", () =>
       Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
     );
@@ -158,12 +164,24 @@ async function smoke() {
       Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
-    assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
+    assert.ok(codexRevision !== retiredRevision, "Codex start must admit a new revision");
+    // Read the previous edit before writing again so a fresh workspace cannot pass.
+    await step("read saved Codex workspace after start", () =>
+      checkCodexWorkspaceFile(stack, codex.agent, workspaceBeforeStop),
+    );
+    const workspaceAfterStart = `<!-- First Agent Smoke after start ${randomUUID()} -->\n`;
+    await step("write and read Codex workspace after start", () =>
+      checkCodexWorkspaceFile(stack, codex.agent, workspaceAfterStart, { write: true }),
+    );
     await smokeStep("chat-after-start", () =>
       Promise.all([
         chatTurn(stack, embedded.agent, embeddedRevision),
         chatTurn(stack, codex.agent, codexRevision),
       ]),
+    );
+    assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");
+    await smokeStep("controlled-channel-proxy", () =>
+      proveControlledChannelProxy(stack, [codex, control], modelDirectory, smokeStep),
     );
   } catch (error) {
     await diagnostics(diagnosticStack);

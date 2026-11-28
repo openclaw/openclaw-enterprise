@@ -2,16 +2,12 @@ import { writeFile } from "node:fs/promises";
 import { lookup } from "node:dns/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  assertSlackChannelDestination,
-  verifySingleSlackDelivery,
-} from "../helpers/slack-delivery.ts";
+import { verifySlackChannelAccess, verifySingleSlackDelivery } from "../helpers/slack-delivery.ts";
 import { gatewaySlackEvidence } from "../helpers/slack-native-evidence.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
   assertDeniedConnection,
-  storedSecret,
   hash,
   kubectl,
   requiresLiveSlack,
@@ -20,16 +16,28 @@ import {
 } from "../helpers/harness-topology-k3d-real.mjs";
 import { slackApi } from "../helpers/slack-web-api.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
+import { redactQaError } from "../helpers/qa-secrets.ts";
 
 // The topology registers its platform Namespace delete before the worker and port-forward stops.
 // Run them newest-first, each bounded and all attempted (finding 1711).
+const patSelected = () => process.env.OCC_TEST_CODEX_TOKEN_FILE !== undefined;
+const protectPatFailure = (work) => async (context) => {
+  try {
+    await work(context);
+  } catch (error) {
+    throw patSelected() ? redactQaError(error) : error;
+  }
+};
 const topologyTeardown = (testContext) =>
-  boundedTeardown(testContext, { label: "production topology teardown" });
+  boundedTeardown(testContext, {
+    label: "production topology teardown",
+    ...(patSelected() ? { sanitizeError: redactQaError } : {}),
+  });
 
 test(
   "production k3d gateway replies once to a real Slack message through its assigned Envoy listener and Codex Agent",
   { ...requiresLiveSlack, timeout: 1_800_000 },
-  async (testContext) => {
+  protectPatFailure(async (testContext) => {
     const { context } = topologyTeardown(testContext);
     for (const key of [
       "OCC_TEST_SLACK_CHANNEL_ID",
@@ -65,36 +73,29 @@ test(
     );
     assert.equal(slack.botToken.startsWith("xoxb-"), true, "Slack requires an approved bot token");
     assert.equal(slack.senderBotToken.startsWith("xoxb-"), true);
-    const members = [
-      { role: "gateway", token: slack.botToken, userId: gatewayIdentity.user_id },
-      { role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id },
-    ];
-    const memberships = await Promise.allSettled(
-      members.map(({ token }) =>
-        slackApi("conversations.info", token, { channel: slack.channelId }),
-      ),
+    await verifySlackChannelAccess({
+      channelId: slack.channelId,
+      gatewayToken: slack.botToken,
+      senderToken: slack.senderBotToken,
+      gatewayIdentity,
+      senderIdentity,
+    });
+    testContext.diagnostic(
+      `Slack Gateway and distinct sender are members of channel ${slack.channelId}.`,
     );
-    const membershipFailures = [];
-    for (const [index, result] of memberships.entries()) {
-      const { role, userId } = members[index];
-      let status = "unverified";
-      if (result.status === "fulfilled") {
-        assertSlackChannelDestination(result.value, slack.channelId);
-        status = result.value.channel?.is_member === true ? "member" : "not-member";
-      }
-      testContext.diagnostic(
-        `Slack ${role} channel membership=${status}; channel=${slack.channelId}; user=${userId}`,
-      );
-      if (status !== "member") {
-        const reason = result.status === "rejected" ? ` ${result.reason.message}` : "";
-        membershipFailures.push(
-          `Slack ${role} membership=${status}.${reason} Invite bot ${userId} to channel ${slack.channelId} and ensure it can read channel information before rerunning.`,
-        );
-      }
-    }
-    assert.equal(membershipFailures.length, 0, membershipFailures.join("\n"));
 
-    const topology = await arrangeProductionTopology(context, "dedicated", slack);
+    const tokenFile = process.env.OCC_TEST_CODEX_TOKEN_FILE;
+    const topology = await arrangeProductionTopology(context, "dedicated", slack, {
+      ...(tokenFile !== undefined
+        ? { modelAuthentication: { method: "codex_pat", tokenFile } }
+        : {}),
+    });
+    const modelCredential = topology.protectedModelCredential();
+    const protectedModelVariants = [
+      modelCredential,
+      encodeURIComponent(modelCredential),
+      Buffer.from(modelCredential).toString("base64"),
+    ];
     // Deployment already validated the saved Slack credentials through OCC's
     // listener. Exercise both directory operations through their real API owner.
     for (const [kind, id] of [
@@ -106,7 +107,7 @@ test(
         `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
         {
           agentId: topology.agent.id,
-          secretId: topology.secretApi.slackBot.id,
+          sourceId: topology.slackSources.bot.id,
           kind,
           ids: [id],
         },
@@ -125,21 +126,18 @@ test(
     );
     const gatewayEnvironment = gateway.spec.template.spec.containers[0].env;
     const agentEnvironment = agent.spec.template.spec.containers[0].env;
+    const stagedName = `gateway-secrets-${suffix}-${hash(topology.revision.id)}`;
+    const staged = await resource("secret", stagedName, topology.gatewayPlacement);
     for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
-      const source = await storedSecret(
-        topology.observerPool,
-        topology.agent.namespaceId,
-        topology.secretApi[key === "SLACK_APP_TOKEN" ? "slackApp" : "slackBot"].id,
-      );
       const { optional, ...ref } = gatewayEnvironment.find(({ name }) => name === key).valueFrom
         .secretKeyRef;
-      assert.equal(source.backendRef.namespaceName, topology.gatewayPlacement);
       assert.equal(optional ?? false, false);
       assert.deepEqual(
         ref,
-        { name: source.backendRef.name, key: source.backendRef.key },
-        "only the owning Gateway may reference the admitted canonical channel source",
+        { name: stagedName, key },
+        "the Gateway must reference Compute's revision-specific delivery Secret",
       );
+      assert.ok(staged.data[key], "Compute must stage the selected Source for this revision");
       assert.equal(
         agentEnvironment.some(({ name }) => name === key),
         false,
@@ -230,6 +228,15 @@ test(
     for (const token of [slack.appToken, slack.botToken, slack.senderBotToken].filter(Boolean)) {
       assert.ok(!JSON.stringify(fleet).includes(token), "Envoy must not receive Slack credentials");
     }
+    const modelSurfaces = [topology.agent, topology.revision, gateway, fleet].map((value) =>
+      JSON.stringify(value),
+    );
+    assert.ok(
+      !protectedModelVariants.some((value) =>
+        modelSurfaces.some((surface) => surface.includes(value)),
+      ),
+      "A Harness model credential appeared in a public, Gateway, or Envoy surface.",
+    );
 
     await waitFor("a genuine authenticated Slack Socket Mode connection", async () => {
       const logs = await kubectl(
@@ -237,6 +244,10 @@ test(
         topology.gatewayPod.metadata.name,
         "--namespace",
         topology.gatewayPlacement,
+      );
+      assert.ok(
+        !protectedModelVariants.some((value) => logs.includes(value)),
+        "Gateway logs must not expose a Harness model credential.",
       );
       assert.equal(logs.includes(slack.appToken), false, "gateway logs must not expose app tokens");
       assert.equal(logs.includes(slack.botToken), false, "gateway logs must not expose bot tokens");
@@ -354,7 +365,7 @@ test(
           `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
           {
             agentId: topology.agent.id,
-            secretId: topology.secretApi.slackBot.id,
+            sourceId: topology.slackSources.bot.id,
             kind: "users",
             ids: [senderIdentity.user_id],
           },
@@ -374,5 +385,5 @@ test(
     context.diagnostic(
       "Channel credential isolation, assigned Envoy listener, and single-message native Codex Slack delivery verified.",
     );
-  },
+  }),
 );

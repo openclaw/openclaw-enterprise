@@ -1,6 +1,5 @@
 import { enterManualModel } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import type { Locator } from "playwright";
@@ -20,6 +19,7 @@ import {
   AGENT_READ,
   accessibleDescription,
   apiRequests,
+  createSlackSourceConsoleFixture,
   detailUrl,
   expectReachableReason,
   grantInstallationAdministration,
@@ -32,7 +32,7 @@ import {
   shippedPreset,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
+import { slackAgentValues } from "./console-slack-agent.ts";
 import { bindRole, restrict } from "../helpers/iam-grants.ts";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
@@ -61,33 +61,6 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
   );
   assertId(agent);
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  // An Agent bound to an issued service account. Issuance is outside the console: seed its stored
-  // result, as the Credentials tests do.
-  const issued = await fixture.controller.transact(async (state) => {
-    const created = await state.serviceAccounts.createServiceAccount({
-      id: `sa_${randomUUID()}`,
-      namespaceId: namespace.id,
-      name: "Described issued account",
-    });
-    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
-      kind: "access_token",
-      secretRef: { name: "described-issued-account", key: "token" },
-    });
-  });
-  assert.ok(issued);
-  const issuedAgent: unknown = await fixture.createAgent(
-    namespace.id,
-    "Described issued Agent",
-    nativeValues("issued", { harnessId: "codex" }),
-    {
-      executionMode: "dedicated",
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespace.id, id: issued.id },
-      },
-    },
-  );
-  assertId(issuedAgent);
   const reader = await fixture.createNamespaceMember("described-reader", namespace.id, AGENT_READ);
   const { page } = await newPage(t, fixture);
 
@@ -142,30 +115,17 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
   await status.filter({ hasNotText: "Loading" }).filter({ hasText: /\S/ }).waitFor();
   const bound = (await status.textContent())?.trim();
   await expectReachableReason(page, apiKey, bound);
-
-  // An issued-account source: its account select needs Agent update too, and the same note says
-  // why (finding 2925).
-  await page.goto(detailUrl(fixture, namespace.id, issuedAgent.id, "draft", "credentials").href);
-  const account = page.getByLabel("Issued ChatGPT service account", { exact: true });
-  await page.getByText(reason, { exact: true }).waitFor();
-  assert.equal(await account.inputValue(), issued.id);
-  await expectReachableReason(page, account, reason);
 });
 
 // Finding 2899: the Agents list, Secrets and Slack token controls a reader cannot use were
 // natively disabled, so Tab skipped them and their reasons.
 test("a reader reaches the list, Secret and Slack token controls they cannot use, and why", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reachable reader");
-  const app = await fixture.createSecret(
-    namespace.id,
-    "Reachable Slack app token",
-    "xapp-reachable",
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Reachable reader",
   );
-  const bot = await fixture.createSecret(
-    namespace.id,
-    "Reachable Slack bot token",
-    "xoxb-reachable",
-  );
+  const app = (await enroll("Reachable Slack app token", "xapp")).source;
+  const bot = (await enroll("Reachable Slack bot token")).source;
   // A running Agent for the row's Stop and Delete, and a Slack draft for the token fields.
   const running: unknown = await fixture.createAgent(
     namespace.id,
@@ -178,12 +138,19 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
     namespace.id,
     "Reachable Slack Agent",
     slackAgentValues("reach"),
-    slackTokenBindings(app, bot),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
   );
   assertId(agent);
   const reader = await fixture.createNamespaceMember("reachable-reader", namespace.id, [
     ...AGENT_READ,
     ["read", "secret"],
+    ["read", "credential_source"],
   ]);
   const { page } = await newPage(t, fixture);
 
@@ -211,14 +178,16 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
     SECRET_CREATE_MEMBER_DENIED,
   );
 
-  // Credentials: each read-only Slack token field's status says what is bound.
+  // Credentials: each read-only Slack selector remains reachable and explains the editing
+  // permission that makes it unavailable.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href);
+  const readOnly =
+    "Your access does not include editing this Configuration, so its channel credentials are read-only.";
+  await page.getByText(readOnly, { exact: true }).waitFor();
   for (const name of ["Slack app token", "Slack bot token"]) {
     const field = page.getByRole("combobox", { name, exact: true });
     await field.waitFor();
-    const status = page.locator(`#${await field.getAttribute("id")}-status`);
-    await status.filter({ hasNotText: "Loading" }).filter({ hasText: /\S/ }).waitFor();
-    await expectReachableReason(page, field, (await status.textContent())?.trim());
+    await expectReachableReason(page, field, readOnly);
   }
 });
 
@@ -318,7 +287,7 @@ test("Configure Slack on an embedded Agent is described by the execution mode", 
   assert.equal(await accessibleDescription(configure), CHANNELS_NEED_DEDICATED);
   await expectReachableReason(page, configure, CHANNELS_NEED_DEDICATED);
   assert.equal(await page.getByRole("dialog").count(), 0);
-  // An Embedded Agent cannot have channels, so the card asks for no Slack token Secrets
+  // An Embedded Agent cannot have channels, so the card asks for no Slack credentials
   // (finding D708).
   assert.equal(await page.getByText(SLACK_SETUP_HINT).count(), 0);
 });
@@ -405,25 +374,26 @@ test("Start with default Preset names the missing default as its reason", async 
   await expectReachableReason(page, shortcut, reason);
 });
 
-// Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
+// Finding D793. Save plugin selections, Discard changes, Save channel credentials and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.
 test("a draft's disabled Save and Discard name their reasons", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described draft");
-  const app = await fixture.createSecret(
-    namespace.id,
-    "Described Slack app token",
-    "xapp-described",
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Described draft",
   );
-  const bot = await fixture.createSecret(
-    namespace.id,
-    "Described Slack bot token",
-    "xoxb-described",
-  );
-  const agent: unknown = await fixture.createAgent(
+  const app = (await enroll("Described Slack app token", "xapp")).source;
+  const bot = (await enroll("Described Slack bot token")).source;
+  const agent = await fixture.createAgent(
     namespace.id,
     "Described Slack Agent",
     slackAgentValues("slack"),
-    slackTokenBindings(app, bot),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
   );
   assertId(agent);
   const { page } = await newPage(t, fixture);
@@ -437,9 +407,18 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
   // Both Slack tokens are bound, and nothing changed.
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await describedBy(
-    page.getByRole("button", { name: "Save channel Secrets" }),
-    "No channel Secret changes to save.",
+    page.getByRole("button", { name: "Save channel credentials" }),
+    "No channel credential changes to save.",
   );
+  // A valid saved Configuration can become temporarily incomplete in the editable form; Save
+  // names the missing Source without writing that invalid draft.
+  const appPicker = page.getByLabel("Slack app token", { exact: true });
+  await appPicker.selectOption("");
+  await describedBy(
+    page.getByRole("button", { name: "Save channel credentials" }),
+    "Choose a ready static Credential Source for each Slack credential.",
+  );
+  await appPicker.selectOption(app.id);
 
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   for (const name of ["Save plugin selections", "Discard changes"]) {
@@ -460,26 +439,6 @@ test("Use Preset names the Preset still to choose as its reason", async (t) => {
   const use = page.getByRole("button", { name: "Use Preset" });
   assert.equal(await use.isDisabled(), true);
   await expectReachableReason(page, use, reason);
-});
-
-// A Slack token without a Secret is the reason too.
-test("Save channel Secrets names an unbound Slack token as its reason", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbound Slack");
-  const agent: unknown = await fixture.createAgent(
-    namespace.id,
-    "Unbound Slack Agent",
-    slackAgentValues("unbound"),
-    { executionMode: "dedicated" },
-  );
-  assertId(agent);
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  const save = page.getByRole("button", { name: "Save channel Secrets" });
-  await save.waitFor();
-  assert.equal(await save.isDisabled(), true);
-  const reason = "Choose a Secret for each Slack token to save.";
-  assert.equal(await page.getByText(reason, { exact: true }).isVisible(), true);
-  await expectReachableReason(page, save, reason);
 });
 
 // An Installation administrator's Credentials tab read the IAM policy and found no grant of the

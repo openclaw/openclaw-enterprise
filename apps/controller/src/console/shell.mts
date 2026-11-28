@@ -1,9 +1,9 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
-import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
+import { button, element, focusSaveOutcome, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
-  oauthClientsPage,
+  credentialClientsPage,
   type createNavigation,
   type pages,
 } from "./navigation.mjs";
@@ -33,7 +33,11 @@ type ShellOptions = Pick<Navigation, "route" | "pageUrl" | "navigate"> & {
   logout(): void;
 };
 
-type LeaveGuard = (options?: { pendingOnly: true } | { refresh: true }) => boolean;
+type LeaveGuard = (options?: {
+  pendingOnly?: true;
+  refresh?: true;
+  focusFeedback?: (feedback: HTMLElement) => void;
+}) => boolean;
 
 export function brandContents(placement: "navigation" | "sign-in") {
   const displayName =
@@ -167,6 +171,7 @@ export function createShell({
   let drawerControls: {
     shell: HTMLElement;
     sidebar: HTMLElement;
+    toggle: HTMLButtonElement;
     close(focus?: boolean): void;
   } | null = null;
   let namespaceSelect: HTMLSelectElement | null = null;
@@ -174,6 +179,14 @@ export function createShell({
   // Whether the shown page refuses to be left yet; it then says why (finding 1902).
   let refuseLeave: LeaveGuard = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
+
+  function focusLeaveFeedback(feedback: HTMLElement) {
+    // The drawer makes the page inert. Close it without returning focus to its toggle.
+    if (drawerControls?.shell.classList.contains("drawer-open")) {
+      drawerControls.close(false);
+    }
+    focusSaveOutcome(document.body, [], feedback);
+  }
 
   mobileLayout.addEventListener("change", (event) => {
     // The account menu of the layout being left is hidden; close it so it doesn't reappear open.
@@ -294,7 +307,18 @@ export function createShell({
     });
     enableMenuKeys(menu, closeAccount);
     menu.append(
-      button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
+      button(
+        "Settings",
+        () => {
+          if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
+            // Restore the toggle only if the guard left focus in the menu.
+            closeAccount(menu.contains(document.activeElement));
+            return;
+          }
+          navigate("settings");
+        },
+        { role: "menuitem", tabindex: "-1" },
+      ),
       button("Sign out", () => void logout(), { role: "menuitem", tabindex: "-1" }),
     );
     account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));
@@ -414,7 +438,7 @@ export function createShell({
         return;
       }
       // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
-      if (refuseLeave()) {
+      if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
         select.value = namespaceId ?? "";
         return;
       }
@@ -499,7 +523,12 @@ export function createShell({
     );
     copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, status);
+    return element(
+      "span",
+      { className: "page-meta-id" },
+      element("span", { className: "page-meta-id-controls" }, id, copy),
+      status,
+    );
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
@@ -515,7 +544,7 @@ export function createShell({
         return;
       }
       event.preventDefault();
-      if (refuseLeave()) {
+      if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
         return;
       }
       navigate("agents");
@@ -579,6 +608,8 @@ export function createShell({
       Boolean(drawerControls?.shell.classList.contains("drawer-open"));
     const drawerFocus =
       drawerOpen && !menuFocus && drawerControls?.sidebar.contains(focused) ? focused : null;
+    // The closed drawer's toggle is outside the sidebar but belongs to the same load.
+    const drawerToggleFocused = !drawerOpen && focused === drawerControls?.toggle;
     // Focus the person moved to a sidebar control during a load stays on it through the load's
     // later renders (loading, then the page). reset() runs as each load starts, so the first
     // render keeps none.
@@ -602,7 +633,7 @@ export function createShell({
         event.preventDefault();
         // A page waiting on a write stays and says why, as ← Agents does (finding 1937). On a
         // phone the drawer closes, so the reason is not hidden behind it.
-        if (refuseLeave({ pendingOnly: true })) {
+        if (refuseLeave({ pendingOnly: true, focusFeedback: focusLeaveFeedback })) {
           if (drawerControls?.shell.classList.contains("drawer-open")) {
             drawerControls.close();
           }
@@ -611,8 +642,8 @@ export function createShell({
         navigate(name);
       });
     }
-    const credentialAdministration =
-      feature === connectionTemplatesPage || feature === oauthClientsPage;
+    const credentialSection =
+      feature === connectionTemplatesPage || feature === credentialClientsPage;
     const icons = {
       agents:
         "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
@@ -625,7 +656,7 @@ export function createShell({
         {
           href: pageUrl(name),
           "data-nav": name,
-          ...(feature === name || (credentialAdministration && name === "secrets")
+          ...(feature === name || (credentialSection && name === "secrets")
             ? { "aria-current": "page" }
             : {}),
         },
@@ -694,7 +725,7 @@ export function createShell({
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
-      credentialAdministration || ["agents", "secrets"].includes(feature)
+      credentialSection || ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
@@ -756,17 +787,20 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (feature === "secrets" || credentialAdministration) {
+    if (feature === "secrets" || credentialSection) {
       const sections = element("nav", {
         className: "credential-tabs",
         "aria-label": "Credential sections",
       });
       for (const [name, label] of [
-        ["secrets", "Secrets"],
+        ["secrets", "Credentials"],
         [connectionTemplatesPage, "Connection templates"],
-        [oauthClientsPage, "OAuth clients"],
+        [credentialClientsPage, "Credential clients"],
       ] as const) {
-        if (name !== "secrets" && !state.installationAdmin) {
+        if (
+          (name === connectionTemplatesPage || name === credentialClientsPage) &&
+          !state.installationAdmin
+        ) {
           continue;
         }
         const link = element(
@@ -859,7 +893,7 @@ export function createShell({
         tabindex: "-1",
       }),
     );
-    drawerControls = { shell, sidebar, close: closeDrawer };
+    drawerControls = { shell, sidebar, toggle: mobileToggle, close: closeDrawer };
     app.replaceChildren(shell);
     if (drawerOpen) {
       // Focus moves to the same control in the new drawer; close if it has none.
@@ -874,6 +908,16 @@ export function createShell({
     }
     if (sidebarFocus) {
       sameControl(sidebarFocus, sidebar)?.focus({ preventScroll: true });
+    }
+    if (
+      drawerToggleFocused &&
+      session &&
+      mobileLayout.matches &&
+      !document.hidden &&
+      document.hasFocus() &&
+      document.activeElement === document.body
+    ) {
+      mobileToggle.focus({ preventScroll: true });
     }
     if (menuFocus) {
       menuFocus.focus({ preventScroll: true });
@@ -1067,13 +1111,14 @@ export function createShell({
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
     dropAdministrationLinks() {
-      for (const page of [connectionTemplatesPage, oauthClientsPage]) {
+      for (const page of [connectionTemplatesPage, credentialClientsPage]) {
         app.querySelector(`.credential-tabs [data-nav="${page}"]`)?.remove();
       }
       observabilityUrl = null;
       observabilityLink?.remove();
       observabilityLink = null;
     },
+    focusLeaveFeedback,
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;
     },

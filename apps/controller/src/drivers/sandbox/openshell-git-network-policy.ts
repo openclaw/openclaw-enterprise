@@ -1,4 +1,14 @@
 import {
+  parseRepositoryApiLimits,
+  type DeploymentRequestMatch,
+  type RepositoryNetworkGrant,
+} from "@openclaw-enterprise/contracts";
+import {
+  repositoryGitRestOperations,
+  type RepositoryGitRestAuthority,
+} from "../repo/access/delivery.ts";
+import { githubPullRequestCreationRequest } from "../repo/github/access/registry.ts";
+import {
   openShellProfileEndpoint,
   type OpenShellProviderProfileEndpoint,
 } from "./openshell-gateway-client.ts";
@@ -7,12 +17,26 @@ export type OpenShellGitNetworkTarget =
   | { readonly repository: string; readonly installationId?: never }
   | { readonly repository?: never; readonly installationId: string };
 
-const binaries = Object.freeze([
+/** Stock Git and transport helpers eligible to receive Repository credentials. */
+export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
   "/usr/bin/git",
   "/usr/lib/git-core/git-remote-https",
   "/usr/lib/git-core/git-remote-http",
   "/usr/libexec/git-core/git-remote-https",
   "/usr/libexec/git-core/git-remote-http",
+]);
+
+export function openShellRepositoryMetadataRequest(repository: string) {
+  return {
+    binary: "/usr/bin/curl",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+  } satisfies DeploymentRequestMatch;
+}
+
+const binaries = Object.freeze([
+  ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
   "/usr/bin/curl",
   "/usr/local/bin/node",
   "/usr/bin/node",
@@ -91,11 +115,6 @@ export function openShellGitEndpoints(
       ];
 }
 
-interface RepositoryNetworkGrant {
-  readonly repository: string;
-  readonly access: "read" | "write";
-}
-
 function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryNetworkGrant[] {
   if (!Array.isArray(grants) || grants.length === 0 || grants.length > 32) {
     throw new Error("Expected between 1 and 32 repository grants.");
@@ -109,7 +128,7 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
       !grant ||
       typeof grant !== "object" ||
       Array.isArray(grant) ||
-      Reflect.ownKeys(grant).length !== 2 ||
+      Reflect.ownKeys(grant).length !== (Object.hasOwn(grant, "apiLimits") ? 3 : 2) ||
       !Object.hasOwn(grant, "repository") ||
       !Object.hasOwn(grant, "access")
     ) {
@@ -126,51 +145,70 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
       throw new Error("Invalid repository network grant.");
     }
     seen.add(repository);
-    policy.push({ repository, access });
+    const apiLimits = Object.hasOwn(grant, "apiLimits")
+      ? parseRepositoryApiLimits(grant.apiLimits)
+      : undefined;
+    policy.push({ repository, access, ...(apiLimits && { apiLimits }) });
   }
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
 
-function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGrant) {
+export function openShellGitServiceRules({ repository, access }: RepositoryNetworkGrant) {
   const root = `/${repository}.git`;
   const services =
     access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+  return services.flatMap((service) => [
+    {
+      allow: {
+        method: "GET",
+        path: `${root}/info/refs`,
+        query: { service: { glob: service } },
+      },
+    },
+    { allow: { method: "POST", path: `${root}/${service}` } },
+  ]);
+}
+
+function repositoryNetworkEndpoint(grant: RepositoryNetworkGrant) {
   return openShellProfileEndpoint({
     host: "github.com",
     port: 443,
     protocol: "rest",
-    path: `${root}/**`,
-    rules: services.flatMap((service) => [
-      {
-        allow: {
-          method: "GET",
-          path: `${root}/info/refs`,
-          query: { service: { glob: service } },
-        },
-      },
-      { allow: { method: "POST", path: `${root}/${service}` } },
-    ]),
+    path: `/${grant.repository}.git/**`,
+    rules: openShellGitServiceRules(grant),
   });
 }
 
-export interface OpenShellScopedRestGrant {
-  readonly repository: string;
-  readonly readIssues: boolean;
-}
+export type OpenShellScopedRestGrant = RepositoryGitRestAuthority[number];
 
 function scopedApiEndpoints(
   policy: readonly RepositoryNetworkGrant[],
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
 ): readonly OpenShellProviderProfileEndpoint[] {
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
-  for (const { repository } of policy) {
+  for (const { repository, issues, pull_requests: pulls } of repositoryGitRestOperations(
+    policy,
+    permissions,
+  )) {
     const rules = [];
-    const rest = permissions?.find((grant) => grant.repository === repository);
-    if (rest?.readIssues === true) {
-      const path = `/repos/${repository}/issues`;
+    if (pulls === "write") {
+      const { method, path } = githubPullRequestCreationRequest(repository).requestPolicy;
+      rules.push({ allow: { method, path } });
+    }
+    if (issues === "write") {
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });
+    }
+    for (const [resource, enabled] of [
+      ["issues", issues !== "none"],
+      ["pulls", pulls !== "none"],
+    ] as const) {
+      if (!enabled) {
+        continue;
+      }
+      const path = `/repos/${repository}/${resource}`;
       rules.push({ allow: { method: "GET", path } });
       // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
-      // Enumerate positive decimal issue-number paths up to 19 digits.
+      // Enumerate positive decimal detail paths up to 19 digits.
       for (let width = 1; width <= 19; width++) {
         rules.push({ allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width - 1)}` } });
       }

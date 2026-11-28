@@ -10,7 +10,7 @@
     "OCC_TEST_GATEWAY_CA_CERT_PATH",
     "OCC_TEST_GATEWAY_CA_KEY_PATH"
   ],
-  "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"],
+  "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE", "OCC_TEST_KEYCLOAK_HOST_PORT"],
   "env": {
     "OCC_TEST_GATEWAY_ROUTING_REAL": "1",
     "OCC_TEST_SLACK_LIVE": "0",
@@ -29,6 +29,12 @@
     "keycloak": true
   },
   "files": [
+    {
+      "path": "tests/integration/agent-network-proxy-kubernetes-real.test.ts",
+      "expectedTests": [
+        "an Agent without channels saves and deploys a proxy selection without granting channel egress"
+      ]
+    },
     {
       "path": "tests/integration/native-profile-upgrade-k3d-real.test.ts",
       "expectedTests": [
