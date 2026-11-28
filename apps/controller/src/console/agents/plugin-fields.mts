@@ -19,6 +19,7 @@ import {
   jsonObjectDiagnostic,
   mayReturnFocus,
   revealStatus,
+  setHidden,
   setText,
   setUnavailable,
 } from "../dom.mjs";
@@ -1690,20 +1691,24 @@ export function createPluginFields({
       const toolFilterStatus = element("div", { role: "status" });
       const filterTools = () => {
         const query = tabState().toolQuery.toLowerCase();
-        let hasMatch = false;
+        let firstMatch: HTMLDetailsElement | undefined;
         for (const [tool, row] of toolRows) {
-          row.hidden = ![tool.name, tool.description ?? "", tool.id].some((value) =>
+          const matches = [tool.name, tool.description ?? "", tool.id].some((value) =>
             value.toLowerCase().includes(query),
           );
-          hasMatch ||= !row.hidden;
+          setHidden(row, !matches);
+          if (matches) {
+            firstMatch ??= row;
+          }
         }
-        const showNoMatches = toolRows.length > 0 && !hasMatch;
+        const showNoMatches = toolRows.length > 0 && !firstMatch;
         // Keep the empty live region in place without adding hint spacing.
         toolFilterStatus.classList.toggle("hint", showNoMatches);
         setText(
           toolFilterStatus,
           showNoMatches ? "No matching tools. Change or clear the filter." : "",
         );
+        return firstMatch;
       };
       if (tools.size) {
         const filter = element("input", {
@@ -1713,9 +1718,38 @@ export function createPluginFields({
           "data-discovery": "true",
           value: tabState().toolQuery,
         });
+        let previousResult: Element | undefined;
         filter.addEventListener("input", () => {
           tabState().toolQuery = filter.value;
-          filterTools();
+          const paneTop = detail.getBoundingClientRect().top + detail.clientTop;
+          const paneBottom = paneTop + detail.clientHeight;
+          const field = filter.getBoundingClientRect();
+          const visible =
+            document.activeElement === filter && field.top >= paneTop && field.bottom <= paneBottom;
+          // Keep the pane's scroll position when rows below the field disappear.
+          const offset = detail.scrollTop;
+          details.style.minBlockSize =
+            visible && filter.value && offset > 0 ? `calc(100% + ${offset}px)` : "";
+          const result = filterTools() ?? toolFilterStatus;
+          const changed = result !== previousResult;
+          previousResult = filter.value ? result : undefined;
+          if (!visible || !changed) {
+            return;
+          }
+          // Reveal a new result only if the field and its focus ring can stay in view.
+          const feedback = result.querySelector(".plugin-tool-heading") ?? result;
+          const shift = Math.ceil(feedback.getBoundingClientRect().bottom - paneBottom);
+          if (shift <= 0) {
+            return;
+          }
+          const { outlineWidth, outlineOffset } = getComputedStyle(filter);
+          const ring = Math.max(
+            0,
+            Number.parseFloat(outlineWidth) + Number.parseFloat(outlineOffset),
+          );
+          if (shift + ring <= field.top - paneTop) {
+            detail.scrollTop += shift;
+          }
         });
         details.append(element("h4", {}, `Tools (${tools.size})`));
         if (values !== null) {
