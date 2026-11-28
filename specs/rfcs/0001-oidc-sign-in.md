@@ -16,6 +16,9 @@ status: Proposed
 - **Source baseline:** `main` at `ccf5d79b`; source links are pinned to it. Details may change as
   the implementation lands in the stacked PR; this document follows the code, not the reverse.
 
+> **Historical proposal.** This RFC records the original manual-attach design. The
+> [OIDC sign-in guide](../../docs/guides/deploy/oidc-sign-in.md) describes supported sign-in and enrollment.
+
 <a id="problem-and-decision"></a>
 
 ## Summary
@@ -109,6 +112,10 @@ elsewhere is refused as `404` today ([errors.ts:378-383][errors]). Account creat
 only `github.subject` ([index.ts:4278][create-account]), so OIDC identities are attached
 afterwards.
 
+> **Current behavior.** An authorized administrator receives HTTP `409 RESOURCE_CONFLICT`
+> when another account already holds the same provider instance and subject. See
+> [Attach and detach](../../docs/guides/deploy/oidc-sign-in.md#attach-and-detach).
+
 The callback admits only an attached (instance, subject) pair
 ([human-authentication.ts:545-562][snapshot]); anything else is audited as
 `EXTERNAL_IDENTITY_REJECTED` and creates no account. Only the `openid` scope is requested and
@@ -122,6 +129,13 @@ sessions on their next use, audited as `authentication.session.end`. Other sessi
 detach (version bump) or expiry, eight hours at most. OCE does not learn when an IdP
 disables someone, so offboarding also means detaching or disabling in OCE. Sign-out is
 local: while the IdP session lives, one click signs in again.
+
+> **Current offboarding.** Disable the OCE account to end its sessions and block future
+> human sign-in. Revoke the person's applicable service keys separately and disable the
+> person at the IdP. Disabling only at the IdP leaves issued OCE sessions valid until
+> expiry, up to eight hours. Detaching one sign-in method ends existing sessions, and
+> other enabled methods remain usable. See
+> [Offboard a person](../../docs/guides/deploy/oidc-operations.md#offboard-a-person).
 
 ### ID-token checks
 
