@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-10
-last_updated_session: authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761
+updated: 2026-11-24
+last_updated_session: authoring-run/9f7e7f75-a9d9-41c1-9261-57b348b67fa5
 ---
 
 # Console sign-in and destination recovery
@@ -123,9 +123,15 @@ later. The
 [authentication flow](../local-password-authentication.md#3-construct-session-authentication)
 owns the server side.
 
-`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks Origin
-before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
-CLI requests remain supported. The browser stores no credentials.
+The browser stores the session token in an `HttpOnly` cookie. Console
+JavaScript cannot read the token. The tab sends the separate session key.
+
+In `apps/controller/src/auth/index.ts`, password sign-in calls
+`requireTrustedBrowserOrigin` before the Better Auth server call. A supplied
+`Origin` must match the configured Console origin. Without it, OCC rejects
+`Sec-Fetch-Site: cross-site` but accepts CLI requests without browser headers.
+Sign-out calls `requireSessionMutationOrigin`. It requires the configured
+`Origin` and, if present, `Sec-Fetch-Site: same-origin`.
 
 ### 2. Authorize the destination
 
@@ -165,6 +171,8 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:03: Distinguish the session cookie and origin checks for sign-in and sign-out. (authoring-run/9f7e7f75-a9d9-41c1-9261-57b348b67fa5 - 265dfda012f6c161342bcc7a2f6c98d6fe0b919f)
 
 - 2026-11-10 08:33: Keep password entry behind explicit recovery until sign-in discovery settles. (authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

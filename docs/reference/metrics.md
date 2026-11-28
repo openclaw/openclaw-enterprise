@@ -146,7 +146,8 @@ upgrades must explicitly review this list; new defaults are filtered out.
 
 For `R` observed registered route/method pairs, HTTP has at most `20R` series
 (six statuses plus fourteen histogram series). Unmatched methods add at most
-eight pairs. Sign-in callbacks add three API series.
+eight pairs. `occ_sign_in_unmatched_callbacks_total` adds two series per API
+registry, one for `google` and one for `oidc`. Both start at zero.
 
 In one worker registry with a successful six-state snapshot, application metrics
 expose exactly `54 + 14K + P` series. `K` is the number of observed work kinds;
