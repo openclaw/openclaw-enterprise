@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   codexBwrapAdditionalSyscalls,
   deriveCodexBwrapProfile,
+  validateRuntimeDefaultSeccompProfile,
 } from "../../scripts/lib/codex-seccomp-profile.ts";
 import {
   fixture,
@@ -120,22 +121,39 @@ export function registerSeccompProfileDerivationCases() {
 
   test("codex seccomp profile derivation rejects a baseline that denies a call bwrap needs", () => {
     // CRI-O's RuntimeDefault denies clone with any namespace flag; appended allows would not override it.
-    assert.throws(
-      () =>
+    const deniesClone = {
+      ...runtimeDefaultBaseline,
+      syscalls: [
+        ...runtimeDefaultBaseline.syscalls,
+        {
+          names: ["clone"],
+          action: "SCMP_ACT_ERRNO",
+          errnoRet: 1,
+          args: [{ index: 0, op: "SCMP_CMP_MASKED_EQ", value: 0x20000, valueTwo: 0x20000 }],
+        },
+      ],
+    };
+    assert.throws(() => deriveCodexBwrapProfile(deniesClone), /explicitly denies clone/);
+    assert.doesNotThrow(() => validateRuntimeDefaultSeccompProfile(deniesClone));
+  });
+
+  test("codex seccomp profile derivation admits denials that cannot block a bwrap call", () => {
+    const harmless = [
+      {
+        names: ["unshare"],
+        action: "SCMP_ACT_ERRNO",
+        args: [{ index: 0, op: "SCMP_CMP_EQ", value: 0x40000000 }],
+      },
+      { names: ["clone"], action: "SCMP_ACT_LOG" },
+    ];
+    for (const rule of harmless) {
+      assert.doesNotThrow(() =>
         deriveCodexBwrapProfile({
           ...runtimeDefaultBaseline,
-          syscalls: [
-            ...runtimeDefaultBaseline.syscalls,
-            {
-              names: ["clone"],
-              action: "SCMP_ACT_ERRNO",
-              errnoRet: 1,
-              args: [{ index: 0, op: "SCMP_CMP_MASKED_EQ", value: 0x20000, valueTwo: 0x20000 }],
-            },
-          ],
+          syscalls: [...runtimeDefaultBaseline.syscalls, rule],
         }),
-      /explicitly denies clone/,
-    );
+      );
+    }
   });
 
   test("codex seccomp profile derivation admits reviewed native architecture compat groups", () => {
