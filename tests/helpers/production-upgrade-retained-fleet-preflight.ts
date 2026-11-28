@@ -225,6 +225,7 @@ export function registerRetainedFleetPreflightTests(
           executionMode: "dedicated",
           activeRevisionId: "rev_old",
           deploymentInProgress: true,
+          repositoryWorkerRestart: "not-applicable",
         },
       ],
     };

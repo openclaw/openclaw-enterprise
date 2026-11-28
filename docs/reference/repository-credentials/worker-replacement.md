@@ -24,11 +24,22 @@ supported held launches and observed-hook previews when their admitted mode and
 execution evidence match. Unsupported legacy installation-wide routes return
 `unknown`; historical recovery does not establish current support.
 
-The inventory keeps its existing authorization checks: Installation `administer`,
+With exactly one other revision queued at zero recorded attempts, OCC still assesses
+the active revision. The inventory also reports `deploymentInProgress: true`,
+which blocks the upgrade regardless of the assessment. A deferral can reset
+the count. Zero attempts does not prove that the Worker never claimed the work.
+
+For claimed work, a positive attempt count, work on the active revision or
+multiple pending revisions, OCC omits the assessment. Missing evidence cannot
+authorize a restart.
+
+The inventory requires Installation `administer`,
 Namespace and Agent `read`, plus Agent `deploy` and revision `read` for eligible
-running Agents. OCC reads owners outside the State transaction with one ten-second
+running Agents. These checks include the active revision when another revision is
+queued at zero attempts. A denied check refuses the entire inventory. OCC reads owners outside the State transaction with one ten-second
 observation budget, then reauthorizes and compares the complete fleet and selected
-Drivers. A changed inventory refuses the read. The
+Drivers. If the snapshots differ, OCC refuses the read. A claim followed by
+deferral between reads can go undetected. The
 [upgrade helper](../../guides/deploy/production-upgrade.md#prepare-the-release) rechecks
 before stopping writers; operators must still exclude concurrent deployment.
 

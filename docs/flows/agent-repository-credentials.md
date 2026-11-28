@@ -318,6 +318,10 @@ Missing standing evidence closes Git. Within five seconds, the worker rechecks m
 
 `OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports supported
 held/preview execution `original-worker-required`; unsupported legacy routes `unknown`.
+`packages/occ/src/deployment-inventory.ts:readDeploymentInventory` can assess the active
+revision when one other revision is queued at zero recorded attempts. It requires Agent
+`deploy` and active revision `read`. Pending work still blocks upgrades.
+See [Worker replacement](../reference/repository-credentials/worker-replacement.md).
 [Preflight](coordinated-production-upgrade.md#1-prepare-the-candidate) cannot authorize execution.
 
 `OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
@@ -384,6 +388,8 @@ See [repository credential tests](../testing/repository-credentials.md).
 
 - 2026-11-24 17:19: Trace the lifetime of Source-backed Git authorization. (authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796 - 936baaa9652b5008437647a818ad3c09eed317f1)
 
+- 2026-11-24 12:41: Restart assessments. (authoring-run/89e4f141-6ec7-476f-8bfb-48d4359255d1 - 23ba5411395f41321d6c7eb5d80d9793642895a8)
+
 - 2026-11-20 16:39: Point repository binding and standing approval checks to the policy module. (authoring-run/7a822e28-b4b9-453a-ae0d-313b27e85a4e - 571102147928317ea943b955070e901086ad1503)
 
 - 2026-11-18 23:36: Trace predecessor expiry. (authoring-run/1133838b-9b9c-4205-879f-1ec640b33f0e - 30fb467c88fedb0479c6970366f8014edeffba17)
@@ -428,15 +434,5 @@ See [repository credential tests](../testing/repository-credentials.md).
 - 2026-11-04 07:04: Trace symlink-safe native Git hook launchers. (authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195 - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
-
-- 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
-
-- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
-
-- 2026-10-30 02:21: Admit CLI metadata. (authoring-run/086003c3-b067-490a-b33b-8083e88519bd - 35f44276ed5cdcb69b5fd707b085fd59b06009dd)
-
-- 2026-10-29 23:23: Share selected-repository grant projection. (authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd - a198a93e81cc88f7ba83edc4de7a949a43b19e17)
-
-- 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 
 [Earlier changes](agent-repository-credentials/history.md)

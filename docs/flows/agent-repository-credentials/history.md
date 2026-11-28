@@ -8,6 +8,16 @@ This record preserves the dated changes to the Agent repository credential flow.
 
 ## Changelog
 
+- 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
+
+- 2026-10-30 02:21: Admit CLI metadata. (authoring-run/086003c3-b067-490a-b33b-8083e88519bd - 35f44276ed5cdcb69b5fd707b085fd59b06009dd)
+
+- 2026-10-29 23:23: Share selected-repository grant projection. (authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd - a198a93e81cc88f7ba83edc4de7a949a43b19e17)
+
+- 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
+
 - 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a new Agent's deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
 
 - 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
