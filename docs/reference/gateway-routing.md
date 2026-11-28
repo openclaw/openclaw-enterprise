@@ -328,4 +328,4 @@ See [HTML preview setup](../guides/deploy/native-admin.md#enable-html-previews).
   and [API mounts](../../deploy/helm/openclaw-enterprise/templates/deployments.yaml).
 - [Kubernetes route contract](drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
   and [workspace-file execution flow](../flows/workspace-files.md).
-- [Private-routing testing](../testing/kubernetes.md#kubernetes-model-turns-and-secrets).
+- [Private-routing testing](../testing/kubernetes.md#private-gateway-routing).

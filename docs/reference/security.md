@@ -243,11 +243,15 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   never granted by bootstrap. A `read_logs` Restriction also blocks
   `administer`. Every poll is authorized again; a denial is audited and reaches
   no Driver.
-- **Audit.** OCC writes `openclaw.agents.runtime_logs.view` before the first log
-  read of a view, and `openclaw.agents.runtime_logs.download` before every
-  download, both with audit kind `access`. If that write fails the request returns `503` with no content.
-  A download is the same sanitized page in a text serializer; it needs the
-  same grants and is not stored on the server.
+- **Audit.** OCC records `openclaw.agents.runtime_logs.view` before the first
+  log read of a view and `openclaw.agents.runtime_logs.download` before reading
+  logs for each download. Both events have kind `access`. If the audit write
+  fails, OCC returns `503 RUNTIME_LOGS_AUDIT_UNAVAILABLE` without reading
+  or returning log records. When automatic container
+  log selection finds no Pod, the download returns only a header, without a
+  download access event. A selected Pod can also return zero records after
+  the audit. A [download](../guides/topics/agent-logs.md#download) uses the same
+  grants and serializes the sanitized page as text. OCC does not store the file.
 - **Content.** An allowlist classifier keeps only operational wrapper, Gateway,
   Codex tracing and short plain-text lines. Codex message text is kept only from
   reviewed operational targets (app server, login, CA setup, plugin manifests)

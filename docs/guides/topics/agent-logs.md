@@ -40,18 +40,18 @@ narrow the loaded rows (up to 5000). Gap and withheld rows stay visible.
 
 ### Download
 
-**Download** requests the latest 1,000 lines and can omit
-[older visible rows](#gaps-limits-and-retention).
-Download uses the selected stream and instance. **Include debug** applies.
-The level chips and **Filter** box do not.
+**Download** requests the selected source’s latest 1,000 lines.
+[Older visible rows](#gaps-limits-and-retention) may be missing. Downloads
+respect **Include debug** but ignore level chips and **Filter**.
 Container filenames use `<agent>-<revision>-<source>-<pod>.log`; **Previous
 instance** adds `-previous` before `.log`.
 
-The `#` header names the Agent and version, plus the Pod and container if available.
-`instance=current` or `instance=previous` is what you requested, not a guarantee that logs exist.
-Records follow the page format (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`,
-`GAP` or `WITHHELD`), with the same best-effort redaction. Treat the file as
-sensitive; delete it when done.
+The header names the Agent, version and source. Container headers include the requested
+instance and any selected Pod and container. Sandbox headers identify the Sandbox.
+If automatic container selection finds no Pod, OCC returns only the header without a download access
+event. Audited reads can also be empty.
+Records use `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, `GAP` or
+`WITHHELD`. Redaction is best effort. Delete the sensitive file when done.
 
 The HTTP API offers these reads:
 
@@ -83,7 +83,7 @@ AGENT_ID --source SOURCE` prints one page, or keeps polling with `--follow`:
 
 ```sh
 occ agent logs agt_... --source agent --since 10m --level info --follow
-occ agent logs agt_... --source agent --previous -o json
+occ agent logs agt_... --source agent --previous
 occ agent logs agt_... --source sandbox --follow
 ```
 
@@ -94,11 +94,11 @@ selection, flags, output formats, retries and exit codes.
 
 ## Who can see what
 
-| Read                                                                       | Required grants                                              | Audited                                                   |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------- |
-| Runtime status: Pods, phase, readiness, restarts, last termination, Events | Agent `operate` and `read`, and `read` on the Agent revision | No, like [diagnostics](../../reference/agents.md)         |
-| Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`          | Once per view as `openclaw.agents.runtime_logs.view`      |
-| Log download                                                               | Same as log text                                             | Every download as `openclaw.agents.runtime_logs.download` |
+| Read                                                                       | Required grants                                              | Audited                                                              |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Runtime status: Pods, phase, readiness, restarts, last termination, Events | Agent `operate` and `read`, and `read` on the Agent revision | No, like [diagnostics](../../reference/agents.md)                    |
+| Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`          | Before each view’s first read as `openclaw.agents.runtime_logs.view` |
+| Log download                                                               | Same as log text                                             | Before reading logs as `openclaw.agents.runtime_logs.download`       |
 
 Installation administrators hold Agent `administer`, which also reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
@@ -147,9 +147,8 @@ lines and malformed lines that start like a JSON object or array, is
 becomes one withheld row. Each row names its reason code: `unrecognised_structured` (structured output
 OCC does not keep), `malformed` (JSON split across lines, as Codex prints
 it, JSON that does not parse, or JSON nested too deeply) or `oversized`.
-The console and `occ agent logs` show an invisible or direction-changing
-character in retained text (such as a bidirectional override) as an escape like
-`\u202e`.
+Console and CLI text escape bidirectional controls such as `U+202E`.
+JSON and downloads can retain them.
 
 Every retained string is redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,

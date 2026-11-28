@@ -1,7 +1,7 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-17 02:02"
-last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
+updated: "2026-11-25 05:19"
+last_updated_session: "authoring-run/b2f57b81-40a4-41f7-bf02-599337389069"
 ---
 
 # Agent HTTP chat flow
@@ -41,15 +41,18 @@ graph TD
   G -->|audit succeeds| H["<b>Private proxy</b><br/>Set chat-only authority"]
   H --> I["<b>Gateway and Harness</b><br/>Run turn and emit response"]
   I --> J["<b>OCC relay</b><br/>Forward JSON or SSE<br/>Apply backpressure"]
-  J --> K{"Response completed?"}
-  K -->|yes| N["Recheck caller and revision"]
-  N -->|current| L["Audit terminal outcome"]
+  J --> K{"Relay still active and body complete,<br/>including any required [DONE] line?"}
+  K -->|yes| P["Wait for any pending periodic check"]
+  P -->|passed or none pending| N["Recheck caller and revision"]
+  P -->|failed| M
+  N -->|current| O["End caller response"]
+  O --> L["Attempt terminal audit"]
   N -->|changed or unavailable| M
-  K -->|deadline, disconnect<br/>or failed recheck| M["Abort upstream<br/>Audit uncertain execution"]
+  K -->|no| M["Abort upstream<br/>Attempt to audit uncertain execution"]
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef process fill:#E9F4F1,stroke:#83A99E,color:#29443D,stroke-width:1px
   class D,E,K gate
-  class B,C,F,G,H,I,J process
+  class B,C,F,G,H,I,J,O process
 ```
 
 ## Execution Trace
@@ -89,18 +92,25 @@ request. No retry or redirect follows.
 
 ### 4. Bound the relay and record the result
 
-`apps/controller/src/http/agent-chat.ts:relayAgentChat` streams bytes with
-backpressure. A timer reauthenticates and reauthorizes the pinned revision.
-After the native body completes, terminal delivery awaits any in-flight periodic
-check and its cleanup, then starts a fresh bounded admission/revision check.
-Checks do not overlap, and terminal bytes stay withheld until the fresh check
-succeeds. A check started before body completion cannot authorize delivery.
-Failure, revision change, client disconnect or deadline aborts the upstream
-connection. One outer cleanup clears the timers and disconnect listeners, aborts
-the upstream and appends one terminal audit after admission. Before headers, OCC
-can return its error envelope; after headers,
-it closes the response. The final audit identifies the principal and revision
-without message content. An audit-write failure emits `http.audit_append_failed`.
+The OCC relay (`apps/controller/src/http/agent-chat.ts:relayAgentChat`)
+forwards bytes with backpressure and periodically rechecks the caller and
+pinned revision. For `stream: true` with Gateway HTTP 200, OCC retains the
+last 128 bytes or fewer and requires a `data: [DONE]` line there. A native
+stream error can also end with this marker.
+
+When the Gateway body ends cleanly, OCC still aborts the relay if the
+required line is missing. Otherwise, OCC waits for any periodic check in
+progress and its cleanup. If no check was pending or the check passed,
+OCC runs a fresh, bounded check. On success, OCC ends the caller response
+with any retained bytes. **For JSON the caller may already have received
+the entire body**, even if that final check fails.
+
+A failed check, revision change, disconnect, deadline or truncated response
+aborts the relay. Before sending headers, OCC can return its error envelope.
+After headers, it closes the response. Cleanup clears the timers and disconnect
+listeners, aborts the upstream request and attempts one terminal audit after
+admission. The audit identifies the principal and revision without message
+content. A failed audit write emits `http.audit_append_failed`.
 
 ## Debugging and Verification
 
@@ -124,6 +134,9 @@ without message content. An audit-write failure emits `http.audit_append_failed`
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-25 05:19: Show when relay completion requires a fresh authorization check. (authoring-run/b2f57b81-40a4-41f7-bf02-599337389069 - ec84767917edc3358695b6d01c6e0fa4bec8c658)
+- 2026-11-24 15:51: Distinguish JSON and SSE completion after reauthorization. (authoring-run/b555d174-e0cc-47b5-adf4-c60dc37e5995 - 7b0d04f59c01e53e3f19e1e744daee1e428e851c)
 
 - 2026-11-18 05:48: Note that the route proxy's `503` reaches a non-stream caller when a Gateway Pod is deleted. (fix-interrupted-turns-1118 - 8cbb31a68)
 
