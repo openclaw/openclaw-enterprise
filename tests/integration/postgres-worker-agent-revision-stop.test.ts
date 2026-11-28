@@ -1573,18 +1573,31 @@ test(
     const live = await fixture.revision(sibling, 1);
     await fixture.start(fixture.compute);
     await Promise.all([fixture.work(candidate, "succeeded"), fixture.work(live, "succeeded")]);
+    const opened = await repositoryAttempts(fixture, candidate);
+    assert.ok(opened.length > 0);
+    assert.ok(opened.every(({ liveRevisionId }) => liveRevisionId === candidate.id));
     const stop = await fixture.requestStop(owner);
     await fixture.work(stop, "succeeded");
-    await waitFor("cleanup to complete while its revision still exists", async () => {
-      const cleanup = await fixture.observerPool.query<{ state: string }>(
-        `SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+    async function readCleanup() {
+      const { rows } = await fixture.observerPool.query<
+        CleanupWorkRow & { idempotency_key: string }
+      >(
+        `SELECT idempotency_key, agent_id, revision_id, namespace_target, agent_target, state
+         FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
+         ORDER BY idempotency_key`,
+        [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
       );
-      return required(cleanup.rowCount) > 0 &&
-        cleanup.rows.every(({ state }) => state === "succeeded")
-        ? true
-        : undefined;
-    });
+      return rows;
+    }
+    const completedKeys = await waitFor(
+      "cleanup to complete while its revision still exists",
+      async () => {
+        const cleanup = (await readCleanup()).filter((row) => row.revision_id === candidate.id);
+        return cleanup.length > 0 && cleanup.every(({ state }) => state === "succeeded")
+          ? cleanup.map(({ idempotency_key }) => idempotency_key)
+          : undefined;
+      },
+    );
     const beforeDeletion = await fixture.controller.getInstallationDeploymentInventory(
       fixture.actor.id,
     );
@@ -1596,30 +1609,25 @@ test(
     );
     await fixture.requestDeletion(owner);
     await waitFor("Agent deletion and its independent cleanup to finish", async () => {
-      const cleanup = await fixture.observerPool.query<CleanupWorkRow>(
-        `SELECT agent_id, revision_id, namespace_target, agent_target, state
-         FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2`,
-        [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-      );
+      const cleanup = await readCleanup();
       return (await fixture.currentAgent(owner)) === undefined &&
-        required(cleanup.rowCount) > 0 &&
-        cleanup.rows.every((row) => row.state === "succeeded")
-        ? cleanup.rows
+        cleanup.length > 0 &&
+        cleanup.every((row) => row.state === "succeeded")
+        ? cleanup
         : undefined;
     });
     await fixture.stop();
 
     // The production deletion finalizer detaches both owners, retaining the
     // immutable cleanup identity and completion. No historical row is fabricated.
-    const retained = await fixture.observerPool.query<CleanupWorkRow & { idempotency_key: string }>(
-      `SELECT idempotency_key, agent_id, revision_id, namespace_target, agent_target, state
-       FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
-       ORDER BY idempotency_key`,
-      [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-    );
-    assert.ok(required(retained.rowCount) > 0);
+    const retained = await readCleanup();
+    assert.ok(retained.length > 0);
+    const retainedKeys = new Set(retained.map(({ idempotency_key }) => idempotency_key));
+    for (const key of completedKeys) {
+      assert.ok(retainedKeys.has(key), "completed cleanup must survive deletion");
+    }
     assert.ok(
-      retained.rows.every(
+      retained.every(
         (row) =>
           row.agent_id === null &&
           row.revision_id === null &&
@@ -1628,8 +1636,13 @@ test(
           row.state === "succeeded",
       ),
     );
+    const attempts = await repositoryAttempts(fixture, candidate);
+    const retainedAdmissions = new Set(attempts.map(({ admissionId }) => admissionId));
+    for (const { admissionId } of opened) {
+      assert.ok(retainedAdmissions.has(admissionId), "repository attempt must survive deletion");
+    }
     assert.ok(
-      (await repositoryAttempts(fixture, candidate)).every(
+      attempts.every(
         ({ phase, liveRevisionId }) => phase === "disposed" && liveRevisionId === null,
       ),
     );
@@ -1684,20 +1697,12 @@ test(
     await fixture.stop();
     assert.equal((await inventoryAgent()).activeRevisionId, replacement.id);
     assert.equal((await inventoryAgent()).deploymentInProgress, false);
-    const afterInventory = await fixture.observerPool.query<
-      CleanupWorkRow & { idempotency_key: string }
-    >(
-      `SELECT idempotency_key, agent_id, revision_id, namespace_target, agent_target, state
-       FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
-       ORDER BY idempotency_key`,
-      [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-    );
-    assert.deepEqual(afterInventory.rows, retained.rows);
+    assert.deepEqual(await readCleanup(), retained);
 
     // The schema permits this terminal failure state, although the worker
     // normally retries cleanup indefinitely. Inject failure into the real
     // retained record to prove that inventory leaves terminal failure intact.
-    const cleanupKey = required(retained.rows[0]).idempotency_key;
+    const cleanupKey = required(retained[0]).idempotency_key;
     try {
       await fixture.observerPool.query(
         "UPDATE occ.controller_work SET state = 'failed_permanent' WHERE idempotency_key = $1",
