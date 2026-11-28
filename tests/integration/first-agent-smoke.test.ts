@@ -36,6 +36,7 @@ import {
   registerInstalledGitTransportCase,
 } from "./first-agent-smoke-git-cases.ts";
 import { registerImageCases } from "./first-agent-smoke-image-cases.ts";
+import { registerWorkspaceReadCases } from "./first-agent-smoke-workspace-cases.ts";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
@@ -1397,3 +1398,4 @@ test("cluster events print oldest to newest by observed instant, whatever field 
 
 registerImageCases();
 registerGitExpiryCase();
+registerWorkspaceReadCases();

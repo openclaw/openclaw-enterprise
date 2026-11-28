@@ -134,6 +134,29 @@ Pod timestamps have whole-second precision. These samples cannot establish
 which component waited for another or how long users lost access. The test omits
 missing or invalid values and offsets outside 0–60 minutes.
 
+Find the `workspace reads` lines for `channel-proxy-initial-deploy` and
+`channel-proxy-move-deploy`. They sample Agent A's saved `USER.md` through the
+workspace API while A and B deploy together, then while A alone moves from an
+HTTP to an HTTPS proxy. Each phase requires a matching baseline before deployment.
+`baselineConfirmed=1` records that check. The `duringConfirmed`, `duringUnconfirmed`,
+and `duringMismatch` counts classify reads started during deployment. Confirmed
+reads match the saved edit, unconfirmed reads failed, and mismatches are responses
+whose file name or content differs. After a successful deployment, the script tries
+up to three reads, retrying unconfirmed results, and reports `afterConfirmed`,
+`afterUnconfirmed`, and `afterMismatch`. Any sampled mismatch or failure to confirm
+a post-check fails the phase. A failed baseline stops the phase before its summary.
+A deployment failure skips post-checks and can still print a summary.
+
+`firstUnconfirmedReadCompletedMs` records when the first unconfirmed read completed,
+in milliseconds from the observation start after the baseline.
+`firstConfirmedAfterUnconfirmedReadCompletedMs` records when the first later
+confirmed read completed, including a post-check. Either field is `-1` when its
+observation is absent. Reads run sequentially with a two-second delay between
+samples during deployment, and an in-flight read can finish after deployment.
+The phases also use different proxy configurations and deployment concurrency.
+These samples cannot identify the cause of a failed read, establish continuous
+availability, or determine exact downtime.
+
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.
 

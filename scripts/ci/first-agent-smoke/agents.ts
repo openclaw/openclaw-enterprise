@@ -430,33 +430,50 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
 
+const codexWorkspaceFile = "USER.md";
+
+function codexWorkspaceFilePath(namespaceId: string, agentId: string) {
+  return `/namespaces/${namespaceId}/agents/${agentId}/workspace/files/${codexWorkspaceFile}`;
+}
+
+export async function readCodexWorkspaceFile(
+  stack: Pick<SmokeStack, "api" | "namespaceId">,
+  agent: Pick<SmokeAgent, "id">,
+  content: string,
+): Promise<"confirmed" | "unconfirmed" | "mismatch"> {
+  let file: unknown;
+  try {
+    file = await stack.api("GET", codexWorkspaceFilePath(stack.namespaceId, agent.id));
+  } catch {
+    return "unconfirmed";
+  }
+  const matches =
+    file != null &&
+    wireField(file, "name") === codexWorkspaceFile &&
+    wireField(file, "content") === content;
+  return matches ? "confirmed" : "mismatch";
+}
+
 export async function checkCodexWorkspaceFile(
   stack: SmokeStack,
   agent: SmokeAgent,
   content: string,
   { write = false } = {},
 ) {
-  const name = "USER.md";
-  const path = `/namespaces/${stack.namespaceId}/agents/${agent.id}/workspace/files/${name}`;
   // The API client can include the request path and server error in exceptions.
   // Report only the operation, including when the outcome of a write is unknown.
   if (write) {
     try {
-      await stack.api("PUT", path, { content });
+      await stack.api("PUT", codexWorkspaceFilePath(stack.namespaceId, agent.id), { content });
     } catch {
       throw new Error("Codex workspace file write could not be confirmed");
     }
   }
-  let file: unknown;
-  try {
-    file = await stack.api("GET", path);
-  } catch {
+  const outcome = await readCodexWorkspaceFile(stack, agent, content);
+  if (outcome === "unconfirmed") {
     throw new Error("Codex workspace file read failed");
   }
-  assert.ok(
-    file != null && wireField(file, "name") === name && wireField(file, "content") === content,
-    "Codex workspace file did not match the expected edit",
-  );
+  assert.ok(outcome === "confirmed", "Codex workspace file did not match the expected edit");
 }
 
 export async function readLogs(stack: SmokeStack, agent: SmokeAgent, source: "gateway" | "agent") {
