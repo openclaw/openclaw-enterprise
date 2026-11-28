@@ -8,6 +8,53 @@ import { promisify } from "node:util";
 
 const executeFile = promisify(execFile);
 
+type GatewaySkillCalls = {
+  "skills.upload.begin": {
+    params: {
+      kind: "skill-archive";
+      slug: string;
+      sizeBytes: number;
+      sha256: string;
+      force: boolean;
+    };
+    result: { uploadId: string };
+  };
+  "skills.upload.chunk": {
+    params: { uploadId: string; offset: number; dataBase64: string };
+    result: unknown;
+  };
+  "skills.upload.commit": {
+    params: { uploadId: string; sha256: string };
+    result: unknown;
+  };
+  "skills.install": {
+    params: {
+      agentId: string;
+      source: "upload";
+      slug: string;
+      uploadId: string;
+      sha256: string;
+      force: boolean;
+    };
+    result: { ok: boolean; targetDir: string; sha256: string };
+  };
+  "skills.status": {
+    params: { agentId: string };
+    result: { skills: { name: string; filePath: string }[] };
+  };
+};
+
+type DedicatedSkillSourceOptions = {
+  callGateway: <Method extends keyof GatewaySkillCalls>(
+    method: Method,
+    params: GatewaySkillCalls[Method]["params"],
+  ) => Promise<GatewaySkillCalls[Method]["result"]>;
+  readHarnessFile: (path: string) => Promise<string | null>;
+  readGatewayFile: (path: string) => Promise<string | null>;
+  withNodeWritesDenied: (run: () => Promise<void>) => Promise<void>;
+  slug?: string;
+};
+
 // Callers use a real Gateway and a separate Harness; file reads are independent
 // observations, not replacements for the Gateway -> paired-node publication path.
 export async function assertDedicatedSkillSourceLifecycle({
@@ -16,16 +63,16 @@ export async function assertDedicatedSkillSourceLifecycle({
   readGatewayFile,
   withNodeWritesDenied,
   slug = `source-lifecycle-${randomUUID()}`,
-}) {
+}: DedicatedSkillSourceOptions) {
   const directory = await mkdtemp(join(tmpdir(), "oce-skill-source-"));
   const target = `/home/node/workspace/skills/${slug}`;
   const sourcePath = `${target}/SKILL.md`;
   const lockPaths = [".clawhub", ".clawdhub"].map(
     (directory) => `/home/node/workspace/${directory}/lock.json`,
   );
-  const content = (version) =>
+  const content = (version: number) =>
     `---\nname: ${slug}\ndescription: Verify dedicated Skill source version ${version}.\n---\nReturn SOURCE_VERSION_${version}.\n`;
-  async function install(version, force) {
+  async function install(version: number, force: boolean) {
     await writeFile(join(directory, "SKILL.md"), content(version));
     const archivePath = join(directory, "source.zip");
     await rm(archivePath, { force: true });
@@ -61,7 +108,7 @@ export async function assertDedicatedSkillSourceLifecycle({
     assert.equal(installed.targetDir, target);
     assert.equal(installed.sha256, sha256);
   }
-  async function assertInstalled(version) {
+  async function assertInstalled(version: number) {
     assert.equal(await readHarnessFile(sourcePath), content(version));
     assert.equal(await readGatewayFile(sourcePath), null, "source belongs to the Harness");
     const status = await callGateway("skills.status", { agentId: "main" });

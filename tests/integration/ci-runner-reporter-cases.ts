@@ -321,7 +321,7 @@ export function registerReporterCases() {
   });
 
   test("Skill policy restore preserves failures that cannot be formatted", async () => {
-    const { withSkillPolicyRestore } = await import("../helpers/skill-policy-restore.mjs");
+    const { withSkillPolicyRestore } = await import("../helpers/skill-policy-restore.ts");
     const original: object = Object.create(null);
     const restoration = new Error("synthetic restoration failure");
     let restoreCalls = 0;
@@ -368,7 +368,7 @@ export function registerReporterCases() {
       [
         'import test from "node:test";',
         'import { execFileSync } from "node:child_process";',
-        `import { withSkillPolicyRestore } from ${JSON.stringify(new URL("../helpers/skill-policy-restore.mjs", import.meta.url).href)};`,
+        `import { withSkillPolicyRestore } from ${JSON.stringify(new URL("../helpers/skill-policy-restore.ts", import.meta.url).href)};`,
         `import { registerQaSecret } from ${JSON.stringify(new URL("../helpers/qa-secrets.ts", import.meta.url).href)};`,
         'registerQaSecret("fixture-private-restore-value");',
         'for (const kind of ["short", "long", "multiline", "key-tail"]) {',

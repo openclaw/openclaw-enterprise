@@ -57,8 +57,8 @@ import {
 } from "../helpers/envoy-workspace-gateway.mjs";
 import { assertKubernetesOtelLogs, reportFailedModelTurn } from "./harness-topology-otel.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
-import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
+import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.ts";
+import { withSkillPolicyRestore } from "./skill-policy-restore.ts";
 import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
