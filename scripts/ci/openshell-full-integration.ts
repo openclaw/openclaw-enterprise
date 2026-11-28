@@ -7,6 +7,25 @@ const installerFiles = new Set([
   "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
 ]);
 
+// Approved release ancestors can carry this 14-path layout from #5333 until #7224.
+// The earlier 13-path set had two shard assignments, so leave its projection unchanged.
+const legacyInstallerFiles = new Set([
+  ...installerFiles,
+  "tests/integration/openshell-git-finite-removal-real.test.ts",
+]);
+const legacyPaths = new Set([
+  ...legacyInstallerFiles,
+  "tests/integration/openshell-refresh-real.test.ts",
+  "tests/integration/openshell-withdrawal-real.test.ts",
+  "tests/integration/openshell-credentials-real.test.ts",
+  "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+  "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+  "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
+  "tests/integration/openshell-plugin-install-real.test.ts",
+  "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+  "tests/integration/openshell-git-retention-real.test.ts",
+]);
+
 export function isOpenShellInstallerFile(file: string | undefined) {
   return file !== undefined && installerFiles.has(file);
 }
@@ -51,11 +70,15 @@ export function projectFullIntegrationOpenShell(manifest: {
     throw new Error("Full Integration requires the canonical OpenShell lane exactly once.");
   }
   const paths = new Set(original.files.map(({ path }) => path));
-  const installers = original.files.filter(({ path }) => isOpenShellInstallerFile(path));
-  const shared = original.files.filter(({ path }) => !isOpenShellInstallerFile(path));
+  const installerPaths =
+    paths.size === legacyPaths.size && [...paths].every((path) => legacyPaths.has(path))
+      ? legacyInstallerFiles
+      : installerFiles;
+  const installers = original.files.filter(({ path }) => installerPaths.has(path));
+  const shared = original.files.filter(({ path }) => !installerPaths.has(path));
   if (
     paths.size !== original.files.length ||
-    installers.length !== installerFiles.size ||
+    installers.length !== installerPaths.size ||
     shared.length === 0
   ) {
     throw new Error("Full Integration requires two disjoint, nonempty OpenShell lanes.");
