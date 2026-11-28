@@ -9,15 +9,36 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { setEnvironment } from "../helpers/environment.ts";
+import {
+  checkPreparedJournalStateLock,
+  stateLockProcessArgs,
+  StateLockReconciliation,
+} from "../helpers/ci-prepare-state-lock.ts";
+import { postgresSuperuser, postgresSuperuserPassword } from "../../scripts/ci/postgres-admin.ts";
 import { attachKeycloakToK3d, attachPostgresToK3d } from "../helpers/k3d-postgres-network.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 test(
   "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects",
-  { skip: process.env.OCC_TEST_CI_POSTGRES_REAL !== "1", timeout: 180_000 },
+  {
+    skip: process.env.OCC_TEST_CI_POSTGRES_REAL !== "1",
+    timeout: process.env.OCC_TEST_CI_STATE_LOCK_RECOVERY === "1" ? 600_000 : 180_000,
+  },
   async (t) => {
     const managed = process.env.OCC_TEST_CI_POSTGRES_STATES;
+    const recoverStateLock = process.env.OCC_TEST_CI_STATE_LOCK_RECOVERY === "1";
+    assert(
+      !recoverStateLock || managed === undefined,
+      "Destructive state-lock qualification requires standalone journal custody",
+    );
+    const predecessor = recoverStateLock
+      ? process.env.OCC_TEST_CI_STATE_LOCK_PREDECESSOR
+      : undefined;
+    assert(
+      !recoverStateLock || predecessor,
+      "Old-data qualification requires the exact historical lock source",
+    );
     const parentPath = managed === undefined ? undefined : process.env.OPENCLAW_ENTERPRISE_CI_STATE;
     const states: { path: string; owner: string }[] =
       managed !== undefined ? JSON.parse(managed) : [];
@@ -76,8 +97,11 @@ test(
     const started: typeof states = [];
     const projects: string[] = [];
     const env = { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "" };
-    const node = (args: string[]) =>
-      execFileSync(process.execPath, args, {
+    const producerArgs = stateLockProcessArgs(predecessor);
+    const reconciliation = new StateLockReconciliation(states[0]!.path);
+    let body: Promise<void> = Promise.resolve();
+    const node = (args: string[], original = false) =>
+      execFileSync(process.execPath, [...(original ? producerArgs : []), ...args], {
         cwd: repositoryRoot,
         env,
         encoding: "utf8",
@@ -86,6 +110,13 @@ test(
     const docker = (args: string[]) =>
       execFileSync("docker", args, { encoding: "utf8", timeout: 30_000 }).trim();
     t.after(async () => {
+      await body.catch(() => {});
+      try {
+        await reconciliation.beforeCleanup();
+      } catch (error) {
+        t.diagnostic(`Retained owned PostgreSQL journals: ${JSON.stringify(started)}`);
+        throw error;
+      }
       const errors: unknown[] = [];
       for (const state of started) {
         try {
@@ -116,88 +147,171 @@ test(
       }
       await rm(root, { recursive: true });
     });
-    const ports = new Set<number>();
-    // Keep both real servers alive: Docker, rather than a released caller-side
-    // probe, must assign distinct usable ports to the independent preparations.
-    for (const { path: statePath, owner } of states) {
-      await assert.rejects(
-        lstat(statePath),
-        { code: "ENOENT" },
-        "CI state already exists; refusing to adopt it",
-      );
-      started.push({ path: statePath, owner });
+    const run = async () => {
+      const ports = new Set<number>();
+      const preparedPorts = new Map<string, number>();
+      // Keep both real servers alive: Docker, rather than a released caller-side
+      // probe, must assign distinct usable ports to the independent preparations.
+      for (const { path: statePath, owner } of states) {
+        await assert.rejects(
+          lstat(statePath),
+          { code: "ENOENT" },
+          "CI state already exists; refusing to adopt it",
+        );
+        started.push({ path: statePath, owner });
+        node(
+          [
+            "scripts/ci/prepare.ts",
+            "--lane",
+            "postgres-auth",
+            "--state",
+            statePath,
+            "--cleanup-owner",
+            owner,
+          ],
+          true,
+        );
+        const state = JSON.parse(await readFile(statePath, "utf8"));
+        const server = state.resources.find(
+          (resource: { kind: string }) => resource.kind === "compose-postgres",
+        );
+        projects.push(server.name);
+        assert.equal(server.status, "ready");
+        assert.ok(server.port > 0 && server.port <= 65535 && server.port !== 55432);
+        ports.add(server.port);
+        preparedPorts.set(statePath, Number(server.port));
+        const container = docker([
+          "compose",
+          "-f",
+          server.composeFile,
+          "-p",
+          server.name,
+          "ps",
+          "-q",
+          "postgres",
+        ]);
+        const bindings = JSON.parse(
+          docker(["inspect", "--format", "{{json .HostConfig.PortBindings}}", container]),
+        );
+        assert.deepEqual(bindings["5432/tcp"], [{ HostIp: "127.0.0.1", HostPort: "0" }]);
+        const published = JSON.parse(
+          docker(["inspect", "--format", "{{json .NetworkSettings.Ports}}", container]),
+        );
+        assert.deepEqual(published["5432/tcp"], [
+          { HostIp: "127.0.0.1", HostPort: String(server.port) },
+        ]);
+      }
+      assert.equal(ports.size, 2);
+      const { default: pg } = await import("pg");
+      if (recoverStateLock) {
+        const lockPort = preparedPorts.get(states[0]!.path);
+        assert.ok(lockPort !== undefined && Number.isSafeInteger(lockPort));
+        const sentinel = randomUUID();
+        const databaseName = (url: string) => {
+          const name = new URL(url).pathname.slice(1);
+          assert.match(name, /^openclaw_ci_[a-z0-9_]+$/);
+          return name;
+        };
+        const query = async <Row extends Record<string, unknown> = Record<string, unknown>>(
+          database: string,
+          text: string,
+          values: string[] = [],
+        ): Promise<Row[]> => {
+          const client = new pg.Client({
+            host: "127.0.0.1",
+            port: lockPort,
+            database,
+            user: postgresSuperuser,
+            password: postgresSuperuserPassword,
+            connectionTimeoutMillis: 5_000,
+          });
+          try {
+            await client.connect();
+            return (await client.query<Row>(text, values)).rows;
+          } finally {
+            await client.end();
+          }
+        };
+        await checkPreparedJournalStateLock(t, {
+          selection: {
+            lane: "postgres-auth",
+            file: "tests/integration/native-admin-session-postgres.test.ts",
+            statePath: states[0]!.path,
+          },
+          env,
+          predecessor,
+          oracle: {
+            effects: () => query("postgres", "SELECT datname FROM pg_database ORDER BY datname"),
+            seed: async (url) => {
+              await query(
+                databaseName(url),
+                "CREATE TABLE occ.ci_state_lock_sentinel (value text PRIMARY KEY)",
+              );
+              await query(databaseName(url), "INSERT INTO occ.ci_state_lock_sentinel VALUES ($1)", [
+                sentinel,
+              ]);
+            },
+            present: async (url) => {
+              assert.deepEqual(
+                await query("postgres", "SELECT datname FROM pg_database WHERE datname = $1", [
+                  databaseName(url),
+                ]),
+                [{ datname: databaseName(url) }],
+              );
+              assert.deepEqual(
+                await query(databaseName(url), "SELECT value FROM occ.ci_state_lock_sentinel"),
+                [{ value: sentinel }],
+              );
+            },
+            absent: async (url) => {
+              assert.deepEqual(
+                await query("postgres", "SELECT datname FROM pg_database WHERE datname = $1", [
+                  databaseName(url),
+                ]),
+                [],
+              );
+            },
+          },
+        });
+      }
+      const envFile = join(root, "test.env");
       node([
         "scripts/ci/prepare.ts",
         "--lane",
         "postgres-auth",
         "--state",
-        statePath,
-        "--cleanup-owner",
-        owner,
+        states[0]!.path,
+        "--file",
+        "tests/integration/native-admin-session-postgres.test.ts",
+        "--github-env",
+        envFile,
       ]);
-      const state = JSON.parse(await readFile(statePath, "utf8"));
-      const server = state.resources.find(
-        (resource: { kind: string }) => resource.kind === "compose-postgres",
-      );
-      projects.push(server.name);
-      assert.equal(server.status, "ready");
-      assert.ok(server.port > 0 && server.port <= 65535 && server.port !== 55432);
-      ports.add(server.port);
-      const container = docker([
-        "compose",
-        "-f",
-        server.composeFile,
-        "-p",
-        server.name,
-        "ps",
-        "-q",
-        "postgres",
-      ]);
-      const bindings = JSON.parse(
-        docker(["inspect", "--format", "{{json .HostConfig.PortBindings}}", container]),
-      );
-      assert.deepEqual(bindings["5432/tcp"], [{ HostIp: "127.0.0.1", HostPort: "0" }]);
-      const published = JSON.parse(
-        docker(["inspect", "--format", "{{json .NetworkSettings.Ports}}", container]),
-      );
-      assert.deepEqual(published["5432/tcp"], [
-        { HostIp: "127.0.0.1", HostPort: String(server.port) },
-      ]);
-    }
-    assert.equal(ports.size, 2);
-    const envFile = join(root, "test.env");
-    node([
-      "scripts/ci/prepare.ts",
-      "--lane",
-      "postgres-auth",
-      "--state",
-      states[0]!.path,
-      "--file",
-      "tests/integration/native-admin-session-postgres.test.ts",
-      "--github-env",
-      envFile,
-    ]);
-    const connectionString = (await readFile(envFile, "utf8"))
-      .split("\n")
-      .find((line) => line.startsWith("OCC_TEST_DATABASE_URL="))
-      ?.slice("OCC_TEST_DATABASE_URL=".length);
-    assert.ok(connectionString);
-    const { default: pg } = await import("pg");
-    const client = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000 });
-    try {
-      await client.connect();
-      // The migrator created this table; bootstrap alone creates only schemas.
-      assert.deepEqual(
-        (
-          await client.query(
-            "select current_user as role, to_regclass('occ.installation') is not null as migrated",
-          )
-        ).rows,
-        [{ role: "occ_app", migrated: true }],
-      );
-    } finally {
-      await client.end();
-    }
+      const connectionString = (await readFile(envFile, "utf8"))
+        .split("\n")
+        .find((line) => line.startsWith("OCC_TEST_DATABASE_URL="))
+        ?.slice("OCC_TEST_DATABASE_URL=".length);
+      assert.ok(connectionString);
+      const client = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000 });
+      try {
+        await client.connect();
+        // The migrator created this table; bootstrap alone creates only schemas.
+        assert.deepEqual(
+          (
+            await client.query(
+              "select current_user as role, to_regclass('occ.installation') is not null as migrated",
+            )
+          ).rows,
+          [{ role: "occ_app", migrated: true }],
+        );
+      } finally {
+        await client.end();
+      }
+    };
+    // The hold is armed synchronously before run can create a resource. Managed
+    // CI keeps its original preparation/cleanup case; it cannot preserve this
+    // standalone proof's unknown child operations.
+    body = recoverStateLock ? reconciliation.run(run) : run();
+    await body;
   },
 );
 

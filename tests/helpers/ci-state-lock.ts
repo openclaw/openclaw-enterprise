@@ -38,9 +38,11 @@ const helperPath = fileURLToPath(import.meta.url);
 async function waitUntil<T>(
   read: () => T | undefined | Promise<T | undefined>,
   description: string,
+  deadline = Date.now() + 30_000,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const value = await read();
     if (value !== undefined) {
       return value;
@@ -130,49 +132,185 @@ async function worker(
   process.disconnect?.();
 }
 
-class Contender {
+// Only inspect these owned process groups. Linux can retain dead orphan zombies;
+// they cannot execute commands or keep a resource operation alive.
+async function liveGroupMembers(group: number): Promise<number[]> {
+  if (process.platform !== "linux") {
+    try {
+      process.kill(-group, 0);
+      return [group];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        return [];
+      }
+      throw error;
+    }
+  }
+  const live: number[] = [];
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) {
+      continue;
+    }
+    try {
+      const stat = await readFile(`/proc/${name}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      if (Number(fields[2]) === group && fields[0] !== "Z" && fields[0] !== "X") {
+        live.push(Number(name));
+      }
+    } catch (error) {
+      if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        throw error;
+      }
+    }
+  }
+  return live;
+}
+
+async function superviseStateLockWorker(args: string[]) {
+  assert(process.send && process.connected);
+  const stopGroup = () => process.kill(-process.pid, "SIGKILL");
+  process.once("disconnect", stopGroup);
+  process.once("exit", stopGroup);
+  process.on("SIGTERM", () => {});
+  process.on("SIGINT", () => {});
+  const child = spawn(process.execPath, args, {
+    env: { ...process.env, OPENCLAW_CI_COMPLETE_PHASE: "1" },
+    stdio: ["ignore", "ignore", "ignore", "ipc", 4, 5],
+  });
+  const send = (message: Message) => {
+    if (process.connected) {
+      process.send?.(message);
+    }
+  };
+  send({ type: "state-lock-worker-started", pid: child.pid });
+  child.on("message", send);
+  child.once("exit", (code, signal) =>
+    send({ type: "state-lock-worker-exit", status: { code, signal } }),
+  );
+  child.once("close", (code, signal) =>
+    send({ type: "state-lock-worker-close", status: { code, signal } }),
+  );
+  child.once("error", (error) => {
+    send({ type: "state-lock-worker-error", message: error.message });
+    stopGroup();
+  });
+  process.on("message", (message: Record<string, unknown>) => {
+    if (message.supervisor === "stop-worker") {
+      child.kill("SIGKILL");
+    } else if (child.connected) {
+      child.send(message);
+    }
+  });
+  // The owner acknowledges settlement by killing this still-owned group leader.
+  await new Promise(() => {});
+}
+
+export class StateLockProcess {
   messages: Message[] = [];
   pauses: Pause[] = [];
   child: ChildProcess;
   closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   debuggerInput: Writable;
+  debuggerOutput: Readable;
   bridgeReady?: Message;
   exited = false;
+  exitStatus?: { code: number | null; signal: NodeJS.Signals | null };
+  closeStatus?: { code: number | null; signal: NodeJS.Signals | null };
   replies = new Map<number, (value: Reply) => void>();
   nextId = 0;
+  readonly execArgv: string[];
+  readonly supervised: boolean;
+  readonly deadline: number | undefined;
+  readonly signal: AbortSignal | undefined;
+  workerPid?: number;
+  workerExit?: { code: number | null; signal: NodeJS.Signals | null };
+  workerClose?: { code: number | null; signal: NodeJS.Signals | null };
+  readonly groups = new Set<number>();
+  private stopping?: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  private readonly cancel = () => {
+    void this.stop().catch(() => {});
+  };
+  get pid() {
+    return this.supervised ? this.workerPid : this.child.pid;
+  }
+  private wait<T>(read: () => T | undefined | Promise<T | undefined>, description: string) {
+    return waitUntil(read, description, this.deadline, this.signal);
+  }
   constructor(
     statePath: string,
     role: string,
     eventPath: string,
     timeoutMs = 60_000,
     inspectOwner = true,
+    launch?: {
+      path: string;
+      args: string[];
+      env: NodeJS.ProcessEnv;
+      execArgv?: string[];
+      supervised?: boolean;
+      deadline?: number;
+      signal?: AbortSignal;
+    },
   ) {
-    this.child = spawn(
-      process.execPath,
-      [
-        "--disable-sigusr1",
-        helperPath,
+    this.execArgv = launch?.execArgv ?? ["--disable-sigusr1"];
+    this.supervised = launch?.supervised === true;
+    this.deadline = launch?.deadline;
+    this.signal = launch?.signal;
+    this.signal?.throwIfAborted();
+    if (this.supervised) {
+      assert.notEqual(process.platform, "win32", "Caller supervision requires POSIX groups");
+    }
+    const workerArgs = [
+      ...this.execArgv,
+      launch?.path ?? helperPath,
+      ...(launch?.args ?? [
         "--state-lock-worker",
         statePath,
         role,
         String(timeoutMs),
         String(inspectOwner),
         eventPath,
-      ],
+      ]),
+    ];
+    this.child = spawn(
+      process.execPath,
+      this.supervised
+        ? ["--disable-sigusr1", helperPath, "--state-lock-supervisor", JSON.stringify(workerArgs)]
+        : workerArgs,
       {
         cwd: dirname(statePath),
-        env: { LANG: "C", TZ: "UTC" },
+        detached: this.supervised,
+        env: launch?.env ?? { LANG: "C", TZ: "UTC" },
         stdio: ["ignore", "ignore", "ignore", "ipc", "pipe", "pipe"],
       },
     );
     this.closed = new Promise((resolve, reject) => {
       this.child.once("error", reject);
-      this.child.once("exit", () => {
+      this.child.once("exit", (code, signal) => {
         this.exited = true;
+        this.exitStatus = { code, signal };
+        if (this.supervised) {
+          this.debuggerInput.destroy();
+          this.debuggerOutput.destroy();
+        }
       });
-      this.child.once("close", (code, signal) => resolve({ code, signal }));
+      this.child.once("close", (code, signal) => {
+        this.closeStatus = { code, signal };
+        resolve(this.closeStatus);
+      });
     });
     this.child.on("message", (message: Message) => {
+      if (message.type === "state-lock-worker-started") {
+        assert.equal(typeof message.pid, "number");
+        this.workerPid = message.pid as number;
+      } else if (message.type === "state-lock-worker-exit") {
+        this.workerExit = message.status as { code: number | null; signal: NodeJS.Signals | null };
+      } else if (message.type === "state-lock-worker-close") {
+        this.workerClose = message.status as { code: number | null; signal: NodeJS.Signals | null };
+      } else if (message.type === "ci-lifecycle-group") {
+        assert(Number.isSafeInteger(message.id) && Number(message.id) > 1);
+        this.groups.add(Number(message.id));
+      }
       this.messages.push(message);
     });
     const pipes: readonly (Readable | Writable | null | undefined)[] = this.child.stdio;
@@ -180,6 +318,7 @@ class Contender {
     const output = pipes[5];
     assert(input instanceof Writable && output instanceof Readable);
     this.debuggerInput = input;
+    this.debuggerOutput = output;
     createInterface({ input: output }).on("line", (line: string) => {
       const reply = JSON.parse(line) as Reply & {
         id?: number;
@@ -196,13 +335,14 @@ class Contender {
         this.bridgeReady = reply as Message;
       }
     });
+    this.signal?.addEventListener("abort", this.cancel, { once: true });
   }
   async connect() {
-    const bridge = await waitUntil(() => this.bridgeReady, "private debugger bridge");
+    const bridge = await this.wait(() => this.bridgeReady, "private debugger bridge");
     assert.equal(bridge.inspectorUrl, null);
     const ready = await this.message("ready");
     assert.equal(ready.inspectorUrl, null);
-    assert.deepEqual(ready.execArgv, ["--disable-sigusr1"]);
+    assert.deepEqual(ready.execArgv, this.execArgv);
     await this.command("Debugger.enable");
   }
   async command(method: string, params: Record<string, unknown> = {}) {
@@ -213,7 +353,7 @@ class Contender {
     });
     this.debuggerInput.write(`${JSON.stringify({ id, method, params })}\n`);
     try {
-      const value = await waitUntil(() => reply, method);
+      const value = await this.wait(() => reply, method);
       assert.equal(value.error, undefined);
       return value.result ?? {};
     } finally {
@@ -221,37 +361,101 @@ class Contender {
     }
   }
   send(command: string) {
+    this.signal?.throwIfAborted();
     this.child.send({ command });
   }
   message(type: string) {
-    return waitUntil(() => this.messages.find((value) => value.type === type), type);
+    return this.wait(() => this.messages.find((value) => value.type === type), type);
   }
-  async stop() {
-    if (!this.exited) {
-      this.child.kill("SIGKILL");
+  stop() {
+    return (this.stopping ??= this.stopOwned().finally(() => {
+      this.signal?.removeEventListener("abort", this.cancel);
+    }));
+  }
+  private async stopOwned() {
+    if (!this.supervised) {
+      if (!this.exited) {
+        this.child.kill("SIGKILL");
+      }
+      return this.closed;
     }
-    return this.closed;
+    const deadline = Date.now() + 15_000;
+    const group = this.child.pid;
+    assert(group !== undefined && group > 1);
+    this.groups.add(group);
+    let failure: unknown;
+    if (!this.exited) {
+      // Keep the group leader alive until the real caller has reported exit/close.
+      // Its IPC loss also terminates any independently supervised cleanup groups.
+      if (this.child.connected) {
+        this.child.send({ supervisor: "stop-worker" });
+      }
+      try {
+        await waitUntil(() => this.workerClose, "caller close", Date.now() + 5_000);
+      } catch (error) {
+        failure = error;
+      } finally {
+        if (!this.exited) {
+          process.kill(-group, "SIGKILL");
+        }
+      }
+    }
+    const exited = await waitUntil(() => this.exitStatus, "caller supervisor exit", deadline);
+    // An explicitly lost IPC channel may omit ChildProcess's aggregate close
+    // event. Join the actual exit and our descriptor closures independently;
+    // never turn a missing caller result into a successful operation receipt.
+    this.debuggerInput.destroy();
+    this.debuggerOutput.destroy();
+    await waitUntil(
+      () => (this.debuggerInput.closed && this.debuggerOutput.closed ? true : undefined),
+      "caller debugger descriptors to close",
+      deadline,
+    );
+    await waitUntil(
+      async () => {
+        for (const id of this.groups) {
+          if ((await liveGroupMembers(id)).length > 0) {
+            return undefined;
+          }
+        }
+        return true;
+      },
+      "owned command groups to stop",
+      deadline,
+    );
+    if (failure !== undefined) {
+      throw failure;
+    }
+    return this.workerClose ?? this.closeStatus ?? exited;
   }
   async finish(outcome = "fulfilled") {
     const result = await this.message("result");
     assert.equal(result.outcome, outcome);
     this.send("shutdown");
-    assert.deepEqual(await this.closed, { code: 0, signal: null });
+    if (this.supervised) {
+      assert.deepEqual(await this.wait(() => this.workerClose, "caller close"), {
+        code: 0,
+        signal: null,
+      });
+      await this.stop();
+    } else {
+      assert.deepEqual(await this.closed, { code: 0, signal: null });
+    }
     return result;
   }
-  async breakpoint(statement: string, after = "") {
-    const source = await readFile(new URL(sourceUrl), "utf8");
+  async breakpoint(statement: string, after = "", url = sourceUrl, sourceText?: string) {
+    const source = sourceText ?? (await readFile(new URL(url), "utf8"));
     const start = source.indexOf(after);
     const offset = source.indexOf(statement, start);
     assert(start >= 0 && offset >= 0, `Missing debugger location: ${statement}`);
     const lineNumber = source.slice(0, offset).split("\n").length - 1;
-    const reply = await this.command("Debugger.setBreakpointByUrl", { url: sourceUrl, lineNumber });
+    const reply = await this.command("Debugger.setBreakpointByUrl", { url, lineNumber });
     const locations = reply.locations as Array<{ lineNumber: number }>;
     assert(locations.length > 0 && locations.every((value) => value.lineNumber === lineNumber));
     return String(reply.breakpointId);
   }
   pause(id: string) {
-    return waitUntil(() => {
+    return this.wait(() => {
       const index = this.pauses.findIndex((value) => value.hitBreakpoints?.includes(id));
       return index < 0 ? undefined : this.pauses.splice(index, 1)[0];
     }, `breakpoint ${id}`);
@@ -275,7 +479,7 @@ class Contender {
 }
 
 class Scenario {
-  readonly contenders: Contender[] = [];
+  readonly contenders: StateLockProcess[] = [];
   readonly eventPath: string;
   readonly statePath: string;
   readonly context: TestContext;
@@ -287,7 +491,13 @@ class Scenario {
     t.after(() => this.cleanup());
   }
   async start(role: string, { begin = false, timeoutMs = 60_000, inspectOwner = true } = {}) {
-    const contender = new Contender(this.statePath, role, this.eventPath, timeoutMs, inspectOwner);
+    const contender = new StateLockProcess(
+      this.statePath,
+      role,
+      this.eventPath,
+      timeoutMs,
+      inspectOwner,
+    );
     this.contenders.push(contender);
     await contender.connect();
     if (begin) {
@@ -363,6 +573,20 @@ function debuggerBridge() {
     parentPort!.close();
   });
   send({ type: "debugger-ready", inspectorUrl: inspectorUrl() ?? null });
+}
+
+export async function runWithStateLockDebugger(operation: () => Promise<void>) {
+  const bridge = new Worker(helperPath, { workerData: "state-lock-debugger", execArgv: [] });
+  const bridgeExit = new Promise<number>((resolve, reject) => {
+    bridge.once("error", reject);
+    bridge.once("exit", resolve);
+  });
+  try {
+    await operation();
+  } finally {
+    bridge.postMessage("stop");
+    assert.equal(await bridgeExit, 0);
+  }
 }
 
 // A separate process has no debugger descriptors. On Linux it checks only this
@@ -942,28 +1166,21 @@ export async function checkStateLockControls(t: TestContext, root: string) {
 if (!isMainThread && workerData === "state-lock-debugger") {
   debuggerBridge();
 } else if (isMainThread && process.argv[1] === helperPath) {
-  if (process.argv[2] === "--state-lock-debugger-peer") {
+  if (process.argv[2] === "--state-lock-supervisor") {
+    const args: unknown = JSON.parse(process.argv[3]!);
+    assert(Array.isArray(args) && args.every((arg) => typeof arg === "string"));
+    await superviseStateLockWorker(args as string[]);
+  } else if (process.argv[2] === "--state-lock-debugger-peer") {
     const pid = Number(process.argv[3]);
     assert(Number.isSafeInteger(pid) && pid > 0);
     console.log(JSON.stringify({ pid, listeners: await listeningTcpSockets(pid) }));
   } else if (process.argv[2] === "--state-lock-worker") {
-    assert(process.argv[3] && process.argv[4] && process.argv[7]);
-    const bridge = new Worker(helperPath, { workerData: "state-lock-debugger", execArgv: [] });
-    const bridgeExit = new Promise<number>((resolve, reject) => {
-      bridge.once("error", reject);
-      bridge.once("exit", resolve);
-    });
-    try {
-      await worker(
-        process.argv[3],
-        process.argv[4],
-        Number(process.argv[5]),
-        process.argv[6] === "true",
-        process.argv[7],
-      );
-    } finally {
-      bridge.postMessage("stop");
-      assert.equal(await bridgeExit, 0);
-    }
+    const statePath = process.argv[3];
+    const role = process.argv[4];
+    const eventPath = process.argv[7];
+    assert(statePath && role && eventPath);
+    await runWithStateLockDebugger(() =>
+      worker(statePath, role, Number(process.argv[5]), process.argv[6] === "true", eventPath),
+    );
   }
 }
