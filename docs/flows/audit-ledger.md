@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-22"
-last_updated_session: "authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/57f5eb0a-0165-4fce-afd2-db468006930b"
 ---
 
 # Audit ledger flow
@@ -94,7 +94,31 @@ The event action is
 This includes rejections from request validation and authentication before the
 handler starts.
 
-Both records carry the API-generated request ID, registered operation,
+During graceful shutdown, OCC waits for covered non-streaming handlers to
+finish their result audit attempt before closing State, even if the client
+disconnects. This wait excludes Agent chat, which can take over the socket.
+If requests remain after sockets close, `http.audit_drain_started` reports
+their count and the oldest pending request and operation IDs. On completion,
+`http.audit_drain_finished` reports the elapsed milliseconds and an outcome.
+
+- `recorded` means OCC saved the result audits for this wait. Requests can
+  still have failed.
+- `reconcile` warns that at least one outcome needs investigation. It names
+  the first affected request. `AUDIT_RESULT_UNCONFIRMED` means OCC could
+  not confirm the audit append. `COMMIT_OUTCOME_UNKNOWN` means PostgreSQL
+  may still commit the change, even after the API exits.
+
+For `occ-api` records, the Collector exports `request.id` when present and
+`occ.audit_drain.pending` at the start. At the end it exports
+`occ.audit_drain.outcome`, either warning code in `occ.code` when applicable,
+and `duration_ms` for waits up to ten minutes. The operation ID stays local.
+
+Check `http.audit_append_failed` and `http.commit_outcome_unknown` for
+other affected requests. A forced stop can leave no finish event. Keep
+writers stopped during maintenance until outstanding transactions settle.
+Check the resource and mutation audit before retrying a write.
+
+The admission and result records carry the API-generated request ID, registered operation,
 HTTP method, and Installation ID. The result adds the HTTP status. The hook
 uses the authenticated actor when identity resolution succeeded. A result
 describes the response OCC prepared. If its append fails, the hook logs
@@ -245,7 +269,7 @@ to the same session, Agent, and window.
   Namespace mismatch, or reserved persistence metadata. Invalid persisted event
   values or JSON can make the entire internal list fail.
 - The `postgres-platform` test lane checks request records, Agent result scope,
-  failed admission writes, and refusals during an audit outage in
+  shutdown after a client disconnects, failed admission writes, and refusals during an audit outage in
   `tests/integration/postgres-api-request-audit.test.ts`. It checks
   worker claim writes in `tests/integration/postgres-worker-audit.test.ts`.
 - `tests/integration/postgres-agent-audit-read.test.ts` exercises the Agent
@@ -269,6 +293,7 @@ to the same session, Agent, and window.
 
 ## Changelog
 
+- 2026-11-24 01:02: Describe how shutdown waits for request result audits after a disconnect. (authoring-run/57f5eb0a-0165-4fce-afd2-db468006930b - 04dc50d43cda589166b395f130b01b5a60015c20)
 - 2026-11-22 10:38: Trace how PostgreSQL binds repository methods for read and write transactions. (authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999 - b766b8ed991110ad86ce9e44adb59215ddb91293)
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)

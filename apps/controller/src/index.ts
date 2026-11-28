@@ -556,6 +556,74 @@ function clientInstallation(
   };
 }
 
+// Fastify closes the listener before this child hook runs. Disconnected handlers can
+// still be committing. Keep State alive until their result audit attempts settle.
+function requestAuditDrain(routes: FastifyInstance) {
+  const pending = new Map<string, string>();
+  type Uncertain = "COMMIT_OUTCOME_UNKNOWN" | "AUDIT_RESULT_UNCONFIRMED";
+  let closing:
+    | { done: () => void; started: number; reconcile?: { requestId: string; code: Uncertain } }
+    | undefined;
+
+  function report(level: "info" | "warn", event: Record<string, unknown>) {
+    try {
+      routes.log[level](event);
+    } catch {
+      // A failed diagnostic must neither skip the wait nor prevent State cleanup.
+    }
+  }
+  routes.addHook("onClose", (_instance, done) => {
+    closing = { done, started: performance.now() };
+    const first = pending.entries().next();
+    if (first.done) {
+      done();
+      return;
+    }
+    const [requestId, operationId] = first.value;
+    report("info", {
+      event: "http.audit_drain_started",
+      pending: pending.size,
+      requestId,
+      operationId,
+    });
+  });
+
+  return {
+    start(requestId: string, operationId: string) {
+      if (closing !== undefined) {
+        throw dependencyUnavailable();
+      }
+      // Chat can hijack the response and bypass onSend.
+      if (operationId !== "chatWithAgent") {
+        pending.set(requestId, operationId);
+      }
+    },
+    finish(requestId: string, saved: boolean, commitUnknown: boolean) {
+      if (!pending.delete(requestId) || closing === undefined) {
+        return;
+      }
+      if (commitUnknown || !saved) {
+        closing.reconcile ??= {
+          requestId,
+          code: commitUnknown ? "COMMIT_OUTCOME_UNKNOWN" : "AUDIT_RESULT_UNCONFIRMED",
+        };
+      }
+      if (pending.size === 0) {
+        const event = {
+          event: "http.audit_drain_finished",
+          durationMs: Math.round(performance.now() - closing.started),
+        };
+        if (closing.reconcile !== undefined) {
+          report("warn", { ...event, outcome: "reconcile", ...closing.reconcile });
+        } else {
+          report("info", { ...event, outcome: "recorded" });
+        }
+        closing.done();
+      }
+    },
+  };
+}
+
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
   const readManagedMcpToolNames = (
     endpoint: string,
@@ -3395,6 +3463,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         handler,
       });
     }
+    const drain = requestAuditDrain(routes);
+
     for (const operation of occApiRoutes) {
       // Bootstrap has its own transactional evidence. Runtime log reads have their own
       // disclosure gate and can also return a download.
@@ -3475,15 +3545,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           // Admission here means the request can enter the handler. The handler still
           // checks the caller's permission for the exact operation and target.
-          if (
-            controller !== undefined &&
-            requestAuditState.has(request) &&
-            !(await appendRequestAudit(routeAuditSink, request, operation, {
-              action: API_REQUEST_AUDIT_ACTIONS.admitted,
-              outcome: "success",
-            }))
-          ) {
-            throw dependencyUnavailable();
+          const audit = requestAuditState.get(request);
+          if (controller !== undefined && audit !== undefined) {
+            drain.start(request.id, operation.operationId);
+            if (
+              !(await appendRequestAudit(routeAuditSink, request, operation, {
+                action: API_REQUEST_AUDIT_ACTIONS.admitted,
+                outcome: "success",
+              }))
+            ) {
+              throw dependencyUnavailable();
+            }
           }
           if (controller === undefined) {
             await performFenced(request, reply, operation);
@@ -3520,15 +3592,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
                 // Preserve the selected response if the append fails. The handler may have
                 // committed its change or already denied the request.
-                await appendRequestAudit(routeAuditSink, request, operation, {
-                  action: API_REQUEST_AUDIT_ACTIONS.result,
-                  outcome,
-                  statusCode,
-                  ...(readTarget === undefined ? {} : { readTarget }),
-                  ...(audit.commitOutcomeUnknown === true
-                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
-                    : {}),
-                });
+                let saved = false;
+                try {
+                  saved = await appendRequestAudit(routeAuditSink, request, operation, {
+                    action: API_REQUEST_AUDIT_ACTIONS.result,
+                    outcome,
+                    statusCode,
+                    ...(readTarget === undefined ? {} : { readTarget }),
+                    ...(audit.commitOutcomeUnknown === true
+                      ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
+                      : {}),
+                  });
+                } finally {
+                  drain.finish(request.id, saved, audit.commitOutcomeUnknown === true);
+                }
                 return payload;
               },
             }),

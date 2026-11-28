@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { Pool } from "pg";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -392,16 +392,37 @@ test(
 test(
   "PostgreSQL retains the mutation and result audit when an admitted client disconnects",
   postgresRequestAudit,
-  async (t) => {
-    const migrationUrl = disposableMigrationUrl();
-    const fixture = await createPostgresAgentApp(t, {
-      label: "api-audit-disconnect",
-      authSecret,
-      requestAudit: true,
-    });
-    const { pool, state, principal } = fixture;
-    const session = await signInToControllerApp(fixture.app, fixture.adminAccount);
+  checkShutdownAfterDisconnect,
+);
+
+async function checkShutdownAfterDisconnect(t: TestContext) {
+  const migrationUrl = disposableMigrationUrl();
+  const logs: unknown[] = [];
+  const fixture = await createPostgresAgentApp(t, {
+    label: "api-audit-disconnect",
+    authSecret,
+    requestAudit: true,
+    appOptions: {
+      logger: createOccLogger({
+        component: "occ-api-request-audit-test",
+        destination: jsonLineDestination(logs),
+      }),
+    },
+  });
+  const { pool, state, principal } = fixture;
+  const session = await signInToControllerApp(fixture.app, fixture.adminAccount);
+  const replacement = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+
+  async function checkDisconnect(expectResult: boolean) {
+    logs.length = 0;
     const app = fixture.createApp();
+    const drainEvents = () =>
+      logs
+        .map(requireLogRecord)
+        .filter(
+          ({ event }) =>
+            event === "http.audit_drain_started" || event === "http.audit_drain_finished",
+        );
     const requestStarted = callbackGate<string>("the live Namespace request", 5_000);
     const responseClosed = callbackGate<boolean>("the server-side disconnect", 5_000);
     app.addHook("onRequest", async (request, reply) => {
@@ -418,7 +439,7 @@ test(
         (event) => event.requestId === requestId,
       );
 
-    const requestId = await withPool(migrationUrl, async (migrator) => {
+    const { shutdown } = await withPool(migrationUrl, async (migrator) => {
       const locker = await migrator.connect();
       try {
         await locker.query("BEGIN");
@@ -458,7 +479,21 @@ test(
             (await pool.query("SELECT id FROM occ.namespaces WHERE name = $1", [name])).rowCount,
             0,
           );
-          return id;
+          // Close the listener while the handler still needs PostgreSQL. Read from the
+          // independent fixture as soon as shutdown finishes, without polling for a late audit.
+          const shutdown = app.close().then(() => forRequest(id));
+          void shutdown.catch(() => {});
+          const start = await waitFor(
+            "the API to drain the disconnected write",
+            () => drainEvents()[0],
+            { timeoutMs: 5_000 },
+          );
+          assert.equal(start.event, "http.audit_drain_started");
+          assert.equal(start.pending, 1);
+          assert.equal(start.operationId, "createNamespace");
+          assert.equal(start.requestId, id);
+          assert.equal(drainEvents().length, 1);
+          return { shutdown };
         } finally {
           disconnect.abort();
         }
@@ -467,32 +502,42 @@ test(
       }
     });
 
-    const records = await waitFor(
-      "the durable result for the disconnected request",
-      async () => {
-        const current = await forRequest(requestId);
-        return current.some(({ action }) => action === resultAction) ? current : undefined;
-      },
-      5_000,
-    );
+    const records = await within(shutdown, "draining the disconnected request", 5_000);
+    const events = drainEvents();
+    assert.equal(events.length, 2);
+    const end = events[1]!;
+    assert.equal(end.event, "http.audit_drain_finished");
+    assert.ok(typeof end.durationMs === "number" && end.durationMs >= 0);
+    assert.ok(!JSON.stringify(events).includes(name));
     const mutationAction = "openclaw.namespaces.create";
-    assert.deepEqual(records.map(({ action }) => action).sort(), [
-      admittedAction,
-      resultAction,
-      mutationAction,
-    ]);
-    const result = records.find(({ action }) => action === resultAction);
-    assert.ok(result);
-    assert.equal(result.kind, "api_request");
-    assert.equal(result.actorId, principal.id);
-    assert.equal(result.outcome, "success");
-    assert.deepEqual(result.details, {
-      operationId: "createNamespace",
-      method: "POST",
-      statusCode: 201,
-    });
+    if (expectResult) {
+      assert.equal(end.outcome, "recorded");
+      assert.deepEqual(records.map(({ action }) => action).sort(), [
+        admittedAction,
+        resultAction,
+        mutationAction,
+      ]);
+      const result = records.find(({ action }) => action === resultAction);
+      assert.ok(result);
+      assert.equal(result.kind, "api_request");
+      assert.equal(result.actorId, principal.id);
+      assert.equal(result.outcome, "success");
+      assert.deepEqual(result.details, {
+        operationId: "createNamespace",
+        method: "POST",
+        statusCode: 201,
+      });
+    } else {
+      assert.equal(end.outcome, "reconcile");
+      assert.equal(end.code, "AUDIT_RESULT_UNCONFIRMED");
+      assert.equal(end.requestId, events[0]!.requestId);
+      assert.deepEqual(records.map(({ action }) => action).sort(), [
+        admittedAction,
+        mutationAction,
+      ]);
+    }
 
-    const read = await fetch(path, {
+    const read = await fetch(`${replacement}/namespaces`, {
       headers: authenticatedHeaders(session),
       signal: AbortSignal.any([t.signal, AbortSignal.timeout(5_000)]),
     });
@@ -512,5 +557,14 @@ test(
       namespaces.data.filter((namespace) => namespace.name === name).map(({ id }) => id),
       [mutation.resource.id],
     );
-  },
-);
+  }
+
+  await checkDisconnect(true);
+  await withPool(migrationUrl, (migrator) =>
+    withRejectedAuditRows(
+      migrator,
+      "action <> 'openclaw.api.request.result' OR details->>'operationId' <> 'createNamespace'",
+      () => checkDisconnect(false),
+    ),
+  );
+}

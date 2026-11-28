@@ -499,6 +499,61 @@ export function registerKubernetesProcessorCases() {
           scopeLogs: [
             {
               logRecords: [
+                line({
+                  severity: "INFO",
+                  event: "http.audit_drain_started",
+                  pending: 3,
+                  requestId,
+                  operationId: canary,
+                  namespaceId,
+                  payload: canary,
+                }),
+                line({
+                  severity: "INFO",
+                  event: "http.audit_drain_started",
+                  pending: 1.5,
+                  requestId: agentId,
+                }),
+                line({
+                  severity: "INFO",
+                  event: "http.audit_drain_finished",
+                  outcome: "recorded",
+                  durationMs: 790,
+                }),
+                ...["COMMIT_OUTCOME_UNKNOWN", "AUDIT_RESULT_UNCONFIRMED"].map((code) =>
+                  line({
+                    severity: "WARN",
+                    event: "http.audit_drain_finished",
+                    outcome: "reconcile",
+                    requestId,
+                    code,
+                    durationMs: 12000,
+                    agentId,
+                    error: canary,
+                  }),
+                ),
+                line({
+                  severity: "WARN",
+                  event: "http.audit_drain_finished",
+                  outcome: canary,
+                  requestId: namespaceId,
+                  code: canary,
+                  durationMs: -1,
+                }),
+                line({
+                  severity: "WARN",
+                  event: "http.audit_drain_finished",
+                  outcome: "reconcile",
+                  code: "UNREVIEWED_EXTRA",
+                }),
+                line({
+                  severity: "INFO",
+                  event: "http.audit_drain_finished",
+                  outcome: "recorded",
+                  code: "COMMIT_OUTCOME_UNKNOWN",
+                  durationMs: 600001,
+                }),
+                line({ severity: "WARN", event: "http.audit_drain_finished-unreviewed" }),
                 line({ severity: "INFO", event: "shutdown.started", signal: "SIGTERM" }),
                 line({ severity: "INFO", event: "shutdown.completed", durationMs: 1250.375 }),
                 line({
@@ -696,6 +751,12 @@ export function registerKubernetesProcessorCases() {
           scopeLogs: [
             {
               logRecords: [
+                line({
+                  severity: "INFO",
+                  event: "http.audit_drain_started",
+                  pending: 7,
+                  requestId,
+                }),
                 line(
                   { level: "warn", event: "database.idle-client-error", code: "57P01" },
                   "stderr",
@@ -755,6 +816,35 @@ export function registerKubernetesProcessorCases() {
           }),
         ),
         sort([
+          api("INFO", {
+            "event.name": "http.audit_drain_started",
+            "occ.audit_drain.pending": "3",
+            "request.id": requestId,
+          }),
+          api("INFO", { "event.name": "http.audit_drain_started" }),
+          api("INFO", {
+            "event.name": "http.audit_drain_finished",
+            "occ.audit_drain.outcome": "recorded",
+            duration_ms: "790",
+          }),
+          ...["COMMIT_OUTCOME_UNKNOWN", "AUDIT_RESULT_UNCONFIRMED"].map((code) =>
+            api("WARN", {
+              "event.name": "http.audit_drain_finished",
+              "occ.audit_drain.outcome": "reconcile",
+              "request.id": requestId,
+              "occ.code": code,
+              duration_ms: "12000",
+            }),
+          ),
+          api("WARN", { "event.name": "http.audit_drain_finished" }),
+          api("WARN", {
+            "event.name": "http.audit_drain_finished",
+            "occ.audit_drain.outcome": "reconcile",
+          }),
+          api("INFO", {
+            "event.name": "http.audit_drain_finished",
+            "occ.audit_drain.outcome": "recorded",
+          }),
           api("INFO", { "event.name": "shutdown.started" }),
           api("INFO", { "event.name": "shutdown.completed", duration_ms: "1250.375" }),
           api("ERROR", {
