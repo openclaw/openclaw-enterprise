@@ -336,12 +336,12 @@ operation, caller cancellation and engine health.
 
 ### Inspect owned resources
 
-Owned resources can be observed through the selected engine using the same
-driver labels:
+List Docker Compute resources on the selected engine, including stopped
+containers. Check Namespace ownership separately.
 
 ```bash
 docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
-docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
+docker ps -a --filter label=org.openclaw.enterprise.compute-driver=docker
 docker volume ls --filter label=org.openclaw.enterprise.compute-driver=docker
 ```
 

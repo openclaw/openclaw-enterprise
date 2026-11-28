@@ -12,8 +12,9 @@ in Settings to hide diagnostics and stop new image reads. URL query parameters
 do not enable or disable it. If the browser refuses storage access, Settings
 reports that it could not save the preference and leaves the current value.
 
-Use **Refresh** to update the snapshot or retry a failed read. The panel does not
-continuously poll.
+Open **Agents** and select **Refresh** in the page header to update the snapshot.
+The panel does not continuously poll. If a read fails, follow the reason shown
+and wait for any stated retry interval before refreshing.
 
 ## Field meanings
 
@@ -67,7 +68,8 @@ OpenClaw provenance; unrelated sidecars normally show this state.
 | **No accessible Agents in this Namespace.**                         | No Agents were returned within your read permissions.                                                                                                                                                            |
 | **Image inspection is unavailable for this Compute Driver.**        | The selected Driver does not support image inspection; SSH is one example.                                                                                                                                       |
 | **No deployed runtime images observed.**                            | The Agent has no selected version, or inspection found no matching containers. This is not a runtime health result.                                                                                              |
-| **Runtime image metadata unavailable. Refresh to retry.**           | An Agent-list or runtime-image request failed. Refresh to retry; persistent failures require checking API and Compute Driver availability.                                                                       |
+| **Agents could not be read.**                                       | OCC could not list Agents. If access was denied, check `read` on the Namespace.                                                                                                                                  |
+| **Runtime image metadata could not be read.**                       | Check the reason for this Agent. If access was denied, check `read` on that Agent.                                                                                                                               |
 
 ## Inspection scope
 

@@ -78,9 +78,23 @@ You need a working model credential, the Agent's local gateway password, Bash,
 Python 3, and `kubectl` permission to get and list Pods and create
 `pods/portforward` requests in the Gateway's physical namespace. If you retrieve the generated
 password from Kubernetes, you also need read access to the Agent's `gateway-password-<suffix>` Secret (and to its
-transport Secret for an Agent deployed before that separate Secret existed). Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`,
-`KUBECONFIG_FILE`, and `CONTEXT` from the [production Agent guide](../deploy/production-agents.md).
-Set `REVISION_ID` to the Agent revision ID for the version you want to verify.
+transport Secret for an Agent deployed before that separate Secret existed). Keep `AGENT_ID`, `NAMESPACE_ID`, and `TENANT_NAMESPACE` from the
+[production Agent guide](../deploy/production-agents.md). Set `REVISION_ID` to
+the deployed revision you want to verify and `AGENT_EXECUTION_MODE` to that
+revision’s Harness mode. Before forwarding, verify the kubeconfig, context, and
+physical namespace with the operator responsible for that deployment.
+
+- For embedded execution, set `KUBECONFIG_FILE` and `CONTEXT` for the execution cluster.
+  Use the execution tenant’s physical namespace for `TENANT_NAMESPACE`.
+- For dedicated execution on one cluster, set `KUBECONFIG_FILE` and `CONTEXT` for that cluster
+  and explicitly set `GATEWAY_RUNTIME_NAMESPACE` to the execution tenant’s
+  verified physical namespace.
+- For dedicated execution on two clusters, set `KUBECONFIG_FILE` and `CONTEXT` for the control
+  cluster and explicitly set `GATEWAY_RUNTIME_NAMESPACE` to the verified
+  control-plane Gateway namespace.
+
+Stop if the revision’s mode or any target value is unknown. These steps do not
+require permission to list Kubernetes Namespaces.
 
 Configure the Agent to serve model requests and use the Kubernetes-managed local
 password. Add these fields to the existing native gateway Configuration without
@@ -122,19 +136,27 @@ attempts. No match, multiple Ready matches, or a Kubernetes error stops the
 check without opening a connection to another version.
 
 ```bash
-# For two-cluster dedicated execution, set GATEWAY_RUNTIME_NAMESPACE to its control target.
-GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
-if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
-  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:-$TENANT_NAMESPACE}"
-fi
-export GATEWAY_NAMESPACE
 forward_requested_gateway() {
   local expected_configmap pods_json pod selection_code attempt
+  unset GATEWAY_NAMESPACE
+  case "${AGENT_EXECUTION_MODE:-}" in
+    embedded)
+      GATEWAY_NAMESPACE="${TENANT_NAMESPACE:-}"
+      ;;
+    dedicated)
+      GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:-}"
+      ;;
+    *)
+      printf '%s\n' 'Set the deployed revision’s execution mode to embedded or dedicated.' >&2
+      return 1
+      ;;
+  esac
   if [ -z "${AGENT_ID:-}" ] || [ -z "${REVISION_ID:-}" ] || [ -z "${NAMESPACE_ID:-}" ] ||
      [ -z "${GATEWAY_NAMESPACE:-}" ] || [ -z "${KUBECONFIG_FILE:-}" ] || [ -z "${CONTEXT:-}" ]; then
     printf '%s\n' 'Set the Agent, revision, OCC and Kubernetes namespaces, kubeconfig, and context first.' >&2
     return 1
   fi
+  export GATEWAY_NAMESPACE
   if ! expected_configmap="$(python3 -c '
 import hashlib, sys
 def digest(value):
@@ -188,16 +210,23 @@ forward_requested_gateway
 ```
 
 Leave the command running after `Forwarding from 127.0.0.1:18789` appears.
-If it reports no matching Pod, inspect the requested version and tenant Pods
-before rerunning the block; do not forward to the Agent-wide Service. If the
-local port is occupied, change `18789` in both the forward and the verification
-example. In another operator shell with the same environment, set
-`GATEWAY_PASSWORD_FILE` to a protected file containing the password. If the
-credential API created it, you can retrieve it without printing the value:
+If no Pod matches, check the requested Agent revision. Inspect its Gateway
+Pods in `$GATEWAY_NAMESPACE` using the same kubeconfig and context before
+rerunning the block. Do not forward to the Agent-wide Service.
+
+If the local port is occupied, change `18789` in both the forward and the verification
+example. In a second Bash shell, set `AGENT_ID`, `KUBECONFIG_FILE`, `CONTEXT`,
+and `GATEWAY_NAMESPACE` to the exact values used by the first shell. Verify
+that they identify the same Agent, cluster, and physical namespace before
+reading a Secret. Set and export `GATEWAY_PASSWORD_FILE` if you already have a
+protected file containing the password. If the credential API created it, the
+following block retrieves and exports the file path without printing the value.
+Stop if the block fails.
 
 ```bash
 umask 077
 fetch_gateway_password() {
+  set +x
   local working_directory agent_suffix transport_secret secret_json
   unset GATEWAY_PASSWORD_FILE GATEWAY_PASSWORD_DIRECTORY
   if [ -z "${AGENT_ID:-}" ] || [ -z "${KUBECONFIG_FILE:-}" ] ||

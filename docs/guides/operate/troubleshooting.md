@@ -87,21 +87,18 @@ with the same profile and state directory, and start the profile again.
 
 ## Local startup stalls on cert-manager
 
-On some Linux hosts, especially Ubuntu with Docker 29, the k3d node cannot
-resolve container registries. Startup then waits on the cert-manager rollout
-while its pods stay in `ContainerCreating`. The launcher does not print those
-Pod events, and it prints the kubeconfig path only after startup succeeds.
+On some Linux hosts, especially Ubuntu with Docker 29, k3d nodes cannot resolve
+registries. Startup waits on cert-manager while Pods remain in `ContainerCreating`.
+The launcher omits Pod events and prints the kubeconfig path only on success.
 
-In a second terminal, while that wait is still running, describe the
-cert-manager Pods. The context is `k3d-` plus the cluster name from the first
-startup line, `Creating Kubernetes-only k3d cluster ...`. `<state-directory>`
-belongs to the process that started OCC, not to this second terminal. Use
-`OCC_DEVELOPMENT_STATE_DIRECTORY` when that process set it. Otherwise use that
-process's temporary directory plus `openclaw-development`: its `TMPDIR` when
-set, and `/tmp` on Linux when `TMPDIR` is unset. Do not substitute this
-terminal's `TMPDIR`. The
-[development settings](../../reference/settings/development.md#required-development-controller-environment)
-define that directory.
+While startup waits, inspect Pods from another terminal before rollback.
+`<cluster>` follows `Creating k3d cluster ...` or
+`Creating Kubernetes-only k3d cluster ...`.
+For `<state-directory>`, use the OCC process’s nonempty
+`OCC_DEVELOPMENT_STATE_DIRECTORY`; otherwise use its resolved temporary directory
+(`TMPDIR`, or `/tmp` on Linux if empty or unset) plus `openclaw-development`.
+Ignore the second terminal’s `TMPDIR`. See
+[development settings](../../reference/settings/development.md#required-development-controller-environment).
 
 ```bash
 kubectl --kubeconfig '<state-directory>/kubeconfig' \
@@ -109,11 +106,10 @@ kubectl --kubeconfig '<state-directory>/kubeconfig' \
   -n cert-manager describe pods
 ```
 
-A registry DNS failure shows up as a lookup error in the Pod events. Follow
+Registry DNS failures appear as lookup errors in events. Follow
 [Resolve node DNS failures](../deploy/local-kubernetes-development.md#resolve-node-dns-failures)
-and set a reachable resolver for a fresh start. That recovery changes only the
-owned node's resolver. If startup rolls the cluster back, wait until that
-command exits before starting again.
+and set a reachable resolver for a fresh start; this changes only the owned
+node's resolver. If rollback starts, wait for startup to exit before retrying.
 
 ## Local Agent Sandbox controller image pull fails
 
@@ -121,7 +117,18 @@ Default startup preloads the pinned controller. Check registry access and the
 import error; Pod pull policy cannot fix this. Keep state after incomplete cleanup
 and retry `occ dev down`; uncertain/replaced tags retain recovery state.
 
-For custom manifests, inspect [Pod events](#local-startup-stalls-on-cert-manager).
+For custom manifests, inspect Pod events during startup's rollout wait, before
+rollback, using the [state directory and cluster name](#local-startup-stalls-on-cert-manager).
+
+```bash
+kubectl --kubeconfig '<state-directory>/kubeconfig' \
+  --context 'k3d-<cluster>' \
+  -n agent-sandbox-system describe pods
+```
+
+If the manifest places the controller elsewhere, inspect that namespace for pull
+errors. Local startup requires the controller in `agent-sandbox-system`.
+
 `ImagePullBackOff` with `cdn.registry.k8s.io` resets means node delivery failed.
 Restore connectivity or [preload a verified cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache).
 Preserve version pins, TLS verification and network policies.
@@ -330,13 +337,12 @@ retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 
-Run `kubectl describe pod <pod-name>` in the Agent's tenant namespace. Each
-`Readiness probe failed:` event reports the private HTTP endpoint's status or a
-connection failure. A `503` means the runtime's native, plugin, authentication,
-or identity gate has not passed. Check the container's startup-phase logs for
-the failing stage. See
-[Harness authentication](../../reference/harness-execution.md#harness-authentication)
-for the probe codes.
+Use the cluster’s kubeconfig and context. Run `kubectl describe pod <pod-name>`
+in the Pod’s namespace. For two-cluster dedicated execution, inspect the Gateway in the
+control cluster and the Harness in the execution cluster.
+`Readiness probe failed:` reports a connection failure or
+[HTTP status](../../reference/drivers/kubernetes-compute.md#troubleshooting).
+For `503`, check startup logs for unmet native, plugin, authentication or identity requirements.
 
 ## A Gateway log asks for a restart to apply the model catalog
 

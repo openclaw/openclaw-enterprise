@@ -124,7 +124,7 @@ restored, or identities are missing, malformed, conflicting or uncertain.
 Labels and names can locate candidates; they do not authorize deletion. Startup
 resources use `app.kubernetes.io/instance=<release>` and
 `app.kubernetes.io/component=upgrade-preflight`; migration Jobs use
-`component=initialization`. Inspect `preflight-<resource>-create.err` for create
+`app.kubernetes.io/component=initialization`. Inspect `preflight-<resource>-create.err` for create
 failures. Preserve all records and reconcile accepted requests without repeating
 them.
 
