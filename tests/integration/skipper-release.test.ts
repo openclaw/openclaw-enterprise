@@ -87,14 +87,20 @@ function receipt() {
     sourceSha,
     status: "passed",
     exitCode: 0,
+    scope: "full",
     counts,
+    issues: [],
     imageScope: "checkout-images-with-synthetic-model-trust-layer",
     imageDigests: { controller: image("1"), runtime: image("2"), repository: image("3") },
     files: [
       {
         path: "tests/integration/skipper-prepared-git-installed.test.mjs",
         status: "passed",
+        exercised: true,
+        signal: null,
+        nodeExitCode: 0,
         counts,
+        issues: [],
         cleanup: { status: "passed" },
         tests: [
           {
@@ -217,6 +223,27 @@ test("aggregate qualifies only the independently selected Skipper image set with
       output.issues.some((issue: { code: string }) => issue.code === "skipper-release-mismatch"),
     );
   };
+  // Keep every other receipt field valid so each missing runner fact is decisive.
+  for (const scope of [undefined, "focused"]) {
+    await denied({ ...receipt(), scope });
+  }
+  for (const issues of [undefined, [{ code: "runner-issue" }]]) {
+    await denied({ ...receipt(), issues });
+  }
+  for (const [field, value] of [
+    ["exercised", false],
+    ["exercised", undefined],
+    ["signal", "SIGTERM"],
+    ["signal", undefined],
+    ["nodeExitCode", 1],
+    ["nodeExitCode", undefined],
+    ["fileFailure", { error: { code: "ERR_TEST_FAILURE" } }],
+    ["issues", [{ code: "file-issue" }]],
+    ["issues", undefined],
+  ] as const) {
+    const evidence = receipt();
+    await denied({ ...evidence, files: [{ ...evidence.files[0], [field]: value }] });
+  }
   await denied(receipt(), selection, "missing");
   await denied(receipt(), {});
   await denied(receipt(), { ...selection, sourceSha: "a".repeat(40) });
