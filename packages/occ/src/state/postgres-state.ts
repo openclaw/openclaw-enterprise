@@ -2722,14 +2722,19 @@ export class PostgresPlatformState implements PlatformStateStore {
     // Deleting a Namespace resource also removes the AccessBindings that grant
     // on it (as Agent deletion does), so none outlive their target or keep
     // blocking deletion of the Role they reference. Resource ids are unique.
-    const deleteResourceAccessBindings = async (
+    const finishResourceDeletion = async (
+      rowCount: number | null,
       resourceKind: "configuration" | "preset" | "secret" | "credential_source" | "service_account",
       resourceId: string,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
+      if (rowCount !== 1) {
+        return false;
+      }
       await client.query(
         "DELETE FROM occ.iam_access_bindings WHERE resource_kind = $1 AND resource_id = $2",
         [resourceKind, resourceId],
       );
+      return true;
     };
 
     const findPreset = async (
@@ -2827,11 +2832,7 @@ export class PostgresPlatformState implements PlatformStateStore {
            WHERE p.namespace_id = $1 AND p.id = $2 AND n.id = p.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, presetId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("preset", presetId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "preset", presetId);
       },
     };
 
@@ -3011,11 +3012,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = c.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, configurationId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("configuration", configurationId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "configuration", configurationId);
       },
     };
 
@@ -3171,11 +3168,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = s.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, secretId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("secret", secretId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "secret", secretId);
       },
     };
 
@@ -3752,11 +3745,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, credentialSourceId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("credential_source", credentialSourceId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "credential_source", credentialSourceId);
       },
     };
 
@@ -3900,11 +3889,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = s.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, serviceAccountId],
         );
-        if (deleted.rowCount !== 1) {
-          return false;
-        }
-        await deleteResourceAccessBindings("service_account", serviceAccountId);
-        return true;
+        return finishResourceDeletion(deleted.rowCount, "service_account", serviceAccountId);
       },
       findIssuedCredentialBinding: async (namespaceId, serviceAccountId) => {
         const found = decodeQueryRows(
