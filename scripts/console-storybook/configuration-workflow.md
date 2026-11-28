@@ -127,8 +127,10 @@ Press Enter. The list should return with **Search plugins** focused. Open anothe
 plugin and move focus to **Done** while its tools load. Check that focus stays
 on **Done**.
 
-In **Pages → Create Agent → Load plugin tools**, open Calendar. Tab to
-**Filter tools** and type `create`. Check that the field stays in place when
+In **Pages → Create Agent → Load plugin tools**, choose **Add Calendar**.
+Under **Plugin policies**, check that selectors on each row line up even when
+a label wraps. At 390 px, check that the fields stack in the same order.
+Tab to **Filter tools** and type `create`. Check that the field stays in place when
 **Create event** fits below it. Type `x` to hide the last match. Check that
 you can see the field and the message. Press Backspace to see the result again.
 
