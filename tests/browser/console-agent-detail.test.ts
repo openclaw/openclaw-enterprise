@@ -1435,6 +1435,97 @@ test("Returning from Plugins preserves the reading position of a Configuration s
   assert.equal(await editor.inputValue(), edited.slice(0, -1) + "Y");
 });
 
+test("Returning from v1 resumes typing at the active end of an unsaved Configuration selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Draft caret", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Draft caret Agent", nativeValues("v1"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const notes = JSON.stringify(Array<string>(60).fill("note"), null, 2);
+  const draft = `{ "notes": ${notes},\n"note": "first draft here" }`;
+  const start = draft.indexOf("draft");
+  await editor.fill(draft);
+  // Moving the selection after the last edit changes where typing should resume.
+  await editor.evaluate((node, offset) => {
+    if (!(node instanceof HTMLTextAreaElement)) {
+      throw new Error("Configuration JSON must be a textarea");
+    }
+    node.setSelectionRange(offset, offset + "draft".length, "backward");
+  }, start);
+
+  const chooser = versionChooser(page);
+  await chooser.selectOption(revision.id);
+  await editor.waitFor({ state: "detached" });
+  await waitForChosenVersion(page, 1);
+  await chooser.selectOption("draft");
+  await editor.waitFor();
+  await nextFrames(page);
+  assert.ok(await hasFocus(page.getByRole("heading", { level: 1 })));
+  for (let i = 0; i < 20 && !(await hasFocus(editor)); i++) {
+    await page.keyboard.press("Tab");
+  }
+  assert.ok(await hasFocus(editor));
+  assert.equal(await editor.inputValue(), draft);
+  const range = await editor.evaluate((node) => {
+    if (!(node instanceof HTMLTextAreaElement)) {
+      throw new Error("Configuration JSON must be a textarea");
+    }
+    return [node.selectionStart, node.selectionEnd];
+  });
+  assert.deepEqual(range, [start, start]);
+  await page.keyboard.type("X");
+  assert.equal(await editor.inputValue(), draft.replace("draft", "Xdraft"));
+
+  // Refocusing the rebuilt editor must respect a new, deliberate selection.
+  await page.keyboard.press("Shift+ArrowLeft");
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  assert.ok(await hasFocus(editor));
+  await page.keyboard.type("Y");
+  assert.equal(await editor.inputValue(), draft.replace("draft", "Ydraft"));
+
+  // The direct action must reveal the caret before typing scrolls it into view.
+  await chooser.selectOption(revision.id);
+  await editor.waitFor({ state: "detached" });
+  await waitForChosenVersion(page, 1);
+  await page
+    .getByRole("button", { name: "Edit current Configuration", exact: true })
+    .press("Enter");
+  await editor.waitFor();
+  await nextFrames(page);
+  assert.ok(await hasFocus(editor));
+  const returned = await editor.evaluate((node) => {
+    if (!(node instanceof HTMLTextAreaElement)) {
+      throw new Error("Configuration JSON must be a textarea");
+    }
+    // The insertion point is on the last short line, just above the bottom padding.
+    const style = getComputedStyle(node);
+    const top = node.getBoundingClientRect().top + node.clientTop;
+    const lineBottom = top + node.scrollHeight - node.scrollTop - parseFloat(style.paddingBottom);
+    return {
+      selection: [node.selectionStart, node.selectionEnd],
+      lineTop: lineBottom - parseFloat(style.lineHeight),
+      lineBottom,
+      visibleTop: Math.max(top, 0),
+      visibleBottom: Math.min(top + node.clientHeight, window.innerHeight),
+    };
+  });
+  assert.deepEqual(returned.selection, [start + 1, start + 1]);
+  assert.ok(
+    returned.lineTop >= returned.visibleTop && returned.lineBottom <= returned.visibleBottom,
+    `Restored caret line must be visible: ${JSON.stringify(returned)}`,
+  );
+  await page.keyboard.type("Z");
+  assert.equal(await editor.inputValue(), draft.replace("draft", "YZdraft"));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
 for (const [focus, refocus] of [
   ["status", false],
   ["editor", false],

@@ -240,6 +240,7 @@ interface EditorState {
 
 interface ConfigurationDraft {
   text: string;
+  caret?: number;
   initialText: string;
   baseline: Pick<Configuration, "id" | "generation">;
   secretBindings?: SecretBindings;
@@ -2123,13 +2124,15 @@ export async function renderAgentDetail(
       );
     }
     if (editStart && !editStart.disabled) {
-      // Entering the editor focuses it without scrolling; the editor is then brought into view.
-      if (editStart.id === "configuration-json") {
-        editStart.focus({ preventScroll: true });
-      } else {
+      const resume = editStart instanceof HTMLTextAreaElement;
+      if (!resume) {
         editStart.click();
       }
-      const field = detailPane.querySelector("#configuration-json")?.closest(".form-field");
+      const editor = detailPane.querySelector<HTMLTextAreaElement>("#configuration-json");
+      if (!resume) {
+        editor?.setSelectionRange(0, 0);
+      }
+      const field = editor?.closest(".form-field");
       if (field) {
         // The draft's "New version" notice comes to the top with the editor below it, so the
         // screen says this is now the draft (finding 2086). When the notice is too far above for
@@ -2139,10 +2142,21 @@ export async function renderAgentDetail(
         const below = notice
           ? field.getBoundingClientRect().top - notice.getBoundingClientRect().top
           : -1;
-        scrollToVersionDetail(
-          options,
-          notice && below >= 0 && below + 160 <= window.innerHeight ? notice : field,
-        );
+        const anchor = notice && below >= 0 && below + 160 <= window.innerHeight ? notice : field;
+        scrollToVersionDetail(options, anchor);
+        // Fit the last line below the notice on return. Leave manual resizing available.
+        if (resume && anchor === notice && !editStart.style.height) {
+          const box = editStart.getBoundingClientRect();
+          const available = Math.floor(window.innerHeight - box.top - 8);
+          if (available >= 80 && available < box.height) {
+            editStart.style.minHeight = "80px";
+            editStart.style.height = `${available}px`;
+          }
+        }
+        // Reveal the restored caret after positioning the notice, even in a long draft.
+        if (resume) {
+          editStart.focus();
+        }
         return;
       }
     }
@@ -7274,17 +7288,17 @@ export async function renderAgentDetail(
   ) {
     const retained = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     if (!retained?.carried) {
-      // The note describes the saved values used for this merge. Refresh can keep the
-      // draft even when it rereads a different Configuration or generation.
-      const note =
-        retained?.reviewNote &&
-        retained.baseline.id === snapshot.id &&
+      // Refresh can retain the text even when the saved Configuration has changed.
+      const current =
+        retained?.baseline.id === snapshot.id &&
         retained.baseline.generation === snapshot.generation &&
         !retained.outcomeUnknown &&
-        !retained.reloadRequired
-          ? retained.reviewNote
-          : "";
-      return { retained, note };
+        !retained.reloadRequired;
+      return {
+        retained,
+        note: current ? (retained.reviewNote ?? "") : "",
+        caret: current && retained.text !== retained.initialText ? retained.caret : undefined,
+      };
     }
     const initialText = JSON.stringify(values, null, 2);
     if (retained.baseline?.id !== snapshot.id) {
@@ -7381,7 +7395,11 @@ export async function renderAgentDetail(
       ),
       safety.node,
     );
-    const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
+    const {
+      retained,
+      note: carriedNote,
+      caret,
+    } = carriedConfigurationDraft(context, snapshot, values);
     const reviewReminder = "Review the merged draft. Saving may replace other changes.";
     let reviewNote = retained ? carriedNote : "";
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
@@ -7420,10 +7438,18 @@ export async function renderAgentDetail(
     // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
     const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
+    if (caret !== undefined) {
+      // Restore just the caret so typing cannot replace a selection outside the visible area.
+      editor.setSelectionRange(caret, caret);
+    }
     context.drafts.track("configuration", () =>
       editing
         ? {
             text: editor.value,
+            caret:
+              editor.selectionDirection === "backward"
+                ? editor.selectionStart
+                : editor.selectionEnd,
             initialText,
             baseline,
             secretBindings: stagedSecretBindings,

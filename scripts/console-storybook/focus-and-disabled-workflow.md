@@ -226,6 +226,18 @@ still on the Configuration tab, check that the same lines are visible. Tab back
 into **Configuration JSON** and type `X`. Check that only the selected word
 changes. Repeat at desktop width and at 390 px.
 
+In **Pages / Agent detail**, open `pages-agent-detail--new-version`. Choose
+**Edit Configuration**. Make the draft long enough to scroll. Select a word
+backward with Shift+Left. Using the keyboard, switch to **v1**, then
+**Draft**, and Tab from the heading to **Configuration JSON**. Check that the
+insertion point is visible in the editor and viewport. Type `X`. It should
+appear before the word, leaving it intact.
+
+Reset and repeat via **v1** and **Edit current Configuration**, which focuses
+the editor directly. Test both routes at desktop and 390 px. Do not save. In
+the fresh **Edit current Configuration** story, check the **New version**
+notice above the focused editor when both fit.
+
 ## Configuration save conflict
 
 Open **Pages / Agent detail / Configuration conflict preserves moved focus**
