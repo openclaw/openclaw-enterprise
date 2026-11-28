@@ -438,6 +438,8 @@ for (const [mode, title] of Object.entries({
   again: "Switching Namespace twice updates the empty header before the second list arrives",
   phone: "Switching Namespace keeps focus on Open navigation while the phone list loads",
   back: "Interrupting Back across Namespaces hides the previous Agent and restores the remembered row",
+  foreground:
+    "Returning to the tab during Back across Namespaces keeps focus on the reopened Agent",
 })) {
   test(title, async (t) => {
     const { page, fixture } = await signedOutPage(t);
@@ -487,10 +489,9 @@ for (const [mode, title] of Object.entries({
       await pauseClock(page);
     }
     const options = { once: true, method: "GET", afterServer: true };
-    const westRead = `${fixture.origin}/namespaces/${west.id}/agents`;
     const session = await holdRequests(t, page, SESSION, options);
-    const list = await holdRequests(t, page, westRead, options);
-    if (mode === "back") {
+    const returnsToDetail = mode === "back" || mode === "foreground";
+    if (returnsToDetail) {
       await page.evaluate(() => globalThis.history.go(-2));
       await page.waitForURL(detailUrl(fixture, west.id, west.agent.id).href);
     } else {
@@ -500,13 +501,47 @@ for (const [mode, title] of Object.entries({
     assert.equal((await session.requested)?.status(), 200);
     assert.ok(await picker.isDisabled());
     assert.equal(await picker.locator("option:checked").textContent(), "West");
-    if (mode === "back") {
+    if (returnsToDetail) {
       assert.deepEqual(
         await eastIdentity(),
         noEastIdentity,
         "West detail admission hides the previous Agent",
       );
       assert.equal(await eastTitle.isVisible(), false);
+    }
+    if (mode === "foreground") {
+      assert.ok(await hasFocus(agentsHeading), "Back focuses the pending heading");
+      // A visibility gain starts a fresh admission while Back's successful reply is held.
+      const resumed = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+      await page.evaluate(() => globalThis.document.dispatchEvent(new Event("visibilitychange")));
+      assert.equal((await resumed).status(), 200);
+
+      const header = main.locator(".page-header");
+      const westTitle = header.getByRole("heading", {
+        name: west.agent.name,
+        level: 1,
+        exact: true,
+      });
+      await agentShown(page);
+      await header.getByText(west.agent.id, { exact: true }).waitFor();
+      assert.equal(await picker.inputValue(), west.id);
+      assert.equal(await eastTitle.isVisible(), false);
+      assert.equal(await main.getByText(east.agent.id, { exact: true }).isVisible(), false);
+      assert.ok(await hasFocus(westTitle), "The settled West Agent heading keeps focus");
+      await page.keyboard.press("Tab");
+      const refresh = header.getByRole("button", { name: "Refresh", exact: true });
+      assert.ok(await hasFocus(refresh), "The first Tab reaches the West Agent's Refresh button");
+      assert.deepEqual(
+        requests.filter(({ method }) => method !== "GET" && method !== "HEAD"),
+        [],
+      );
+      session.release();
+      return;
+    }
+
+    const westRead = `${fixture.origin}/namespaces/${west.id}/agents`;
+    const list = await holdRequests(t, page, westRead, options);
+    if (mode === "back") {
       // Interrupt the detail admission before the session held above can return.
       await page.goBack();
       await page.waitForURL(`**${westList}`);

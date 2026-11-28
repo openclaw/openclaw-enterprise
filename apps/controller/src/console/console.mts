@@ -2040,8 +2040,18 @@ async function loadPage({
   // takes it: the Agent's heading for an Agent page loading behind it (the new version an
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
   // list (finding 1636). The pending shell also replaces a pressed sidebar link (finding 1653).
+  // A tab return can restart a pending Agent navigation. Continue its heading handoff if the
+  // neutral Namespace shell's heading still has focus, even before the window gains focus.
+  const resumingAgentHeading =
+    resumingView &&
+    !document.hidden &&
+    agentId != null &&
+    shownFeature === "agents" &&
+    shownPage === null &&
+    shownAgentScope === current.namespace &&
+    focused?.matches(".content h1") === true;
   // On refocus, restore the reader’s place only if we reuse the view (finding 1654).
-  let refocused = resumingView ? focusInShownView() : null;
+  let refocused = resumingView && !resumingAgentHeading ? focusInShownView() : null;
   const listRoute =
     current.feature === "agents" && current.namespace && !current.agentId && !current.creating
       ? routeKey(current)
@@ -2076,7 +2086,10 @@ async function loadPage({
       app.querySelector<HTMLElement>(".content h1")!.focus({ preventScroll: true });
     }
   } else if (knownPrivateState && !openingAgent) {
-    shell = holdShownView({ busyCue: !resumingView, keepFocus: !resumingView });
+    shell = holdShownView({
+      busyCue: !resumingView,
+      keepFocus: !resumingView || resumingAgentHeading,
+    });
   }
   const heldAgentReturn =
     listRoute &&
@@ -2101,6 +2114,10 @@ async function loadPage({
     document.activeElement === app.querySelector<HTMLHeadingElement>(".content h1")
       ? document.activeElement
       : null;
+  const heldHeadingHasFocus = () =>
+    heldHeading !== null &&
+    document.activeElement === heldHeading &&
+    (!resumingAgentHeading || (!document.hidden && document.hasFocus()));
   // A reader who moves away and back has still moved on. Exempt only our own heading transfer.
   let expectedHeading: HTMLElement | null = null;
   const trackSecretReturn =
@@ -2260,7 +2277,7 @@ async function loadPage({
               return;
             }
             // The loading page's heading takes focus from the held one it replaces.
-            const headingFocused = heldHeading !== null && document.activeElement === heldHeading;
+            const headingFocused = heldHeadingHasFocus();
             const keepHeadingFocus = () => {
               heldHeading = headingFocused
                 ? app.querySelector<HTMLHeadingElement>(".content h1")
@@ -2699,6 +2716,9 @@ async function loadPage({
         returnFocusMoved = true;
       }
       const headerFocus = scopeControl() ?? versionHeaderFocus();
+      if (resumingAgentHeading && heldHeadingHasFocus()) {
+        focusAgentResult = true;
+      }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       // The shell already restores Namespace focus. Keep that control in view too.
       const keptNamespaceFocus =
@@ -3166,7 +3186,7 @@ async function loadPage({
           // the Agent's heading, focused once under its name.
           const focusHeading =
             document.activeElement === pendingAgentHeading ||
-            (heldHeading !== null && document.activeElement === heldHeading) ||
+            heldHeadingHasFocus() ||
             shownNow.view.contains(document.activeElement);
           const headerFocus = scopeControl() ?? versionHeaderFocus();
           const detailShell = renderShell(privatePage, false);
