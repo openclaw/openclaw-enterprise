@@ -136,11 +136,18 @@ Use production setup's `KUBECONFIG_FILE`, `CONTEXT`, `OCC_INPUT_DIRECTORY`, and
 existing `openclaw-system` namespace. Retain the complete `values.yaml`; the
 logging block alone cannot install OCC.
 
-If an existing cluster Collector already reads the OCC and tenant CRI files,
-use it only after applying the same [native receiver](../../deploy/logging/kubernetes.yaml)
-and [shared policy](../../deploy/logging/collector.yaml): trusted metadata,
-privacy, filtering, egress, and limits on memory, storage, and queues. Use one collection route per
-stream. Otherwise, enable the bundled Collector below.
+To reuse an existing cluster Collector that reads OCC and tenant CRI files, run
+it in the OCC control-plane namespace (`openclaw-system`) and mount its
+Kubernetes-projected ServiceAccount namespace file at
+`/var/run/secrets/kubernetes.io/serviceaccount/namespace`. The shipped
+[native receiver](../../deploy/logging/kubernetes.yaml) requires this file at
+startup and assigns OCC identity only when the Pod namespace matches it. Retain
+this namespace check; labels alone are not trusted OCC identity. A Collector in
+another namespace needs its own explicitly reviewed identity policy.
+
+Apply the [shared policy](../../deploy/logging/collector.yaml) and equivalent
+trusted metadata, privacy, filtering, egress, memory, storage, and queue limits.
+Use one collection route per stream. Otherwise, enable the bundled Collector below.
 
 Create its two dedicated Secrets before installing or upgrading the chart:
 
@@ -199,8 +206,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 Helm never updates these Secrets, so an upgrade keeps the previous release's
 filtering until you refresh them. Before each upgrade, including image-only
 releases, reapply `collector.yaml` and `kubernetes.yaml` from the target
-commit's checkout and merge any reviewed local changes. Substitute your
-protected exporter file if you use one. Then restart the Collector as shown above:
+commit's checkout and merge any reviewed local changes. Before applying the
+receiver, confirm that the Collector runs in the OCC control-plane namespace and
+mounts its projected ServiceAccount namespace file. For a Collector elsewhere,
+review its separate identity policy instead of applying the shipped receiver
+unchanged. Preserve the namespace trust check. Substitute your protected exporter
+file if you use one. Then restart the Collector as shown above:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \

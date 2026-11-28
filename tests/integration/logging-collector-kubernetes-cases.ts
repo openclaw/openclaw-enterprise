@@ -469,6 +469,7 @@ export function registerKubernetesProcessorCases() {
         attributes: Object.entries({
           "occ.application": "openclaw-enterprise",
           "occ.component": component,
+          "k8s.namespace.name": `system-${fixture.suffix}`,
           "k8s.pod.uid": `pod-${randomUUID()}`,
           "container.id": `containerd://${randomUUID()}`,
         }).map(([key, value]) => ({ key, value: { stringValue: value } })),

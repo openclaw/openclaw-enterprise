@@ -154,9 +154,12 @@ export async function startKubernetesProcessors(fixture: CollectorFixture) {
       2,
     )}\n`,
   );
+  const namespaceFile = join(fixture.directory, "namespace");
+  await writeFile(namespaceFile, `system-${fixture.suffix}`);
   await fixture.startCollector({
     receiverPath: join(fixture.directory, "receiver.yaml"),
     publish: ["127.0.0.1::4318"],
+    volumes: [`${namespaceFile}:/var/run/secrets/kubernetes.io/serviceaccount/namespace:ro`],
   });
   const receiverAddress = await fixture.port(4318);
   await waitFor(

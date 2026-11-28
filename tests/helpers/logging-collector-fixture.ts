@@ -124,6 +124,7 @@ async function collectorFixture(t: TestContext, prefix: string) {
   ]);
   return {
     suffix,
+    image,
     directory,
     out,
     backend,
