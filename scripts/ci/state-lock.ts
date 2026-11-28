@@ -5,26 +5,42 @@
 // may call prepareFile itself (a copy of its file's prepared database per test). Without
 // a lock shared by both processes, one side's write can drop the other side's resource.
 //
-// The lock is `<state>.lock`, created atomically with link(2), holding the owner's pid
-// and a random token. A lock whose owner process no longer exists is abandoned (a test
-// killed by its timeout): a waiter renames it aside, so only one waiter can take it, and
-// removes it. A reused pid, or a zombie, reads as alive, so such a lock is only given up
-// at the timeout. A nested call in the same async context reuses the held lock instead
-// of deadlocking. The holder keeps the lock for its whole operation (a fresh database's
+// The lock is a non-empty `<state>.lock` directory, published by rename(2). Its one
+// marker has the owner's pid and a unique generation in both its name and contents.
+// Recovery unlinks only the observed dead owner's marker; release unlinks only its own.
+// Both then use nonrecursive rmdir(2), which cannot remove a live successor's non-empty
+// directory. This requires a shared, local POSIX filesystem where rename is atomic and
+// refuses a non-empty directory destination. A reused pid, or a zombie, reads as alive,
+// so such a lock is only given up at the timeout. A nested call in the same async context
+// reuses the held lock instead of deadlocking. The holder keeps the lock for its whole operation (a fresh database's
 // migration included), so a waiter's wait counts against its own test timeout.
 //
 // Waiters are served first come, first served, across processes and within one. Each
-// call writes a ticket next to the lock, named by a system-wide monotonic clock and its
-// deadline, and only the waiter with the oldest live ticket tries the lock, at a fixed
+// call creates a ticket directory next to the lock, named by a system-wide monotonic
+// clock and its deadline, and only the waiter with the oldest live ticket tries the lock, at a fixed
 // short interval. A ticket whose process has exited, or which outlived its deadline (a
 // reused pid), is removed. Each waiter scans the lock's directory, which in CI holds a
 // few files. Before tickets, waiters raced on the lock: long waiters backed off to 100 ms
 // polls while new arrivals polled at 5-40 ms and the holder's process re-took the lock
 // at once, so waits reached 30-110 s under load and tests timed out on the lock
 // (finding 2179).
+//
+// Every process sharing a state file must use this protocol. Before upgrading from the
+// old file-lock protocol, stop and reap all old users/reclaimers, then remove their
+// abandoned lock and ticket files while quiescent. A running old reclaimer can rename
+// a new lock directory; merely observing no old lock is not a safe transition.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rmdir,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -37,6 +53,9 @@ const queuePollMs = 20;
 // to a process that died with it, whose pid now reads as alive.
 const ticketGraceMs = 10_000;
 const held = new AsyncLocalStorage<ReadonlySet<string>>();
+const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const markerPattern = new RegExp(`^([1-9]\\d*)\\.(${uuidPattern})\\.owner$`);
+type LockOwner = { marker: string; pid: number; token: string };
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
@@ -51,13 +70,44 @@ function processExists(pid: number) {
     return true;
   } catch (error) {
     // EPERM: the process exists but belongs to someone else.
-    return hasErrorCode(error, "EPERM");
+    if (hasErrorCode(error, "EPERM")) {
+      return true;
+    }
+    if (hasErrorCode(error, "ESRCH")) {
+      return false;
+    }
+    throw error;
   }
+}
+
+function invalidLock(path: string) {
+  return new Error(
+    `Unrecognized CI state lock ${path}. All users must use the directory-lock protocol; stop and reap legacy users before removing old lock or ticket files.`,
+  );
 }
 
 async function readLock(path: string) {
   try {
-    return await readFile(path, "utf8");
+    if (!(await lstat(path)).isDirectory()) {
+      throw invalidLock(path);
+    }
+    const entries = await readdir(path, { withFileTypes: true });
+    // A releaser may have removed its marker but not yet removed the empty directory.
+    // Publication can replace that empty directory atomically.
+    if (entries.length === 0) {
+      return undefined;
+    }
+    const entry = entries[0];
+    const match = entry && markerPattern.exec(entry.name);
+    if (entries.length !== 1 || !entry?.isFile() || !match) {
+      throw invalidLock(path);
+    }
+    const pid = Number(match[1]);
+    const token = `${pid} ${match[2]}\n`;
+    if (!Number.isSafeInteger(pid) || (await readFile(join(path, entry.name), "utf8")) !== token) {
+      throw invalidLock(path);
+    }
+    return { marker: entry.name, pid, token };
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) {
       return undefined;
@@ -66,49 +116,28 @@ async function readLock(path: string) {
   }
 }
 
-function lockOwner(content: string | undefined) {
-  return Number.parseInt(content?.split(" ")[0] ?? "", 10);
-}
-
-// Removes the lock if the process that took it has exited. Renaming it aside first
-// means two waiters cannot both remove it, and a waiter never removes a lock it did not
-// inspect: if the lock changed hands in between, it goes back where it was.
-async function removeAbandonedLock(path: string, content: string | undefined) {
-  if (content === undefined || processExists(lockOwner(content))) {
-    return;
-  }
-  if ((await readLock(path)) !== content) {
-    return;
-  }
-  const aside = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.abandoned`);
+// A delayed rmdir can find a successor, but cannot remove its non-empty directory.
+async function removeEmptyLock(path: string) {
   try {
-    await rename(path, aside);
+    await rmdir(path);
   } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
+    if (
+      hasErrorCode(error, "ENOENT") ||
+      hasErrorCode(error, "ENOTEMPTY") ||
+      hasErrorCode(error, "EEXIST")
+    ) {
       return;
     }
     throw error;
   }
-  try {
-    if ((await readFile(aside, "utf8")) !== content) {
-      // Another waiter removed the abandoned lock and a live process took a new one.
-      // link(2) never replaces a file. If a third process took the lock in this gap,
-      // two holders now overlap: fail here rather than let them both write the state.
-      // It needs a holder that died with the lock (in practice a test killed by its
-      // timeout) and three live processes trying the lock at once. Only the waiter with
-      // the oldest ticket tries it, so two of them must also have written their tickets
-      // just after the third read the queue. The likely result is this error on a run
-      // that is already failing.
-      await link(aside, path).catch((error: unknown) => {
-        if (hasErrorCode(error, "EEXIST")) {
-          throw new Error(`Displaced a live CI state lock ${path} and could not restore it.`);
-        }
-        throw error;
-      });
-    }
-  } finally {
-    await unlink(aside);
+}
+
+async function removeAbandonedLock(path: string, owner: LockOwner | undefined) {
+  if (owner === undefined || processExists(owner.pid)) {
+    return;
   }
+  await unlink(join(path, owner.marker)).catch(ignoreMissing);
+  await removeEmptyLock(path);
 }
 
 function ignoreMissing(error: unknown) {
@@ -123,7 +152,45 @@ function clockDigits(nanoseconds: bigint) {
 
 function ticketPattern(path: string) {
   const name = basename(path).replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^\\.${name}\\.\\d{20}\\.(\\d{20})\\.(\\d+)\\.[0-9a-f-]{36}\\.ticket$`);
+  return new RegExp(`^\\.${name}\\.\\d{20}\\.(\\d{20})\\.([1-9]\\d*)\\.(${uuidPattern})\\.ticket$`);
+}
+
+async function removeTicket(path: string, marker: string) {
+  // Validate the unique ticket before claiming it. Its live waiter can still publish
+  // it, even after expiry, so never empty the directory at its original pathname.
+  // A process can die while writing this unpublished marker; its name, not potentially
+  // partial contents, identifies the only removable file.
+  try {
+    if (!(await lstat(path)).isDirectory()) {
+      throw invalidLock(path);
+    }
+    const entries = await readdir(path, { withFileTypes: true });
+    if (
+      entries.length > 1 ||
+      (entries[0] && (entries[0].name !== marker || !entries[0].isFile()))
+    ) {
+      throw invalidLock(path);
+    }
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return;
+    }
+    throw error;
+  }
+  const claimed = join(dirname(path), `.${randomUUID()}.reaping`);
+  try {
+    // Publication and reclamation compete for this exact directory. If publication
+    // wins, ENOENT leaves its canonical generation untouched. If reclamation wins,
+    // the publisher can no longer move the directory after we remove its marker.
+    await rename(path, claimed);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return;
+    }
+    throw error;
+  }
+  await unlink(join(claimed, marker)).catch(ignoreMissing);
+  await rmdir(claimed).catch(ignoreMissing);
 }
 
 // Counts the live tickets older than `ticket` and removes the others. The names sort by
@@ -141,7 +208,9 @@ async function ticketsAhead(path: string, ticket: string) {
       ahead += 1;
       continue;
     }
-    await unlink(join(dirname(path), name)).catch(ignoreMissing);
+    const ticketPath = join(dirname(path), name);
+    const marker = `${match[2]}.${match[3]}.owner`;
+    await removeTicket(ticketPath, marker);
   }
   return ahead;
 }
@@ -149,6 +218,7 @@ async function ticketsAhead(path: string, ticket: string) {
 async function acquireFileLock(path: string, timeoutMs: number) {
   const id = randomUUID();
   const token = `${process.pid} ${id}\n`;
+  const owner = { marker: `${process.pid}.${id}.owner`, pid: process.pid, token };
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   // process.hrtime reads CLOCK_MONOTONIC (Linux) or its equivalent, which every process
   // on the host shares, so the names order waiters by arrival.
@@ -157,20 +227,24 @@ async function acquireFileLock(path: string, timeoutMs: number) {
     clock + BigInt(Math.ceil(Math.min(timeoutMs, 2 ** 40)) + ticketGraceMs) * 1_000_000n;
   const ticket = `.${basename(path)}.${clockDigits(clock)}.${clockDigits(expiry)}.${process.pid}.${id}.ticket`;
   const ticketPath = join(dirname(path), ticket);
-  // The ticket becomes the lock by link(2), so the lock appears complete or not at all
-  // and a waiter never sees an empty owner.
-  await writeFile(ticketPath, token, { mode: 0o600, flag: "wx" });
+  await mkdir(ticketPath, { mode: 0o700 });
   const deadline = Date.now() + timeoutMs;
   try {
+    await writeFile(join(ticketPath, owner.marker), token, { mode: 0o600, flag: "wx" });
     for (;;) {
       const ahead = await ticketsAhead(path, ticket);
-      let content: string | undefined;
+      let content: LockOwner | undefined;
       if (ahead === 0) {
         try {
-          await link(ticketPath, path);
-          return token;
+          // Both directories are on the same filesystem. A live holder's directory
+          // stays non-empty, so rename cannot replace it.
+          await rename(ticketPath, path);
+          return owner;
         } catch (error) {
-          if (!hasErrorCode(error, "EEXIST")) {
+          if (hasErrorCode(error, "ENOTDIR") || hasErrorCode(error, "EISDIR")) {
+            throw invalidLock(path);
+          }
+          if (!hasErrorCode(error, "EEXIST") && !hasErrorCode(error, "ENOTEMPTY")) {
             throw error;
           }
         }
@@ -180,25 +254,27 @@ async function acquireFileLock(path: string, timeoutMs: number) {
       if (Date.now() >= deadline) {
         content ??= await readLock(path);
         throw new Error(
-          `Timed out after ${timeoutMs} ms waiting for the CI state lock ${path} (held by pid ${lockOwner(content) || "unknown"}, ${ahead} waiting ahead).`,
+          `Timed out after ${timeoutMs} ms waiting for the CI state lock ${path} (held by pid ${content?.pid ?? "unknown"}, ${ahead} waiting ahead).`,
         );
       }
       await delay(ahead === 0 ? firstPollMs : queuePollMs);
     }
-  } finally {
-    await unlink(ticketPath).catch(ignoreMissing);
+  } catch (error) {
+    await removeTicket(ticketPath, owner.marker);
+    throw error;
   }
 }
 
-async function releaseFileLock(path: string, token: string) {
+async function releaseFileLock(path: string, owner: LockOwner) {
   const content = await readLock(path);
   if (content === undefined) {
     throw new Error(`The CI state lock ${path} was removed while this process held it.`);
   }
-  if (content !== token) {
+  if (content.marker !== owner.marker) {
     throw new Error(`The CI state lock ${path} was taken while this process held it.`);
   }
-  await unlink(path);
+  await unlink(join(path, owner.marker));
+  await removeEmptyLock(path);
 }
 
 // Runs `operation` while holding the lock for `statePath`, an absolute path.
@@ -211,7 +287,7 @@ export async function withStateLock<T>(
     return operation();
   }
   const path = `${statePath}.lock`;
-  const token = await acquireFileLock(path, timeoutMs);
+  const owner = await acquireFileLock(path, timeoutMs);
   const paths = new Set(held.getStore() ?? []);
   paths.add(statePath);
   let result: T;
@@ -219,11 +295,11 @@ export async function withStateLock<T>(
     result = await held.run(paths, operation);
   } catch (error) {
     // Report the operation's own failure; a lost lock is secondary to it.
-    await releaseFileLock(path, token).catch((releaseError: unknown) => {
+    await releaseFileLock(path, owner).catch((releaseError: unknown) => {
       console.error(releaseError instanceof Error ? releaseError.message : releaseError);
     });
     throw error;
   }
-  await releaseFileLock(path, token);
+  await releaseFileLock(path, owner);
   return result;
 }

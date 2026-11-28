@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   appendFile,
@@ -26,6 +24,17 @@ import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prep
 import { registerNativeProfileUpgradeCases } from "./ci-prepare-native-profile-upgrade-cases.ts";
 import { registerOpenShellCredentialCases } from "./ci-prepare-openshell-credential-cases.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
+import {
+  checkPreparedJournalStateLock,
+  checkStateLockStopReceipts,
+} from "../helpers/ci-prepare-state-lock.ts";
+import {
+  checkStateLockControls,
+  checkStateLockDebugger,
+  checkStateLockLongBasename,
+  checkStateLockRecovery,
+  checkStateLockTicketReaping,
+} from "../helpers/ci-state-lock.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
@@ -1218,6 +1227,63 @@ console.error(laneTemplate + " " + new URL(template.env.OCC_TEST_DATABASE_URL).p
     await writePostgresState(statePath, server);
     const slow = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);\n`;
     await writeFile(corepackPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
+    const fakeEnv = {
+      PATH: root,
+      LANG: "C",
+      OCC_DOCKER_BIN: join(root, "must-not-run"),
+      OPENCLAW_CI_COREPACK_BIN: corepackPath,
+    };
+    // This is caller/journal proof against the maintained protocol fixture. The
+    // Docker-gated owner test separately verifies copied data on PostgreSQL.
+    // Recovery owns a separate journal so it cannot warm the concurrent cold start.
+    const recoveryRoot = await fixture(t);
+    const recoveryStatePath = join(recoveryRoot, "state.json");
+    const recoveryCorepackPath = join(recoveryRoot, "fake-corepack.mjs");
+    const recoveryPostgres = await laneFakePostgres(t);
+    const recoveryServer = composePostgres("recovery", recoveryPostgres.port);
+    await writePostgresState(recoveryStatePath, recoveryServer);
+    await writeFile(recoveryCorepackPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
+    const name = (url: string) => new URL(url).pathname.slice(1);
+    const statementsFor = (sql: string) =>
+      recoveryPostgres.queries().filter((line) => line === `postgres\t${sql}`);
+    const recoveryState = JSON.parse(await readFile(recoveryStatePath, "utf8"));
+    assert.deepEqual(recoveryState.resources, [recoveryServer]);
+    assert.deepEqual(recoveryPostgres.queries(), []);
+    await checkPreparedJournalStateLock(t, {
+      selection: {
+        lane: "postgres-application",
+        file: "tests/integration/postgres-worker-agent-revision.test.mjs",
+        statePath: recoveryStatePath,
+      },
+      env: {
+        ...fakeEnv,
+        PATH: recoveryRoot,
+        OCC_DOCKER_BIN: join(recoveryRoot, "must-not-run"),
+        OPENCLAW_CI_COREPACK_BIN: recoveryCorepackPath,
+      },
+      predecessor: process.env.OCC_TEST_CI_STATE_LOCK_PREDECESSOR,
+      oracle: {
+        effects: () => recoveryPostgres.queries(),
+        seed: async () => {},
+        present: async (url, source) => {
+          assert.ok(source);
+          assert.equal(
+            statementsFor(`CREATE DATABASE "${name(url)}" TEMPLATE "${name(source)}"`).length,
+            1,
+          );
+          assert.equal(
+            statementsFor(`DROP DATABASE IF EXISTS "${name(url)}" WITH (FORCE)`).length,
+            0,
+          );
+        },
+        absent: async (url) => {
+          assert.equal(
+            statementsFor(`DROP DATABASE IF EXISTS "${name(url)}" WITH (FORCE)`).length,
+            1,
+          );
+        },
+      },
+    });
     // A template per process, then a copy per test, like the worker revision suite, whose
     // template is the database the runner prepared for its file.
     const program = `
@@ -1228,24 +1294,24 @@ const options = {
   statePath: process.argv[2],
 };
 const template = await prepareFile(options);
+console.log(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1));
 for (let index = 0; index < 10; index += 1) {
   const copy = await prepareFile({ ...options, template: template.env.OCC_TEST_DATABASE_URL });
   await copy.cleanup();
 }
 await template.cleanup();
 `;
-    const run = () =>
-      runProgram(
-        program,
-        statePath,
-        {
-          PATH: root,
-          LANG: "C",
-          OCC_DOCKER_BIN: join(root, "must-not-run"),
-          OPENCLAW_CI_COREPACK_BIN: corepackPath,
-        },
-        60_000,
-      );
+    const run = () => runProgram(program, statePath, fakeEnv, 60_000);
+    assert.deepEqual(
+      JSON.parse(await readFile(statePath, "utf8")).resources,
+      [server],
+      "the concurrent callers must start with a server-only journal",
+    );
+    assert.deepEqual(
+      postgres.queries().filter((line) => /\tCREATE DATABASE /.test(line)),
+      [],
+      "the concurrent callers must create the first lane template",
+    );
     const results = await Promise.all([run(), run()]);
     for (const result of results) {
       assert.equal(result.status, 0, result.stderr);
@@ -1277,61 +1343,35 @@ await template.cleanup();
     // Every copy and drop reached the server: per process a copy of the lane template for
     // its file and 10 per-test copies, each dropped again.
     const statements = postgres.queries();
+    const laneTemplate = settled.resources[1].name;
+    assert.match(laneTemplate, /^openclaw_ci_lane_template_[a-f0-9]{12}$/);
+    assert.deepEqual(
+      statements.filter((line) => /^postgres\tCREATE DATABASE "[^"]+"$/.test(line)),
+      [`postgres\tCREATE DATABASE "${laneTemplate}"`],
+    );
+    const fileDatabases = results.map((result) => result.stdout.trim());
+    for (const database of fileDatabases) {
+      assert.match(database, /^openclaw_ci_postgres_worker_agent_revision_[a-f0-9]{12}$/);
+    }
+    assert.equal(new Set(fileDatabases).size, 2);
+    assert.deepEqual(
+      statements.filter((line) => line.endsWith(` TEMPLATE "${laneTemplate}"`)).sort(),
+      fileDatabases
+        .map((database) => `postgres\tCREATE DATABASE "${database}" TEMPLATE "${laneTemplate}"`)
+        .sort(),
+    );
     assert.equal(statements.filter((line) => / TEMPLATE /.test(line)).length, 22);
     assert.equal(statements.filter((line) => /\tDROP DATABASE /.test(line)).length, 22);
   });
 
   test("the CI state lock removes an exited holder's lock and waits for a live one", async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state.json");
-    const lockPath = `${statePath}.lock`;
-    const exited = spawnSync(process.execPath, ["-e", ""]);
-    assert.equal(exited.status, 0);
-    await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
-    // Places in the queue older than any live waiter's: the exited process's, and one past
-    // its deadline whose pid reads as alive (reused, here this process's).
-    const ticket = (clock: string, expiry: string, pid: number) =>
-      writeFile(
-        join(
-          root,
-          `.state.json.lock.${clock.padStart(20, "0")}.${expiry.padStart(20, "0")}.${pid}.${randomUUID()}.ticket`,
-        ),
-        `${pid} queued\n`,
-        { mode: 0o600 },
-      );
-    await ticket("1", String(process.hrtime.bigint() + 10n ** 12n), exited.pid);
-    await ticket("2", "3", process.pid);
-    // A nested call in the same async context reuses the held lock.
-    assert.equal(
-      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran"), {
-        timeoutMs: 10_000,
-      }),
-      "ran",
-    );
-    assert.deepEqual(await readdir(root), []);
-
-    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
-      stdio: "ignore",
-    });
-    t.after(() => holder.kill());
-    await writeFile(lockPath, `${holder.pid} live\n`, { mode: 0o600 });
-    let ran = false;
-    await assert.rejects(
-      () =>
-        withStateLock(
-          statePath,
-          async () => {
-            ran = true;
-          },
-          { timeoutMs: 300 },
-        ),
-      new RegExp(
-        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}, 0 waiting ahead\\)`,
-      ),
-    );
-    assert.equal(ran, false);
-    assert.equal(await readFile(lockPath, "utf8"), `${holder.pid} live\n`);
-    assert.deepEqual((await readdir(root)).sort(), ["state.json.lock"]);
+    await checkStateLockStopReceipts(t, root);
+    await checkStateLockDebugger(t, root);
+    await checkStateLockRecovery(t, root);
+    await checkStateLockControls(t, root);
+    await checkStateLockTicketReaping(t, root);
+    await checkStateLockLongBasename(t, root);
   });
 
   test("the CI state lock serves waiters in arrival order across processes", async (t) => {
