@@ -17,6 +17,7 @@
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-deployment-inventory.test.ts",
+    "tests/integration/postgres-deployment-inventory-empty-actor.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -141,6 +142,10 @@
       "expectedTests": [
         "deployment inventory bounds PostgreSQL queries across retained revision history"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-deployment-inventory-empty-actor.test.ts",
+      "expectedTests": ["deployment inventory refuses a settled revision row with an empty actor"]
     },
     {
       "path": "tests/integration/postgres-platform-state.test.ts",

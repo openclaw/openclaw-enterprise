@@ -117,8 +117,9 @@ Standalone preflight records original-worker requirements. Unknown assessments b
 Runtime upgrades record replacements and check draft images, sizes, baseline versions
 and Namespace readiness. Exclude stopped or deleting Agents. Allow pending repository cleanup.
 
-`deploymentInventorySnapshot` reads work in one State snapshot and refuses
-missing or mismatched work. Credential withdrawal is separate.
+`deploymentInventorySnapshot` reads deployment work in one State snapshot and
+refuses missing or mismatched work. Credential withdrawal is separate.
+`listUnsettledOperations` skips finished revision work.
 `findRevisionForBrowsing` returns `unknown` for unreadable snapshots and
 propagates database or identity errors. `readDeploymentInventory` gives Compute
 ten seconds outside State transactions, then checks fleet authorization and

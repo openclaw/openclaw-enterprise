@@ -3,73 +3,17 @@ import test from "node:test";
 import pg from "pg";
 
 import type { InstallationDeploymentInventoryResponse } from "../../packages/contracts/src/index.ts";
-import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { seedInventoryAgent } from "../helpers/postgres-inventory-agent.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "deployment inventory bounds PostgreSQL queries across retained revision history",
   requiresPostgres,
   async (t) => {
-    const { deployAgent, inject, pool, principal, state } = await createPostgresAgentApp(t, {
-      label: "inventory-history",
-      authSecret: "synthetic-deployment-inventory-auth-secret",
-      controllerOptions: { recordOperations: true },
-    });
-    const { namespace, agent, revision } = await deployAgent("Inventory Agent");
-    const completed = await pool.query(
-      `UPDATE occ.controller_work
-       SET state = 'succeeded', attempt_count = 1, completed_at = now(), updated_at = now(),
-           reason_code = 'REVISION_ACTIVATED'
-       WHERE idempotency_key = $1`,
-      [`agent_revision:${revision.id}:reconcile`],
+    const { agent, appendHistory, inject, namespace, pool, revision } = await seedInventoryAgent(
+      t,
+      "inventory-history",
     );
-    assert.equal(completed.rowCount, 1);
-    await state.transact(async ({ agents, operations }) => {
-      assert.ok(
-        await agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
-      );
-      // Outstanding credential withdrawal on the active revision does not block inventory.
-      await operations.append({
-        kind: "agent_revision",
-        action: "reconcile",
-        target: "credentials_withdrawn",
-        operationId: "inventory-withdrawal",
-        namespaceId: namespace.id,
-        resourceId: revision.id,
-        actorId: principal.id,
-      });
-    });
-
-    const appendHistory = async (
-      offset: number,
-      count: number,
-      workState: "queued" | "failed_permanent",
-      keySuffix = "reconcile",
-    ) => {
-      const inserted = await pool.query(
-        `WITH history AS (
-           INSERT INTO occ.agent_revisions
-             (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec,
-              gateway_managed_mode, admitted_at)
-           SELECT 'rev_' || gen_random_uuid(), namespace_id, agent_id, revision_number + n,
-                  backend_id, admitted_spec, gateway_managed_mode, now()
-           FROM occ.agent_revisions, generate_series($2::int, $2::int + $3::int - 1) AS n
-           WHERE id = $1
-           RETURNING id, namespace_id, agent_id
-         )
-         INSERT INTO occ.controller_work
-           (idempotency_key, namespace_id, agent_id, revision_id, actor_id, state, available_at,
-            attempt_count, completed_at, reason_code, created_at, updated_at)
-         SELECT 'agent_revision:' || id || ':' || $6, namespace_id, agent_id, id, $4, $5, now(),
-                CASE WHEN $5 = 'queued' THEN 0 ELSE 1 END,
-                CASE WHEN $5 = 'queued' THEN NULL ELSE now() END,
-                CASE WHEN $5 = 'queued' THEN NULL ELSE 'CONVERGENCE_DEADLINE_EXCEEDED' END,
-                now(), now()
-         FROM history`,
-        [revision.id, offset, count, principal.id, workState, keySuffix],
-      );
-      assert.equal(inserted.rowCount, count);
-    };
 
     // Count real pg calls around each request, including both inventory snapshots.
     const sql = t.mock.method(pg.Client.prototype, "query");
@@ -77,7 +21,13 @@ test(
     const read = async () => {
       const before = sql.mock.callCount();
       const reply = await inject("GET", inventoryPath);
-      const queries = sql.mock.callCount() - before;
+      const calls = sql.mock.calls.slice(before);
+      const queries = calls.length;
+      let rows = 0;
+      for (const call of calls) {
+        const result = (await call.result) as { rows?: unknown[] } | undefined;
+        rows += result?.rows?.length ?? 0;
+      }
       assert.equal(reply.statusCode, 200, reply.body);
       const inventory = reply.json<InstallationDeploymentInventoryResponse>().data;
       const selected = inventory.namespaces
@@ -85,7 +35,7 @@ test(
         ?.agents.find(({ id }) => id === agent.id);
       assert.ok(selected);
       assert.equal(selected.activeRevisionId, revision.id);
-      return { inventory, selected, queries };
+      return { inventory, selected, queries, rows };
     };
     const small = await read();
     assert.equal(small.selected.deploymentInProgress, false);
@@ -96,6 +46,8 @@ test(
     await appendHistory(1, historicalRevisions, "failed_permanent");
     const populated = await read();
     assert.deepEqual(populated.inventory, small.inventory);
+    // Settled history stays in PostgreSQL: the rows read do not grow with it.
+    assert.equal(populated.rows, small.rows, "settled history must not add rows read");
 
     await appendHistory(historicalRevisions + 1, 1, "queued");
     const pending = await read();
@@ -125,7 +77,7 @@ test(
     assert.deepEqual(firstRefusal.json().error, incomplete.json().error);
 
     t.diagnostic(
-      `Inventory queries with 0 and ${historicalRevisions} historical revisions: ${small.queries} and ${populated.queries}`,
+      `Inventory queries and rows with 0 and ${historicalRevisions} historical revisions: ${small.queries}/${small.rows} and ${populated.queries}/${populated.rows}`,
     );
     assert.ok(small.queries > 0, "inventory must read PostgreSQL");
     assert.ok(

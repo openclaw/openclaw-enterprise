@@ -45,6 +45,7 @@ export const platformReadMethods = deepFreeze({
   sandboxPolicies: ["find"],
   operations: [
     "list",
+    "listUnsettledOperations",
     "findWork",
     "findWorkByKeys",
     "findWorkAttempt",
