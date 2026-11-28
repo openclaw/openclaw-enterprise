@@ -147,6 +147,24 @@ const iamOf = (fixture: Fixture) => fixture.controller.selectDriver("iam", "cons
 const collection = (namespaceId: string) => `/namespaces/${namespaceId}/presets`;
 const presetPath = (namespaceId: string, presetId: string) =>
   `${collection(namespaceId)}/${presetId}`;
+function presetWrites(namespaceId: string, presetId: string) {
+  return [
+    {
+      method: "POST",
+      path: collection(namespaceId),
+      grant: "create",
+      targetId: namespaceId,
+      denied: { code: "FORBIDDEN", message: createDenied("Preset", namespaceId) },
+    },
+    {
+      method: "PATCH",
+      path: presetPath(namespaceId, presetId),
+      grant: "update",
+      targetId: presetId,
+      denied: { code: "FORBIDDEN", message: callerDenied("Preset update", `Preset ${presetId}`) },
+    },
+  ] as const;
+}
 const agentsPath = (namespaceId: string) => `/namespaces/${namespaceId}/agents`;
 // The list route returns summaries without templates (finding 1323).
 const listPresets = async (fixture: Fixture, namespaceId: string) =>
@@ -162,12 +180,10 @@ const presetSummary = ({ id, namespaceId, name, createdAt }: PresetSummary) => (
   name,
   createdAt,
 });
-// Each listed Preset with its template, read one by one as clients do.
+// Fetch the full documents in catalog order so comparisons include template edits.
 const listPresetDocuments = async (fixture: Fixture, namespaceId: string) =>
   Promise.all(
-    (await listPresets(fixture, namespaceId)).map(
-      async ({ id }) => (await readPreset(fixture, namespaceId, id)).data,
-    ),
+    (await listPresets(fixture, namespaceId)).map(({ id }) => readPreset(fixture, namespaceId, id)),
   );
 const presetNames = async (fixture: Fixture, namespaceId: string) =>
   (await listPresets(fixture, namespaceId)).map((preset) => preset.name).sort();
@@ -176,7 +192,9 @@ async function readPreset(fixture: Fixture, namespaceId: string, presetId: strin
   const data = presetDocument(
     fixture.fixtureResponse(response, 200, PresetResponse, "read Preset").data,
   );
-  return { ...response, data };
+  assert.equal(data.namespaceId, namespaceId);
+  assert.equal(data.id, presetId);
+  return data;
 }
 const auditFrom = (fixture: Fixture, source: string) =>
   fixture.audit.events.filter((event) => event.details?.source === source);
@@ -345,6 +363,51 @@ async function bindPreset(
     .data;
 }
 
+type StartupArgs = Parameters<typeof initializeInstallationPresets>;
+
+function startPresets(
+  fixture: Fixture,
+  { defaultPresets }: Pick<BundledRuntime, "defaultPresets">,
+  {
+    identities = fixture.policy.identities,
+    iam = iamOf(fixture),
+    onWarning,
+  }: { identities?: StartupArgs[2]; iam?: IAMDriver; onWarning?: StartupArgs[4] } = {},
+) {
+  return initializeInstallationPresets(
+    fixture.controller,
+    iam,
+    identities,
+    defaultPresets,
+    onWarning,
+  );
+}
+
+async function assertSeededDefaults(
+  fixture: Fixture,
+  namespaceId: string,
+  expectedNames: readonly string[],
+) {
+  const listed = await listPresets(fixture, namespaceId);
+  assert.deepEqual(listed.map(({ name }) => name).sort(), [...expectedNames].sort());
+  const ids = listed.map(({ id }) => id).sort();
+  assert.equal(new Set(ids).size, ids.length);
+
+  const events = auditFrom(fixture, "installation-defaults").filter(
+    (event) => event.namespaceId === namespaceId || ids.includes(event.resource.id),
+  );
+  assert.deepEqual(events.map(({ resource }) => resource.id).sort(), ids);
+  for (const event of events) {
+    assert.equal(event.namespaceId, namespaceId);
+    assert.equal(event.kind, "mutation");
+    assert.equal(event.action, "openclaw.presets.create");
+    assert.equal(event.outcome, "success");
+    assert.equal(event.actorId, fixture.admin.id);
+    assert.equal(event.resource.kind, "preset");
+    assert.equal(event.resource.namespaceId, namespaceId);
+  }
+}
+
 // Startup log lines, as the controller logger would emit them.
 function captureLog() {
   const lines: Array<Record<string, unknown>> = [];
@@ -390,7 +453,7 @@ async function installFromCatalog(fixture: Fixture, namespaceId: string, file: s
   );
   // The catalog lists a summary; the template comes from the exact Preset.
   assert.deepEqual(listed, presetSummary(installed.data));
-  const preset = (await readPreset(fixture, namespaceId, listed.id)).data;
+  const preset = await readPreset(fixture, namespaceId, listed.id);
   return { artifact, installed, preset };
 }
 
@@ -575,13 +638,10 @@ describe("Presets", { concurrency: 2 }, () => {
       },
     };
     const created = await createPreset(fixture, namespace.id, "Full workspace", template);
-    assert.deepEqual((await readPreset(fixture, namespace.id, created.id)).data.template, template);
+    assert.deepEqual((await readPreset(fixture, namespace.id, created.id)).template, template);
     const replacement = await createPreset(fixture, namespace.id, "Replacement", {});
     await patchTemplate(fixture, namespace.id, replacement.id, template);
-    assert.deepEqual(
-      (await readPreset(fixture, namespace.id, replacement.id)).data.template,
-      template,
-    );
+    assert.deepEqual((await readPreset(fixture, namespace.id, replacement.id)).template, template);
   });
 
   test("Preset transport admits the template JSON limit and escaped strings, while admission still rejects larger templates", async () => {
@@ -594,10 +654,7 @@ describe("Presets", { concurrency: 2 }, () => {
       .slice(0, 1024 * 1024 - overhead);
     assert.equal(Buffer.byteLength(JSON.stringify(template)), 1024 * 1024);
     const accepted = await createPreset(fixture, namespace.id, "JSON boundary", template);
-    assert.deepEqual(
-      (await readPreset(fixture, namespace.id, accepted.id)).data.template,
-      template,
-    );
+    assert.deepEqual((await readPreset(fixture, namespace.id, accepted.id)).template, template);
 
     // JSON permits Unicode escapes for ordinary string characters, without changing the template.
     const encoded = JSON.stringify({ name: "Escaped JSON", template }).replace(
@@ -627,10 +684,7 @@ describe("Presets", { concurrency: 2 }, () => {
         .message,
       /JSON exceeds maximum size of 1 MiB/,
     );
-    assert.deepEqual(
-      (await readPreset(fixture, namespace.id, accepted.id)).data.template,
-      template,
-    );
+    assert.deepEqual((await readPreset(fixture, namespace.id, accepted.id)).template, template);
   });
 
   test("Preset writes refuse a caller without the grant before reading the body", async () => {
@@ -650,30 +704,16 @@ describe("Presets", { concurrency: 2 }, () => {
     const session = await fixture.signIn(member.credentials);
     // Over the general 64 KiB limit and under the Preset route limit (6 MiB + 8 KiB).
     const declaredBytes = 6 * 1024 * 1024;
-    // Each refusal names the grant it checked, the same before and after the body arrives.
-    const forbidden = {
-      POST: { code: "FORBIDDEN", message: createDenied("Preset", namespace.id) },
-      PATCH: { code: "FORBIDDEN", message: callerDenied("Preset update", `Preset ${existing.id}`) },
-    };
-    for (const [method, path, action, grant, targetId] of [
-      ["POST", collection(namespace.id), "openclaw.presets.create", "create", namespace.id],
-      [
-        "PATCH",
-        presetPath(namespace.id, existing.id),
-        "openclaw.presets.update",
-        "update",
-        existing.id,
-      ],
-    ] as const) {
+    const writes = presetWrites(namespace.id, existing.id);
+    for (const { method, path, grant, targetId, denied } of writes) {
       const target: ResourceRef = { kind: "preset", id: targetId, namespaceId: namespace.id };
       const small = await fixture.request(method, path, {
         session,
         body: { name: "Unauthorized", template: {} },
       });
-      assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
       assert.deepEqual(
-        fixture.fixtureResponse(small, small.status, ErrorResponse, "error response").error,
-        forbidden[method],
+        fixture.fixtureResponse(small, 403, ErrorResponse, method).error,
+        denied,
         method,
       );
       const auditStart = fixture.audit.events.length;
@@ -692,65 +732,75 @@ describe("Presets", { concurrency: 2 }, () => {
       assert.ok(refused, `${method}: the controller waited for the unread body`);
       assert.deepEqual(
         fixture.fixtureResponse(refused, 403, ErrorResponse, method).error,
-        forbidden[method],
+        denied,
         method,
       );
       // The refusal keeps its audit row, naming the exact grant the write itself checks.
       assertWriteAuthorizationDenial(
         fixture.audit.events.slice(auditStart),
-        { principalId: memberId, action, grant, resource: target },
+        { principalId: memberId, action: `openclaw.presets.${grant}`, grant, resource: target },
         method,
       );
     }
-    assert.deepEqual((await readPreset(fixture, namespace.id, existing.id)).data, existing);
-    assert.deepEqual(
-      (await listPresets(fixture, namespace.id)).map((preset) => preset.id),
-      [existing.id],
-    );
+    assert.deepEqual(await listPresetDocuments(fixture, namespace.id), [existing]);
   });
 
   test("Preset writes check the grant again in their transaction after the pre-body check", async (t) => {
     // Own app: the pre-body check is patched controller-wide.
     const fixture = await createFixture(t);
     const namespace = await fixture.createNamespace("Preset grant re-check", { ready: true });
-    const existing = await createPreset(fixture, namespace.id, "Existing");
+    const template = { agent: { name: "original-agent" } };
+    const existing = await createPreset(fixture, namespace.id, "Existing", template);
+    assert.deepEqual(existing.template, template);
     const member = await fixture.createAccountWithPolicy("preset-writer", (principal) => {
       grantRole(fixture.policy, principal.id, {
-        id: "re-check-preset-writer",
-        resource: undefined,
-        bindingId: "re-check-write-presets",
+        id: "re-check-preset-reader",
         namespaceId: namespace.id,
-        permissions: { namespace: ["read"], preset: ["read", "create", "update"] },
+        permissions: { namespace: ["read"], preset: ["read"] },
       });
     });
-    const writerBinding = required(
-      fixture.policy.bindings.find((binding) => binding.id === "re-check-write-presets"),
-    );
+    const writes = presetWrites(namespace.id, existing.id).map((write) => ({
+      ...write,
+      binding: grantRole(fixture.policy, member.principal.id, {
+        id: `re-check-preset-${write.grant}`,
+        namespaceId: namespace.id,
+        permissions: { preset: [write.grant] },
+      }).binding,
+    }));
     const session = await fixture.signIn(member.credentials);
-    // The grant is withdrawn right after the pre-body check passes, before the handler runs.
     const occ = fixture.controller;
     const preBodyCheck = occ.authorizePresetWrite;
-    occ.authorizePresetWrite = async (...args) => {
-      await preBodyCheck.apply(occ, args);
-      const index = fixture.policy.bindings.indexOf(writerBinding);
-      assert.notEqual(index, -1);
-      fixture.policy.bindings.splice(index, 1);
-    };
     t.after(() => {
       Reflect.deleteProperty(occ, "authorizePresetWrite");
     });
-    for (const [method, path] of [
-      ["POST", collection(namespace.id)],
-      ["PATCH", presetPath(namespace.id, existing.id)],
-    ] as const) {
+    const { bindings } = fixture.policy;
+    const originalBindings = [...bindings];
+    for (const { method, path, denied, binding } of writes) {
+      const index = bindings.indexOf(binding);
+      assert.notEqual(index, -1, method);
+      occ.authorizePresetWrite = async (...args) => {
+        await preBodyCheck.apply(occ, args);
+        assert.deepEqual(bindings.splice(index, 1), [binding], method);
+      };
       const refused = await fixture.request(method, path, {
         session,
         body: { name: "Withdrawn", template: {} },
       });
-      assertApiError(refused, 403, "FORBIDDEN", method);
-      // The pre-body check passed and withdrew the grant; restore it for the next write.
-      assert.equal(fixture.policy.bindings.includes(writerBinding), false, method);
-      fixture.policy.bindings.push(writerBinding);
+      assert.deepEqual(
+        fixture.fixtureResponse(refused, 403, ErrorResponse, method).error,
+        denied,
+        method,
+      );
+      assert.equal(bindings.includes(binding), false, method);
+      // The same caller can still read the whole Preset before we restore the write grant.
+      const read = await fixture.request("GET", presetPath(namespace.id, existing.id), { session });
+      assert.deepEqual(
+        fixture.fixtureResponse(read, 200, PresetResponse, method).data,
+        existing,
+        method,
+      );
+      bindings.splice(index, 0, binding);
+      assert.deepEqual(bindings, originalBindings, method);
     }
     assert.deepEqual(await listPresets(fixture, namespace.id), [presetSummary(existing)]);
   });
@@ -806,10 +856,9 @@ describe("Presets", { concurrency: 2 }, () => {
     fixture.controller.registerDriver(pluginDriver);
     fixture.controller.selectDriver("plugin", pluginDriver.id);
     const read = await readPreset(fixture, namespace.id, preset.id);
-    assert.equal(read.status, 200);
-    assert.deepEqual(read.data.template, template);
+    assert.deepEqual(read.template, template);
     // The API consumer uses the same renderer as the console, then the ordinary two-create flow.
-    const rendered = renderPresetTemplate(read.data.template, {
+    const rendered = renderPresetTemplate(read.template, {
       name: 'My "Agent"',
       enabled: false,
     });
@@ -924,8 +973,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     assert.equal(rejectedUpdate.status, 400, JSON.stringify(rejectedUpdate.body));
     const unchanged = await readPreset(fixture, alpha.id, preset.id);
-    assert.equal(unchanged.status, 200);
-    assert.deepEqual(unchanged.data.template, preset.template);
+    assert.deepEqual(unchanged.template, preset.template);
     const rendered = renderPresetTemplate(preset.template, { secretId: secret.ref.id });
     const reader = await fixture.createAccountWithPolicy(
       "preset-user-without-secret",
@@ -1498,8 +1546,7 @@ describe("Presets", { concurrency: 2 }, () => {
     }
 
     const retained = await readPreset(fixture, namespace.id, installed.data.id);
-    assert.equal(retained.status, 200, JSON.stringify(retained.body));
-    assert.deepEqual(retained.data.template, originalTemplate);
+    assert.deepEqual(retained.template, originalTemplate);
 
     // An operator can disable Slack until they bind its Credential Sources. Do not create
     // obsolete Channel Secrets as incidental setup for a model authentication assertion.
@@ -1577,7 +1624,7 @@ describe("Presets", { concurrency: 2 }, () => {
         assert.equal(JSON.stringify(response.body).includes("sentinel-credential"), false);
       }
     }
-    assert.deepEqual((await readPreset(fixture, namespace.id, preset.id)).data.template, template);
+    assert.deepEqual((await readPreset(fixture, namespace.id, preset.id)).template, template);
     assert.equal(JSON.stringify(fixture.audit.events).includes("sentinel-credential"), false);
   });
 
@@ -1590,14 +1637,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const fixture = await createFixture(t, { defaultPresets: runtime.defaultPresets });
     const principal = fixture.admin;
     const namespace = await fixture.createNamespace("Default catalog", { ready: true });
-    const list = await fixture.request("GET", collection(namespace.id));
-    assert.equal(list.status, 200);
-    const listedPresets = fixture.fixtureResponse(
-      list,
-      200,
-      PresetListResponse,
-      "list Presets",
-    ).data;
+    const listedPresets = await listPresets(fixture, namespace.id);
     const defaultNames = [
       customPreset.name,
       "default-codex",
@@ -1667,16 +1707,12 @@ describe("Presets", { concurrency: 2 }, () => {
       fixture.controller.initializeDefaultPresets(principal.id),
     ]);
     const retained = await readPreset(fixture, namespace.id, required(listedPresets[0]).id);
-    assert.deepEqual(retained.data.template, renamedTemplate);
-    const seeded = await listPresets(fixture, existing.id);
-    assert.deepEqual(seeded.map((preset) => preset.name).sort(), defaultNames);
-    const audit = auditFrom(fixture, "installation-defaults");
-    assert.ok(
-      audit.some(
-        (event) => event.resource.id === required(seeded[0]).id && event.actorId === principal.id,
-      ),
+    assert.deepEqual(retained.template, renamedTemplate);
+    await assertSeededDefaults(fixture, existing.id, defaultNames);
+    assert.deepEqual(
+      await fixture.controller.transact((state) => state.presets.listPresets(leaving.id)),
+      [],
     );
-    assert.equal(audit.filter((event) => event.resource.id === required(seeded[0]).id).length, 1);
 
     // Namespace creation must roll back if its caller cannot create the defaults.
     const limited = await fixture.createAccountWithPolicy("namespace-only", (identity) => {
@@ -1725,13 +1761,12 @@ describe("Presets", { concurrency: 2 }, () => {
       const early = await fixture.request(method, path, { body });
       assertApiError(early, 409, "NAMESPACE_NOT_READY", method);
     }
-    // Startup must skip a persisted non-administrator even when it is returned first.
-    await initializeInstallationPresets(
-      fixture.controller,
-      iamOf(fixture),
-      [limited.principal, principal],
-      runtime.defaultPresets,
-    );
+    // The first principal can create Presets, but only the administrator may seed at startup.
+    const fresh = await persistedNamespace(fixture, "Empty before administrator selection");
+    assert.deepEqual(await listPresets(fixture, fresh.id), []);
+    await startPresets(fixture, runtime, { identities: [limited.principal, principal] });
+    await assertSeededDefaults(fixture, fresh.id, defaultNames);
+
     // Disabling startup defaults never removes a saved Preset.
     const disabledRuntime = await bundledRuntime(t, { includeDefaults: false });
     const disabled = new OpenClawController(fixture.controller.installation, {
@@ -1762,33 +1797,19 @@ describe("Presets", { concurrency: 2 }, () => {
     );
     assert.deepEqual(await listPresets(fixture, existing.id), []);
 
-    await initializeInstallationPresets(
-      fixture.controller,
-      iam,
-      [scoped, principal],
-      runtime.defaultPresets,
+    await startPresets(fixture, runtime, { iam, identities: [scoped, principal] });
+    await assertSeededDefaults(
+      fixture,
+      existing.id,
+      runtime.defaultPresets.map(({ name }) => name),
     );
-    assert.deepEqual(
-      await presetNames(fixture, existing.id),
-      runtime.defaultPresets.map((preset) => preset.name).sort(),
-    );
-    const audit = auditFrom(fixture, "installation-defaults").filter(
-      (event) => event.namespaceId === existing.id,
-    );
-    assert.equal(audit.length, runtime.defaultPresets.length);
-    assert.ok(audit.every((event) => event.actorId === principal.id));
 
     // With no administrator able to create them, startup still fails, and says why: the
     // administrator's Preset refusal, never a later non-administrator's.
     const unseeded = await persistedNamespace(fixture, "Existing without a capable administrator");
     const { principal: member } = await fixture.createAccountWithPolicy("member", () => {});
     await assert.rejects(
-      initializeInstallationPresets(
-        fixture.controller,
-        iam,
-        [scoped, member],
-        runtime.defaultPresets,
-      ),
+      startPresets(fixture, runtime, { iam, identities: [scoped, member] }),
       (error: unknown) =>
         error instanceof Error &&
         /can create Presets in every Namespace/.test(error.message) &&
@@ -1801,12 +1822,7 @@ describe("Presets", { concurrency: 2 }, () => {
     // An authorization outage is not a denial: startup stops with it instead of trying others.
     failPresetAuthorization(t, iam, "create");
     await assert.rejects(
-      initializeInstallationPresets(
-        fixture.controller,
-        iam,
-        [principal, scoped],
-        runtime.defaultPresets,
-      ),
+      startPresets(fixture, runtime, { iam, identities: [principal, scoped] }),
       DependencyUnavailableError,
     );
     assert.deepEqual(await listPresets(fixture, unseeded.id), []);
@@ -1874,6 +1890,7 @@ describe("Presets", { concurrency: 2 }, () => {
     await patchTemplate(fixture, edited.id, first.id, {
       agent: { name: "Operator customization" },
     });
+    const before = await listPresetDocuments(fixture, edited.id);
     const blockingSecret = await fixture.createSecret(edited.id, "blocking-secret", "value");
     const blocked = await fixture.request("DELETE", `/namespaces/${edited.id}`);
     assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
@@ -1883,7 +1900,9 @@ describe("Presets", { concurrency: 2 }, () => {
         .message,
       `The requested Namespace is not empty. It still contains: Presets (${first.id}), Secrets (${blockingSecret.id}).`,
     );
-    assert.equal((await listPresets(fixture, edited.id)).length, rest.length + 1);
+    const after = await listPresetDocuments(fixture, edited.id);
+    assert.equal(after.length, rest.length + 1);
+    assert.deepEqual(after, before);
   });
 
   test("startup refreshes untouched copies of superseded bundled defaults in place and keeps edited ones", async (t) => {
@@ -1926,12 +1945,7 @@ describe("Presets", { concurrency: 2 }, () => {
       presetId: stale.id,
     });
 
-    await initializeInstallationPresets(
-      fixture.controller,
-      iamOf(fixture),
-      fixture.policy.identities,
-      runtime.defaultPresets,
-    );
+    await startPresets(fixture, runtime);
     const after = await byName(upgraded.id);
     // Untouched copies now hold the current release's template under their old IDs.
     for (const [name, copy] of [
@@ -2067,18 +2081,13 @@ describe("Presets", { concurrency: 2 }, () => {
         ),
     );
     try {
-      await initializeInstallationPresets(
-        fixture.controller,
-        iamOf(fixture),
-        fixture.policy.identities,
-        runtime.defaultPresets,
-      );
+      await startPresets(fixture, runtime);
     } finally {
       observe.mock.restore();
     }
 
-    assert.deepEqual((await readPreset(fixture, namespace.id, copy.id)).data, rolledBack);
-    assert.deepEqual((await readPreset(fixture, namespace.id, unrelated.id)).data, unrelated);
+    assert.deepEqual(await readPreset(fixture, namespace.id, copy.id), rolledBack);
+    assert.deepEqual(await readPreset(fixture, namespace.id, unrelated.id), unrelated);
     const [restored] = await listPresetDocuments(fixture, missing.id);
     assert.ok(restored);
     assert.notEqual(restored.id, removed.id);
@@ -2105,8 +2114,9 @@ describe("Presets", { concurrency: 2 }, () => {
       ),
     );
     const reused = { name: retired.name, template };
+    const defaultPresets = [...runtime.defaultPresets, reused];
     const fixture = await createFixture(t, {
-      defaultPresets: [...runtime.defaultPresets, reused],
+      defaultPresets,
       bundledPresetVersions: [
         ...runtime.bundledPresetVersions,
         { ...reused, file: "reused-name.json", version: "0".repeat(16), current: true },
@@ -2121,13 +2131,8 @@ describe("Presets", { concurrency: 2 }, () => {
     // The copy an earlier release seeded from standard-codex.json under the retired name.
     const earlier = await patchTemplate(fixture, namespace.id, copy.id, retired.template);
 
-    await initializeInstallationPresets(
-      fixture.controller,
-      iamOf(fixture),
-      fixture.policy.identities,
-      [...runtime.defaultPresets, reused],
-    );
-    assert.deepEqual((await readPreset(fixture, namespace.id, copy.id)).data, earlier);
+    await startPresets(fixture, { defaultPresets });
+    assert.deepEqual(await readPreset(fixture, namespace.id, copy.id), earlier);
     assert.deepEqual(auditFrom(fixture, "installation-defaults-refresh"), []);
   });
 
@@ -2162,15 +2167,9 @@ describe("Presets", { concurrency: 2 }, () => {
 
     // The Installation-only administrator comes first; it must not stand in for the one
     // who can refresh the open Namespace.
-    await initializeInstallationPresets(
-      fixture.controller,
-      iam,
-      [scoped, principal],
-      runtime.defaultPresets,
-      emit,
-    );
-    const read = async ({ namespace, copy }: Awaited<ReturnType<typeof staleCopy>>) =>
-      (await readPreset(fixture, namespace.id, copy.id)).data;
+    await startPresets(fixture, runtime, { iam, identities: [scoped, principal], onWarning: emit });
+    const read = ({ namespace, copy }: Awaited<ReturnType<typeof staleCopy>>) =>
+      readPreset(fixture, namespace.id, copy.id);
     assert.deepEqual(await read(frozen), frozen.copy);
     assert.notDeepEqual((await read(open)).template, open.copy.template);
     assert.deepEqual(
@@ -2192,13 +2191,7 @@ describe("Presets", { concurrency: 2 }, () => {
     // With no administrator able to update Presets at all, startup still completes.
     const unbound = await staleCopy("Unbound administrators");
     lines.length = 0;
-    await initializeInstallationPresets(
-      fixture.controller,
-      iam,
-      [scoped],
-      runtime.defaultPresets,
-      emit,
-    );
+    await startPresets(fixture, runtime, { iam, identities: [scoped], onWarning: emit });
     assert.deepEqual(await read(unbound), unbound.copy);
     assert.deepEqual(
       lines.map(({ level, event, presetId, reason }) => ({ level, event, presetId, reason })),
@@ -2216,7 +2209,7 @@ describe("Presets", { concurrency: 2 }, () => {
     // An authorization outage is not a refusal: startup still stops with it.
     failPresetAuthorization(t, iam, "update");
     await assert.rejects(
-      initializeInstallationPresets(fixture.controller, iam, [principal], runtime.defaultPresets),
+      startPresets(fixture, runtime, { iam, identities: [principal] }),
       DependencyUnavailableError,
     );
   });
@@ -2245,13 +2238,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const before = await presetNames(fixture, frozen.id);
     const { lines, emit } = captureLog();
 
-    await initializeInstallationPresets(
-      fixture.controller,
-      iamOf(fixture),
-      [fixture.admin],
-      runtime.defaultPresets,
-      emit,
-    );
+    await startPresets(fixture, runtime, { identities: [fixture.admin], onWarning: emit });
     assert.deepEqual(await presetNames(fixture, frozen.id), before);
     assert.ok((await presetNames(fixture, open.id)).includes("default-codex"));
     assert.deepEqual(lines, [
