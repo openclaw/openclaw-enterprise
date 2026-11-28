@@ -1959,9 +1959,11 @@ read_restart_inventory() {
   local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Preserve the original evidence. If quiescence stopped the API, restore the existing API under exclusive maintenance only after verifying compatibility of the selected Helm release, mounted Installation Secret, and database migration history. Keep both writers fenced for a separate migration handoff. No additional OCC writer was stopped. See docs/guides/deploy/production-upgrade-recovery.md#restore-incumbent-api-access-after-partial-quiescence."
-  jq -es --arg installationId "$installation_id" '
+  # A Stop queues Agent work separately from revision deployments.
+  local blocker
+  blocker=$(jq -ers --arg installationId "$installation_id" '
     def identifier: type == "string" and length > 0;
-    length == 1 and (.[0] |
+    select(length == 1 and (.[0] |
     .installationId == $installationId and
     (.namespaces | type == "array") and
     ([.namespaces[].id] | length == (unique | length)) and
@@ -1975,12 +1977,16 @@ read_restart_inventory() {
         (.desiredRuntimeState | IN("running", "stopped")) and
         (.executionMode | IN("embedded", "dedicated")) and
         ((has("activeRevisionId") | not) or (.activeRevisionId | identifier)) and
-        (.deploymentInProgress | type == "boolean"))))
-  ' "$destination" >/dev/null ||
+        (.deploymentInProgress | type == "boolean"))))) |
+    first(.[0].namespaces[] as $ns | $ns.agents[] |
+      if .deploymentInProgress then
+        "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
+      elif .status == "active" and .desiredRuntimeState == "stopped" and .activeRevisionId != null then
+        "Agent \(.id | tojson) in Namespace \($ns.id | tojson) still has active revision \(.activeRevisionId | tojson) despite a requested Stop. Inspect its outcome. Wait for cleanup or resolve a failed Stop before upgrading."
+      else empty end) // ""
+  ' "$destination") ||
     die "the deployment inventory is incomplete, invalid or belongs to another Installation; no additional OCC writer was stopped."
-  if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$destination" >/dev/null; then
-    die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
-  fi
+  [[ -z "$blocker" ]] || die "$blocker"
   if [[ -z "$runtime_image" && "$channel_egress_enabled" != true ]]; then
     local assessment refusals original_worker_only
     assessment=$(jq -c '

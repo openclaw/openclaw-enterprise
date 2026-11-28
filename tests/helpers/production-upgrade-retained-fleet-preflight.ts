@@ -242,6 +242,20 @@ export function registerRetainedFleetPreflightTests(
         assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
       },
     );
+    for (const mode of ["controller", "runtime"]) {
+      const options: FixtureOptions = mode === "controller" ? { controllerOnly: true } : {};
+      await t.test(`${mode} upgrade refuses a pending Stop with an active revision`, async (t) => {
+        const f = await fixture(t, { ...options, inventoryNamespaces: [namespace] });
+        await assert.rejects(f.run(), {
+          code: 1,
+          message: /"agt_valid".*"ns_test".*"rev_old".*requested Stop/u,
+        });
+        const state = await f.state();
+        assertWritersUntouched(state);
+        assert.deepEqual(optionalField(state.preflight, "created") ?? [], []);
+        assert.deepEqual(await f.events(), []);
+      });
+    }
     await t.test("a stopped Agent may omit its active revision", async (t) => {
       const { activeRevisionId, ...stopped } = agent;
       const f = await fixture(t, {

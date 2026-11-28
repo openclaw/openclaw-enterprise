@@ -209,19 +209,21 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 ## Rehearse before the maintenance window
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
-upgrade command. Preflight checks inputs, image pairs, Helm server dry run,
+command. Preflight checks inputs, image pairs, Helm server dry run,
 Certificate admission, startup and migration compatibility while writers run.
-The migration Job uses the candidate image and the initializer's credential
-and CA. Hook mode uses `--check`. [Separate mode](separate-database-upgrade.md)
+Candidate migration Jobs use the initializer's credential and CA.
+Hook mode uses `--check`. [Separate mode](separate-database-upgrade.md)
 checks Installation identity with `--check-for-installation`. Both allow
 recognized pending history. The separate Helm hook requires completed history.
 Pods retain chart security and NetworkPolicy labels. Cleanup confirms Jobs and
 Pods disappear before Secrets and NetworkPolicies.
 
-After checks and cleanup, control-plane preflight exits 1 if a retained
-revision requires its original worker. The upgrade remains blocked.
-Stop and settle affected Agents in an authorized interruption or plan a revision
-replacement. With `--verify-agent`, preflight observes the workload before the upgrade.
+Preflight and inventory refresh before writer shutdown block both upgrades if Stop
+leaves an active revision. Wait for cleanup or resolve failed Stops.
+
+Original-worker requirements block control-plane preflight after cleanup (exit 1).
+Stop and settle during authorized downtime or plan revision replacement. `--verify-agent` observes
+the workload before upgrade.
 
 Keep the live immutable Installation Secret or
 [stage a successor](immutable-installation-upgrade.md) before preflight.
