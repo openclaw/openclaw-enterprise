@@ -121,6 +121,16 @@ type DeadlineScenario = {
   material: RepositoryGitMaterialState;
 };
 
+async function claimExpected(
+  queue: InstanceType<ConvergenceFixture["PostgresWorkQueue"]>,
+  expectedKey: string,
+) {
+  const claim = await queue.claim();
+  assert.ok(claim, `expected a claim for ${expectedKey}`);
+  assert.equal(claim.idempotencyKey, expectedKey);
+  return claim;
+}
+
 async function retirementStates(
   fixture: Pick<ConvergenceFixture, "observerPool">,
   revisionId: string,
@@ -184,9 +194,7 @@ revisionTest(
 
     // A normal pending observation restores the failure budget to zero. It must
     // still be distinguishable from a deployment that has never been checked.
-    const first = await queue.claim();
-    assert.ok(first, "expected a claim for the due work");
-    assert.equal(first.idempotencyKey, candidate.idempotencyKey);
+    const first = await claimExpected(queue, candidate.idempotencyKey);
     await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
     const firstDeferred = await readStatus();
     assert.deepEqual(await evidenceCodes(), ["REVISION_INCOMPLETE"]);
@@ -197,9 +205,7 @@ revisionTest(
     // Repeating the same pending result is not a state transition: it adds no audit row,
     // and progress keeps reporting when that result was first recorded.
     await makeDue();
-    const claim = await queue.claim();
-    assert.ok(claim, "expected a claim for the due work");
-    assert.equal(claim.idempotencyKey, candidate.idempotencyKey);
+    const claim = await claimExpected(queue, candidate.idempotencyKey);
     await queue.defer(claim, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
     const deferred = await readStatus();
     assert.deepEqual(await evidenceCodes(), ["REVISION_INCOMPLETE"]);
@@ -235,17 +241,13 @@ revisionTest(
       revisionId: candidate.id,
       actorId: fixture.actor.id,
     });
-    const maintenance = await queue.claim();
-    assert.ok(maintenance, "expected a claim for the due work");
-    assert.equal(maintenance.idempotencyKey, maintenanceKey);
+    const maintenance = await claimExpected(queue, maintenanceKey);
     await queue.defer(maintenance, { code: "DEPENDENCY_UNAVAILABLE" }, { delayMs: 60_000 });
     assert.deepEqual((await readStatus()).progress, deferred.progress);
 
     // Rescheduling only our fixture work lets a new claim exercise retry output.
     await makeDue();
-    const retry = await queue.claim();
-    assert.ok(retry, "expected a claim for the due work");
-    assert.equal(retry.idempotencyKey, candidate.idempotencyKey);
+    const retry = await claimExpected(queue, candidate.idempotencyKey);
     const running = await readStatus();
     assert.equal(running.status, "running");
     assert.ok(running.progress);
@@ -259,9 +261,7 @@ revisionTest(
 
     // Returning to the pending result after a failure is a transition and is recorded again.
     await makeDue();
-    const recovered = await queue.claim();
-    assert.ok(recovered, "expected a claim for the due work");
-    assert.equal(recovered.idempotencyKey, candidate.idempotencyKey);
+    const recovered = await claimExpected(queue, candidate.idempotencyKey);
     await queue.defer(recovered, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
     const codes = await evidenceCodes();
     assert.equal(codes.length, 3);
@@ -304,13 +304,11 @@ revisionTest(
     const statusAhead = statusFrom("2999-01-01T00:00:00Z");
     const statusBehind = statusFrom("1970-01-01T00:00:00Z");
 
-    const claim = await queue.claim();
-    assert.ok(claim, "expected a claim for the due work");
-    assert.equal(claim.idempotencyKey, candidate.idempotencyKey);
+    const claim = await claimExpected(queue, candidate.idempotencyKey);
     // A controller clock ahead of the lease still reports the live claim.
     assert.equal(await statusAhead(), "running");
 
-    await fixture.expireClaim(candidate, claim.claimToken);
+    assert.equal((await fixture.expireClaim(candidate, claim.claimToken)).rowCount, 1);
     // An expired claim does not take a started deploy back to queued under either clock
     // (finding 2456): the next claim resumes it.
     assert.equal(await statusBehind(), "running");
@@ -330,14 +328,10 @@ revisionTest(
 
     // The deployment records evidence, then its preparation fails permanently. As the worker
     // does, the failing claim registers the revision's cleanup and then fails the deployment.
-    const deferredDeploy = await queue.claim();
-    assert.ok(deferredDeploy, "expected a claim for the due work");
-    assert.equal(deferredDeploy.idempotencyKey, candidate.idempotencyKey);
+    const deferredDeploy = await claimExpected(queue, candidate.idempotencyKey);
     await queue.defer(deferredDeploy, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
     await makeWorkDue(fixture.observerPool, candidate.idempotencyKey);
-    const deploy = await queue.claim();
-    assert.ok(deploy, "expected a claim for the due work");
-    assert.equal(deploy.idempotencyKey, candidate.idempotencyKey);
+    const deploy = await claimExpected(queue, candidate.idempotencyKey);
     const revisionOwner = {
       namespaceId: fixture.namespace.id,
       agentId: owner.id,
@@ -372,6 +366,8 @@ revisionTest(
     const claim = await queue.claim();
     assert.ok(claim, "expected a claim for the due work");
     assert.match(claim.idempotencyKey, /^agent_revision:[^:]+:repository_cleanup:retire:/);
+    const retirementPrefix = `agent_revision:${candidate.id}:repository_cleanup:retire:`;
+    assert.ok(claim.idempotencyKey.startsWith(retirementPrefix));
     assert.equal(claim.revisionId, candidate.id);
     assert.deepEqual((await readStatus()).cleanup, { status: "running", nextAttemptAt: null });
 
@@ -387,9 +383,7 @@ revisionTest(
     // A retry counts the attempt and queues the cleanup again. It stays running between
     // attempts and still reports no result.
     await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
-    const retry = await queue.claim();
-    assert.ok(retry);
-    assert.equal(retry.idempotencyKey, claim.idempotencyKey);
+    const retry = await claimExpected(queue, claim.idempotencyKey);
     await queue.retry(retry, { code: "DEPENDENCY_UNAVAILABLE" });
     const retried = await queue.findWork(claim.idempotencyKey);
     assert.ok(retried, "missing retried cleanup work");
@@ -400,9 +394,7 @@ revisionTest(
 
     // Only the recorded result completes it.
     await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
-    const last = await queue.claim();
-    assert.ok(last, "expected a claim for the due work");
-    assert.equal(last.idempotencyKey, claim.idempotencyKey);
+    const last = await claimExpected(queue, claim.idempotencyKey);
     assert.equal((await readStatus()).cleanup?.status, "running");
     await queue.complete(last, { code: "REPOSITORY_CLEANUP_COMPLETE" });
     assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
@@ -418,9 +410,7 @@ revisionTest(
     await queue.complete(stop, { code: "AGENT_STOPPED" });
     const pending = await readStatus();
 
-    const disposal = await queue.claim();
-    assert.ok(disposal);
-    assert.equal(disposal.idempotencyKey, sessions.idempotencyKey);
+    const disposal = await claimExpected(queue, sessions.idempotencyKey);
     const running = await readStatus();
 
     assert.deepEqual(

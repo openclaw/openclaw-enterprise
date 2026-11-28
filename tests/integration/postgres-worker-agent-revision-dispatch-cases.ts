@@ -22,6 +22,7 @@ import type {
   RevisionFixture,
   WorkIdentity,
 } from "../helpers/postgres-worker-refused-candidate.ts";
+import { deferWork } from "../helpers/postgres-worker-revision-queue.ts";
 import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import type { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
@@ -83,6 +84,24 @@ function observeComputeEffects(compute: ComputeDriver, effects: ComputeEffect[])
     async prepareRevision(revision) {
       effects.push("prepare");
       return compute.prepareRevision(revision);
+    },
+  };
+}
+
+function namespaceDenials(fixture: DispatchFixture) {
+  return fixture.observerPool.query<{ authorization: unknown }>(
+    `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+     FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
+    [fixture.namespace.id],
+  );
+}
+
+function expectedPolicyDenial(fixture: DispatchFixture, policyId: string) {
+  return {
+    authorization: {
+      principalId: fixture.actor.id,
+      action: "update",
+      resource: { kind: "sandbox_policy", id: policyId, namespaceId: fixture.namespace.id },
     },
   };
 }
@@ -180,20 +199,12 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       });
       await fixture.work(ordinary, "succeeded");
       const terminal = await settledRevision(fixture, candidate);
-      assert.deepEqual(
-        {
-          state: terminal.state,
-          reason: terminal.reasonCode,
-          candidateWasPrepared: prepared.includes(candidate.id),
-          keptPredecessor: (await fixture.currentAgent(owner))?.activeRevisionId === previous.id,
-        },
-        {
-          state: "failed_permanent",
-          reason: "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED",
-          candidateWasPrepared: false,
-          keptPredecessor: true,
-        },
-      );
+      const candidateWasPrepared = prepared.includes(candidate.id);
+      const current = await fixture.currentAgent(owner);
+      assert.equal(terminal.state, "failed_permanent");
+      assert.equal(terminal.reasonCode, "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED");
+      assert.equal(candidateWasPrepared, false);
+      assert.equal(current?.activeRevisionId, previous.id);
       assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
         code: "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED",
         message:
@@ -283,7 +294,8 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         await fixture.start(compute);
         const refused = await settledRevision(fixture, candidate);
         const evidence = await queue.findWorkAttempt(candidate.idempotencyKey);
-        assert.equal(evidence?.candidateNotStarted, deferred ? undefined : true);
+        assert.ok(evidence);
+        assert.equal(evidence.candidateNotStarted, deferred ? undefined : true);
         assert.deepEqual(prepared, [previous.id]);
         const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
         assert.ok(key);
@@ -342,7 +354,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         await waitUntil("shared prepare accepted", () => outstanding !== undefined);
         const original = await fixture.work(candidate, "claimed");
         assert.ok(original.claim_token);
-        await fixture.expireClaim(candidate, original.claim_token);
+        assert.equal((await fixture.expireClaim(candidate, original.claim_token)).rowCount, 1);
         const queue = new PostgresWorkQueue(fixture.observerPool);
         assert.equal((await queue.recoverStale()).recovered, 1);
         const stopping = fixture.stop();
@@ -359,10 +371,9 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         });
         const refused = await settledRevision(fixture, candidate);
         assert.equal(refused.reasonCode, "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED");
-        assert.equal(
-          (await queue.findWorkAttempt(candidate.idempotencyKey))?.candidateNotStarted,
-          undefined,
-        );
+        const attempt = await queue.findWorkAttempt(candidate.idempotencyKey);
+        assert.ok(attempt);
+        assert.equal(attempt.candidateNotStarted, undefined);
         assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
         const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
         assert.ok(key);
@@ -754,6 +765,15 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           await fixture.compute.retireRevision(revision);
         },
       };
+      // An attempt stays visible while a retry holds a lease. Defer queued work
+      // before stopping the Worker so an interrupted retry cannot block the next revision.
+      const park = async (key: string) => {
+        const parked = await waitFor("a queued deployment to defer", async () => {
+          const result = await deferWork(fixture.observerPool, { key, state: "queued" });
+          return result.rowCount === 0 ? undefined : result;
+        });
+        assert.equal(parked.rowCount, 1);
+      };
       if (active) {
         await fixture.start(initial ? computeSupportingRepositoryPolicy(compute) : compute);
         if (overdue) {
@@ -761,16 +781,13 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
             queue.findWorkAttempt(older.idempotencyKey, "REVISION_FINALIZATION_INCOMPLETE"),
           );
           assert.ok(original);
+          await park(older.idempotencyKey);
         } else {
           await fixture.work(older, "succeeded");
         }
         await fixture.stop();
-      }
-      if (!active || overdue) {
-        await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
-          [older.idempotencyKey],
-        );
+      } else {
+        await park(older.idempotencyKey);
       }
       const options =
         enforcement === "legacy"
@@ -782,6 +799,8 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         await waitFor("the scoped deployment stays queued after preparation", () =>
           queue.findWorkAttempt(candidate.idempotencyKey, "REVISION_INCOMPLETE"),
         );
+        // Queued work with prior Compute effects can still own the Gateway during maintenance.
+        await park(candidate.idempotencyKey);
       } else {
         assert.equal(
           (await settledRevision(fixture, candidate)).reasonCode,
@@ -789,15 +808,6 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         );
       }
       await fixture.stop();
-      if (converging) {
-        // Keep the already-prepared candidate queued while maintenance runs.
-        // A queued operation with prior Compute effects can still own the Gateway.
-        const parked = await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1 AND state = 'queued'",
-          [candidate.idempotencyKey],
-        );
-        assert.equal(parked.rowCount, 1);
-      }
       assert.equal(
         (await fixture.currentAgent(owner))?.activeRevisionId,
         active ? older.id : undefined,
@@ -810,11 +820,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       if (queued !== undefined) {
         // A later admission is only queued. It has not touched the Gateway
         // installed by the held, deny-all revision.
-        const moved = await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1 AND state = 'queued'",
-          [queued.idempotencyKey],
-        );
-        assert.equal(moved.rowCount, 1);
+        await park(queued.idempotencyKey);
       }
 
       if (active) {
@@ -1028,7 +1034,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, activeRevisionId);
           const original = await fixture.work(candidate, "claimed");
           assert.ok(original.claim_token);
-          await fixture.expireClaim(candidate, original.claim_token);
+          assert.equal((await fixture.expireClaim(candidate, original.claim_token)).rowCount, 1);
           assert.equal((await recoveryQueue.recoverStale()).recovered, 1);
           recovered = await recoveryQueue.claim();
           assert.equal(recovered?.idempotencyKey, candidate.idempotencyKey);
@@ -1196,30 +1202,10 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         );
         const queue = new PostgresWorkQueue(fixture.observerPool);
         const attempt = await queue.findWorkAttempt(candidate.idempotencyKey);
-        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
-          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
-           FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
-          [fixture.namespace.id],
-        );
-        assert.deepEqual(
-          { untouched: attempt?.candidateNotStarted, authorizations: denied.rows },
-          {
-            untouched: untouched ? true : undefined,
-            authorizations: [
-              {
-                authorization: {
-                  principalId: fixture.actor.id,
-                  action: "update",
-                  resource: {
-                    kind: "sandbox_policy",
-                    id: policyId,
-                    namespaceId: fixture.namespace.id,
-                  },
-                },
-              },
-            ],
-          },
-        );
+        const denied = await namespaceDenials(fixture);
+        assert.ok(attempt);
+        assert.equal(attempt.candidateNotStarted, untouched ? true : undefined);
+        assert.deepEqual(denied.rows, [expectedPolicyDenial(fixture, policyId)]);
         if (!afterCommit) {
           const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
           assert.ok(key);
@@ -1333,39 +1319,13 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         }
 
         const result = await settledRevision(fixture, candidate);
-        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
-          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
-         FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
-          [fixture.namespace.id],
-        );
-        assert.deepEqual(
-          {
-            state: result.state,
-            reason: result.reasonCode,
-            effects,
-            active: (await fixture.currentAgent(owner))?.activeRevisionId,
-            denials: denied.rows,
-          },
-          {
-            state: "failed_permanent",
-            reason: "AUTHORIZATION_DENIED",
-            effects: [],
-            active: previous.id,
-            denials: [
-              {
-                authorization: {
-                  principalId: fixture.actor.id,
-                  action: "update",
-                  resource: {
-                    kind: "sandbox_policy",
-                    id: policyId,
-                    namespaceId: fixture.namespace.id,
-                  },
-                },
-              },
-            ],
-          },
-        );
+        const denied = await namespaceDenials(fixture);
+        const current = await fixture.currentAgent(owner);
+        assert.equal(result.state, "failed_permanent");
+        assert.equal(result.reasonCode, "AUTHORIZATION_DENIED");
+        assert.deepEqual(effects, []);
+        assert.equal(current?.activeRevisionId, previous.id);
+        assert.deepEqual(denied.rows, [expectedPolicyDenial(fixture, policyId)]);
       },
     );
   }
@@ -1443,31 +1403,19 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         });
         await fixture.work(ordinary, "succeeded");
         const terminal = await settledRevision(fixture, candidate);
-        assert.deepEqual(
-          {
-            state: terminal.state,
-            reason: terminal.reasonCode,
-            candidateWasPrepared: prepared.includes(candidate.id),
-            keptPredecessor: (await fixture.currentAgent(owner))?.activeRevisionId === previous.id,
-          },
-          {
-            state: "failed_permanent",
-            reason: "AUTHORIZATION_DENIED",
-            candidateWasPrepared: false,
-            keptPredecessor: true,
-          },
-        );
+        const candidateWasPrepared = prepared.includes(candidate.id);
+        const current = await fixture.currentAgent(owner);
+        assert.equal(terminal.state, "failed_permanent");
+        assert.equal(terminal.reasonCode, "AUTHORIZATION_DENIED");
+        assert.equal(candidateWasPrepared, false);
+        assert.equal(current?.activeRevisionId, previous.id);
         assert.deepEqual(checked, []);
         assert.deepEqual(prepared, [ordinary.id]);
         assert.equal(backendSecretReads, 0);
         assert.equal((await fixture.currentAgent(control))?.activeRevisionId, ordinary.id);
 
         // Audit the denied authorization itself, not merely the enclosing deploy action.
-        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
-          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
-           FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
-          [fixture.namespace.id],
-        );
+        const denied = await namespaceDenials(fixture);
         assert.deepEqual(denied.rows, [
           {
             authorization: {
@@ -1614,11 +1562,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           ],
           "only the independently authorized binding reaches Compute, outside gateway environment projections",
         );
-        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
-          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
-         FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
-          [fixture.namespace.id],
-        );
+        const denied = await namespaceDenials(fixture);
         const deniedResources = denied.rows
           .map(({ authorization }) => {
             const decision = asRecord(authorization);

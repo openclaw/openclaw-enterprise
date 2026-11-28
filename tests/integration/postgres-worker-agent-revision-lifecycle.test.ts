@@ -1,89 +1,31 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { after, type TestContext } from "node:test";
-import type { Pool, PoolClient } from "pg";
+import test, { after } from "node:test";
+import type { PoolClient } from "pg";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
-import type {
-  Agent,
-  AgentRevision,
-  ComputeDriver,
-  ComputeRevisionContext,
-  Namespace,
-  Principal,
-} from "../../packages/contracts/src/index.ts";
+import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import {
   PostgresMetricsSnapshot,
   type ControllerWorkState,
   type OpenClawController,
 } from "../../packages/occ/src/index.ts";
-import type { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-import type { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
-import type { WorkerEvent } from "../helpers/postgres-worker-refused-candidate.ts";
+import type { RevisionFixture, WorkerEvent } from "../helpers/postgres-worker-refused-candidate.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completion, expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
-type WorkIdentity = { id: string; idempotencyKey: string };
-type AdmittedRevision = AgentRevision & WorkIdentity;
 type WorkStateRow = { state: ControllerWorkState; attempt_count: number };
-type LifecycleFixture = {
-  actor: Pick<Principal, "id">;
-  namespace: Pick<Namespace, "id">;
-  compute: ComputeDriver;
-  observerPool: Pool;
-  workerPool: Pool;
-  PostgresWorkQueue: typeof PostgresWorkQueue;
-  state: Pick<PostgresPlatformState, "read" | "transact">;
-  controller: Pick<OpenClawController, "deleteAgent" | "listRevisions">;
-  agent(label: string): Promise<Agent>;
-  currentAgent(owner: Pick<Agent, "id">): Promise<Readonly<Agent> | undefined>;
-  admitInitialRevision(
-    label: string,
-    options?: { agent: Pick<Agent, "executionMode"> },
-  ): Promise<{ owner: Agent; candidate: AdmittedRevision }>;
-  requestStop(owner: Pick<Agent, "id">): Promise<WorkIdentity>;
-  revision(
-    owner: Agent,
-    number: number,
-    options?: { controllerSkewMs: number },
-  ): Promise<AdmittedRevision>;
-  start(compute: ComputeDriver, options?: Pick<ControllerWorkerOptions, "emit">): Promise<void>;
-  stop(): Promise<void>;
-  work(
-    work: WorkIdentity,
-    expected: ControllerWorkState,
-  ): Promise<
-    WorkStateRow & {
-      claim_token: string | null;
-    }
-  >;
-};
 
 // The file owns its migrated template. Each case owns its clone and connections.
-const {
-  setup,
-  cleanup,
-}: {
-  setup(
-    context: Pick<TestContext, "after">,
-    options?: Pick<ControllerWorkerOptions, "maxAttempts" | "metrics">,
-  ): Promise<LifecycleFixture>;
-  cleanup: ReturnType<typeof createWorkerRevisionFixtures>["cleanup"];
-} = createWorkerRevisionFixtures(import.meta.url);
+const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
-function revisionTest(name: string, run: (fixture: LifecycleFixture) => Promise<void>) {
-  test(name, requiresPostgres, async (context) => {
-    await run(await setup(context));
-  });
-}
-
+type AdmittedRevision = Awaited<ReturnType<RevisionFixture["revision"]>>;
 type RevisionEffect = { action: "prepare" | "retire"; revisionId: string };
 type RemovedCountRow = { count: number };
 type MaintenanceCountRow = { count: string };

@@ -7,7 +7,6 @@ import type {
   AgentRevision,
   ComputeDriver,
   IAMDriver,
-  RevisionHarnessDescriptor,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import {
@@ -18,8 +17,12 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import {
+  checkedWorkerEvent,
+  type WorkerEvent,
+  workPasses,
+} from "../helpers/postgres-worker-revision-queue.ts";
 import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
-import type { WorkResultRow } from "../helpers/postgres-worker-revision-scenarios.ts";
 import {
   assertWorkEnds,
   denyDeploy,
@@ -37,36 +40,8 @@ import {
 
 const fixtures = createWorkerRevisionFixtures(import.meta.url);
 type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;
-type WorkIdentity = { id: string; idempotencyKey: string };
-type WorkRow = { state: string; claim_token: string | null; attempt_count: number };
-type WorkerEvent = Readonly<Record<string, unknown>> & {
-  event?: string;
-  workId?: string;
-  outcome?: string;
-  code?: string;
-  stopYields?: number;
-};
-function checkedWorkerEvent<T extends Readonly<Record<string, unknown>>>(
-  event: T,
-): T & WorkerEvent {
-  for (const key of ["event", "workId", "outcome", "code"]) {
-    assert.ok(event[key] === undefined || typeof event[key] === "string", `invalid worker ${key}`);
-  }
-  assert.ok(
-    event.stopYields === undefined || typeof event.stopYields === "number",
-    "invalid stop yield count",
-  );
-  return event;
-}
-type Fixture = Omit<
-  RawFixture,
-  "compute" | "start" | "revision" | "work" | "workResult" | "requestStop" | "activePointer"
-> & {
-  work: (candidate: WorkIdentity, expected: string, timeoutMs?: number) => Promise<WorkRow>;
-  workResult: (
-    candidate: Pick<WorkIdentity, "idempotencyKey">,
-  ) => Promise<QueryResult<WorkResultRow>>;
-  requestStop: (owner: Pick<Agent, "id">) => Promise<WorkIdentity>;
+type WorkIdentity = Awaited<ReturnType<RawFixture["requestStop"]>>;
+type Fixture = Omit<RawFixture, "compute" | "start" | "activePointer"> & {
   activePointer: (
     owner: Pick<Agent, "id">,
   ) => Promise<QueryResult<{ active_revision_id: string | null }>>;
@@ -80,11 +55,6 @@ type Fixture = Omit<
         ) => NonNullable<ControllerWorkerOptions["drivers"]> | undefined;
       },
   ) => ReturnType<RawFixture["start"]>;
-  revision: (
-    owner: Agent,
-    number: number,
-    options?: { harness?: RevisionHarnessDescriptor; workAge?: string },
-  ) => Promise<AgentRevision & WorkIdentity>;
 };
 const setup = fixtures.setup as (
   context: TestContext,
@@ -124,6 +94,14 @@ type DrainOptions = {
   exclusive?: ((revision: AgentRevision) => boolean) | undefined;
   heldFailure?: ((revision: AgentRevision) => boolean) | undefined;
 };
+type Drain = {
+  started: number;
+  harness?: number;
+  // Opened on the first yield. Record which revisions ended their wait for real Work
+  // before this predecessor's Harness stopped.
+  waitsEndedForWork?: Set<string>;
+};
+
 function drainingExclusiveCompute(
   fixture: Fixture,
   {
@@ -142,7 +120,7 @@ function drainingExclusiveCompute(
   const drains = new Map<string, number>();
   const pointers = new Set<string | null>();
   const stopCalls = new Map<string, number>();
-  const stoppedAt = new Map<string, { started: number; harness?: number }>();
+  const stoppedAt = new Map<string, Drain>();
   const holds: number[] = [];
   const isBusy = (revision: AgentRevision) => busy.has(revision.id) || busy.has(revision.agentId);
   let yields = 0;
@@ -159,7 +137,15 @@ function drainingExclusiveCompute(
       prepared.push(revision.id);
       if (holdMs !== undefined && isBusy(revision)) {
         const started = Date.now();
-        while (Date.now() - started < holdMs && !(await computeWorkWaiting())) {
+        while (Date.now() - started < holdMs) {
+          if (await computeWorkWaiting()) {
+            for (const drain of stoppedAt.values()) {
+              if (drain.harness === undefined) {
+                drain.waitsEndedForWork?.add(revision.id);
+              }
+            }
+            break;
+          }
           await delay(100);
         }
         holds.push(Date.now() - started);
@@ -194,10 +180,13 @@ function drainingExclusiveCompute(
       }
       const drainEndsAt = drains.get(revision.id);
       assert.ok(drainEndsAt !== undefined);
+      const stop = stoppedAt.get(revision.id);
+      assert.ok(stop);
       while (Date.now() < drainEndsAt) {
         const agent = await fixture.currentAgent({ id: revision.agentId });
         pointers.add(agent?.activeRevisionId ?? null);
         if (await computeStopShouldYield("gateway")) {
+          stop.waitsEndedForWork ??= new Set<string>();
           yields += 1;
           throw new ComputeStopYieldedError(
             "The AgentRevision workload Pods are still terminating; other work is waiting.",
@@ -207,9 +196,7 @@ function drainingExclusiveCompute(
       }
       running.delete(revision.id);
       harnessStops.push(revision.id);
-      const stop = stoppedAt.get(revision.id);
-      assert.ok(stop);
-      stoppedAt.set(revision.id, { ...stop, harness: Date.now() });
+      stop.harness = Date.now();
     },
     async retireRevision(revision) {
       running.delete(revision.id);
@@ -232,12 +219,6 @@ function drainingExclusiveCompute(
 
 function runningFor(driver: ReturnType<typeof drainingExclusiveCompute>, owner: { id: string }) {
   return [...driver.running].filter(([, agentId]) => agentId === owner.id).map(([id]) => id);
-}
-
-function workPasses<T extends WorkerEvent>(events: readonly T[], work: { idempotencyKey: string }) {
-  return events.filter(
-    ({ event, workId }) => event === "worker.completed" && workId === work.idempotencyKey,
-  );
 }
 
 async function persistedPredecessorStoppingAtMs(
@@ -270,23 +251,10 @@ async function persistedPredecessorStoppingAtMs(
 async function yieldedRedeploy(
   fixture: Fixture,
   label: string,
-  {
-    drainMs,
-    holdMs,
-    failStop,
-    exclusive,
-    heldFailure,
-    start = {},
-  }: DrainOptions & { start?: Parameters<Fixture["start"]>[1] },
+  { start = {}, ...options }: DrainOptions & { start?: Parameters<Fixture["start"]>[1] },
 ) {
   const owner = await fixture.agent(label, { executionMode: "dedicated" });
-  const driver = drainingExclusiveCompute(fixture, {
-    drainMs,
-    holdMs,
-    failStop,
-    exclusive,
-    heldFailure,
-  });
+  const driver = drainingExclusiveCompute(fixture, options);
   const events: (WorkerEvent & { at: number })[] = [];
   await fixture.start(driver.compute, {
     ...start,
@@ -568,7 +536,7 @@ for (const failing of [false, true]) {
 revisionTest(
   "another Agent's optional wait ends for a yielded redeploy, which starts soon after its drain",
   async (fixture) => {
-    const { owner, driver, first, replacement, requestedAt } = await yieldedRedeploy(
+    const { owner, driver, first, busy, replacement, requestedAt } = await yieldedRedeploy(
       fixture,
       "drain-predecessor-hold",
       { drainMs: 3_000, holdMs: 20_000 },
@@ -577,6 +545,10 @@ revisionTest(
     // Bounded by the drain and a few rechecks, not by the other Agent's 20 s holds.
     const elapsed = Date.now() - requestedAt;
     assert.ok(elapsed < 3_000 + 12_000, `${elapsed} ms, holds ${driver.holds.join(", ")}`);
+    assert.ok(
+      driver.stoppedAt(first)?.waitsEndedForWork?.has(busy.id),
+      `busy revision did not end its wait for Work during the yielded drain; holds ${driver.holds.join(", ")}`,
+    );
     assert.deepEqual(driver.overlaps, []);
     assert.deepEqual(driver.harnessStops, [first.id]);
     assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, replacement.id);

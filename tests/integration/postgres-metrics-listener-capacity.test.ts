@@ -14,6 +14,7 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const migrationUrl = process.env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL;
 
@@ -212,12 +213,14 @@ test(
     assert.equal(migrator.pathname, appUrl.pathname);
     const owner = new pg.Pool({ connectionString: databaseUrl, max: 1 });
     const locks = new pg.Pool({ connectionString: migrationUrl, max: 1 });
+    const collectorTimeoutMs = 1500;
+    const lockReleaseMs = 2200;
     const pool = await createPostgresPool(databaseUrl, {
       authMode: "password",
       max: 1,
       connectionTimeoutMillis: 500,
-      statement_timeout: 1500,
-      query_timeout: 1500,
+      statement_timeout: collectorTimeoutMs,
+      query_timeout: collectorTimeoutMs,
       options: "-c default_transaction_read_only=on",
     });
     let databaseClients = 0;
@@ -287,7 +290,10 @@ test(
       wire.socket.once("close", () => active.delete(wire.socket));
       return wire;
     };
-    const withLock = async (work: (pid: number) => Promise<void>) => {
+    type WaitForCollectorLock = (description: string) => Promise<string>;
+    const withLock = async (
+      work: (waitForCollectorLock: WaitForCollectorLock) => Promise<void>,
+    ) => {
       const locker = await locks.connect();
       let heldAt: number | undefined;
       let timer: NodeJS.Timeout | undefined;
@@ -299,11 +305,35 @@ test(
         await locker.query("BEGIN");
         await locker.query("LOCK TABLE occ.agents IN ACCESS EXCLUSIVE MODE");
         heldAt = Date.now();
+        const lockDeadline = performance.now() + lockReleaseMs;
         timer = setTimeout(() => {
           void release().catch(() => {});
-        }, 2200);
+        }, lockReleaseMs);
         const pid = Number((await pool.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
-        await work(pid);
+        await work(async (description) => {
+          // HTTP admission can finish before the collector issues its blocking query.
+          const deadline = Math.min(lockDeadline, performance.now() + collectorTimeoutMs);
+          let observed: string | null | undefined;
+          const details = () => `${description} (pid ${pid}, last wait_event_type: ${observed})`;
+          const checkDeadline = () => {
+            assert.ok(!rollback, `Owned lock release started before confirmation: ${details()}`);
+            assert.ok(performance.now() < deadline, `Timed out waiting for ${details()}`);
+          };
+          return waitFor(
+            details,
+            async () => {
+              checkDeadline();
+              const { rows } = await owner.query<{ wait_event_type: string | null }>(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+                [pid],
+              );
+              observed = rows[0]?.wait_event_type;
+              checkDeadline();
+              return observed === "Lock" ? observed : undefined;
+            },
+            collectorTimeoutMs,
+          );
+        });
       } finally {
         clearTimeout(timer);
         try {
@@ -318,7 +348,7 @@ test(
       }
     };
     const checkImplicitPipeline = async (kind: "missing-host" | "unsupported-expect") => {
-      await withLock(async (pid) => {
+      await withLock(async (waitForCollectorLock) => {
         const before = responses.length;
         const beforeAdmitted = admitted;
         const beforeSnapshots = snapshots;
@@ -334,15 +364,7 @@ test(
             responses.slice(before).some((response) => response.req.socket.destroyed),
           "implicit response pipeline is parsed or terminated",
         );
-        const wait = await owner.query<{ wait_event_type: string }>(
-          "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
-          [pid],
-        );
-        assert.equal(
-          wait.rows[0]?.wait_event_type,
-          "Lock",
-          "real PostgreSQL collection is pending",
-        );
+        await waitForCollectorLock("real PostgreSQL collection is pending");
         const queued = responses.slice(before).filter((response) => response.headersSent);
         const statuses = queued.map((response) => response.statusCode);
         context.diagnostic(
@@ -383,17 +405,13 @@ test(
     };
     const checkProtocolTeardown = async (kind: "connect" | "upgrade") => {
       const scenarioStart = requestsSent;
-      await withLock(async (pid) => {
+      await withLock(async (waitForCollectorLock) => {
         const beforeAdmitted = admitted;
         const beforeSnapshots = snapshots;
         const wire = pipeline(Array.from({ length: 4 }, () => requestText()));
         await wire.connected;
         await until(() => pending === 4, "four admitted scrapes are pending");
-        const wait = await owner.query<{ wait_event_type: string }>(
-          "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
-          [pid],
-        );
-        assert.equal(wait.rows[0]?.wait_event_type, "Lock", "the real collection is blocked");
+        await waitForCollectorLock("the real collection is blocked");
         recordRequests(1);
         wire.socket.write(kind === "connect" ? connectRequest : upgradeRequest());
         if (kind === "upgrade") {
@@ -412,7 +430,7 @@ test(
         );
         await until(() => pending === 0, "the real collection settles after socket closure");
       });
-      await withLock(async (pid) => {
+      await withLock(async (waitForCollectorLock) => {
         const beforeAdmitted = admitted;
         const beforeSnapshots = snapshots;
         const beforeResponses = responses.length;
@@ -427,20 +445,16 @@ test(
             responses.slice(beforeResponses).some((response) => response.headersSent),
           "concurrent recovery reaches admission or a refusal",
         );
-        const wait = await owner.query<{ wait_event_type: string }>(
-          "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
-          [pid],
-        );
+        const waitEventType = await waitForCollectorLock("recovery uses blocked PostgreSQL");
         context.diagnostic(
           JSON.stringify({
             scenario: `${kind}-recovery`,
             admitted: admitted - beforeAdmitted,
             pending,
             snapshots: snapshots - beforeSnapshots,
-            waitEventType: wait.rows[0]?.wait_event_type,
+            waitEventType,
           }),
         );
-        assert.equal(wait.rows[0]?.wait_event_type, "Lock", "recovery uses blocked PostgreSQL");
         assert.equal(
           admitted - beforeAdmitted,
           16,
@@ -462,7 +476,7 @@ test(
     };
     try {
       assert.equal(await scrape(listener.url), 200);
-      await withLock(async (pid) => {
+      await withLock(async (waitForCollectorLock) => {
         const before = admitted;
         const beforeSnapshots = snapshots;
         const wire = pipeline(
@@ -471,15 +485,7 @@ test(
         );
         await wire.connected;
         await until(() => pending >= 16, "pipeline reaches the admitted waiters");
-        const wait = await owner.query<{ wait_event_type: string }>(
-          "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
-          [pid],
-        );
-        assert.equal(
-          wait.rows[0]?.wait_event_type,
-          "Lock",
-          "the genuine collector waits on PostgreSQL",
-        );
+        await waitForCollectorLock("the genuine collector waits on PostgreSQL");
         context.diagnostic(
           JSON.stringify({
             scenario: "fixed24",
