@@ -20,6 +20,7 @@ import {
   MAX_BUFFER,
   MAX_FRAME,
   MAX_CHANNELS,
+  PROBE_CHANNELS,
 } from "../../deploy/runtime/strands-box/transport.mjs";
 import { connect as tlsConnect } from "node:tls";
 import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.ts";
@@ -129,7 +130,35 @@ async function supervisor(t: TestContext) {
     await accepted;
     return socket;
   }
-  return { ...serving, client, token, reader, frames, gateway, tls };
+  async function diagnostic(path = "/revisions/test-revision/readiness") {
+    const tlsOptions = {
+      host: "127.0.0.1",
+      port: tcpPort(serving.diagnostics),
+      servername: "localhost",
+      ca: tls.caBundle,
+      allowHalfOpen: true,
+    };
+    const socket = tlsConnect(tlsOptions);
+    t.after(() => socket.destroy());
+    const ended = once(socket, "end");
+    let response = "";
+    socket.on("data", (data: Buffer) => (response += data.toString()));
+    socket.write(
+      `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${token}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
+    );
+    await ended;
+    return response;
+  }
+  async function pendingHandshake(listener: Server) {
+    const accepted = once(listener, "connection");
+    const socket = connect({ host: "127.0.0.1", port: tcpPort(listener) });
+    socket.on("error", () => {});
+    t.after(() => socket.destroy());
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    await accepted;
+    return { socket, closed };
+  }
+  return { ...serving, client, diagnostic, pendingHandshake, token, reader, frames, gateway, tls };
 }
 
 test(
@@ -163,29 +192,85 @@ test(
   },
 );
 
-test("the worker port allows readiness but refuses native upgrades with the same valid bearer", async (t) => {
-  const { diagnostics, tls, token, frames } = await supervisor(t);
-  const read = async (path: string) => {
-    const socket = tlsConnect({
-      host: "127.0.0.1",
-      port: tcpPort(diagnostics),
-      servername: "localhost",
-      ca: tls.caBundle,
-    });
-    socket.write(
-      `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${token}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
-    );
-    const chunks: Buffer[] = [];
-    for await (const chunk of socket) {
-      assert.ok(Buffer.isBuffer(chunk));
-      chunks.push(chunk);
+test(
+  "the worker port allows readiness but refuses native upgrades with the same valid bearer",
+  { timeout: 5000 },
+  async (t) => {
+    const { diagnostic, frames } = await supervisor(t);
+    // Leave each client's write half open past the listener's capacity.
+    for (let i = 0; i <= PROBE_CHANNELS; i++) {
+      assert.match(await diagnostic(), /200 OK[\s\S]*starting/u);
     }
-    return Buffer.concat(chunks).toString();
-  };
-  assert.match(await read("/revisions/test-revision/readiness"), /200 OK[\s\S]*starting/u);
-  assert.match(await read("/"), /404 Not Found/u);
-  assert.equal(frames.length, 0);
-});
+    assert.match(await diagnostic("/"), /404 Not Found/u);
+    assert.equal(frames.length, 0);
+  },
+);
+
+test(
+  "Strands TLS listeners reclaim stalled handshakes at capacity while preserving an authenticated channel",
+  { timeout: 9000 },
+  async (t) => {
+    const harness = await supervisor(t);
+    const client = await harness.client();
+    client.write(`GET / HTTP/1.1\r\nAuthorization: Bearer ${harness.token}\r\n\r\n`);
+    for (let i = 0; harness.frames.length < 2 && i < 100; i++) {
+      await delay(10);
+    }
+    const channel = harness.frames[0];
+    assert.equal(channel?.type, "open");
+    assert.equal(harness.frames[1]?.type, "data");
+
+    const closures: Promise<void>[] = [];
+    for (const [listener, capacity] of [
+      [harness.server, MAX_CHANNELS + PROBE_CHANNELS - 1],
+      [harness.diagnostics, PROBE_CHANNELS],
+    ] as const) {
+      for (let i = 0; i < capacity; i++) {
+        const { socket, closed } = await harness.pendingHandshake(listener);
+        closures.push(closed);
+        if (i === 0) {
+          // Start a TLS record and keep its body incomplete while sending bytes.
+          socket.write(Buffer.from([0x16, 0x03, 0x03, 0x10, 0x00]));
+          const trickle = setInterval(() => socket.write(Buffer.alloc(1)), 100);
+          socket.once("close", () => clearInterval(trickle));
+        }
+      }
+    }
+    // Wait past the handshake deadline even if a stalled peer closes early.
+    await Promise.all([...closures, delay(5100, undefined, { signal: t.signal })]);
+    const reply = "channel survives the handshake deadline";
+    harness.reader.write(
+      JSON.stringify({
+        id: channel.id,
+        type: "data",
+        data: Buffer.from(reply).toString("base64"),
+      }) + "\n",
+    );
+    let received = "";
+    for await (const chunk of client.iterator({ destroyOnReturn: false })) {
+      assert.ok(Buffer.isBuffer(chunk));
+      received += chunk.toString();
+      if (received.length >= reply.length) {
+        break;
+      }
+    }
+    assert.equal(received, reply);
+
+    assert.match(await harness.diagnostic(), /200 OK[\s\S]*starting/u);
+  },
+);
+
+test(
+  "Strands shutdown closes pending TLS handshakes on both listeners",
+  { timeout: 3000 },
+  async (t) => {
+    const harness = await supervisor(t);
+    const native = await harness.pendingHandshake(harness.server);
+    const diagnostic = await harness.pendingHandshake(harness.diagnostics);
+    harness.stop();
+    await Promise.all([native.closed, diagnostic.closed]);
+  },
+);
 
 test(
   "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",

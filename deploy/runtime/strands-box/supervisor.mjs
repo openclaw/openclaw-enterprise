@@ -12,6 +12,24 @@ import {
   CHUNK,
 } from "./transport.mjs";
 
+const HANDSHAKE_TIMEOUT_MS = 5000;
+
+function connectionKey(socket) {
+  // The raw and TLS sockets expose the same TCP endpoints, including the listener.
+  return `${socket.localAddress}/${socket.localPort}/${socket.remoteAddress}/${socket.remotePort}`;
+}
+
+function finishReply(socket, response) {
+  if (socket.destroyed) {
+    return;
+  }
+  // end() alone leaves the paused readable half alive when the peer withholds FIN.
+  const deadline = setTimeout(() => socket.destroy(), 1000);
+  deadline.unref();
+  socket.once("close", () => clearTimeout(deadline));
+  socket.end(response, () => socket.destroy());
+}
+
 // The supervisor owns both directions of the bounded relay. The contained
 // process supplies bytes; only the prepared manifest selects Gateway routing.
 export function serveHarness(manifest, { reader, writer, terminate, tls, probePath, status }) {
@@ -26,6 +44,7 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
   }
   const channels = new Map();
   const accepted = new Set();
+  const pending = new Map();
   const probes = new Set();
   let stopping = false;
   function stop() {
@@ -37,6 +56,9 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
     probeServer.close();
     diagnostics.close();
     for (const socket of [...channels.values(), ...accepted]) {
+      socket.destroy();
+    }
+    for (const { socket } of pending.values()) {
       socket.destroy();
     }
     terminate();
@@ -85,16 +107,8 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
     }
     accepted.add(socket);
     socket.once("close", () => accepted.delete(socket));
-    const reject = (status) => {
-      // end() alone leaves the paused readable half alive. Bound flushing and
-      // destroy it even when the rejected client never sends FIN or reads.
-      const deadline = setTimeout(() => socket.destroy(), 1000);
-      deadline.unref();
-      socket.once("close", () => clearTimeout(deadline));
-      socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () =>
-        socket.destroy(),
-      );
-    };
+    const reject = (status) =>
+      finishReply(socket, `HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     firstHeader(socket, (lines, bytes) => {
       if (stopping) {
         socket.destroy();
@@ -124,7 +138,8 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
         status().then(
           (result) => {
             const body = JSON.stringify(result);
-            socket.end(
+            finishReply(
+              socket,
               "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
                 Buffer.byteLength(body) +
                 "\r\n\r\n" +
@@ -174,12 +189,42 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
     });
   }
   const server = createTlsServer(
-    { ...tls, minVersion: "TLSv1.2", handshakeTimeout: 5000 },
-    (socket) => accept(socket, false),
+    { ...tls, minVersion: "TLSv1.2", handshakeTimeout: HANDSHAKE_TIMEOUT_MS },
+    (socket) => {
+      pending.get(connectionKey(socket))?.cleanup();
+      accept(socket, false);
+    },
   );
+  server.prependListener("connection", (socket) => {
+    if (stopping) {
+      socket.destroy();
+      return;
+    }
+    // Node's handshake timeout is based on socket activity. Bound total time
+    // from TCP acceptance even while a peer keeps the TLS record incomplete.
+    const key = connectionKey(socket);
+    const deadline = setTimeout(() => socket.destroy(), HANDSHAKE_TIMEOUT_MS);
+    deadline.unref();
+    const cleanup = () => {
+      clearTimeout(deadline);
+      socket.removeListener("close", cleanup);
+      if (pending.get(key)?.socket === socket) {
+        pending.delete(key);
+      }
+    };
+    pending.set(key, { socket, cleanup });
+    socket.once("close", cleanup);
+  });
+  server.on("tlsClientError", (_error, socket) => socket.destroy());
   // Port-level NetworkPolicies keep the worker on its read-only route. Pass
   // those TCP sockets to the same TLS server; localPort survives the TLS wrap.
-  const diagnostics = createServer((socket) => server.emit("connection", socket));
+  const diagnostics = createServer((socket) => {
+    if (stopping) {
+      socket.destroy();
+      return;
+    }
+    server.emit("connection", socket);
+  });
   diagnostics.maxConnections = PROBE_CHANNELS;
   diagnostics.on("error", stop);
   diagnostics.listen(manifest.statusPort, "0.0.0.0");
