@@ -1733,15 +1733,26 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             : {}),
         });
       } else if (args.includes("agent") && args.includes("revision")) {
-        log("revision-read " + args.at(-1));
+        if (state.controllerOnly || state.activeRevisionResponse !== undefined) {
+          log("revision-read " + args.at(-1));
+        }
         if (state.activeRevisionResponse === "denied") {
           return fail(1, "revision read denied");
         }
+        const namespaces =
+          optionalField(optionalField(state.inventoryResponses, "0"), "namespaces") ??
+          state.inventoryNamespaces;
+        const namespace = list(namespaces ?? [], "inventory namespaces").find(
+          (item) => field(item, "id") === fileArg("--namespace"),
+        );
+        const agent = list(optionalField(namespace, "agents") ?? [], "namespace agents").find(
+          (item) => field(item, "id") === args.at(-2),
+        );
         out(
           state.activeRevisionResponse ?? {
-            id: "rev_old",
-            namespaceId: "ns_test",
-            agentId: "agt_test",
+            id: optionalField(agent, "activeRevisionId") ?? "rev_old",
+            namespaceId: optionalField(namespace, "id") ?? "ns_test",
+            agentId: optionalField(agent, "id") ?? "agt_test",
             harness: {
               id: "codex",
               version: "1",

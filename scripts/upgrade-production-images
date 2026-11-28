@@ -2543,7 +2543,28 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
   agent_drafts="$evidence_dir/inventory/agent-drafts.jsonl"
   : >"$agent_drafts"
   while IFS= read -r target; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId baseline_revision=baselineRevisionId
+    # Automatic Deploy defaults to restricted egress. A readable legacy revision
+    # without the field also used restricted egress. A metadata-only read can
+    # omit the mode of a public revision, so it cannot establish that default.
+    egress_mode=$(
+      "${occ_json[@]}" --namespace "$namespace_id" agent revision "$agent_id" "$baseline_revision" </dev/null 2>/dev/null |
+        jq -ers --arg namespaceId "$namespace_id" --arg agentId "$agent_id" --arg revisionId "$baseline_revision" '
+          select(length == 1) | .[0] |
+          select(.namespaceId == $namespaceId and .agentId == $agentId and .id == $revisionId and
+            (has("configurationReadError") | not) and
+            (.harness.overrides | type) == "object" and (.harness.configuration | type) == "object") |
+          (if has("networkEgressMode") then .networkEgressMode else "restricted" end) |
+          select(. == "restricted" or . == "public")
+        ' 2>/dev/null
+    ) || egress_mode=
+    case "$egress_mode" in
+      restricted) egress_refusal= ;;
+      public) egress_refusal="uses public network egress" ;;
+      *) egress_refusal="has an unconfirmed network egress mode" ;;
+    esac
+    [[ -z "$egress_refusal" ]] ||
+      die "active revision $baseline_revision of Agent $agent_id in Namespace $namespace_id $egress_refusal. Automatic redeployment requires a confirmed restricted mode. Check the exact revision. If still blocked, stop and settle the Agent under an authorized interruption, start again with fresh evidence, and deploy it explicitly with reviewed settings after the upgrade. No cluster changes were made."
     prefix="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id")"
     "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null \
       >"$prefix.agent.json" ||

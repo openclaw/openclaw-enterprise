@@ -139,6 +139,7 @@ type RecoverySeed = {
   | "inventoryRequiresApi"
   | "inventoryResponses"
   | "activeRevisionResponse"
+  | "controllerOnly"
   | "names"
   | "olderDraftRules"
   | "preflightFault"
@@ -659,6 +660,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       inventoryResponses,
       inventoryRequiresApi,
       activeRevisionResponse,
+      controllerOnly,
       names,
       configurationValues,
       ...(certificate ? { recoveryCandidateResources: [testCertificate] } : {}),
