@@ -60,7 +60,7 @@ occ_request() {
     args+=(--header 'Content-Type: application/json' --data-binary "@$input")
   fi
   status="$(printf 'x-api-key: %s\n' "$key" |
-    curl "${args[@]}" --header @- --output "$work/response.json" \
+    curl -q "${args[@]}" --header @- --output "$work/response.json" \
       --write-out '%{http_code}' "$OCC_URL$path")" || return
   if [[ "$status" != 2?? ]]; then
     printf 'OCC returned HTTP %s.\n' "$status" >&2
@@ -72,6 +72,7 @@ occ_request() {
 ```
 
 This helper keeps the key out of command arguments and refuses redirects.
+Keep `-q` first so curl ignores its default configuration file, which can enable redirects.
 For a private CA, set `CURL_CA_BUNDLE`; do not disable certificate verification.
 
 ## Create a Namespace and wait for readiness
