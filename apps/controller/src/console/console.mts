@@ -910,8 +910,10 @@ const stillCheckingDelayMs = 1000;
 let mountedRouteKey: string | null = null;
 // The page whose shell is on screen. A held page keeps its own navigation and header.
 let shownFeature: Page | null = null;
-// The shown header's page: an Agent's ({ agentId }), Create Agent ({ creating: true }) or null.
-let shownPage: Exclude<ShellState["page"], undefined> = null;
+// Keep the Namespace with the header. An interrupted navigation may already have changed
+// the requested Namespace while this header is still on screen.
+type HeaderPage = (NonNullable<ShellState["page"]> & { namespaceId: string | null }) | null;
+let shownPage: HeaderPage = null;
 let mountedAgent: AgentRead | null | undefined = null;
 let mountedViewState: MountedView | null = null;
 let resumePending: Promise<void> | null = null;
@@ -1438,14 +1440,14 @@ function resetReads({
 
 // The header shape for a route: an Agent's page and Create Agent lead with ← Agents and carry a
 // meta row (the ID, the Namespace) under the title; collections do not (UX spec 3.2).
-function headerPage(current: Route): NonNullable<ShellState["page"]> | null {
+function headerPage(current: Route): HeaderPage {
   if (current.feature !== "agents") {
     return null;
   }
   if (current.creating) {
-    return { creating: true };
+    return { creating: true, namespaceId };
   }
-  return current.agentId ? { agentId: current.agentId } : null;
+  return current.agentId ? { agentId: current.agentId, namespaceId } : null;
 }
 
 function collectionPath(feature: string, namespacePath: string | null) {
@@ -1473,7 +1475,10 @@ function readDebugPreference() {
 function renderShell(
   feature: Page,
   namespaceAdmissionPending = false,
-  { recovery = true, page = headerPage(route()) }: Pick<ShellState, "page" | "recovery"> = {},
+  {
+    recovery = true,
+    page = headerPage(route()),
+  }: Pick<ShellState, "recovery"> & { page?: HeaderPage } = {},
 ) {
   shownFeature = feature;
   shownPage = page;
@@ -2048,10 +2053,28 @@ async function loadPage({
   let searchForRetry: AgentSearchFocus | null = null;
   let admittedSearch: AgentSearchFocus | null = null;
   const outgoingScrollY = listRoute && outgoingAgentView ? window.scrollY : 0;
-  let shell: LoadingShell | null =
-    knownPrivateState && !openingAgent
-      ? holdShownView({ busyCue: !resumingView, keepFocus: !resumingView })
+  const changingAgentScope =
+    knownPrivateState &&
+    (fromNavigation || restoreHistory !== null) &&
+    !openingAgent &&
+    shownPage?.agentId !== undefined &&
+    shownPage.namespaceId !== current.namespace;
+  // The shell keeps the picker and sidebar focused. The closed phone drawer's toggle
+  // sits outside both. Leave the heading to the existing return-to-row handoff.
+  const scopeControl = () =>
+    changingAgentScope && document.activeElement?.matches(".mobile-toggle")
+      ? focusInShownView()
       : null;
+  let shell: LoadingShell | null = null;
+  if (changingAgentScope) {
+    // Show the destination without the previous Agent's ID, actions or data.
+    shell = renderShell(privatePage, true, { page: null });
+    if (focused?.closest(".content, .sidebar")) {
+      app.querySelector<HTMLElement>(".content h1")!.focus({ preventScroll: true });
+    }
+  } else if (knownPrivateState && !openingAgent) {
+    shell = holdShownView({ busyCue: !resumingView, keepFocus: !resumingView });
+  }
   const heldAgentReturn =
     listRoute &&
     outgoingAgentView &&
@@ -2127,7 +2150,7 @@ async function loadPage({
   let shownStandIn: { view: HTMLElement } | null = null;
   let standInTitle: string | null = null;
   // The shell that says it is checking Namespace access, while it is the one shown.
-  let pendingNamespaceShell: Shell | null = null;
+  let pendingNamespaceShell: LoadingShell | null = null;
   // When the loading delay put a loading page on screen (performance.now()), or null.
   let loadingShownAt: number | null = null;
   let sessionResolved = false;
@@ -2193,8 +2216,14 @@ async function loadPage({
   // A return or refocus that can reuse its retained view keeps the shown page and, past
   // stillCheckingDelayMs, says it is still checking. Other loads, Refresh included, show
   // loading after loadingDelayMs (finding 1442).
-  const recheck = held && retained && reuseView;
+  const recheck = held && retained && reuseView && !changingAgentScope;
   const loadingDelay = startup ? startupStatusDelayMs : loadingDelayMs;
+  const showReading = (view: HTMLElement, feature: Page) =>
+    panel(
+      view,
+      "Loading…",
+      current.agentId ? "Reading this Agent." : `Reading ${pages[feature].toLowerCase()}.`,
+    );
   let loadingTimer =
     !held && !startup
       ? null
@@ -2216,6 +2245,17 @@ async function loadPage({
             }
             held = false;
             loadingShownAt = performance.now();
+            // The destination header is already in place. Leave its controls and focus alone.
+            if (changingAgentScope && shell) {
+              if (accessResolved) {
+                // The detail may already be rendering in a hidden view behind this header.
+                showReading((shownStandIn ?? shell).view, privatePage);
+              } else {
+                pendingNamespaceShell = shell;
+                panel(shell.view, "Loading…", "Checking Namespace access.");
+              }
+              return;
+            }
             // The loading page's heading takes focus from the held one it replaces.
             const headingFocused = heldHeading !== null && document.activeElement === heldHeading;
             const keepHeadingFocus = () => {
@@ -2235,13 +2275,7 @@ async function loadPage({
             // the loading page that now stands in for it (finding 1537).
             const behind = shownStandIn ? shell!.view : null;
             shell = renderShell(privatePage, false);
-            panel(
-              shell.view,
-              "Loading…",
-              current.agentId
-                ? "Reading this Agent."
-                : `Reading ${pages[privatePage].toLowerCase()}.`,
-            );
+            showReading(shell.view, privatePage);
             if (behind) {
               shownStandIn = shell;
               shell.view.after(behind);
@@ -2437,7 +2471,11 @@ async function loadPage({
       // keeps the scope beside its rows until the destination replaces them. A page held for
       // another page (Agents on the way to Backends, say) keeps its selector disabled: a pick
       // there would open the destination, not the page it heads (finding 1527).
-      shellUI.updateNamespaces(namespaces, { preservePageScope: held });
+      shellUI.updateNamespaces(namespaces, { preservePageScope: held && !changingAgentScope });
+      if (changingAgentScope && pendingNamespaceShell && !scopedNamespaceUnavailable) {
+        showReading(pendingNamespaceShell.view, privatePage);
+        pendingNamespaceShell = null;
+      }
     }
     // The destination's first read runs before its shell renders, so the held page (or
     // loading) is replaced once, by the page itself (finding 1407).
@@ -2657,7 +2695,7 @@ async function loadPage({
       if (returningToDraft && heldHeading?.isConnected && document.activeElement !== heldHeading) {
         returnFocusMoved = true;
       }
-      const headerFocus = versionHeaderFocus();
+      const headerFocus = scopeControl() ?? versionHeaderFocus();
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       // The shell already restores Namespace focus. Keep that control in view too.
       const keptNamespaceFocus =
@@ -2712,15 +2750,14 @@ async function loadPage({
         : startupStandIn
           ? { view: startupStandIn, diagnostics: null }
           : null;
-    // A held return keeps saying it is still checking while the Agent renders (finding 1442), and
-    // a startup status gives way to loading at the delay. Other timers would replace the
-    // stand-in's shell, so they stop here.
-    if (!standIn || !(recheck || startupStandIn)) {
+    // Keep the wait cue alive while the Agent renders behind a retained view (finding 1442),
+    // startup status or a new Namespace header. Other timers would replace the stand-in's shell.
+    if (!standIn || !(recheck || startupStandIn || changingAgentScope)) {
       stopLoadingTimer();
     }
     if (standIn && standIn === pendingNamespaceShell) {
       // Admission is done; the stand-in names the read that remains.
-      panel(standIn.view, "Loading…", "Reading this Agent.");
+      showReading(standIn.view, privatePage);
     }
     if (standIn) {
       const detailView = element("div", { "aria-live": "polite", "aria-busy": "true", hidden: "" });
@@ -2730,11 +2767,13 @@ async function loadPage({
     } else {
       // A Namespace the reader cannot read hides its Agent too: the panel takes the Agents list's
       // header, not the Agent page's ID, copy button and ← Agents link (finding 2400).
+      const scopeFocus = scopeControl();
       shell = renderShell(
         privatePage,
         false,
         scopedNamespaceUnavailable ? { page: null } : undefined,
       );
+      scopeFocus?.restore(shell.view);
     }
     const viewState: MountedView = {
       active,
@@ -3126,7 +3165,7 @@ async function loadPage({
             document.activeElement === pendingAgentHeading ||
             (heldHeading !== null && document.activeElement === heldHeading) ||
             shownNow.view.contains(document.activeElement);
-          const headerFocus = versionHeaderFocus();
+          const headerFocus = scopeControl() ?? versionHeaderFocus();
           const detailShell = renderShell(privatePage, false);
           shell = detailShell;
           detailShell.view.replaceWith(detailView);
@@ -3417,7 +3456,9 @@ async function loadPage({
       // stored answer, asks it too. Neither is audited.
       settleNotAdministrator();
     }
+    const scopeFocus = scopeControl();
     shell = renderShell(privatePage);
+    scopeFocus?.restore(shell.view);
     if (current.agentId && status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in
       // the default selection. Agent IDs are unique: look in the others.
