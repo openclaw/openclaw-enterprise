@@ -1092,10 +1092,8 @@ function retainMountedView(returnControl: Element | null, scrollY = window.scrol
 // Finds the destination's retained view without removing it. The load forgets it only once it
 // mounts or replaces the view; a load abandoned before then (Forward during a return's
 // recheck, say) leaves it for the next return (finding 1441).
-function peekRetainedView(current: Route) {
+function peekRetainedView(key: string | null) {
   const owner = sessionOwnerKey(session);
-  const address = routeKey(current);
-  const key = address && navigation.retainedViewKey(address);
   const retained = key && retainedViews.get(key);
   if (!owner || !retained || retained.owner !== owner) {
     return null;
@@ -1926,8 +1924,19 @@ async function loadPage({
       ? discardCreationOnExit
       : null;
   const previousMountedRouteKey = mountedRouteKey;
-  // Save/reload actions navigate to the current URL to discard the editor.
-  if (fromNavigation && previousMountedRouteKey === routeKey(current)) {
+  const previousRetainedViewKey =
+    previousMountedRouteKey && navigation.retainedViewKey(previousMountedRouteKey);
+  const targetAddress = routeKey(current, current.namespace);
+  const targetRetainedViewKey = targetAddress && navigation.retainedViewKey(targetAddress);
+  // Save/reload actions discard the editor even when they reorder URL parameters.
+  // History traversal keeps the existing exact-address rule for duplicate entries.
+  if (
+    fromNavigation &&
+    (previousMountedRouteKey === routeKey(current) ||
+      (!restoreHistory &&
+        previousRetainedViewKey !== null &&
+        previousRetainedViewKey === targetRetainedViewKey))
+  ) {
     reuseView = false;
   }
   const agentHistory =
@@ -2016,12 +2025,12 @@ async function loadPage({
     const creationDrafts = drafts.scope(abandonedCreation.namespaceId, "create");
     creationDrafts.forget("create");
     creationDrafts.forget("channels");
-    if (previousMountedRouteKey !== null) {
-      retainedViews.delete(navigation.retainedViewKey(previousMountedRouteKey));
+    if (previousRetainedViewKey !== null) {
+      retainedViews.delete(previousRetainedViewKey);
     }
     discardCreationOnExit = null;
   }
-  const taken = knownPrivateState ? peekRetainedView(current) : null;
+  const taken = knownPrivateState ? peekRetainedView(targetRetainedViewKey) : null;
   if (!reuseView) {
     // Refresh and save/reload discard the shown view even if the load is abandoned.
     forgetRetainedView(taken);
