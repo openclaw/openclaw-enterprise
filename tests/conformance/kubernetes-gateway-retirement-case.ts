@@ -129,9 +129,11 @@ function retirementFixture(
         readNamespacedService: readNamespaced("Service"),
         async patchNamespacedService({
           name,
+          namespace: requestNamespace,
           body,
         }: Parameters<Clients["core"]["patchNamespacedService"]>[0]) {
           const service = body as ObservedResource;
+          assert.equal(requestNamespace, namespace);
           assert.equal(service.kind, "Service");
           assert.equal(service.metadata.name, name);
           assert.equal(service.metadata.namespace, namespace);
@@ -202,6 +204,7 @@ function retirementFixture(
 
   return {
     observe,
+    read,
     reset,
     nodeResources,
     clearNodeResources,
@@ -379,8 +382,12 @@ export async function checkGatewayRetirement() {
     });
   }
 
-  function expectChatRetirement(revision: AgentRevision) {
+  async function retireChat(revision: AgentRevision) {
     const name = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+    assert.partialDeepStrictEqual(fixture.read("Service", namespace, name), {
+      spec: { selector: { "openclaw.dev/revision": revision.id } },
+    });
+    await driver["removeRetiredGateway"](revision, target);
     assert.deepEqual(deletions, [
       routeDeletion(name, name + "-route-uid", "1"),
       ["Service", { name, namespace, body: { preconditions: { uid: name + "-service-uid" } } }],
@@ -413,16 +420,14 @@ export async function checkGatewayRetirement() {
   assert.equal(fixture.nodeResources().size, 0);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
-  await driver["removeRetiredGateway"](candidate, target);
-  expectChatRetirement(candidate);
+  await retireChat(candidate);
 
   // Once activation replaces the Gateway, the same endpoint belongs to the new
   // revision. Retiring the predecessor must leave it usable by the new node.
   observeGateway(candidate);
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   const candidateNodes = expectNodeResources(candidate);
-  await driver["removeRetiredGateway"](active, target);
-  expectChatRetirement(active);
+  await retireChat(active);
   await driver["removeRetiredGateway"](candidate, target);
   assert.deepEqual(deletions.slice(0, 2), [
     routeDeletion(nodeName, "HTTPRoute-node-uid", "1"),

@@ -7648,17 +7648,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
           asRecord(existingGatewayService.spec?.selector)?.["app.kubernetes.io/name"] ===
             `${gatewayName}-inactive`);
       await this.prepareRevisionStage("gateway_service", () =>
-        this.reconcile(
-          this.service(
-            gatewayName,
-            gatewayOwnership,
-            gatewayNamespace,
-            inactiveEmbeddedGateway
-              ? { "app.kubernetes.io/name": `${gatewayName}-inactive` }
-              : this.gatewayServiceSelector(revision, gatewayName),
-          ),
+        this.reconcileService(
+          gatewayName,
           gatewayOwnership,
           gatewayNamespace,
+          inactiveEmbeddedGateway
+            ? { "app.kubernetes.io/name": `${gatewayName}-inactive` }
+            : this.gatewayServiceSelector(revision, gatewayName),
         ),
       );
       await this.prepareRevisionStage("gateway_route", () =>
@@ -7715,24 +7711,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (initialDedicatedCodexGateway) {
         // No Gateway serves another revision yet, so the Service can select this
         // revision's Harness before it is ready.
-        await this.reconcile(
-          this.service(
-            agentName,
-            agentOwnership,
-            namespace,
-            this.agentServiceSelector(revision, revisionName),
-          ),
+        await this.reconcileService(
+          agentName,
           agentOwnership,
           namespace,
+          this.agentServiceSelector(revision, revisionName),
         );
       } else if (existingService === undefined) {
-        await this.reconcile(
-          this.service(agentName, agentOwnership, namespace, {
-            "app.kubernetes.io/name": `${agentName}-inactive`,
-          }),
-          agentOwnership,
-          namespace,
-        );
+        await this.reconcileService(agentName, agentOwnership, namespace, {
+          "app.kubernetes.io/name": `${agentName}-inactive`,
+        });
       }
       if (this.options.runtime !== undefined) {
         for (const policy of await this.agentNetworkPoliciesWithPeers(
@@ -8423,22 +8411,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : agentReadiness;
       }
       const pluginWarnings = agentReadiness.warnings ?? [];
-      await this.reconcile(
-        this.service(
-          agentName,
-          agentOwnership,
-          namespace,
-          this.agentServiceSelector(
-            revision,
-            sandboxDriver?.provisionHarness === undefined
-              ? revisionName
-              : providerOwnsHarnessEndpoint || nativeRuntime !== undefined
-                ? `${agentName}-inactive`
-                : undefined,
-          ),
-        ),
+      await this.reconcileService(
+        agentName,
         agentOwnership,
         namespace,
+        this.agentServiceSelector(
+          revision,
+          sandboxDriver?.provisionHarness === undefined
+            ? revisionName
+            : providerOwnsHarnessEndpoint || nativeRuntime !== undefined
+              ? `${agentName}-inactive`
+              : undefined,
+        ),
       );
       if (deferInitialDedicatedGatewayForPluginStatus) {
         await reconcileGatewayDeployment({});
@@ -8729,13 +8713,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.reconcile(policy, gatewayOwnership, target);
       }
       await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
-      await this.reconcile(
-        this.service(gatewayName, gatewayOwnership, namespace, {
-          "app.kubernetes.io/name": gatewayName,
-        }),
-        gatewayOwnership,
-        namespace,
-      );
+      await this.reconcileService(gatewayName, gatewayOwnership, namespace, {
+        "app.kubernetes.io/name": gatewayName,
+      });
       await this.reconcileGatewayRoute(revision, gatewayOwnership, namespace);
       if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
         throw new Error("The exact AgentRevision gateway is not ready.");
@@ -8976,35 +8956,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       { gatewayStartupCredentials: context?.gatewayStartupCredentials },
     );
-    await this.reconcile(
-      this.service(
-        gatewayName,
-        gatewayOwnership,
-        gatewayNamespace,
-        this.gatewayServiceSelector(revision, gatewayName),
-      ),
+    await this.reconcileService(
+      gatewayName,
       gatewayOwnership,
       gatewayNamespace,
+      this.gatewayServiceSelector(revision, gatewayName),
     );
     if (revision.credentialDeployment === undefined) {
       await this.reconcileGatewayRoute(revision, gatewayOwnership, gatewayNamespace);
     }
-    await this.reconcile(
-      this.service(
-        agentName,
-        ownership,
-        namespace,
-        this.agentServiceSelector(
-          revision,
-          sandboxDriver?.provisionHarness === undefined
-            ? revisionName
-            : providerOwnsHarnessEndpoint || nativeRuntime !== undefined
-              ? `${agentName}-inactive`
-              : undefined,
-        ),
-      ),
+    await this.reconcileService(
+      agentName,
       ownership,
       namespace,
+      this.agentServiceSelector(
+        revision,
+        sandboxDriver?.provisionHarness === undefined
+          ? revisionName
+          : providerOwnsHarnessEndpoint || nativeRuntime !== undefined
+            ? `${agentName}-inactive`
+            : undefined,
+      ),
     );
     if (nativeRuntime === undefined && !providerOwnsHarnessEndpoint) {
       await this.reconcileHarnessRoute(revision, namespace);
@@ -9119,13 +9091,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (asRecord(service.spec?.selector)?.["app.kubernetes.io/name"] !== gatewayName) {
         return;
       }
-      await this.reconcile(
-        this.service(gatewayName, ownership, namespace, {
-          "app.kubernetes.io/name": `${gatewayName}-inactive`,
-        }),
-        ownership,
-        namespace,
-      );
+      await this.reconcileService(gatewayName, ownership, namespace, {
+        "app.kubernetes.io/name": `${gatewayName}-inactive`,
+      });
       return;
     }
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
@@ -15131,11 +15099,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (publishUserRoutes && chatEndpoint.status === "available") {
       const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
       const chatOwnership = { ...ownership, revisionId: revision.id };
-      const chatService = this.service(chatName, chatOwnership, namespace, {
+      await this.reconcileService(chatName, chatOwnership, namespace, {
         ...this.gatewayServiceSelector(revision, name),
         "openclaw.dev/revision": revision.id,
       });
-      await this.reconcile(chatService, chatOwnership, namespace);
       const routing = this.options.gatewayRouting;
       const chatRoute = this.manifest(
         GATEWAY_API_VERSION,
@@ -18730,6 +18697,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         },
       },
     };
+  }
+
+  private reconcileService(
+    name: string,
+    ownership: Ownership,
+    namespace: KubernetesNamespaceAddress,
+    selector: Record<string, string>,
+  ): Promise<void> {
+    return this.reconcile(this.service(name, ownership, namespace, selector), ownership, namespace);
   }
 
   private service(
