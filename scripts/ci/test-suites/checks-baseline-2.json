@@ -81,7 +81,7 @@
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.ts",
-    "tests/integration/repository-credentials-projected-inputs.test.mjs",
+    "tests/integration/repository-credentials-projected-inputs.test.ts",
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
@@ -756,7 +756,7 @@
       "path": "tests/integration/repository-credentials-sender-recovery.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-projected-inputs.test.mjs"
+      "path": "tests/integration/repository-credentials-projected-inputs.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-restart.test.ts"

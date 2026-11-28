@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
   chmod,
@@ -21,9 +21,14 @@ import {
   createTlsMaterial,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 
-async function project(directory, generation, values) {
+async function project(
+  directory: string,
+  generation: string,
+  values: Readonly<Record<string, string | Buffer>>,
+) {
   const path = join(directory, generation);
   await mkdir(path, { mode: 0o755 });
   for (const [name, value] of Object.entries(values)) {
@@ -35,7 +40,7 @@ async function project(directory, generation, values) {
     try {
       await symlink(`..data/${name}`, join(directory, name));
     } catch (error) {
-      if (error.code !== "EEXIST") {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
         throw error;
       }
     }
@@ -43,7 +48,7 @@ async function project(directory, generation, values) {
   return path;
 }
 
-async function fixture(t) {
+async function fixture(t: TestContext) {
   // Canonicalize macOS's /var alias.
   const directory = await realpath(await temporaryDirectory(t, "rp-"));
   const inputsDirectory = join(directory, "inputs");
@@ -67,7 +72,7 @@ async function fixture(t) {
     expectedOrigin: "https://credentials.example.test",
     backendId: "github-primary",
     authority: "prepared-git",
-  };
+  } satisfies Parameters<typeof prepareProjectedInputs>[0];
   const tls = await createTlsMaterial(t);
   const config = {
     gateway: {
@@ -142,6 +147,7 @@ test("projected service inputs become owned private files accepted by the real l
   const loaded = await f.prepare();
   assert.equal(loaded.config.gateway.publicOrigin, f.options.expectedOrigin);
   assert.equal(loaded.config.gateway.listen, "0.0.0.0:8443");
+  assert.ok(process.getuid, "The ownership check requires a POSIX user ID.");
   loaded.close();
   for (const name of Object.keys(f.values).concat("registry.json")) {
     const info = await lstat(join(f.options.privateDirectory, name));
@@ -152,11 +158,13 @@ test("projected service inputs become owned private files accepted by the real l
     assert.equal(info.nlink, 1);
   }
   assert.equal((await lstat(f.options.privateDirectory)).mode & 0o777, 0o700);
-  const copied = JSON.parse(
+  const copied: unknown = JSON.parse(
     await readFile(join(f.options.privateDirectory, "config.json"), "utf8"),
   );
-  assert.equal(copied.backend.privateKeyFile, undefined);
-  assert.equal(copied.backend.registryFile, join(f.options.privateDirectory, "registry.json"));
+  const backend = asRecord(asRecord(copied)?.backend);
+  assert.ok(backend);
+  assert.equal(backend.privateKeyFile, undefined);
+  assert.equal(backend.registryFile, join(f.options.privateDirectory, "registry.json"));
   // A projected generation switch takes effect together on the next process
   // start, and owned files left in the memory volume are safely replaced.
   const changed = {
@@ -174,7 +182,6 @@ test("projected service inputs become owned private files accepted by the real l
 
 test("prepared projection loads without an App key and refuses an authority mismatch", async (t) => {
   const f = await fixture(t);
-  f.options.authority = "prepared-git";
   await project(join(f.options.registryFile, ".."), "..prepared-registry", {
     "registry.json": JSON.stringify({
       ...f.registry,
@@ -201,7 +208,7 @@ test("prepared projection loads without an App key and refuses an authority mism
   });
   const loaded = await f.prepare();
   assert.equal(loaded.authority, "github-prepared-git-registry");
-  assert.equal(loaded.repositoryDescriptions, undefined);
+  assert.equal(asRecord(loaded)?.repositoryDescriptions, undefined);
   assert.equal(loaded.config.gateway.controlSocket, f.options.controlSocket);
   loaded.close();
   assert.deepEqual((await readdir(f.options.privateDirectory)).sort(), [
@@ -210,13 +217,17 @@ test("prepared projection loads without an App key and refuses an authority mism
     "tls.crt",
     "tls.key",
   ]);
-  const copied = JSON.parse(
+  const copied: unknown = JSON.parse(
     await readFile(join(f.options.privateDirectory, "config.json"), "utf8"),
   );
-  assert.equal(Object.hasOwn(copied.backend, "privateKeyFile"), false);
-  f.options.authority = "github-app";
-  await assert.rejects(f.prepare(), /signing gateway retired/);
-  f.options.authority = "prepared-git";
+  const copiedBackend = asRecord(asRecord(copied)?.backend);
+  assert.ok(copiedBackend);
+  assert.equal(Object.hasOwn(copiedBackend, "privateKeyFile"), false);
+  await assert.rejects(
+    // @ts-expect-error Probe the runtime refusal a retired authority receives from an untyped caller.
+    prepareProjectedInputs({ ...f.options, authority: "github-app" }, f.clock),
+    /signing gateway retired/,
+  );
   await project(f.options.inputsDirectory, "..wrong-authority", {
     ...f.values,
     "config.json": JSON.stringify({
@@ -229,8 +240,7 @@ test("prepared projection loads without an App key and refuses an authority mism
 
 test("projection startup derives the broker origin from the trusted deployment argument", async (t) => {
   const f = await fixture(t);
-  const gateway = { ...f.config.gateway };
-  delete gateway.publicOrigin;
+  const { publicOrigin: _omitted, ...gateway } = f.config.gateway;
   await project(f.options.inputsDirectory, "..derived-origin", {
     ...f.values,
     "config.json": JSON.stringify({ ...f.config, gateway }),

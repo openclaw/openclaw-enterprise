@@ -345,7 +345,7 @@
     "tests/integration/repository-credentials-github-token.test.ts": 7800,
     "tests/integration/repository-credentials-http.test.ts": 500,
     "tests/integration/repository-credentials-package.test.ts": 2100,
-    "tests/integration/repository-credentials-projected-inputs.test.mjs": 400,
+    "tests/integration/repository-credentials-projected-inputs.test.ts": 400,
     "tests/integration/repository-credentials-restart.test.ts": 800,
     "tests/integration/repository-credentials-router.test.ts": 3500,
     "tests/integration/repository-credentials-server-timeout.test.ts": 1300,
