@@ -956,7 +956,10 @@ test("Unreadable Plugin selections JSON keeps tool details without claiming inhe
   await page.keyboard.press("Backspace");
   assert.equal(await input.inputValue(), draft.slice(0, -1));
   await configure.click();
-  await dialog.getByRole("alert").filter({ hasText: "Fix Plugin selections JSON" }).waitFor();
+  assert.equal(
+    await dialog.getByRole("alert").textContent(),
+    `Invalid JSON at line ${draft.split("\n").length}, column 1. Enter a valid JSON object. Your JSON has been kept.`,
+  );
   assert.equal(await filter.isEnabled(), true, "Tool search stays available during repair");
   assert.equal(await filter.inputValue(), "Alphaz");
   await tool.waitFor({ state: "hidden" });
@@ -3914,7 +3917,7 @@ test("Plugin JSON drafts refuse out-of-range numbers before requests or picker e
 
   // A well-formed draft with an unsupported tool policy still needs policy guidance.
   const unsupported = JSON.stringify({
-    [id]: { ...valid[id], toolDefaults: { ...sibling, approval: "unsupported" } },
+    [id]: { ...valid[id], toolDefaults: { approval: "unsupported" } },
   });
   await input.fill(unsupported);
   await configure.click();
