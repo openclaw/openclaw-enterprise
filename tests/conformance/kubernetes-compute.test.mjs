@@ -30,7 +30,6 @@ import {
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ActivationPendingError,
-  ConfigurationHarnessError,
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
   SandboxPodQuotaExceededError,
@@ -156,6 +155,7 @@ import {
   checkStoredGatewayToolPolicyMaintenance,
   checkWorkspaceNodePolicyMaintenance,
 } from "./kubernetes-cutover-policy-cases.ts";
+import { checkAgentRoster } from "./kubernetes-agent-roster.ts";
 import { checkEmbeddedStartupProbe } from "./kubernetes-embedded-startup-cases.ts";
 import {
   checkOpenClawConfigurationEnvironmentPin,
@@ -212,7 +212,6 @@ import {
   validateProjectedServicePrincipalTokens,
 } from "./kubernetes-model-admission-cases.ts";
 import {
-  adoptedSplitLayoutNamespaces,
   checkAdoptedSplitLayoutPlacement,
   checkAdoptedSplitLayoutResolution,
   checkDedicatedHarnessPlacementAdmission,
@@ -221,9 +220,11 @@ import {
   checkNamespaceNames,
   checkSharedTenantPreparationOwnership,
   checkSharedWorkspaceClaimOwnership,
-  namespaceListClient,
 } from "./kubernetes-namespace-placement-cases.ts";
 import {
+  checkAdoptedNamespaceDeletion,
+  checkTenantLabelRefusal,
+  checkGatewayDeletionAfterDataPlaneLoss,
   checkSandboxCleanupBeforeNamespaceDeletion,
   checkNamespaceDeletionPermissionHint,
   checkRepositoryWorkloadPermissionHint,
@@ -2028,6 +2029,28 @@ test("invalid runtime snapshots cannot fall back to current images", async () =>
   }
 });
 
+function reloadRuntimeDriver(driver, overrides) {
+  return new KubernetesComputeDriver(
+    { ...driver.options, ...overrides },
+    { nodeEnrollment: driver.nodeEnrollment },
+  );
+}
+
+function reloadWithCandidateImages(driver) {
+  const candidateImages = {
+    gateway: "openclaw-enterprise/gateway-fixture:candidate",
+    agent: "openclaw-enterprise/agent-fixture:candidate",
+  };
+  const reloaded = reloadRuntimeDriver(driver, {
+    images: { ...driver.options.images, ...candidateImages },
+  });
+  for (const role of ["gateway", "agent"]) {
+    assert.notEqual(driver.options.images[role], candidateImages[role]);
+    assert.equal(reloaded.options.images[role], candidateImages[role]);
+  }
+  return reloaded;
+}
+
 test("admitted dedicated runtimes keep their images across maintenance and activation", async () => {
   const fixture = dedicatedFirstDeployFixture();
   await fixture.prepare();
@@ -2040,17 +2063,7 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
   const before = [fixture.gatewayName, fixture.agentName].map((name) =>
     structuredClone(fixture.read("Deployment", name).spec.template),
   );
-  const reloaded = new KubernetesComputeDriver(
-    {
-      ...fixture.driver.options,
-      images: {
-        ...fixture.driver.options.images,
-        gateway: "openclaw-enterprise/gateway-fixture:candidate",
-        agent: "openclaw-enterprise/agent-fixture:candidate",
-      },
-    },
-    { nodeEnrollment: fixture.driver.nodeEnrollment },
-  );
+  const reloaded = reloadWithCandidateImages(fixture.driver);
   reloaded.apiClients = Promise.resolve(fixture.clients);
   assert.equal(
     (await reloaded.prepareRevision(fixture.revision, authContext(fixture.revision))).ready,
@@ -2069,13 +2082,9 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
 test("an enforced digest policy rejects previously admitted tags before reconciliation", async () => {
   const fixture = dedicatedFirstDeployFixture();
   const pinned = "registry.example.test/runtime@sha256:" + "a".repeat(64);
-  const reloaded = new KubernetesComputeDriver(
-    {
-      ...fixture.driver.options,
-      images: { gateway: pinned, agent: pinned, requireImmutableDigest: true },
-    },
-    { nodeEnrollment: fixture.driver.nodeEnrollment },
-  );
+  const reloaded = reloadRuntimeDriver(fixture.driver, {
+    images: { gateway: pinned, agent: pinned, requireImmutableDigest: true },
+  });
   reloaded.apiClients = Promise.resolve(fixture.clients);
   for (const operation of ["prepareRevision", "activateRevision"]) {
     await assert.rejects(
@@ -2108,17 +2117,7 @@ test("admitted workspace initialization retains the Gateway image after defaults
       template.spec.initContainers?.some((container) => container.name === "initialize-workspace"),
     ),
   );
-  const reloaded = new KubernetesComputeDriver(
-    {
-      ...fixture.driver.options,
-      images: {
-        ...fixture.driver.options.images,
-        gateway: "openclaw-enterprise/gateway-fixture:candidate",
-        agent: "openclaw-enterprise/agent-fixture:candidate",
-      },
-    },
-    { nodeEnrollment: fixture.driver.nodeEnrollment },
-  );
+  const reloaded = reloadWithCandidateImages(fixture.driver);
   reloaded.apiClients = fixture.driver.apiClients;
   assert.equal((await reloaded.prepareRevision(fixture.revision, fixture.context)).ready, true);
   assert.deepEqual(templates(), before);
@@ -2156,16 +2155,16 @@ test("prepared direct-Secret workloads retain their provider across default chan
       undefined,
     ]) {
       const { modelProvider: _previous, ...runtime } = fixture.driver.options.runtime;
-      const reloaded = new KubernetesComputeDriver(
-        {
-          ...fixture.driver.options,
-          runtime: {
-            ...runtime,
-            ...(replacement === undefined ? {} : { modelProvider: replacement }),
-          },
+      const reloaded = reloadRuntimeDriver(fixture.driver, {
+        runtime: {
+          ...runtime,
+          ...(replacement === undefined ? {} : { modelProvider: replacement }),
         },
-        { nodeEnrollment: fixture.driver.nodeEnrollment },
-      );
+      });
+      // Unchanged defaults would also leave the rendered workload unchanged.
+      const current = reloaded.options.runtime;
+      assert.deepEqual(current.modelProvider, replacement);
+      assert.equal(Object.hasOwn(current, "modelProvider"), replacement !== undefined);
       reloaded.apiClients = Promise.resolve(fixture.clients);
       await reloaded.activateRevision(fixture.revision, authContext(fixture.revision));
       assert.deepEqual(
@@ -3564,80 +3563,15 @@ test(
   checkAdoptedSplitLayoutResolution,
 );
 
-test("an adopted split-layout storage namespace passes preflight and is deleted with its Namespace", async () => {
-  const { adopted, relabelled } = adoptedSplitLayoutNamespaces();
-  let present = true;
-  const deleted = [];
-  const driver = new KubernetesComputeDriver(options());
-  driver.apiClients = Promise.resolve({
-    version: {
-      async getCode() {
-        return { gitVersion: "v1.35.0" };
-      },
-    },
-    core: {
-      async listNamespace(request) {
-        if (request.labelSelector === "openclaw.dev/gateway-namespace") {
-          return { items: present ? [structuredClone(adopted)] : [] };
-        }
-        return namespaceListClient(present ? [adopted, relabelled] : [relabelled]).listNamespace(
-          request,
-        );
-      },
-      async readNamespace({ name }) {
-        if (present && name === adopted.metadata.name) {
-          return structuredClone(adopted);
-        }
-        throw Object.assign(new Error("Not found"), { statusCode: 404 });
-      },
-      async deleteNamespace(request) {
-        deleted.push(request);
-        present = false;
-      },
-    },
-    objects: {},
-  });
-  // The startup preflight refuses only storage namespaces without the tenant label.
-  assert.deepEqual(await driver.preflight(), { warnings: [] });
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: true,
-  });
-  // Deleting the adopted namespace removes the Gateway state and Secrets it holds; the old
-  // Harness namespace no longer belongs to the tenant and is left to the adopt finalize step.
-  assert.deepEqual(deleted, [
-    { name: adopted.metadata.name, body: { preconditions: { uid: adopted.metadata.uid } } },
-  ]);
-});
+test(
+  "an adopted split-layout storage namespace passes preflight and is deleted with its Namespace",
+  checkAdoptedNamespaceDeletion,
+);
 
-test("the two-cluster profile still refuses a tenant-labelled control namespace", async () => {
-  const { adopted } = adoptedSplitLayoutNamespaces();
-  const driver = new KubernetesComputeDriver(twoClusterOptions());
-  driver.apiClients = Promise.resolve({
-    core: {
-      async listNamespace() {
-        return { items: [] };
-      },
-      async readNamespace({ name }) {
-        if (name === adopted.metadata.name) {
-          return structuredClone(adopted);
-        }
-        throw Object.assign(new Error("Not found"), { statusCode: 404 });
-      },
-      async deleteNamespace() {
-        assert.fail("a mislabelled control namespace must not be deleted");
-      },
-    },
-  });
-  driver.executionApiClients = driver.apiClients;
-  // Adoption applies to single-cluster tenants only; the separate control target keeps its
-  // storage-only labels, so a tenant label there is foreign ownership.
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: false,
-    failure: "permanent",
-  });
-});
+test(
+  "the two-cluster profile still refuses a tenant-labelled control namespace",
+  checkTenantLabelRefusal,
+);
 
 test(
   "Kubernetes namespace deletion waits for Sandbox namespace cleanup",
@@ -3749,81 +3683,10 @@ test(
   checkSharedWorkspaceClaimOwnership,
 );
 
-test("Namespace deletion removes only its owned Gateway target after data-plane loss", async () => {
-  for (const external of [false, true]) {
-    for (const foreign of [false, true]) {
-      const calls = [];
-      const driver = new KubernetesComputeDriver(twoClusterOptions());
-      let gateway = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
-      gateway.metadata.uid = "owned-gateway-namespace-uid";
-      if (foreign) {
-        gateway.metadata.annotations["openclaw.dev/namespace-id"] = "ns_other";
-      }
-      const target = gateway.metadata.name;
-      // Exercise the actual delete lifecycle with an absent managed target or an
-      // external namespace whose logical claim is gone. Never delete that external namespace.
-      driver.apiClients = Promise.resolve({
-        core: {
-          async listNamespace() {
-            return { items: [] };
-          },
-          async readNamespace({ name }) {
-            if (name === target && gateway !== undefined) {
-              return structuredClone(gateway);
-            }
-            if (external && name === "customer-support") {
-              return { apiVersion: "v1", kind: "Namespace", metadata: { name } };
-            }
-            throw Object.assign(new Error("Not found"), { statusCode: 404 });
-          },
-          async deleteNamespace({ name, body }) {
-            assert.equal(name, target);
-            assert.equal(body.preconditions.uid, gateway.metadata.uid);
-            calls.push("delete-gateway");
-            gateway = undefined;
-          },
-        },
-      });
-      driver.executionApiClients = driver.apiClients;
-      const { reconcileNamespaceLifecycle } =
-        await import("../../packages/occ/src/namespace-lifecycle.ts");
-      const result = await reconcileNamespaceLifecycle(
-        driver,
-        [
-          {
-            id: "provider",
-            hooks: {
-              async ensureNamespace() {
-                assert.fail("Deletion must not run setup.");
-              },
-              async deleteNamespace() {
-                calls.push("provider-cleanup");
-                return { namespaceId: tenant.id, namespaceDeleted: true };
-              },
-            },
-          },
-        ],
-        {
-          ...tenant,
-          status: "deleting",
-          ...(external ? { existingNamespace: "customer-support" } : {}),
-        },
-        "deleted",
-        new AbortController().signal,
-        () => {},
-      );
-      assert.deepEqual(result, {
-        namespaceId: tenant.id,
-        namespaceDeleted: !foreign,
-        ...(foreign ? { failure: "permanent" } : {}),
-      });
-      assert.deepEqual(
-        calls,
-        foreign ? [] : external ? ["delete-gateway"] : ["provider-cleanup", "delete-gateway"],
-      );
-    }
-  }
-});
+test(
+  "Namespace deletion removes only its owned Gateway target after data-plane loss",
+  checkGatewayDeletionAfterDataPlaneLoss,
+);
 
 test(
   "native Gateway listeners cannot overlap the private runtime status port",
@@ -4629,16 +4492,12 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     revision.configuration,
     null,
   );
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth(revision.harness, revision.harnessAuth, revision.configuration),
-  );
+  driver.validateHarnessAuth(revision.harness, revision.harnessAuth, revision.configuration);
   // A model ID may contain slashes: catalog entry `vendor/model` must satisfy `openai/vendor/model`.
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth(
-      revision.harness,
-      revision.harnessAuth,
-      admitLoggingConfiguration(createHarnessConfiguration("openclaw", "vendor/model"), "info"),
-    ),
+  driver.validateHarnessAuth(
+    revision.harness,
+    revision.harnessAuth,
+    admitLoggingConfiguration(createHarnessConfiguration("openclaw", "vendor/model"), "info"),
   );
   assert.throws(
     () =>
@@ -4652,257 +4511,11 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
         "Configuration setting cloudWorkers.requiredProfile must be unset on Dedicated OpenClaw: Kubernetes Compute owns the dedicated-native profile.",
     },
   );
-  // OpenClaw's default Agent (sole entry, or a named session store or system owner) keeps its
-  // own workspace, while the Gateway, file transfer and workspace files address main.
-  const withAgents = ({ defaults, ...agents }) => ({
-    ...revision.configuration,
-    agents: {
-      ...revision.configuration.agents,
-      ...agents,
-      defaults: { ...revision.configuration.agents.defaults, ...defaults },
-    },
-  });
-  const codexConfiguration = admitLoggingConfiguration(
-    createHarnessConfiguration("codex", "gpt-5"),
-    "info",
+  checkAgentRoster(
+    driver,
+    revision,
+    admitLoggingConfiguration(createHarnessConfiguration("codex", "gpt-5"), "info"),
   );
-  const codexHarness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  const withCodexAgents = ({ defaults, ...agents }) => ({
-    ...codexConfiguration,
-    agents: {
-      ...codexConfiguration.agents,
-      ...agents,
-      defaults: { ...codexConfiguration.agents.defaults, ...defaults },
-    },
-  });
-  // A dedicated Codex Gateway binds only main to its Harness workspace node, so a sole
-  // non-main Agent would read and write the Gateway's own empty directory (finding 969).
-  for (const [harness, configure, topology] of [
-    [revision.harness, withAgents, "Dedicated OpenClaw"],
-    [codexHarness, withCodexAgents, "Dedicated Codex"],
-  ]) {
-    // Each refusal names the setting and the rule it breaks (finding 885).
-    const ownerRefusal = (owner) =>
-      `${topology} serves the main Agent: set agents.defaults.${owner}.agentId to main, or remove it.`;
-    for (const [agents, message] of [
-      [
-        { entries: { helper: { workspace: "/home/node/helper" } } },
-        `${topology} serves the main Agent: add agents.entries.main, or rename an entry to main.`,
-      ],
-      // OpenClaw's schema admits a leading underscore, but it is not a canonical id.
-      [
-        { ownership: "explicit", entries: { main: {}, _main: {} } },
-        `${topology} rejects the Agent ID in agents.entries._main: use up to 64 letters, digits, _ or -, starting with a letter or digit.`,
-      ],
-      [
-        {
-          ownership: "explicit",
-          entries: { main: {}, helper: {} },
-          defaults: { sessionStore: { agentId: "helper" } },
-        },
-        ownerRefusal("sessionStore"),
-      ],
-      [
-        {
-          ownership: "explicit",
-          entries: { main: {}, helper: {} },
-          defaults: { systemAgent: { agentId: "helper" } },
-        },
-        ownerRefusal("systemAgent"),
-      ],
-    ]) {
-      assert.throws(
-        () => driver.validateHarnessAuth(harness, revision.harnessAuth, configure(agents)),
-        (error) => error instanceof ConfigurationHarnessError && error.message === message,
-        `${topology} ${JSON.stringify(agents)}`,
-      );
-    }
-    // main in any case, and padded with spaces, as OpenClaw normalizes it, satisfies every rule.
-    for (const agents of [
-      {
-        ownership: "explicit",
-        entries: { Main: {}, helper: {} },
-        defaults: { sessionStore: { agentId: "MAIN" }, systemAgent: { agentId: " main " } },
-      },
-      { ownership: "explicit", entries: { Main: {}, helper_2: {}, "re-viewer": {} } },
-      { list: [] },
-    ]) {
-      assert.doesNotThrow(
-        () => driver.validateHarnessAuth(harness, revision.harnessAuth, configure(agents)),
-        `${topology} ${JSON.stringify(agents)}`,
-      );
-    }
-  }
-  // A stored revision re-prepared after this check reports the refusal, not a generic failure.
-  let refusal;
-  try {
-    driver.validateHarnessAuth(
-      revision.harness,
-      revision.harnessAuth,
-      withAgents({ entries: { helper: {} } }),
-    );
-  } catch (error) {
-    refusal = error;
-  }
-  assert.deepEqual(driver.describePrepareRevisionFailure(refusal), {
-    code: "KUBERNETES_CONFIGURATION_INVALID",
-    stage: "prepare_revision",
-    errorClass: "ConfigurationHarnessError",
-    message: refusal.message,
-  });
-  // OpenClaw's config validation rejects retired roster shapes, and its Gateway then exits at
-  // startup (EX_CONFIG 78) instead of serving, so admission refuses them up front. Embedded
-  // OpenClaw and dedicated Codex run the same Gateway on the admitted document.
-  const embeddedHarness = { ...revision.harness, mode: "embedded" };
-  const topologies = [
-    [revision.harness, withAgents],
-    [embeddedHarness, withAgents],
-    [codexHarness, withCodexAgents],
-  ];
-  // Each refusal names the setting and the rule that matched.
-  const listRefusal =
-    "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.";
-  const ownershipRefusal =
-    'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.';
-  const multiRefusal =
-    'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.';
-  const emptyRefusal =
-    'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.';
-  const defaultRefusal = (id) =>
-    `The OpenClaw Gateway rejects agents.entries.${id}.default: remove it.`;
-  const rejectedRosters = [
-    [{ ownership: "explicit", entries: {} }, emptyRefusal],
-    [{ ownership: "explicit" }, emptyRefusal],
-    [{ entries: { main: { default: true } } }, defaultRefusal("main")],
-    [{ entries: { main: { default: false } } }, defaultRefusal("main")],
-    [
-      { entries: { main: {}, helper: { default: true, workspace: "/home/node/helper" } } },
-      defaultRefusal("helper"),
-    ],
-    [
-      { ownership: "explicit", entries: { main: {}, helper: { default: false } } },
-      defaultRefusal("helper"),
-    ],
-    [{ list: [{ id: "main", default: true }] }, listRefusal],
-    [{ list: [], entries: { main: {} } }, listRefusal],
-    [{ list: [], ownership: "explicit", entries: { main: {} } }, listRefusal],
-    // The Gateway drops an empty list only beside an implicit roster, so this names the list.
-    [{ list: [], ownership: "explicit" }, listRefusal],
-    [{ entries: { main: {}, helper: {} } }, multiRefusal],
-    [{ ownership: "shared", entries: { main: {} } }, ownershipRefusal],
-    // With several broken rules, an entry's default marker is named before the ownership.
-    [{ ownership: "shared", entries: { main: { default: true } } }, defaultRefusal("main")],
-  ];
-  for (const agents of [
-    // OpenClaw reads an empty roster as `{ main: {} }` and drops an empty list beside it.
-    { entries: {} },
-    { list: [] },
-    { list: [], entries: {} },
-    { entries: { main: { workspace: "/home/node/main" } } },
-    { ownership: "explicit", entries: { Main: {}, helper: { workspace: "/home/node/helper" } } },
-    {
-      ownership: "explicit",
-      entries: { main: {}, helper: {} },
-      defaults: { systemAgent: { agentId: "Main" } },
-    },
-  ]) {
-    assert.doesNotThrow(
-      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
-      JSON.stringify(agents),
-    );
-  }
-  // OpenClaw's schema also rejects these, and its Gateway exits 78 on them.
-  const entriesRefusal =
-    "The OpenClaw Gateway requires agents.entries to be an object keyed by Agent ID.";
-  const entryRefusal = (path) => `The OpenClaw Gateway requires ${path} to be an object.`;
-  const idRefusal = (path) =>
-    `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
-  const duplicateRefusal = (first, second) =>
-    `The OpenClaw Gateway normalizes agents.entries.${first} and agents.entries.${second} to the same Agent ID: rename one.`;
-  const malformedRosters = [
-    [{ entries: null }, entriesRefusal],
-    [{ entries: [] }, entriesRefusal],
-    [{ entries: "main" }, entriesRefusal],
-    [{ entries: { main: null } }, entryRefusal("agents.entries.main")],
-    [{ entries: { main: [] } }, entryRefusal("agents.entries.main")],
-    [{ entries: { main: false } }, entryRefusal("agents.entries.main")],
-    [
-      { ownership: "explicit", entries: { main: {}, helper: null } },
-      entryRefusal("agents.entries.helper"),
-    ],
-    [{ entries: { "main!": {} } }, idRefusal('agents.entries["main!"]')],
-    // OpenClaw normalizes `main!` to main and may match it first.
-    [
-      {
-        ownership: "explicit",
-        entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} },
-      },
-      idRefusal('agents.entries["main!"]'),
-    ],
-    [{ entries: { " main": {} } }, idRefusal('agents.entries[" main"]')],
-    [{ entries: { "-main": {} } }, idRefusal("agents.entries.-main")],
-    [{ entries: { "a.b": {} } }, idRefusal('agents.entries["a.b"]')],
-    [{ entries: { "": {} } }, idRefusal('agents.entries[""]')],
-    [{ entries: { ["a".repeat(65)]: {} } }, idRefusal(`agents.entries.${"a".repeat(65)}`)],
-    // A submitted key shows control and format characters as ?, quoted.
-    [{ entries: { "a\u0000\u202e\u2028b": {} } }, idRefusal('agents.entries["a???b"]')],
-    [{ entries: { 'a"b': null } }, entryRefusal('agents.entries["a\\"b"]')],
-    [{ ownership: "explicit", entries: { main: {}, Main: {} } }, duplicateRefusal("main", "Main")],
-    [
-      { ownership: "explicit", entries: { main: {}, helper: {}, HELPER: {} } },
-      duplicateRefusal("helper", "HELPER"),
-    ],
-    // OpenClaw drops trailing dashes from a key that starts with _.
-    [{ ownership: "explicit", entries: { _x: {}, "_x-": {} } }, duplicateRefusal("_x", "_x-")],
-    [{ ownership: "explicit", entries: { _X: {}, "_x--": {} } }, duplicateRefusal("_X", "_x--")],
-  ];
-  // A long submitted key shortens the path so the message keeps the 256-character cap.
-  const longKey = "k.".repeat(200);
-  for (const [harness, configure] of topologies) {
-    for (const [configuration, message] of [
-      ...[...rejectedRosters, ...malformedRosters].map(([agents, message]) => [
-        configure(agents),
-        message,
-      ]),
-      [{ ...configure({}), agents: null }, "The OpenClaw Gateway requires agents to be an object."],
-      [{ ...configure({}), agents: [] }, "The OpenClaw Gateway requires agents to be an object."],
-    ]) {
-      assert.throws(
-        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
-        (error) => error instanceof ConfigurationHarnessError && error.message === message,
-        `${harness.mode} ${harness.id} ${JSON.stringify(configuration.agents)}`,
-      );
-    }
-    assert.throws(
-      () =>
-        driver.validateHarnessAuth(harness, apiKeyAuth, configure({ entries: { [longKey]: {} } })),
-      (error) =>
-        error instanceof ConfigurationHarnessError &&
-        Array.from(error.message).length === 256 &&
-        error.message.startsWith(
-          'The OpenClaw Gateway rejects the Agent ID in agents.entries["k.k.',
-        ) &&
-        error.message.endsWith("…: use up to 64 letters, digits, _ or -, not starting with -."),
-      `${harness.mode} ${harness.id} long key`,
-    );
-  }
-  // Only dedicated execution serves main; embedded OpenClaw keeps any valid roster and follows
-  // its Gateway's sole default Agent for workspace files.
-  for (const agents of [
-    { entries: { helper: {} } },
-    { list: [] },
-    { ownership: "explicit", entries: { helper: {}, reviewer: {} } },
-    { entries: { _helper: {} } },
-    { entries: { "9lives": {} } },
-    { entries: { ["a".repeat(64)]: {} } },
-    { ownership: "explicit", entries: { Main: {}, helper_2: {}, "re-viewer": {} } },
-    { ownership: "explicit", entries: { x: {}, "x-": {}, _x: {}, "_-x": {} } },
-  ]) {
-    assert.doesNotThrow(
-      () => driver.validateHarnessAuth(embeddedHarness, apiKeyAuth, withAgents(agents)),
-      JSON.stringify(agents),
-    );
-  }
   const ownership = { namespaceId: tenant.id, agentId };
   const nativeInference = {
     models: {
@@ -4961,75 +4574,57 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const worker = workerDeployment.spec.template.spec.containers[0];
   assert.ok(gateway);
   assert.ok(worker);
-  assert.deepEqual(gateway.readinessProbe, {
-    httpGet: { path: "/readyz", port: "plugin-status" },
-    periodSeconds: 2,
-  });
-  assert.deepEqual(worker.readinessProbe, {
-    httpGet: { path: "/readyz", port: "plugin-status" },
-    periodSeconds: 2,
-    timeoutSeconds: 3,
-  });
-  const workerProgram = containerProgram(worker);
+  const readiness = { httpGet: { path: "/readyz", port: "plugin-status" }, periodSeconds: 2 };
+  assert.deepEqual(gateway.readinessProbe, readiness);
+  assert.deepEqual(worker.readinessProbe, { ...readiness, timeoutSeconds: 3 });
+
+  const gatewayEnv = new Map(gateway.env.map((entry) => [entry.name, entry]));
+  const workerEnv = new Map(worker.env.map((entry) => [entry.name, entry]));
+  assert.equal(gatewayEnv.size, gateway.env.length, "duplicate Gateway environment name");
+  assert.equal(workerEnv.size, worker.env.length, "duplicate Worker environment name");
+  assert.equal(gatewayEnv.has("OPENAI_API_KEY"), false);
+  assert.ok(workerEnv.has("OPENAI_API_KEY"));
+  const profile = gatewayEnv.get("OPENCLAW_NATIVE_WORKER_PROFILE")?.value;
+  const workspaceNodeId = gatewayEnv.get("OPENCLAW_WORKSPACE_NODE_ID")?.value;
+  assert.equal(profile, "dedicated-native");
+  assert.equal(workspaceNodeId, deviceId);
+  assert.equal(workerEnv.get("TMPDIR")?.value, "/tmp/openclaw-native-worker");
   assert.equal(
-    gateway.env.some(({ name }) => name === "OPENAI_API_KEY"),
-    false,
-  );
-  assert.equal(
-    worker.env.some(({ name }) => name === "OPENAI_API_KEY"),
-    true,
-  );
-  assert.equal(workerProgram.includes('"runtime-server"'), false);
-  assert.equal(workerProgram.includes('"connect"'), true);
-  assert.equal(workerProgram.includes('"--ephemeral"'), true);
-  assert.equal(workerProgram.includes('"--target-file"'), true);
-  assert.equal(workerProgram.includes('"--pair-if-needed"'), false);
-  assert.equal(workerProgram.includes('"--session-host"'), false);
-  assert.equal(
-    workerProgram.includes("writeFileSync(connectTargetPath, target, { mode: 0o600 })"),
-    true,
-  );
-  assert.equal(
-    worker.env.find(({ name }) => name === "TMPDIR")?.value,
-    "/tmp/openclaw-native-worker",
-  );
-  assert.equal(
-    worker.env.find(({ name }) => name === "NODE_COMPILE_CACHE")?.value,
+    workerEnv.get("NODE_COMPILE_CACHE")?.value,
     "/home/node/.openclaw-node/.cache/node-compile",
   );
-  assert.equal(workerProgram.includes("chmodSync(temporary, 0o700)"), true);
-  assert.equal(workerProgram.includes("initializeRuntimeAssets();"), true);
-  assert.equal(workerProgram.includes("OPENCLAW_BUNDLED_SKILLS_DIR"), true);
-  assert.equal(workerProgram.includes('publishImageTree("/app/custodian-skills"'), true);
+  assert.equal(workerEnv.get("OPENCLAW_NATIVE_WORKER_CAPACITY")?.value, "12");
   assert.equal(
-    worker.env.find(({ name }) => name === "OPENCLAW_NATIVE_WORKER_CAPACITY")?.value,
-    "12",
-    "the dedicated native node must receive its configured session capacity.",
-  );
-  assert.equal(
-    gateway.env.find(({ name }) => name === "OPENCLAW_NATIVE_WORKER_PROFILE")?.value,
-    "dedicated-native",
-  );
-  assert.equal(
-    gateway.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_NODE_ID")?.value,
-    deviceId,
-  );
-  assert.equal(
-    worker.env.find(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE")?.valueFrom.secretKeyRef.name,
+    workerEnv.get("OPENCLAW_NODE_SETUP_CODE")?.valueFrom?.secretKeyRef?.name,
     "workspace-node-native-worker",
   );
-  assert.equal(
+  assert.deepEqual(
+    JSON.parse(workerEnv.get("OPENCLAW_NATIVE_INFERENCE_CONFIG").value),
+    nativeInference,
+  );
+  assert.ok(
     worker.volumeMounts.some(
       ({ name, mountPath }) =>
         name === "openclaw-workspace" && mountPath === "/home/node/.openclaw-node",
     ),
-    true,
   );
-  assert.deepEqual(
-    JSON.parse(worker.env.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG").value),
-    nativeInference,
-  );
-  assert.equal(worker.readinessProbe.timeoutSeconds, 3);
+
+  const workerProgram = containerProgram(worker);
+  for (const required of [
+    '"connect"',
+    '"--ephemeral"',
+    '"--target-file"',
+    "writeFileSync(connectTargetPath, target, { mode: 0o600 })",
+    "chmodSync(temporary, 0o700)",
+    "initializeRuntimeAssets();",
+    "OPENCLAW_BUNDLED_SKILLS_DIR",
+    'publishImageTree("/app/custodian-skills"',
+  ]) {
+    assert.ok(workerProgram.includes(required), `missing Worker program text: ${required}`);
+  }
+  for (const forbidden of ['"runtime-server"', '"--pair-if-needed"', '"--session-host"']) {
+    assert.ok(!workerProgram.includes(forbidden), `unexpected Worker program text: ${forbidden}`);
+  }
 
   // Execute the production launcher with the admitted worker identity and the
   // candidate image's source identity; native image tests qualify its binary.
@@ -5038,36 +4633,36 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     files: [["/etc/openclaw-managed/openclaw.json", JSON.stringify(configuration)]],
     env: {
       OPENCLAW_GATEWAY_PORT: "8080",
-      OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
+      OPENCLAW_NATIVE_WORKER_PROFILE: profile,
       OPENCLAW_STATE_DIR: "/home/node/.openclaw",
-      OPENCLAW_WORKSPACE_NODE_ID: deviceId,
+      OPENCLAW_WORKSPACE_NODE_ID: workspaceNodeId,
     },
   };
-  const { files, calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], runtimeOptions);
-  assert.equal(
-    calls.some(({ args }) => args?.[1] === "gateway"),
-    true,
-  );
-  const effectiveConfiguration = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-  assert.equal(effectiveConfiguration.cloudWorkers.requiredProfile, "dedicated-native");
-  assert.deepEqual(effectiveConfiguration.cloudWorkers.profiles["dedicated-native"], {
-    provider: "device",
-    settings: { device: deviceId, inference: "worker" },
-  });
-  // Restart against the writable configuration: reuse only the exact admitted worker profile.
-  const restartOptions = { ...runtimeOptions, env: { ...sandbox.process.env }, files };
+  const configPath = "/home/node/.openclaw/openclaw.json";
+  const runsGateway = ({ args }) => args?.[1] === "gateway";
+  function readAdmittedConfiguration({ calls, files }) {
+    assert.ok(calls.some(runsGateway));
+    const config = JSON.parse(files.get(configPath));
+    assert.equal(config.cloudWorkers.requiredProfile, "dedicated-native");
+    assert.deepEqual(config.cloudWorkers.profiles["dedicated-native"], {
+      provider: "device",
+      settings: { device: deviceId, inference: "worker" },
+    });
+    return config;
+  }
+  const started = await runOpenClawRuntimeHelper(undefined, [], runtimeOptions);
+  readAdmittedConfiguration(started);
+  // Restart from the writable configuration, then introduce a conflict in that verified result.
+  const restartOptions = {
+    ...runtimeOptions,
+    env: { ...started.sandbox.process.env },
+    files: started.files,
+  };
   const restarted = await runOpenClawRuntimeHelper(undefined, [], restartOptions);
-  assert.equal(
-    restarted.calls.some(({ args }) => args?.[1] === "gateway"),
-    true,
-  );
-
-  effectiveConfiguration.cloudWorkers.profiles["dedicated-native"].settings.device = "b".repeat(64);
+  const conflictingConfig = readAdmittedConfiguration(restarted);
+  conflictingConfig.cloudWorkers.profiles["dedicated-native"].settings.device = "b".repeat(64);
   const conflictingFiles = new Map(restarted.files);
-  conflictingFiles.set(
-    "/home/node/.openclaw/openclaw.json",
-    JSON.stringify(effectiveConfiguration),
-  );
+  conflictingFiles.set(configPath, JSON.stringify(conflictingConfig));
   const conflictingCalls = [];
   await assert.rejects(
     runOpenClawRuntimeHelper(undefined, [], {
@@ -5077,10 +4672,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     }),
     /worker profile conflicts with admitted configuration/u,
   );
-  assert.equal(
-    conflictingCalls.some(({ args }) => args?.[1] === "gateway"),
-    false,
-  );
+  assert.equal(conflictingCalls.some(runsGateway), false);
 });
 
 test(
