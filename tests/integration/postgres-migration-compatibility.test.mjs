@@ -1577,6 +1577,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preNamespaceProvisioningRetry"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2019,6 +2020,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preNamespaceProvisioningRetry"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3251,6 +3253,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preNamespaceProvisioningRetry"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3393,6 +3396,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preNamespaceProvisioningRetry"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3568,6 +3572,7 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preNamespaceProvisioningRetry"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

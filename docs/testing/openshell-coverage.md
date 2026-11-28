@@ -270,6 +270,29 @@ OpenShell advisory job exercises this workflow with the rest of its runtime suit
 
 ## Namespace bootstrap
 
+### Recover a failed Namespace without a model credential
+
+On an isolated runner with Docker, Helm, and k3d, run:
+
+```sh
+node scripts/ci/run-tests.ts run openshell-namespace-recovery --lifecycle complete \
+  --attempt "$(mktemp -d)/attempt"
+```
+
+The lane prepares a disposable loopback k3d cluster and a fresh migrated
+PostgreSQL database. It uses the shipped API and worker with the OpenShell
+Sandbox Driver, without the retired Credential Gateway selection. It does not
+create Agents or require a model credential.
+
+A Kubernetes Service quota blocks provisioning after the worker creates the
+gateway signing Secret. The test repairs the quota configuration and retries
+through the API. It checks that the same Namespace and backing Kubernetes
+namespace become ready, the signing Secret UID and contents do not change, and
+the real gateway serves its owned Workspace. This lane is opt-in and does not run
+the older model-turn scenario below.
+
+### Older bootstrap and model-turn scenario
+
 `namespace-driver-openshell-k3d-real.test.ts` uses shipped Installation bootstrap,
 PostgreSQL and the queued worker. It renders gateway configuration without
 installing gateway workloads. Selected Drivers create the gateway, signing key,

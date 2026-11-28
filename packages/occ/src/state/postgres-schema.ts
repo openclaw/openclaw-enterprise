@@ -1476,6 +1476,7 @@ export const controllerWork = occSchema.table(
     attemptCount: integer("attempt_count").notNull().default(0),
     claimToken: uuid("claim_token"),
     auditAttemptId: uuid("audit_attempt_id"),
+    provisioningRetryAt: timestamp("provisioning_retry_at", { withTimezone: true }),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),

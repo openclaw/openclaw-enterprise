@@ -1842,6 +1842,20 @@ export class OpenClawController {
     );
   }
 
+  async retryNamespaceProvisioning(
+    principalId: string,
+    namespaceId: string,
+    requestId: string,
+    actorServiceKeyId?: string,
+  ): Promise<Readonly<Namespace>> {
+    return this.composition.namespaces.retryNamespaceProvisioning(
+      principalId,
+      namespaceId,
+      requestId,
+      actorServiceKeyId,
+    );
+  }
+
   /**
    * Begin or retry logical deletion of one exact, authorized, empty Namespace.
    * Driver effects remain deferred to handleNamespaceLifecycle().

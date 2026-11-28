@@ -9,8 +9,36 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 
+import { provisioningRetryCase } from "./postgres-worker-namespace-retry-case.ts";
+
 const migrationUrl = process.env.OCC_TEST_WORKER_AUDIT_MIGRATION_DATABASE_URL;
 const claimAction = "openclaw.controller_work.claimed";
+
+function disposableMigrationUrl() {
+  // The test changes the audit table briefly. Require this file's disposable CI database.
+  assert.ok(databaseUrl && migrationUrl, "The test needs app and migrator URLs.");
+  assert.ok(URL.canParse(databaseUrl) && URL.canParse(migrationUrl), "Invalid fixture URLs.");
+  const appTarget = new URL(databaseUrl);
+  const migratorTarget = new URL(migrationUrl);
+  assert.ok(
+    [appTarget, migratorTarget].every(
+      (url) =>
+        url.protocol === "postgresql:" &&
+        url.hostname === "127.0.0.1" &&
+        url.port !== "" &&
+        /^\/openclaw_ci_postgres_worker_audit_[a-f0-9]{12}$/.test(url.pathname) &&
+        url.search === "" &&
+        url.hash === "",
+    ) &&
+      appTarget.port === migratorTarget.port &&
+      appTarget.pathname === migratorTarget.pathname &&
+      appTarget.username === "occ_app" &&
+      migratorTarget.username === "occ_migrator",
+    "Both roles must use the same disposable worker audit database.",
+  );
+
+  return migrationUrl;
+}
 
 test(
   "PostgreSQL commits a worker claim and its audit record before Compute",
@@ -19,28 +47,7 @@ test(
     timeout: 30_000,
   },
   async (context) => {
-    // The test changes the audit table briefly. Require this file's disposable CI database.
-    assert.ok(databaseUrl && migrationUrl, "The test needs app and migrator URLs.");
-    assert.ok(URL.canParse(databaseUrl) && URL.canParse(migrationUrl), "Invalid fixture URLs.");
-    const appTarget = new URL(databaseUrl);
-    const migratorTarget = new URL(migrationUrl);
-    assert.ok(
-      [appTarget, migratorTarget].every(
-        (url) =>
-          url.protocol === "postgresql:" &&
-          url.hostname === "127.0.0.1" &&
-          url.port !== "" &&
-          /^\/openclaw_ci_postgres_worker_audit_[a-f0-9]{12}$/.test(url.pathname) &&
-          url.search === "" &&
-          url.hash === "",
-      ) &&
-        appTarget.port === migratorTarget.port &&
-        appTarget.pathname === migratorTarget.pathname &&
-        appTarget.username === "occ_app" &&
-        migratorTarget.username === "occ_migrator",
-      "Both roles must use the same disposable worker audit database.",
-    );
-
+    const migrationUrl = disposableMigrationUrl();
     const { inject, pool, principal } = await createPostgresAgentApp(context, {
       label: "worker-audit",
       authSecret: "worker-audit-fixture-signing-secret",
@@ -261,4 +268,13 @@ test(
       await fullLedger.end();
     }
   },
+);
+
+test(
+  "Namespace provisioning retry is atomic, authorized and bounded across worker restarts",
+  {
+    skip: migrationUrl ? false : "Prepare the dedicated postgres-platform file fixture.",
+    timeout: 60_000,
+  },
+  async (context) => provisioningRetryCase(context, disposableMigrationUrl()),
 );

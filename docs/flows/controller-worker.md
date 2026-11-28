@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-22
-last_updated_session: authoring-run/1addf51b-6904-4124-bfe7-9e103a974c29
+updated: 2026-11-27
+last_updated_session: authoring-run/96b5d4d3-ca32-4928-aced-b291c05b8fe4
 ---
 
 # Controller Worker Flow
@@ -88,26 +88,24 @@ connection and outage handling.
 With audit enabled, the resource change, work, and `controller_work.queued`
 commit together. The event links request and work IDs.
 
-Agent deployment keeps the validated `deploy` request and decision with the
-saved version; the API's audit event uses that decision's IAM Driver, principal,
-exact Agent target and evidence even if Driver selection changes first, without
-reauthorizing or relabeling. Audit
-failure rolls back the version, desired runtime state and queued work; an
-unknown PostgreSQL commit outcome remains unknown and is not retried.
+Agent deployment saves the validated `deploy` decision with the version. Its
+audit uses that IAM Driver, principal, exact Agent and evidence even if Driver
+selection changes. Audit failure rolls back the version, desired state and work.
+OCC does not retry unknown commit outcomes.
 
-The queue records the actor, owner and target. Revision work also records the
-Agent and revision IDs; lifecycle work records the Agent and `stopped` or
-`deleted` target. An idempotency key cannot change actor, owner or target. The API
-returns before Compute dispatch.
+The API returns before dispatch. Work keys identify the actor, owner and target,
+including Agent and revision IDs or the Agent lifecycle target.
 
-For an already-deleting Agent, `packages/occ/src/agent-termination.ts:deleteAgent` leaves active
-work unchanged. After terminal failure, `operations.retryFailedAgentDeletion`
-checks delete permission and resets only the stopped, deleting Agent's terminal
-work, keeping prior audits ([who can retry](../reference/agents.md#deletion)); a
-takeover becomes the work's actor, audited as `takeover`, and the worker
-reauthorizes normally.
-`deleteNamespace` recovers Namespace teardown the same way via
-`retryFailedNamespaceDeletion`.
+`packages/occ/src/agent-termination.ts:deleteAgent` preserves active teardown.
+`retryFailedAgentDeletion` and `retryFailedNamespaceDeletion` reset terminal
+teardown under [delete authority](../reference/agents.md#deletion), preserving
+audits. A takeover records the new actor; the worker reauthorizes.
+
+`packages/occ/src/namespace-operations.ts:retryNamespaceProvisioning` locks the
+[failed Namespace](../reference/namespaces.md#retry-failed-provisioning), checks
+the original actor's grants and atomically reopens the Namespace, requeues its
+ready-target work and records the retry. Claims and renewals measure age from
+the saved database retry time. Dispatch repeats authorization.
 
 ### 3. Recover expired claims and claim one eligible operation
 
@@ -422,6 +420,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-27 06:25: Trace failed Namespace provisioning retry. (authoring-run/96b5d4d3-ca32-4928-aced-b291c05b8fe4 - 2b5318e8fe9f5d5bdf0045deed282eae0fd73111)
 
 - 2026-11-22 23:55: Remove unrelated retry edge. (authoring-run/1addf51b-6904-4124-bfe7-9e103a974c29 - 003f7f0740756b4d685b5d737f6203a626dcd16a)
 - 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)

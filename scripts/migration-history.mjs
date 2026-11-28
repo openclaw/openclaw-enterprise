@@ -177,6 +177,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 99 && completedCount > 99) {
     return "preNativeGitHubPullRequestPublication";
   }
+  if (count === 100 && completedCount > 100) {
+    return "preNamespaceProvisioningRetry";
+  }
   if (count === completedCount) {
     return "completed";
   }

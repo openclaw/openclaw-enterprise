@@ -12,6 +12,7 @@ import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
+  AuthorizationDeniedError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   NamespaceNotEmptyError,
@@ -21,6 +22,7 @@ import {
 import { removeNamespacePolicy, removedPolicyDetails } from "./iam-policy-cleanup.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import type { NamespaceLifecycleEvidence } from "./namespace-lifecycle.ts";
+import { namespaceProvisioningDenial } from "./namespace-provisioning-authority.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { createPresetOperations } from "./preset-operations.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
@@ -216,6 +218,82 @@ export function createNamespaceOperations({
       });
       return namespace;
     });
+  }
+
+  async function retryNamespaceProvisioning(
+    principalId: string,
+    namespaceId: string,
+    requestId: string,
+    actorServiceKeyId?: string,
+  ) {
+    namespaceIdentity(namespaceId);
+    return transactions.transact(
+      async (state) => {
+        await authority.holdAuthority(state);
+        await authority.authorize(principalId, "read", {
+          kind: "namespace",
+          id: namespaceId,
+          namespaceId,
+        });
+        const namespace = await state.namespaces.lockNamespace(namespaceId);
+        const denial = await namespaceProvisioningDenial(
+          principalId,
+          installationId,
+          namespaceId,
+          { retry: true, adopted: namespace?.existingNamespace !== undefined },
+          async ({ action, resource }) =>
+            (await authority.authorizationDecision(principalId, action, resource)).decision,
+        );
+        if (denial) {
+          throw new AuthorizationDeniedError(
+            undefined,
+            denial.decision.evidence,
+            denial.authorization,
+            principalId,
+          );
+        }
+        if (!namespace) {
+          throw new ScopeViolationError(
+            "The Namespace does not belong to the server-owned Installation.",
+          );
+        }
+        const workId = `namespace:${namespaceId}:reconcile:ready`;
+        const work = await state.operations.findWork(workId);
+        if (work && work.actorId !== principalId) {
+          throw new AuthorizationDeniedError();
+        }
+        if (
+          namespace.status !== "failed" ||
+          work?.state !== "failed_permanent" ||
+          !(await state.operations.retryFailedNamespaceProvisioning(namespaceId, principalId))
+        ) {
+          throw new ResourceStateConflictError(
+            "The Namespace has no failed provisioning operation to retry.",
+          );
+        }
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId,
+          namespaceId,
+          occurredAt: timestamp(),
+          kind: "mutation",
+          actorId: principalId,
+          source: "occ",
+          action: "openclaw.namespaces.provision.retry",
+          resource: { kind: "namespace", id: namespaceId, namespaceId },
+          outcome: "success",
+          requestId,
+          details: {
+            workId,
+            ...(actorServiceKeyId === undefined ? {} : { actorServiceKeyId }),
+            previousAttemptCount: work.attemptCount,
+            previousReasonCode: work.reasonCode,
+          },
+        });
+        return exactNamespace(state, namespaceId);
+      },
+      { readCommitted: true },
+    );
   }
 
   async function retryNamespaceDeletion(
@@ -640,6 +718,7 @@ export function createNamespaceOperations({
     listNamespaces,
     getNamespace,
     createNamespace,
+    retryNamespaceProvisioning,
     deleteNamespace,
     handleNamespaceLifecycle,
   };

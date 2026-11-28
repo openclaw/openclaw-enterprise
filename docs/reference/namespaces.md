@@ -106,9 +106,22 @@ A provisioning timeout alone does not identify the cause. See
 [Kubernetes troubleshooting](drivers/kubernetes-compute.md#failure-conditions).
 If the worker service account lacks its tenant runtime RoleBinding, restore it in
 the backing Kubernetes namespace while the Namespace is still `provisioning`.
-A later pass can then check readiness. Once the Namespace reaches `failed`,
-there is no supported way to retry provisioning for that Namespace. Rechecking
-in the Console reads its current status.
+A later pass can then check readiness.
+
+### Retry failed provisioning
+
+After repairing the cause, the original creator can send a bodyless
+`POST /namespaces/{namespaceId}/provision/retry`. The caller still needs read
+access to the Namespace and permission to create Namespaces in the Installation,
+with no create restriction on this Namespace. For an adopted Kubernetes namespace,
+the caller also needs Installation administration. Another administrator cannot take over.
+
+A `202` returns the same Namespace in `provisioning`, not a readiness guarantee.
+The worker starts again at Compute with a fresh attempt limit and deadline; the
+Namespace ID and placement do not change. Poll `GET /namespaces/{namespaceId}`.
+If the response is lost, read the status first. An active, deleting, or otherwise
+ineligible Namespace returns `409`; a retry cannot extend an active deadline.
+The Console's refresh action only reads status.
 
 ## Lifecycle
 

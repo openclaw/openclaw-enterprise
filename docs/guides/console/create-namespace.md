@@ -40,3 +40,7 @@ interrupted or unconfirmed, submission stays disabled. Select **Check
 Namespaces** and look for your entered name before making another attempt.
 If you cannot read the result, ask an administrator to check it. There is no
 automatic creation retry.
+
+If the Namespace exists but its provisioning has failed, do not submit the form
+again. Repair the reported infrastructure problem, then use the
+[provisioning retry API](../../reference/namespaces.md#retry-failed-provisioning) as the original creator.

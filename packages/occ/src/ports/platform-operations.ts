@@ -45,6 +45,8 @@ export interface PlatformOperationReadRepository extends AgentDeploymentWorkRead
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
+  /** Reopen the failed Namespace and requeue its original actor's failed ready-target work together. */
+  retryFailedNamespaceProvisioning(namespaceId: string, actorId: string): Promise<boolean>;
   append(operation: PlatformOperation, requestId?: string): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by

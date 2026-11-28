@@ -1,0 +1,38 @@
+{
+  "env": {
+    "OCC_TEST_NAMESPACE_OPENSHELL_RECOVERY_REAL": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "requiresPreparedStateForFile": true,
+    "immutableOptionalEnvImages": [
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+      "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+      "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE"
+    ]
+  },
+  "files": [
+    {
+      "path": "tests/integration/namespace-recovery-openshell-k3d-real.test.ts",
+      "expectedTests": [
+        "OpenShell recovers a failed Namespace in place without rotating its signing key"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_DATABASE_URL",
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
+      ]
+    }
+  ]
+}

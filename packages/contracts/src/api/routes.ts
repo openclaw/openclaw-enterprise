@@ -877,6 +877,22 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "retryNamespaceProvisioning",
+    method: "POST",
+    path: "/namespaces/:namespaceId/provision/retry",
+    action: "openclaw.namespaces.provision.retry",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary: "Retry failed Namespace provisioning as its original authorized actor",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 202: NamespaceResponse, ...mutationErrors },
+    },
+  },
+  {
     operationId: "deleteNamespace",
     method: "DELETE",
     path: "/namespaces/:namespaceId",

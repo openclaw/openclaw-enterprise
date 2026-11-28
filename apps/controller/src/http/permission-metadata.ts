@@ -85,6 +85,12 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     }
     case "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing":
       return [primary(), requirement("administer", "installation", "installation")];
+    case "retryNamespaceProvisioning":
+      return [
+        primary(),
+        requirement("create", "namespace", "installation"),
+        requirement("administer", "installation", "requested", "existing_namespace"),
+      ];
     case "createNamespace":
       return [
         primary("installation"),
@@ -369,6 +375,9 @@ function permissionDescription(
         return `With ${resourceKind === "agent" ? "agentId" : "configurationId"}, requires update permission on that exact ${name}.`;
       }
       if (condition === "existing_namespace") {
+        if (operationId === "retryNamespaceProvisioning") {
+          return "Requires administer permission on the Installation if this Namespace uses an existing Kubernetes namespace.";
+        }
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
       }
       if (condition === "gateway_managed_mode_disabled") {
@@ -470,6 +479,9 @@ function permissionDescription(
     })
     .join(" ");
 
+  if (operationId === "retryNamespaceProvisioning") {
+    return `${description} Only the original provisioning actor can retry, and an exact Namespace create restriction still denies the operation.`;
+  }
   if (operationId.endsWith("DeviceAuthorization") && !operationId.startsWith("start")) {
     return `${description} Only the initiating actor can poll or cancel the login.`;
   }
