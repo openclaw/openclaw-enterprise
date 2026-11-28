@@ -111,10 +111,12 @@ switches require string keys.
 
 Preparation rejects extra active Deployments or StatefulSets matching the drain selector.
 
-`read_restart_inventory` requires complete authorized inventory without nonterminal deployments. Running revisions require saved Harness objects and an accepted
+At preflight and before shutdown, `read_restart_inventory` rejects unfinished
+deployments and Stops retaining active revisions. Await cleanup or resolve failed Stops.
+Retention requires saved Harness objects and an accepted
 [restart assessment](../reference/repository-credentials/worker-replacement.md).
-Standalone preflight records original-worker requirements. Unknown assessments block rehearsal.
-Runtime upgrades record replacements and check draft images, sizes, baseline versions
+Preflight records original-worker requirements. Unknown assessments block rehearsal.
+Runtime upgrades record replacements, checking draft images, sizes, baseline versions
 and Namespace readiness. Exclude stopped or deleting Agents. Allow pending repository cleanup.
 
 `deploymentInventorySnapshot` reads work in one State snapshot and refuses
