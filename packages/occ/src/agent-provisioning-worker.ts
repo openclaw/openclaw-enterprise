@@ -191,6 +191,7 @@ interface ProvisioningWorkerDependencies {
   readonly now: () => Date;
   readonly timestamp: () => string;
   readonly nextId: (kind: "configuration" | "agent") => string;
+  readonly holdAuthority: (state: PlatformUnitOfWork) => Promise<void>;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authorizeRecord: ReturnType<
     typeof createProvisioningRequests
@@ -332,6 +333,8 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
               "The Agent provisioning lifecycle changed before handoff.",
             );
           }
+          await dependencies.holdAuthority(state);
+          await state.installations.holdSandboxNetworkPolicyCeiling("shared");
           await fenceAgentProvisioning(state, claim);
           const revision = await handoffClaim.run(claim, () =>
             dependencies.deploy(

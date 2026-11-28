@@ -803,7 +803,8 @@ export function createControllerComposition(
     repositoryCeiling: (namespaceId) =>
       repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,
-    ceiling: sandboxNetworkPolicyCeiling,
+    ceilingSeed: sandboxNetworkPolicyCeiling,
+    ceilingSeedSupplied: options.sandboxNetworkPolicyCeiling !== undefined,
     authority,
     transactions,
     hasCredentialProxy: () => drivers.hasSelection("credential_proxy"),
@@ -1108,6 +1109,7 @@ export function createControllerComposition(
     nativeWorkers,
   });
   const provisioningWorker = createProvisioningWorker({
+    holdAuthority: authority.holdAuthority,
     installationId: admittedInstallation.id,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
@@ -1149,7 +1151,10 @@ export function createControllerComposition(
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
     supportsCredentialDeployment: options.supportsCredentialDeployment,
-    sandboxNetworkPolicyCeiling,
+    sandboxNetworkPolicyCeiling: () =>
+      transactions.read(
+        async (state) => (await sandboxPolicyOperations.requireInstallationCeiling(state)).rules,
+      ),
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,

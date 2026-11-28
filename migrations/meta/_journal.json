@@ -701,6 +701,20 @@
       "when": 1787000000100,
       "tag": "0100_native_github_pull_request_publication",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787000000101,
+      "tag": "0101_installation_network_policy_ceiling",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1787000000102,
+      "tag": "0102_dynamic_installation_network_policy_ceiling",
+      "breakpoints": true
     }
   ]
 }

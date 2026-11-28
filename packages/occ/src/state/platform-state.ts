@@ -1,3 +1,4 @@
+import type { InstallationSandboxNetworkPolicyCeiling } from "@openclaw-enterprise/contracts";
 import type { SelectedPluginBinding } from "../plugin-credential-bindings.ts";
 import {
   isCanonicalRepositoryNetworkPolicy,
@@ -861,6 +862,7 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  ceiling: Readonly<InstallationSandboxNetworkPolicyCeiling> | undefined;
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
@@ -1027,6 +1029,7 @@ function copyStoredMap<K, V>(source: ReadonlyMap<K, V>): Map<K, Readonly<V>> {
 
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
+    ceiling: snapshot.ceiling,
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
     tokenServiceInstance: snapshot.tokenServiceInstance,
@@ -1554,6 +1557,31 @@ function repositories(
   preparedTokenProof: PreparedTokenCurrentProof,
 ): PlatformUnitOfWork {
   const installations: InstallationRepository = {
+    getBootstrapActor: async () =>
+      snapshot.audit.find(
+        (event) => event.kind === "bootstrap" && event.resource.kind === "installation",
+      )?.actorId,
+    getSandboxNetworkPolicyCeiling: async () =>
+      snapshot.ceiling === undefined ? undefined : immutableCopy(snapshot.ceiling),
+    holdSandboxNetworkPolicyCeiling: async () => undefined,
+    saveSandboxNetworkPolicyCeiling: async (ceiling, expectedVersion) => {
+      assertInitialized(snapshot);
+      if (
+        snapshot.installation!.id !== ceiling.installationId ||
+        ceiling.version < 1 ||
+        !Number.isInteger(ceiling.version) ||
+        ceiling.version !== expectedVersion + 1 ||
+        ceiling.version > 2147483647
+      ) {
+        throw new ScopeViolationError("Invalid Installation ceiling ownership or version.");
+      }
+      validateSandboxNetworkGrants(ceiling.rules, "/rules");
+      if ((snapshot.ceiling?.version ?? 0) !== expectedVersion) {
+        return undefined;
+      }
+      snapshot.ceiling = immutableCopy(ceiling);
+      return snapshot.ceiling;
+    },
     findInstallation: async (installationId) =>
       snapshot.installation?.id === installationId
         ? immutableCopy(snapshot.installation)
@@ -4828,6 +4856,7 @@ function finalizeAgentDeletion(
 /** Process-local, single-writer state. No restart or multi-process durability. */
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
+    ceiling: undefined,
     installation: undefined,
     tokenServiceInstance: undefined,
     namespaces: new Map(),

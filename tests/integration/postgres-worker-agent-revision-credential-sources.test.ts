@@ -1720,6 +1720,10 @@ async function stagedCredentialScenario(
   await installTokenServiceDriver(controller, { ...runtime, secretDriver }, fixture.state);
   const namespaceId = fixture.namespace.id;
   const actorId = fixture.actor.id;
+  // The base fixture has already initialized an empty ceiling. This administrator
+  // explicitly delegates the model route; a new controller's seed cannot overwrite it.
+  const ceiling = await controller.getInstallationSandboxNetworkPolicyCeiling(actorId);
+  await controller.updateInstallationSandboxNetworkPolicyCeiling(actorId, ceiling.version, [grant]);
   const enrolledCredential = randomUUID();
   const source =
     credential === "builtin_codex"

@@ -1,12 +1,24 @@
 import type { TokenServiceInstance } from "./token-service.ts";
-import type { Installation } from "@openclaw-enterprise/contracts";
+import type {
+  InstallationSandboxNetworkPolicyCeiling,
+  Installation,
+} from "@openclaw-enterprise/contracts";
 
 export interface InstallationReadRepository {
+  getBootstrapActor(): Promise<string | undefined>;
+  getSandboxNetworkPolicyCeiling(): Promise<
+    Readonly<InstallationSandboxNetworkPolicyCeiling> | undefined
+  >;
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
   getInstallation(): Promise<Readonly<Installation> | undefined>;
 }
 
 export interface InstallationRepository extends InstallationReadRepository {
+  holdSandboxNetworkPolicyCeiling(mode: "shared" | "exclusive"): Promise<void>;
+  saveSandboxNetworkPolicyCeiling(
+    ceiling: InstallationSandboxNetworkPolicyCeiling,
+    expectedVersion: number,
+  ): Promise<Readonly<InstallationSandboxNetworkPolicyCeiling> | undefined>;
   createInstallation(installation: Installation): Promise<Readonly<Installation>>;
   selectTokenServiceInstance(
     candidate: TokenServiceInstance,

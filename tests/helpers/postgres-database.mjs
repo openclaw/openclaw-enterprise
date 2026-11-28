@@ -9,6 +9,23 @@ export const requiresPostgres = {
     : "Set OCC_TEST_DATABASE_URL to a migrated disposable PostgreSQL database (docs/testing/postgresql.md).",
 };
 
+// CI exports the selected application URL, not a migration URL. The disposable local
+// fixtures use these provisioned roles; preserve the selected host, dynamic port and database.
+export function localMigratorDatabaseUrl(applicationUrl) {
+  const selected = new URL(applicationUrl);
+  if (
+    !["postgres:", "postgresql:"].includes(selected.protocol) ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(selected.hostname) ||
+    selected.username !== "occ_app" ||
+    selected.password !== "occ-app-local"
+  ) {
+    throw new Error("The migrator fixture requires the selected local occ_app database URL.");
+  }
+  selected.username = "occ_migrator";
+  selected.password = "occ-migrator-local";
+  return selected.toString();
+}
+
 // Pool.end() resolves once its idle clients are removed, before their sessions close. This
 // ends `pool` and then waits for each client's own end, so the server holds none of its sessions
 // when it returns: maintenance commands that refuse while another client is connected can run

@@ -235,6 +235,7 @@ export async function composeProduction(
       },
       config.drivers.repositoryAdmission,
     );
+    const ceilingInitialization = await controller.initializeSandboxNetworkPolicyCeiling();
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
@@ -387,7 +388,14 @@ export async function composeProduction(
     });
     config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
-    app.get("/healthz", async () => ({ status: "ok" }));
+    if (ceilingInitialization.seedIgnored) {
+      app.log.warn(
+        "The startup network policy ceiling is seed-only. Use Installation Settings to change the saved ceiling.",
+      );
+    }
+    app.get("/healthz", async () => {
+      return { status: "ok" };
+    });
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
       await checkDatabaseReadiness();

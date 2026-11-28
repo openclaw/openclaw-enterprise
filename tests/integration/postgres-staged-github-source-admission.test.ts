@@ -560,6 +560,14 @@ test(
     nativeController.registerDriver(runtime.computeDriver);
     nativeController.selectDriver("compute", runtime.computeDriver.id);
     installSelectedSandboxDrivers(nativeController, runtime);
+    // Bootstrap already saved an empty ceiling. The administrator must explicitly
+    // delegate the model route; the later controller's startup seed cannot replace it.
+    const ceiling = await nativeController.getInstallationSandboxNetworkPolicyCeiling(principal.id);
+    await nativeController.updateInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+      ceiling.version,
+      installation.sandboxNetworkPolicyCeiling,
+    );
     const app = createApp(nativeController);
     const request = (
       method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
@@ -881,6 +889,19 @@ test(
     const agents: string[] = [];
     let gitSourceId: string | undefined;
     for (const access of ["write", "read"] as const) {
+      const metadataAllowed = access === "write";
+      if (!metadataAllowed) {
+        // Remove saved delegation while the startup seed still includes metadata.
+        // The next admission must omit public routes without losing Git access.
+        const currentCeiling = await nativeController.getInstallationSandboxNetworkPolicyCeiling(
+          principal.id,
+        );
+        await nativeController.updateInstallationSandboxNetworkPolicyCeiling(
+          principal.id,
+          currentCeiling.version,
+          currentCeiling.rules.filter(({ id }) => id !== metadataGrant.id),
+        );
+      }
       const grants = [
         { repository: repositories[0]!.repository, access: "read" as const },
         { repository: repositories[1]!.repository, access },
@@ -1031,7 +1052,10 @@ test(
       assert.ok(repositoryInjection);
       assert.deepEqual(
         deployedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
-        [...grants.map(({ repository }) => metadataRequest(repository)), ...publication],
+        [
+          ...(metadataAllowed ? grants : []).map(({ repository }) => metadataRequest(repository)),
+          ...publication,
+        ],
       );
       assert.deepEqual(
         repositoryInjection.allowedRequests.filter(({ host }) => host === "api.github.com"),
@@ -1139,10 +1163,13 @@ test(
           .flatMap(
             (rule) => (asRecord(rule)?.endpoints as Record<string, unknown>[] | undefined) ?? [],
           )
-          .filter((endpoint) => endpoint.host === metadataGrant.host);
+          .filter(
+            (endpoint) =>
+              endpoint.host === metadataGrant.host && endpoint.credential_binding === undefined,
+          );
         assert.deepEqual(
           metadataEndpoints,
-          grants.map(({ repository }) => ({
+          (metadataAllowed ? grants : []).map(({ repository }) => ({
             host: metadataGrant.host,
             ports: [443],
             path: `/repos/${repository}`,
@@ -1178,6 +1205,15 @@ test(
       );
       agents.push(agent.id);
     }
+    // Later publication cases need metadata delegation restored through its persisted owner.
+    const currentCeiling = await nativeController.getInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+    );
+    await nativeController.updateInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+      currentCeiling.version,
+      [...currentCeiling.rules, metadataGrant],
+    );
     assert.ok(gitSourceId);
     const enrolled = await request("GET", `${base}/credential-sources/${gitSourceId}`);
     assert.equal(enrolled.statusCode, 200, enrolled.body);

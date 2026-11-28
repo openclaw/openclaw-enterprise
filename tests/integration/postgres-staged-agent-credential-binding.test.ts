@@ -1517,6 +1517,15 @@ test(
       instanceId,
     );
     installSelectedSandboxDrivers(nativeController, runtime);
+    // The earlier API fixture seeded empty state. Only this explicit authorized
+    // owner update delegates the declared model and Plugin routes, including automatic
+    // preset requests; restarting with a seed preserves the earlier saved state.
+    const ceiling = await nativeController.getInstallationSandboxNetworkPolicyCeiling(principal.id);
+    await nativeController.updateInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+      ceiling.version,
+      installation.sandboxNetworkPolicyCeiling,
+    );
     assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
     const pluginDriver = new OCCPluginDriver();
     nativeController.installPluginDrivers([pluginDriver]);

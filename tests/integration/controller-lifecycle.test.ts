@@ -240,7 +240,10 @@ function createSandboxDriver(options: SandboxOptions = {}) {
   };
 }
 
-function createController(iam: IAMDriver = createIAMDriver(), options: ControllerOptions = {}) {
+async function createController(
+  iam: IAMDriver = createIAMDriver(),
+  options: ControllerOptions = {},
+) {
   let nextIdentifier = 0;
   const controller = new OpenClawController(installation, {
     ...options,
@@ -254,6 +257,7 @@ function createController(iam: IAMDriver = createIAMDriver(), options: Controlle
             ? `ns_00000000-0000-4000-8000-${String(++nextIdentifier).padStart(12, "0")}`
             : `${kind}-${++nextIdentifier}`,
   });
+  await controller.initializeSandboxNetworkPolicyCeiling("principal-admin");
   const drivers = createDrivers(iam);
   registerAndSelectDrivers(controller, [
     drivers.iam,
@@ -302,7 +306,7 @@ async function createConfiguration(
 }
 
 test("Agent stop records an authorized Agent-scoped target without deleting its revision", async () => {
-  const { controller } = createController();
+  const { controller } = await createController();
   const namespace = await controller.createNamespace("principal-admin", { name: "Stop target" });
   await controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
@@ -349,8 +353,8 @@ test("Agent stop records an authorized Agent-scoped target without deleting its 
   assert.match(operation.operationId, /^[0-9a-f-]{36}$/);
 });
 
-test("only the controller selects explicitly registered Drivers for each capability", () => {
-  const { controller, iam, compute } = createController();
+test("only the controller selects explicitly registered Drivers for each capability", async () => {
+  const { controller, iam, compute } = await createController();
 
   assert.equal(controller.selectedDriver("iam"), iam);
   assert.equal(controller.selectedDriver("compute"), compute);
@@ -373,8 +377,8 @@ test("only the controller selects explicitly registered Drivers for each capabil
   }, DriverSelectionError);
 });
 
-test("the controller selects explicitly registered Sandbox Drivers with closed facet declarations", () => {
-  const { controller } = createController();
+test("the controller selects explicitly registered Sandbox Drivers with closed facet declarations", async () => {
+  const { controller } = await createController();
   const sandbox = createSandboxDriver();
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
@@ -612,7 +616,7 @@ test("a stored Installation or configured default Preset name follows the API Na
 test("direct controller creates and renames apply the API Name rule", async () => {
   // Provisioning authorizes its Namespace-level grants, Installation administration included,
   // before it reads the plan, so the administrator needs that grant to reach the Name rule.
-  const { controller } = createController(
+  const { controller } = await createController(
     createIAMDriver({
       roles: [
         {
@@ -694,7 +698,7 @@ test("direct controller creates and renames apply the API Name rule", async () =
 });
 
 test("authorized resources retain exact Namespace ownership without metadata-only work", async () => {
-  const { controller, calls } = createController();
+  const { controller, calls } = await createController();
   const namespace = await controller.createNamespace("principal-admin", {
     name: "Support namespace",
   });
@@ -829,7 +833,7 @@ class UnreadableRevisionState extends InMemoryPlatformState {
 
 test("deployment refuses with 503 and creates nothing when an earlier revision is unreadable (finding 1338)", async () => {
   const state = new UnreadableRevisionState();
-  const { controller } = createController(createIAMDriver(), { state });
+  const { controller } = await createController(createIAMDriver(), { state });
   const namespace = await controller.createNamespace("principal-admin", {
     name: "Unreadable history",
   });
@@ -918,7 +922,7 @@ test("deployment fails closed when no Compute Driver is selected", async () => {
 });
 
 test("Agent configuration references stay mutable while deployment admits deeply immutable OpenClaw documents", async () => {
-  const { controller, calls } = createController();
+  const { controller, calls } = await createController();
   const harness = { id: "openclaw", version: "1.0.0" };
   const namespace = await controller.createNamespace("principal-admin", {
     name: "Draft isolation namespace",
@@ -1145,7 +1149,7 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
       },
     ],
   });
-  const { controller } = createController(iam);
+  const { controller } = await createController(iam);
   let transformations = 0;
   const sandbox = createSandboxDriver({
     implementation: "custom-containment",
@@ -1239,7 +1243,7 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
 });
 
 test("deployment refuses stored OpenClaw after the Installation selects unsupported Sandbox settings", async () => {
-  const { controller } = createController();
+  const { controller } = await createController();
   const supported = createSandboxDriver();
   controller.registerDriver(supported);
   controller.selectDriver("sandbox", supported.id);
@@ -1285,7 +1289,7 @@ test("deployment refuses stored OpenClaw after the Installation selects unsuppor
 });
 
 test("Sandbox Drivers without an Agent configuration hook preserve the admitted configuration", async () => {
-  const { controller } = createController();
+  const { controller } = await createController();
   const sandbox = createSandboxDriver();
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
@@ -1352,7 +1356,7 @@ for (const { title, implementation, namespaceName, agentName, configureAgent, me
   },
 ]) {
   test(`Sandbox admission rejects ${title} before creating a revision`, async () => {
-    const { controller } = createController();
+    const { controller } = await createController();
     const sandbox = createSandboxDriver({ implementation, configureAgent });
     controller.registerDriver(sandbox);
     controller.selectDriver("sandbox", sandbox.id);
@@ -1379,7 +1383,7 @@ for (const { title, implementation, namespaceName, agentName, configureAgent, me
 
 for (const facets of [["networking"], ["filesystem"], ["process"], ["networking", "filesystem"]]) {
   test(`Sandbox admission accepts a dedicated Agent with facets ${facets.join(", ")}`, async () => {
-    const { controller } = createController();
+    const { controller } = await createController();
     const sandbox = createSandboxDriver({ facets });
     controller.registerDriver(sandbox);
     controller.selectDriver("sandbox", sandbox.id);
@@ -1416,7 +1420,7 @@ test("dedicated native OpenClaw with the pinned runtime requires a full-facet pr
       DedicatedOpenClawSandboxError,
     ],
   ] as const) {
-    const { controller } = createController();
+    const { controller } = await createController();
     if (sandbox !== undefined) {
       controller.registerDriver(sandbox);
       controller.selectDriver("sandbox", sandbox.id);
@@ -1493,7 +1497,7 @@ async function createDedicatedNativeAgentWithUngrantedSecret(
 }
 
 test("deploy refuses for the Agent service principal's missing grant without naming the principal", async () => {
-  const { controller } = createController();
+  const { controller } = await createController();
   const sandbox = createSandboxDriver();
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
@@ -1546,7 +1550,7 @@ test("selected Sandbox Drivers fail closed for embedded Agents regardless of dec
     createSandboxDriver(),
     createSandboxDriver({ id: "partial-sandbox", facets: ["networking"] }),
   ]) {
-    const { controller } = createController();
+    const { controller } = await createController();
     const namespace = await controller.createNamespace("principal-admin", {
       name: `Sandbox rejection ${sandbox.id}`,
     });
@@ -1609,7 +1613,7 @@ test("selected Sandbox Drivers fail closed for embedded Agents regardless of dec
 });
 
 test("configuration updates and admission reject unauthorized or foreign exact Agents without side effects", async () => {
-  const { controller } = createController();
+  const { controller } = await createController();
   const namespace = await controller.createNamespace("principal-admin", {
     name: "Protected configurations",
   });
@@ -1655,7 +1659,7 @@ test("configuration updates and admission reject unauthorized or foreign exact A
 });
 
 test("the one-shot lifecycle harness gates deployment and tombstones an empty Namespace", async () => {
-  const { controller, calls } = createController();
+  const { controller, calls } = await createController();
   const namespace = await controller.createNamespace("principal-admin", { name: "Tenant A" });
   const configuration = await createConfiguration(controller, namespace.id);
   const agent = await controller.createAgent("principal-admin", {
@@ -1746,7 +1750,7 @@ test("the one-shot lifecycle harness gates deployment and tombstones an empty Na
 });
 
 test("incomplete and permanent lifecycle results preserve fail-closed Namespace status", async () => {
-  const { controller, compute } = createController();
+  const { controller, compute } = await createController();
   const retrying = await controller.createNamespace("principal-admin", { name: "Retrying" });
   compute.ensureNamespace = async (namespace) => ({
     namespaceId: namespace.id,
@@ -1806,7 +1810,7 @@ test("a missing selected Compute Driver fails closed with attributable lifecycle
 });
 
 test("denied or cross-Namespace mutations never write resources or queue Driver work", async () => {
-  const { controller, calls } = createController();
+  const { controller, calls } = await createController();
 
   await assert.rejects(
     controller.createNamespace("principal-unknown", { name: "Unknown tenant" }),
@@ -1997,7 +2001,7 @@ test("two Namespace tenants cannot create or deploy each other's Agents", async 
     roles: [tenantRole],
     bindings: [tenantBinding],
   });
-  const { controller, calls } = createController(iam);
+  const { controller, calls } = await createController(iam);
   const namespaceA = await controller.createNamespace("principal-admin", { name: "Tenant A" });
   const namespaceB = await controller.createNamespace("principal-admin", { name: "Tenant B" });
   assert.equal(namespaceB.id, tenantRole.namespaceId);

@@ -292,6 +292,32 @@ export function registerStartupInstallationInputCases({
     );
   });
 
+  test("startup rejects the retired ceiling overwrite option", async (t) => {
+    for (const overwrite of [false, true]) {
+      const configuration = {
+        ...installation(),
+        sandboxNetworkPolicyCeiling: [],
+        sandboxNetworkPolicyCeilingOverwriteOnStartup: overwrite,
+      };
+      await assert.rejects(
+        loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+        }),
+        /unsupported option sandboxNetworkPolicyCeilingOverwriteOnStartup/,
+      );
+      // Programmatic snapshots must reject the retired key too, before development defaults.
+      await assert.rejects(
+        loadInstallationConfiguration({
+          mode: "development",
+          environment: {},
+          startupConfiguration: { configuration, logging: { level: "info" } },
+        }),
+        /sandboxNetworkPolicyCeilingOverwriteOnStartup is retired/,
+      );
+    }
+  });
+
   test("startup rejects plaintext secrets, caller-authored identities, and unsupported schema options", async (t) => {
     const refusal = (path: string, code: ErrorDetail["code"], message: string): ErrorDetail[] => [
       { path, code, message },

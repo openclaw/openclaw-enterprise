@@ -59,38 +59,12 @@ repository grants, GET returns the saved policy with `protectedExecution`,
 authorized editor can clear saved grants. Use a compatible controller and
 Worker to inspect or stop the workload and confirm retirement.
 
-The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
-the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
-`host`, and `ports` containing inclusive `{from,to}` ranges. Defaults grant
-access; the ceiling grants no access. An absent or empty ceiling delegates no
-additions. A changed ceiling governs future admission and pending application;
-it does not revoke already running access automatically.
+## Installation ceiling
 
-```yaml
-sandboxNetworkPolicyCeiling:
-  - id: approved-service
-    binary: /usr/bin/python3.11
-    host: service.example.com
-    ports:
-      - from: 443
-        to: 443
-```
-
-The complete requested scope must fit the ceiling. Executable paths must match
-exactly; a symlink or alternate interpreter path is a different executable.
-`*.example.com` covers one DNS label, not the apex or deeper subdomains. A
-wildcard addition requires that exact wildcard in the ceiling. Port coverage may
-combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. Policy documents allow at most 32 grants and 16 ranges
-per grant. OpenShell additionally limits each grant to 1024 distinct ports.
-
-Default rules, generated workspace access, model credential delivery, and Compute
-isolation remain controlled by their existing owners. Users cannot submit
-arbitrary provider policy YAML, alter defaults, share policies, or change their
-Agent/Namespace association. Policy identities use `sbp_` and the owner's UUID.
-Policies are created and removed with the Agent; there is no standalone
-create/delete or policy-reference API. Exact policy AccessBindings and
-Restrictions are removed with their policy.
+The [persisted Installation ceiling](settings/installation-network-policy-ceiling.md)
+bounds future network additions and pending applications. Startup seeds absent
+state once; Installation administrators manage saved rules through Settings or
+the owner API. It grants no access and does not revoke running access.
 
 ## Desired and applied versions
 

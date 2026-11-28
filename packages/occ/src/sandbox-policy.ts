@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   checkedSandboxPolicySnapshot,
   defaultDeploymentSandboxPolicy,
@@ -82,7 +83,8 @@ interface SandboxPolicyDependencies {
   >;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
-  readonly ceiling: readonly SandboxNetworkGrant[];
+  readonly ceilingSeed: readonly SandboxNetworkGrant[];
+  readonly ceilingSeedSupplied: boolean;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<
     ControllerAuthority,
@@ -134,6 +136,167 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   const { read, transact } = dependencies.transactions;
   const { authorize, authorizationDecision, authorizationAuthority, holdAuthority } =
     dependencies.authority;
+
+  async function requireInstallationCeiling(state: PlatformReadView) {
+    const ceiling = await state.installations.getSandboxNetworkPolicyCeiling();
+    if (ceiling === undefined || ceiling.installationId !== dependencies.installationId) {
+      throw new DependencyUnavailableError(
+        "The Installation network policy ceiling has not been initialized.",
+      );
+    }
+    return ceiling;
+  }
+
+  /** Trusted API startup only. Existing saved rules remain authoritative. */
+  async function initializeSandboxNetworkPolicyCeiling(
+    actorId?: string,
+  ): Promise<{ seedIgnored: boolean }> {
+    const initialize = async (state: PlatformUnitOfWork) => {
+      const installation = await state.installations.getInstallation();
+      if (installation?.id !== dependencies.installationId) {
+        throw new ScopeViolationError("Ceiling startup requires the server-owned Installation.");
+      }
+      await state.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+      const previous = await state.installations.getSandboxNetworkPolicyCeiling();
+      if (previous !== undefined) {
+        return {
+          seedIgnored:
+            dependencies.ceilingSeedSupplied &&
+            !isDeepStrictEqual(previous.rules, dependencies.ceilingSeed),
+        };
+      }
+      const bootstrapActor = actorId ?? (await state.installations.getBootstrapActor());
+      if (bootstrapActor === undefined) {
+        throw new DependencyUnavailableError(
+          "Ceiling initialization requires the Installation bootstrap identity.",
+        );
+      }
+      const saved = await state.installations.saveSandboxNetworkPolicyCeiling(
+        {
+          installationId: dependencies.installationId,
+          version: 1,
+          rules: dependencies.ceilingSeed,
+          updatedAt: dependencies.timestamp(),
+          updatedBy: bootstrapActor,
+        },
+        0,
+      );
+      if (saved === undefined) {
+        throw new ResourceStateConflictError("The Installation ceiling changed during startup.");
+      }
+      await appendCeilingAudit(state, bootstrapActor, saved, "initialize");
+      return { seedIgnored: false };
+    };
+    return transact(initialize, { readCommitted: true });
+  }
+
+  async function getInstallationSandboxNetworkPolicyCeiling(principalId: string) {
+    await authorize(principalId, "administer", {
+      kind: "installation",
+      id: dependencies.installationId,
+    });
+    return read((state) => requireInstallationCeiling(state));
+  }
+
+  async function validateInstallationSandboxNetworkPolicyCeiling(
+    principalId: string,
+    expectedVersion: number,
+    rules: unknown,
+  ): Promise<ConfigurationResult<{ readonly rules: readonly SandboxNetworkGrant[] }>> {
+    const target = { kind: "installation", id: dependencies.installationId } as const;
+    return transact(
+      async (state) => {
+        await holdAuthority(state);
+        await authorize(principalId, "administer", target);
+        await state.installations.holdSandboxNetworkPolicyCeiling("shared");
+        await authorize(principalId, "administer", target);
+        const previous = await requireInstallationCeiling(state);
+        if (previous.version !== expectedVersion) {
+          throw new ResourceStateConflictError(
+            "The Installation ceiling changed. Reload before reviewing.",
+          );
+        }
+        try {
+          validateSandboxNetworkGrants(rules, "/rules");
+          return { success: true, data: { rules: immutableCopy(rules) } };
+        } catch (error) {
+          if (error instanceof ConfigurationValidationError) {
+            return { success: false, error: error.error };
+          }
+          throw error;
+        }
+      },
+      { readCommitted: true },
+    );
+  }
+
+  async function updateInstallationSandboxNetworkPolicyCeiling(
+    principalId: string,
+    expectedVersion: number,
+    rules: readonly SandboxNetworkGrant[],
+  ) {
+    const target = { kind: "installation", id: dependencies.installationId } as const;
+    return transact(
+      async (state) => {
+        await holdAuthority(state);
+        await authorize(principalId, "administer", target);
+        validateSandboxNetworkGrants(rules, "/rules");
+        await state.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+        // The write retains session/IAM authority through COMMIT and rechecks after this wait.
+        await authorize(principalId, "administer", target);
+        const previous = await requireInstallationCeiling(state);
+        if (previous.version !== expectedVersion) {
+          throw new ResourceStateConflictError(
+            "The Installation ceiling changed. Reload before saving.",
+          );
+        }
+        if (isDeepStrictEqual(previous.rules, rules)) {
+          return previous;
+        }
+        const saved = await state.installations.saveSandboxNetworkPolicyCeiling(
+          {
+            ...previous,
+            rules: immutableCopy(rules),
+            version: expectedVersion + 1,
+            updatedAt: dependencies.timestamp(),
+            updatedBy: principalId,
+          },
+          expectedVersion,
+        );
+        if (saved === undefined) {
+          throw new ResourceStateConflictError(
+            "The Installation ceiling changed. Reload before saving.",
+          );
+        }
+        await appendCeilingAudit(state, principalId, saved, "update");
+        return saved;
+      },
+      { readCommitted: true },
+    );
+  }
+
+  async function appendCeilingAudit(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    ceiling: import("@openclaw-enterprise/contracts").InstallationSandboxNetworkPolicyCeiling,
+    operation: string,
+  ) {
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: dependencies.installationId,
+      occurredAt: dependencies.timestamp(),
+      kind: "mutation",
+      source: "occ",
+      actorId,
+      action: `openclaw.installation.sandbox_network_policy_ceiling.${operation}`,
+      resource: { kind: "installation", id: dependencies.installationId },
+      outcome: "success",
+      details: {
+        version: ceiling.version,
+        rules: ceiling.rules,
+      },
+    });
+  }
 
   function sandboxDriver(): SandboxDriver | undefined {
     if (!dependencies.hasSandboxSelection()) {
@@ -259,48 +422,58 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     requireNetworkPolicyFacet(facet);
     await authorizePolicyEdit(principalId, namespaceId, agentId);
     requireNetworkPolicyAvailable();
-    return read(async (state) => {
-      await exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      const previous = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
-        throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
-      }
-      if (
-        previous === undefined ||
-        previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
-      ) {
-        throw new ResourceStateConflictError(
-          "The policy changed or an application is still pending. Reload before editing.",
-        );
-      }
-      try {
-        const snapshot = admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-          repositoryCredentials: (agent.repositoryAccess?.repositories.length ?? 0) > 0,
-        });
-        if (snapshot.additions.length > 0) {
-          const active =
-            agent.activeRevisionId === undefined
-              ? undefined
-              : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-          if (protectedExecutionApplies(agent, active)) {
-            throw new ProtectedExecutionNetworkPolicyError("save");
-          }
+    return transact(
+      async (state) => {
+        await state.installations.holdSandboxNetworkPolicyCeiling("shared");
+        await exactNamespace(state, namespaceId);
+        const agent = await state.agents.findAgent(namespaceId, agentId);
+        const previous = await state.sandboxPolicies.find(namespaceId, agentId);
+        if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
+          throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
         }
-        return { success: true, data: { additions: snapshot.additions } };
-      } catch (error) {
-        if (error instanceof ResourceStateConflictError && error.details?.length) {
-          return {
-            success: false,
-            error: {
-              details: error.details as [ErrorDetail, ...ErrorDetail[]],
+        if (
+          previous === undefined ||
+          previous.version !== expectedVersion ||
+          previous.application?.state === "pending"
+        ) {
+          throw new ResourceStateConflictError(
+            "The policy changed or an application is still pending. Reload before editing.",
+          );
+        }
+        try {
+          const snapshot = admitAgentNetworkPolicy(
+            (await requireInstallationCeiling(state)).rules,
+            additions,
+            expectedVersion + 1,
+            undefined,
+            {
+              repositoryCredentials: (agent.repositoryAccess?.repositories.length ?? 0) > 0,
             },
-          };
+          );
+          if (snapshot.additions.length > 0) {
+            const active =
+              agent.activeRevisionId === undefined
+                ? undefined
+                : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
+            if (protectedExecutionApplies(agent, active)) {
+              throw new ProtectedExecutionNetworkPolicyError("save");
+            }
+          }
+          return { success: true, data: { additions: snapshot.additions } };
+        } catch (error) {
+          if (error instanceof ResourceStateConflictError && error.details?.length) {
+            return {
+              success: false,
+              error: {
+                details: error.details as [ErrorDetail, ...ErrorDetail[]],
+              },
+            };
+          }
+          throw error;
         }
-        throw error;
-      }
-    });
+      },
+      { readCommitted: true },
+    );
   }
 
   const unreadableRevisionReason =
@@ -394,7 +567,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         protectedExecution: revision === null ? null : protectedExecutionApplies(agent, revision),
         capability: revision === null ? null : (driver?.networkPolicy ?? null),
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
-        ceiling: dependencies.ceiling,
+        ceiling: (await requireInstallationCeiling(state)).rules,
         repositoryNetworkPolicyCeiling,
         ...(repositoryApiMaxima && { repositoryApiMaxima }),
         repositoryNetworkPolicySaveSupported: canWithdraw || supported,
@@ -457,6 +630,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   }
 
   function admitAgentNetworkPolicy(
+    ceiling: readonly SandboxNetworkGrant[],
     input: unknown,
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
@@ -483,7 +657,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       requireConfiguration(contribution, { additions });
       const details = networkGrantAdmissionDetails(
         additions,
-        dependencies.ceiling,
+        ceiling,
         driver.networkPolicy,
         "/additions",
       );
@@ -585,6 +759,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (!repositoryOnly) {
         requireNetworkPolicyAvailable();
       }
+      await state.installations.holdSandboxNetworkPolicyCeiling("shared");
       await lockNamespace(state, namespaceId);
       if (explicitList) {
         await authorizeEdit();
@@ -647,9 +822,15 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       const admittedAdditions =
         clearsAll || (admittedEdit && additions.length === 0)
           ? []
-          : admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-              repositoryCredentials: (agent.repositoryAccess?.repositories.length ?? 0) > 0,
-            }).additions;
+          : admitAgentNetworkPolicy(
+              (await requireInstallationCeiling(state)).rules,
+              additions,
+              expectedVersion + 1,
+              undefined,
+              {
+                repositoryCredentials: (agent.repositoryAccess?.repositories.length ?? 0) > 0,
+              },
+            ).additions;
       admittedEdit?.assertCurrent();
       authority?.assertCurrent();
       const updated = await state.sandboxPolicies.save(
@@ -669,7 +850,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       return updated;
     };
-    return transact(save, { readCommitted: explicitList });
+    return transact(save, { readCommitted: true });
   }
 
   async function applyAgentSandboxPolicy(
@@ -687,101 +868,106 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     // Require SandboxPolicy read even for an empty policy.
     await authorize(principalId, "read", sandboxPolicy);
     requireNetworkPolicyAvailable();
-    return transact(async (state) => {
-      const namespace = await lockNamespace(state, namespaceId);
-      const agent = await state.agents.lockAgent(namespaceId, agentId);
-      const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (
-        namespace.status !== "ready" ||
-        agent?.status !== "active" ||
-        agent.sandboxPolicyEditing !== true ||
-        agent.desiredRuntimeState !== "running" ||
-        agent.activeRevisionId !== revisionId ||
-        policy?.version !== expectedVersion
-      ) {
-        throw new ResourceStateConflictError(
-          "The Agent, revision, editing setting, or policy changed. Reload before applying.",
+    return transact(
+      async (state) => {
+        await state.installations.holdSandboxNetworkPolicyCeiling("shared");
+        const namespace = await lockNamespace(state, namespaceId);
+        const agent = await state.agents.lockAgent(namespaceId, agentId);
+        const policy = await state.sandboxPolicies.find(namespaceId, agentId);
+        if (
+          namespace.status !== "ready" ||
+          agent?.status !== "active" ||
+          agent.sandboxPolicyEditing !== true ||
+          agent.desiredRuntimeState !== "running" ||
+          agent.activeRevisionId !== revisionId ||
+          policy?.version !== expectedVersion
+        ) {
+          throw new ResourceStateConflictError(
+            "The Agent, revision, editing setting, or policy changed. Reload before applying.",
+          );
+        }
+        if (policy.application?.state === "pending") {
+          throw new ResourceStateConflictError("A policy application is already pending.");
+        }
+        if (policy.repositoryNetworkPolicy !== undefined) {
+          throw new ResourceStateConflictError(
+            "Live application cannot enforce repository grants. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
+          );
+        }
+        const driver = sandboxDriver();
+        const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+        if (revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+          throw new ResourceStateConflictError(
+            "The active revision has a repository network policy that is missing from the saved policy. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
+          );
+        }
+        // Qualified artifact snapshots do not make protected revisions eligible for live apply.
+        if (revision?.executionAdmission?.mode === "protected") {
+          throw new ProtectedExecutionNetworkPolicyError("apply");
+        }
+        if (
+          driver === undefined ||
+          !unprotectedPolicyRevision(revision) ||
+          revision?.sandboxPolicy === undefined ||
+          revision.sandboxDriverId !== driver.id ||
+          driver.networkPolicy?.live !== true ||
+          driver.applyNetworkPolicy === undefined ||
+          driver.observeNetworkPolicy === undefined
+        ) {
+          throw new ResourceStateConflictError(
+            "Live policy application is unavailable for this revision. Deploy explicitly to apply the saved policy.",
+          );
+        }
+        const desired =
+          additions === undefined
+            ? policy
+            : await updateAgentSandboxPolicy(
+                principalId,
+                namespaceId,
+                agentId,
+                facet,
+                expectedVersion,
+                additions,
+              );
+        const snapshot = admitAgentNetworkPolicy(
+          (await requireInstallationCeiling(state)).rules,
+          desired.additions,
+          desired.version,
+          revision.sandboxPolicy.defaults,
+          { repositoryCredentials: revision.repositoryCredentials !== undefined },
         );
-      }
-      if (policy.application?.state === "pending") {
-        throw new ResourceStateConflictError("A policy application is already pending.");
-      }
-      if (policy.repositoryNetworkPolicy !== undefined) {
-        throw new ResourceStateConflictError(
-          "Live application cannot enforce repository grants. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
-        );
-      }
-      const driver = sandboxDriver();
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      if (revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
-        throw new ResourceStateConflictError(
-          "The active revision has a repository network policy that is missing from the saved policy. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
-        );
-      }
-      // Qualified artifact snapshots do not make protected revisions eligible for live apply.
-      if (revision?.executionAdmission?.mode === "protected") {
-        throw new ProtectedExecutionNetworkPolicyError("apply");
-      }
-      if (
-        driver === undefined ||
-        !unprotectedPolicyRevision(revision) ||
-        revision?.sandboxPolicy === undefined ||
-        revision.sandboxDriverId !== driver.id ||
-        driver.networkPolicy?.live !== true ||
-        driver.applyNetworkPolicy === undefined ||
-        driver.observeNetworkPolicy === undefined
-      ) {
-        throw new ResourceStateConflictError(
-          "Live policy application is unavailable for this revision. Deploy explicitly to apply the saved policy.",
-        );
-      }
-      const desired =
-        additions === undefined
-          ? policy
-          : await updateAgentSandboxPolicy(
-              principalId,
-              namespaceId,
-              agentId,
-              facet,
-              expectedVersion,
-              additions,
-            );
-      const snapshot = admitAgentNetworkPolicy(
-        desired.additions,
-        desired.version,
-        revision.sandboxPolicy.defaults,
-        { repositoryCredentials: revision.repositoryCredentials !== undefined },
-      );
-      const id = crypto.randomUUID();
-      const updated = await state.sandboxPolicies.save(
-        {
-          ...desired,
-          application: {
-            id,
-            revisionId,
-            policyVersion: desired.version,
-            snapshot,
-            state: "pending",
-            requestedBy: principalId,
-            requestedAt: dependencies.timestamp(),
+        const id = crypto.randomUUID();
+        const updated = await state.sandboxPolicies.save(
+          {
+            ...desired,
+            application: {
+              id,
+              revisionId,
+              policyVersion: desired.version,
+              snapshot,
+              state: "pending",
+              requestedBy: principalId,
+              requestedAt: dependencies.timestamp(),
+            },
           },
-        },
-        desired.version,
-      );
-      if (updated === undefined) {
-        throw new ResourceStateConflictError("The policy changed.");
-      }
-      await dependencies.record(state, {
-        kind: "agent",
-        action: "reconcile",
-        target: "sandbox_policy",
-        namespaceId,
-        resourceId: agentId,
-        actorId: principalId,
-        operationId: id,
-      });
-      return updated;
-    });
+          desired.version,
+        );
+        if (updated === undefined) {
+          throw new ResourceStateConflictError("The policy changed.");
+        }
+        await dependencies.record(state, {
+          kind: "agent",
+          action: "reconcile",
+          target: "sandbox_policy",
+          namespaceId,
+          resourceId: agentId,
+          actorId: principalId,
+          operationId: id,
+        });
+        return updated;
+      },
+      { readCommitted: true },
+    );
   }
 
   async function readAgentSandboxRecommendations(
@@ -906,6 +1092,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     repositoryCredentials: boolean,
     policyAlreadyAuthorized = false,
   ): Promise<SandboxPolicySnapshot | undefined> {
+    const ceiling = await read(requireInstallationCeiling);
     const policyScope = { repositoryCredentials };
     // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
     // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
@@ -927,7 +1114,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     }
     const sandboxPolicy =
       policy && policy.additions.length > 0
-        ? admitAgentNetworkPolicy(policy.additions, policy.version, undefined, policyScope)
+        ? admitAgentNetworkPolicy(
+            ceiling.rules,
+            policy.additions,
+            policy.version,
+            undefined,
+            policyScope,
+          )
         : defaultDeploymentSandboxPolicy(
             sandbox,
             policy?.version ?? 1,
@@ -944,6 +1137,11 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   }
 
   return {
+    requireInstallationCeiling,
+    initializeSandboxNetworkPolicyCeiling,
+    getInstallationSandboxNetworkPolicyCeiling,
+    validateInstallationSandboxNetworkPolicyCeiling,
+    updateInstallationSandboxNetworkPolicyCeiling,
     sandboxDriver,
     validateAgentSandboxPolicy,
     getAgentSandboxPolicy,

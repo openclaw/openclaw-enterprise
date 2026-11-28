@@ -229,7 +229,7 @@ export interface DeploymentAdmissionDependencies {
   readonly selectedProxyOwner: () => InstalledDriver;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
   readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
-  readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  readonly sandboxNetworkPolicyCeiling: () => Promise<readonly SandboxNetworkGrant[]>;
   readonly modelCredentialPreset:
     | ((input: {
         readonly presetId: string;
@@ -336,6 +336,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
   function admitModelCredentialBinding(
     { source, preset }: PreparedModelCredentialDeployment,
     networkGrants: readonly DeploymentRequestMatch[],
+    ceiling: readonly SandboxNetworkGrant[],
   ) {
     const presetId = permittedModelCredentialPresetId(source);
     const fixedCodexModel = presetId === "builtin_codex" || presetId === "codex-pat";
@@ -365,10 +366,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         (destinationGrants.length === 0 || fixedCodexModel);
       const binaries = usePresetNetwork
         ? presetBinaries.filter((binary) =>
-            sandboxNetworkGrantsWithinCeiling(
-              [{ binary, ...route }],
-              dependencies.sandboxNetworkPolicyCeiling,
-            ),
+            sandboxNetworkGrantsWithinCeiling([{ binary, ...route }], ceiling),
           )
         : grantedBinaries;
       if (binaries.length !== 1 || destination.path.includes("*")) {
@@ -422,6 +420,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     descriptions: ReadonlyMap<string, PluginDeploymentDescription>,
     templates: ReadonlyMap<string, ConnectionTemplateVersion>,
     additions: readonly SandboxNetworkGrant[],
+    ceiling: readonly SandboxNetworkGrant[],
     repository?: {
       readonly source: Readonly<GitHubAppInstallationCredentialSource>;
       readonly credentialRequests: readonly DeploymentRequestMatch[];
@@ -439,6 +438,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const { binding, injectionPolicy, automaticNetwork } = admitModelCredentialBinding(
         stagedModel,
         network,
+        ceiling,
       );
       network.push(...automaticNetwork);
       bindings.push(binding);
@@ -502,7 +502,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       injections.push({ bindingRef: "repository", allowedRequests: repository.credentialRequests });
       network.push(
         ...repository.publicNetworkRequests.filter((request) =>
-          sandboxNetworkGrantsWithinCeiling([request], dependencies.sandboxNetworkPolicyCeiling),
+          sandboxNetworkGrantsWithinCeiling([request], ceiling),
         ),
       );
     }
@@ -516,7 +516,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     let supported = false;
     try {
       supported =
-        sandboxNetworkGrantsWithinCeiling(network, dependencies.sandboxNetworkPolicyCeiling) &&
+        sandboxNetworkGrantsWithinCeiling(network, ceiling) &&
         dependencies.supportsCredentialDeployment?.({
           sandbox: delivery.sandbox,
           proxy: delivery.proxy,
@@ -895,6 +895,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         namespaceId: input.namespaceId,
       };
       await dependencies.authority.authorize(principalId, "deploy", target);
+      await state.installations.holdSandboxNetworkPolicyCeiling("shared");
       const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this deploy waited stops it before it writes Agent grants.
@@ -1347,7 +1348,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           lockedAgent.id,
           resolvedRepositoryCredentials,
         );
-      let stagedRepository: Parameters<typeof admitCredentialPolicy>[5];
+      let stagedRepository: Parameters<typeof admitCredentialPolicy>[6];
       if (stagedRepositorySource) {
         if (
           !admittedRepository?.stagedAdmission ||
@@ -1402,6 +1403,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
               admittedSources.descriptions,
               admittedSources.templates,
               policy?.additions ?? [],
+              await dependencies.sandboxNetworkPolicyCeiling(),
               stagedRepository,
             );
       if (driver && pluginState) {

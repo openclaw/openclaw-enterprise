@@ -273,7 +273,9 @@ export function installationControllerOptions(
     },
     supportsCredentialDeployment: supportsOpenShellCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
-    sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    ...(installation?.sandboxNetworkPolicyCeiling === undefined
+      ? {}
+      : { sandboxNetworkPolicyCeiling: installation.sandboxNetworkPolicyCeiling }),
     repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
     ...(installation?.runtime === undefined
@@ -963,6 +965,11 @@ async function composeInstallationConfiguration(
   }
   if (configuration === undefined) {
     return undefined;
+  }
+  if (Object.hasOwn(configuration, "sandboxNetworkPolicyCeilingOverwriteOnStartup")) {
+    throw new Error(
+      "sandboxNetworkPolicyCeilingOverwriteOnStartup is retired; startup rules only seed an absent ceiling.",
+    );
   }
   if (
     options.mode === "development" &&

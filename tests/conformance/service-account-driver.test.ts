@@ -127,6 +127,7 @@ async function fixture({
     backends: selectServiceAccountDriver ? [backend] : [],
     ...(configuredServiceAccountDriverId === undefined ? {} : { configuredServiceAccountDriverId }),
   });
+  await controller.initializeSandboxNetworkPolicyCeiling(administrator);
   const compute = createDevelopmentComputeDriver();
   const configuration = createTestConfigurationDriver();
   const externalAccounts = new Set<string>();

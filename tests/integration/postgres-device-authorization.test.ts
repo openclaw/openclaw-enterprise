@@ -599,6 +599,16 @@ test(
     app.controller.registerDriver(runtime.computeDriver);
     app.controller.selectDriver("compute", runtime.computeDriver.id);
     installSelectedSandboxDrivers(app.controller, runtime);
+    // Bootstrap saved an empty ceiling. Only an authorized owner update can
+    // delegate these routes; a later controller's startup seed preserves saved state.
+    const ceiling = await app.controller.getInstallationSandboxNetworkPolicyCeiling(
+      app.principal.id,
+    );
+    await app.controller.updateInstallationSandboxNetworkPolicyCeiling(
+      app.principal.id,
+      ceiling.version,
+      [grant],
+    );
 
     const base = `/namespaces/${namespaceId}`;
     const loginPath = `${base}/agents/device-authorizations`;

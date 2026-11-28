@@ -33,7 +33,8 @@
     "tests/browser/console-next-steps.test.ts",
     "tests/browser/console-disabled-reasons.test.ts",
     "tests/browser/console-page-header.test.ts",
-    "tests/browser/console-secret-picker-refresh.test.ts"
+    "tests/browser/console-secret-picker-refresh.test.ts",
+    "tests/browser/console-network-policy-ceiling.test.ts"
   ],
   "files": [
     {
@@ -125,6 +126,9 @@
     },
     {
       "path": "tests/browser/console-secret-picker-refresh.test.ts"
+    },
+    {
+      "path": "tests/browser/console-network-policy-ceiling.test.ts"
     }
   ]
 }

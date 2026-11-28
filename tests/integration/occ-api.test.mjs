@@ -1129,8 +1129,16 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   permissions.splice(agentDelete, 1);
   await audit.verifyDeniedRequests(namespace, agent);
 
-  const mutationEvents = fixture.auditSink.events.filter((event) =>
-    ["bootstrap", "mutation"].includes(event.kind),
+  const initializationEvents = fixture.auditSink.events.filter(
+    (event) => event.action === "openclaw.installation.sandbox_network_policy_ceiling.initialize",
+  );
+  assert.equal(initializationEvents.length, 1);
+  assert.equal(initializationEvents[0].actorId, fixture.principal.id);
+  assert.equal(initializationEvents[0].installationId, fixture.installationId);
+  assert.equal(initializationEvents[0].outcome, "success");
+  const mutationEvents = fixture.auditSink.events.filter(
+    (event) =>
+      ["bootstrap", "mutation"].includes(event.kind) && !initializationEvents.includes(event),
   );
   assert.equal(mutationEvents.length, 5);
   audit.verifyAttributableAudit(originalIAMDriverId, namespace, agent, mutationEvents);
@@ -1166,7 +1174,16 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
 
   const unchanged = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(unchanged);
-  assert.equal(fixture.auditSink.events.length, 1);
+  assert.deepEqual(
+    fixture.auditSink.events.map(({ action, kind }) => ({ action, kind })),
+    [
+      {
+        action: "openclaw.installation.sandbox_network_policy_ceiling.initialize",
+        kind: "mutation",
+      },
+      { action: "openclaw.installation.bootstrap", kind: "bootstrap" },
+    ],
+  );
 
   await verifyDependencyFailure(fixture, "iam");
 

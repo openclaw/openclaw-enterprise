@@ -270,8 +270,18 @@ Plan filenames and historical commit links retain their original names.
 Earlier versions of the Credential Proxy proposal used these provisional paths.
 RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
 
-| Previous RFC path                         | Current RFC                                                                  |
-| ----------------------------------------- | ---------------------------------------------------------------------------- |
-| `0019-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
-| `0021-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
-| `0022-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+| Previous RFC path                             | Current RFC                                                                                                          |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `0019-egress-proxy-credential-lifecycle/`     | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)                                         |
+| `0021-egress-proxy-credential-lifecycle/`     | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)                                         |
+| `0022-egress-proxy-credential-lifecycle/`     | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)                                         |
+| `0030-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0037-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0038-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0039-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0040-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0041-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0042-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0043-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0044-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |
+| `0045-installation-network-policy-ceiling.md` | [RFC-20261106-installation-network-policy-ceiling](../../specs/rfcs/20261106-installation-network-policy-ceiling.md) |

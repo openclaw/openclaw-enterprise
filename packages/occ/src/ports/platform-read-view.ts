@@ -51,7 +51,12 @@ export const platformReadMethods = deepFreeze({
     "hasRepositoryExecutionRedeployRequired",
     "hasOutstandingCredentialWithdrawalWork",
   ],
-  installations: ["findInstallation", "getInstallation"],
+  installations: [
+    "findInstallation",
+    "getInstallation",
+    "getBootstrapActor",
+    "getSandboxNetworkPolicyCeiling",
+  ],
   namespaces: ["findNamespace", "listNamespaces"],
   configurations: ["findConfiguration"],
   presets: ["findPreset", "listPresets", "listPresetSummaries"],

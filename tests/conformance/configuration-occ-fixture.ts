@@ -81,6 +81,7 @@ export async function fixture(options: ControllerOptions = {}) {
   const configurationDriver = createTestConfigurationDriver();
   const state = new InMemoryPlatformState();
   const controller = new OpenClawController(installation, { state, ...options });
+  await controller.initializeSandboxNetworkPolicyCeiling(administrator);
   const secretDriver = createTestSecretDriver();
   registerAndSelectDrivers(controller, [iam, compute, configurationDriver, secretDriver]);
   const namespace = await controller.createNamespace(administrator, {

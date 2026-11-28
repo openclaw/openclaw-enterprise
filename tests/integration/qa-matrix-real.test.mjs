@@ -434,7 +434,7 @@ test(
       await stage(
         context,
         "kubernetes/Codex/OpenShell",
-        "shared Driver configuration and real network enforcement",
+        "saved Installation ceiling, pending policy rechecks and real network enforcement",
         () => verifyQaSandboxPolicy(artifacts),
       );
     }

@@ -82,6 +82,8 @@ export function bindPlatformUnitOfWork(
     }),
     installations: bindRepository(repositories.installations, lifetime, [
       ...platformReadMethods.installations,
+      "holdSandboxNetworkPolicyCeiling",
+      "saveSandboxNetworkPolicyCeiling",
       "createInstallation",
       "selectTokenServiceInstance",
       "holdPrincipalAccount",

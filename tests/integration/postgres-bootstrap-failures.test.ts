@@ -449,6 +449,30 @@ async function passiveDrivers(): Promise<InstallationRuntimeDrivers> {
   };
 }
 
+async function initializeBootstrapApi(
+  environment: BootstrapEnvironment,
+  drivers: InstallationRuntimeDrivers,
+): Promise<void> {
+  const initializedApi = await composePostgresDevelopment(
+    {
+      mode: "development",
+      host: "127.0.0.1",
+      databaseUrl: environment.OCC_DATABASE_URL,
+      poolMax: 2,
+      logging: { level: "warn" },
+      authBaseURL: environment.OCC_AUTH_BASE_URL,
+      authSecret: environment.OCC_AUTH_SECRET,
+      nativeAdmin: { enabled: false, domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN },
+    },
+    drivers,
+  );
+  try {
+    await initializedApi.ready();
+  } finally {
+    await initializedApi.close();
+  }
+}
+
 function assertBootstrapRaceOutcome(results: BootstrapResult[]) {
   const successful = results.filter((result) => result.ok === true);
   const failed = results.filter((result) => result.ok === false);
@@ -911,6 +935,9 @@ test(
   async (context) => {
     const { environment } = await bootstrapExistingInstallation(context, "stored-name");
     const configurationRoot = await temporaryDirectory(context, "openclaw-bootstrap-stored-name-");
+    // Complete trusted API initialization before corrupting the name. The worker must
+    // reach the stored-name guard with its required saved ceiling already initialized.
+    await initializeBootstrapApi(environment, await passiveDrivers());
     // An Installation stored before OCC applied the Name rule can hold a trailing NBSP:
     // PostgreSQL's name check accepts it.
     await withPool(migratorDatabaseUrl(), (pool: Pool) =>
@@ -1075,6 +1102,8 @@ for (const { name, initiallyReady, extendTimeout = false, firstPass } of [
     );
     const database = environment.OCC_DATABASE_URL;
     const drivers = await passiveDrivers();
+    // Start the real API first: it seeds the saved ceiling that worker startup requires.
+    await initializeBootstrapApi(environment, drivers);
     const { convergenceTimeoutMs } = workerEnvironmentSettings({});
     const parkedAgeMs = convergenceTimeoutMs + 60_000;
 

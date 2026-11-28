@@ -67,6 +67,10 @@ The direct binding for an account created with the Installation administrator
 Group and other bindings can add access. See
 [Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
 
+Reading or saving the [Installation network policy ceiling](../sandbox-policies.md#installation-ceiling)
+requires `installation:administer`. An Agent's existing policy read permissions
+allow inspection of the ceiling rules without the administrator attribution.
+
 ## Configured Roles
 
 The Installation `iam` configuration can declare Installation-level Roles with

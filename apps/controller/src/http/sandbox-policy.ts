@@ -166,7 +166,7 @@ export const sandboxPolicyHandlers = {
     };
     // The save and its audit share this transaction, including the IAM lock wait.
     const policy = await controller.transact(save, {
-      readCommitted: repositoryNetworkPolicy !== undefined,
+      readCommitted: true,
     });
     // An additions-only writer may lack permission to read the saved repository grants.
     reply.send({
@@ -184,31 +184,34 @@ export const sandboxPolicyHandlers = {
     request,
     mutationEvent,
   }) {
-    const policy = await controller.transact(async (unit) => {
-      const updated = await controller.applyAgentSandboxPolicy(
-        context.actorId,
-        namespaceId,
-        params.agentId!,
-        params.facet as SandboxFacet,
-        body!.expectedVersion as number,
-        body!.revisionId as string,
-        body!.additions as readonly SandboxNetworkGrant[] | undefined,
-      );
-      await unit.audit.append(
-        mutationEvent(
-          { kind: "sandbox_policy", id: updated.id, namespaceId },
-          {
-            policyVersion: updated.version,
-            ...(body!.additions === undefined
-              ? {}
-              : { agentId: updated.agentId, additions: updated.additions }),
-            revisionId: updated.application!.revisionId,
-            applicationId: updated.application!.id,
-          },
-        ),
-      );
-      return updated;
-    });
+    const policy = await controller.transact(
+      async (unit) => {
+        const updated = await controller.applyAgentSandboxPolicy(
+          context.actorId,
+          namespaceId,
+          params.agentId!,
+          params.facet as SandboxFacet,
+          body!.expectedVersion as number,
+          body!.revisionId as string,
+          body!.additions as readonly SandboxNetworkGrant[] | undefined,
+        );
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "sandbox_policy", id: updated.id, namespaceId },
+            {
+              policyVersion: updated.version,
+              ...(body!.additions === undefined
+                ? {}
+                : { agentId: updated.agentId, additions: updated.additions }),
+              revisionId: updated.application!.revisionId,
+              applicationId: updated.application!.id,
+            },
+          ),
+        );
+        return updated;
+      },
+      { readCommitted: true },
+    );
     reply.status(202).send({ data: policyBody(policy), meta: { requestId: request.id } });
   },
   async getAgentSandboxRecommendations({

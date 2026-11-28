@@ -1560,6 +1560,37 @@ export class OpenClawController {
     return this.composition.setupDiscovery.discoverConfigurations(principalId, context);
   }
 
+  async initializeSandboxNetworkPolicyCeiling(actorId?: string) {
+    return this.composition.sandboxPolicyOperations.initializeSandboxNetworkPolicyCeiling(actorId);
+  }
+  async getInstallationSandboxNetworkPolicyCeiling(principalId: string) {
+    return this.composition.sandboxPolicyOperations.getInstallationSandboxNetworkPolicyCeiling(
+      principalId,
+    );
+  }
+  async validateInstallationSandboxNetworkPolicyCeiling(
+    principalId: string,
+    expectedVersion: number,
+    rules: unknown,
+  ) {
+    return this.composition.sandboxPolicyOperations.validateInstallationSandboxNetworkPolicyCeiling(
+      principalId,
+      expectedVersion,
+      rules,
+    );
+  }
+  async updateInstallationSandboxNetworkPolicyCeiling(
+    principalId: string,
+    expectedVersion: number,
+    rules: readonly SandboxNetworkGrant[],
+  ) {
+    return this.composition.sandboxPolicyOperations.updateInstallationSandboxNetworkPolicyCeiling(
+      principalId,
+      expectedVersion,
+      rules,
+    );
+  }
+
   async validateAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,

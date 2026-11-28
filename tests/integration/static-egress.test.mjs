@@ -3,9 +3,10 @@ import test from "node:test";
 import { registerStreamReceiptPersistenceCases } from "./credential-proxy-stream-lease-cases.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import { CredentialProxy, egressInjectionDigest } from "../../packages/occ/src/credential-proxy.ts";
@@ -524,6 +525,15 @@ test("the policy worker names protected execution when it fails queued live appl
     additions: [grant],
     application,
   };
+  // Exercise the actual Installation state ports for the saved ceiling. The remaining
+  // controlled provider/queue observations isolate failure classification, not runtime proof.
+  const installationId = `ins_${randomUUID()}`;
+  const ceilingState = new InMemoryPlatformState();
+  const ceilingOwner = new OpenClawController(
+    { id: installationId, name: "Protected policy refusal", createdAt: new Date().toISOString() },
+    { state: ceilingState, sandboxNetworkPolicyCeiling: [grant] },
+  );
+  await ceilingOwner.initializeSandboxNetworkPolicyCeiling("principal");
   const outcomes = [];
   const unit = {
     namespaces: { lockNamespace: async () => ({ status: "ready" }) },
@@ -557,7 +567,10 @@ test("the policy worker names protected execution when it fails queued live appl
   let providerCalls = 0;
   const outcome = await reconcileSandboxPolicy(
     {
-      state: { transactWithQueue: (operation) => operation(unit, queue) },
+      state: {
+        transactWithQueue: (operation) =>
+          ceilingState.transact((actual) => operation({ ...actual, ...unit }, queue)),
+      },
       driver: {
         id: "sandbox",
         implementation: "openshell",
@@ -575,8 +588,7 @@ test("the policy worker names protected execution when it fails queued live appl
         resolveSandboxNamespace: async (namespace) => namespace,
       },
       iam: { id: "iam", authorize: async () => ({ allowed: true }) },
-      installationId: "ins-2053",
-      ceiling: [grant],
+      installationId,
       signal: AbortSignal.timeout(5_000),
       maxAttempts: 5,
       deadlineMs: 600_000,

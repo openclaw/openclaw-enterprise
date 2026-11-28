@@ -62,6 +62,7 @@ async function createFixture() {
   const controller = new OpenClawController(installation, {
     now: () => new Date(installation.createdAt),
   });
+  await controller.initializeSandboxNetworkPolicyCeiling("principal-admin");
   const configurationDriver = createTestConfigurationDriver({ id: "configuration-read-test" });
   const compute = {
     ...createDevelopmentComputeDriver(),

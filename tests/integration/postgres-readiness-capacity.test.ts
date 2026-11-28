@@ -63,6 +63,7 @@ test(
   { ...requiresPostgres, timeout: 120_000 },
   async (context) => {
     assert.ok(databaseUrl);
+    const selectedDatabaseUrl = databaseUrl;
     const secret = randomBytes(32).toString("hex");
     const statePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
     const directory = await mkdtemp(
@@ -124,16 +125,18 @@ test(
     let heldClient: pg.PoolClient | undefined;
     const requests: Promise<unknown>[] = [];
     try {
-      app = await composeProduction({
-        mode: "production",
-        host: "127.0.0.1",
-        databaseUrl,
-        authSecret: secret,
-        authBaseURL: origin,
-        nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-        poolMax: 1,
-        drivers: await productionDrivers(),
-      });
+      const compose = async (): Promise<Awaited<ReturnType<typeof composeProduction>>> =>
+        composeProduction({
+          mode: "production",
+          host: "127.0.0.1",
+          databaseUrl: selectedDatabaseUrl,
+          authSecret: secret,
+          authBaseURL: origin,
+          nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+          poolMax: 1,
+          drivers: await productionDrivers(),
+        });
+      app = await compose();
       assert.ok(applicationPool, "observe the genuine composition-owned pool");
       const pool = applicationPool;
       const server = app;
@@ -167,6 +170,10 @@ test(
       assert.equal(authorized.statusCode, 200);
       assert.ok("data" in authorized.json());
       assert.equal(pool.waitingCount, 0);
+      // Startup releases its transaction client; one connection supplies all normal
+      // application and readiness work throughout this capacity proof.
+      assert.equal(pool.totalCount, 1);
+      assert.equal(pool.idleCount, 1);
 
       // An occupied real client and queued authenticated read reproduce the
       // capacity boundary without introducing extra database connections.
@@ -179,6 +186,8 @@ test(
       const methods = ["GET", "HEAD", "GET", "HEAD", "GET", "HEAD"] as const;
       const probes = methods.map((method) => send(method));
       await waitUntil(() => arrived === enteredBefore + methods.length, "all six routes entered");
+      // Wait for the real application-pool query before measuring shared admission.
+      await waitUntil(() => readinessQueries > before, "readiness reaches the application pool");
       assert.equal(readinessQueries - before, 1, "one readiness query is admitted");
       assert.equal(pool.waitingCount, 2, "only authentication and readiness wait for the client");
       await busy;
@@ -206,6 +215,10 @@ test(
       const failureEntered = arrived;
       const failures = methods.map((method) => send(method));
       await waitUntil(() => arrived === failureEntered + methods.length, "failure callers entered");
+      await waitUntil(
+        () => readinessQueries > failureBefore,
+        "failure readiness reaches the application pool",
+      );
       assert.equal(readinessQueries - failureBefore, 1);
       assert.equal(pool.waitingCount, 1);
       heldClient.release();
