@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, constants } from "node:fs";
 import { Session, url as inspectorUrl } from "node:inspector";
 import { Socket } from "node:net";
 import { createInterface } from "node:readline";
@@ -10,6 +10,7 @@ import { isMainThread, parentPort, Worker, workerData } from "node:worker_thread
 import {
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   readlink,
@@ -50,13 +51,27 @@ async function waitUntil<T>(
 }
 
 async function marker(path: string) {
-  if ((await lstat(path)).isFile()) {
-    return { name: "", token: await readFile(path, "utf8") };
+  const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  const handle = await open(path, flags);
+  try {
+    const info = await handle.stat();
+    if (info.isFile()) {
+      return { name: "", token: await handle.readFile("utf8") };
+    }
+    assert(info.isDirectory());
+  } finally {
+    await handle.close();
   }
   const names = await readdir(path);
   assert.equal(names.length, 1);
   const name = names[0]!;
-  return { name, token: await readFile(join(path, name), "utf8") };
+  const owner = await open(join(path, name), flags);
+  try {
+    assert((await owner.stat()).isFile());
+    return { name, token: await owner.readFile("utf8") };
+  } finally {
+    await owner.close();
+  }
 }
 
 // The worker uses the real public API. Only its callback is gated; debugger pauses
@@ -125,7 +140,6 @@ class Contender {
   exited = false;
   replies = new Map<number, (value: Reply) => void>();
   nextId = 0;
-  stderr = "";
   constructor(
     statePath: string,
     role: string,
@@ -148,7 +162,7 @@ class Contender {
       {
         cwd: dirname(statePath),
         env: { LANG: "C", TZ: "UTC" },
-        stdio: ["ignore", "ignore", "pipe", "ipc", "pipe", "pipe"],
+        stdio: ["ignore", "ignore", "ignore", "ipc", "pipe", "pipe"],
       },
     );
     this.closed = new Promise((resolve, reject) => {
@@ -157,9 +171,6 @@ class Contender {
         this.exited = true;
       });
       this.child.once("close", (code, signal) => resolve({ code, signal }));
-    });
-    this.child.stderr!.on("data", (data: Uint8Array) => {
-      this.stderr += String(data);
     });
     this.child.on("message", (message: Message) => {
       this.messages.push(message);
