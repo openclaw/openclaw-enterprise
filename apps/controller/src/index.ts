@@ -535,9 +535,9 @@ function operationTarget(
 
 function clientInstallation(
   installation: Readonly<Installation>,
-  computeDriver: Readonly<ComputeDriver> | undefined,
-  nativeAdminEnabled: boolean,
+  { computeDriver, nativeAdmin }: Pick<ControllerAppOptions, "computeDriver" | "nativeAdmin">,
 ): Record<string, unknown> {
+  const nativeAdminEnabled = nativeAdmin?.enabled === true;
   const agentProvisioning = computeDriver?.agentProvisioning;
   const capabilities = {
     ...installation.capabilities,
@@ -1614,15 +1614,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
 
+  function requireRequestContext(request: FastifyRequest): RequestContext {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    return context;
+  }
+
   async function perform(
     request: FastifyRequest,
     reply: FastifyReply,
     operation: OccApiRoute,
   ): Promise<void> {
-    const context = contexts.get(request);
-    if (!context) {
-      throw dependencyUnavailable();
+    function sendData(data: unknown): void {
+      reply.send({ data, meta: { requestId: request.id } });
     }
+
+    const context = requireRequestContext(request);
     if (operation.operationId === "chatWithAgent") {
       const admission = admissions.get(request);
       if (controller === undefined || admission === undefined) {
@@ -1699,25 +1708,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const created = options.createController(installation);
         created.registerDriver(selected);
         created.selectDriver("iam", selected.id);
-        if (options.computeDriver) {
-          created.registerDriver(options.computeDriver);
-          created.selectDriver("compute", options.computeDriver.id);
-        }
-        if (options.configurationDriver) {
-          created.registerDriver(options.configurationDriver);
-          created.selectDriver("configuration", options.configurationDriver.id);
-        }
-        if (options.secretDriver) {
-          created.registerDriver(options.secretDriver);
-          created.selectDriver("secret", options.secretDriver.id);
-        }
-        if (options.channelDriver) {
-          created.registerDriver(options.channelDriver);
-          created.selectDriver("channel", options.channelDriver.id);
-        }
-        if (options.sandboxDriver) {
-          created.registerDriver(options.sandboxDriver);
-          created.selectDriver("sandbox", options.sandboxDriver.id);
+        for (const kind of ["compute", "configuration", "secret", "channel", "sandbox"] as const) {
+          const key = `${kind}Driver` as const;
+          if (options[key]) {
+            created.registerDriver(options[key]);
+            created.selectDriver(kind, options[key].id);
+          }
         }
         await created.transact(async (unit) => {
           await createBootstrapResources(created, context.actorId);
@@ -1727,15 +1723,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         });
         await created.applyIAMConfiguration();
         controller = created;
-        reply.status(201).send({
-          data: clientInstallation(
-            created.installation,
-            options.computeDriver,
-            options.nativeAdmin?.enabled === true,
-          ),
-          meta: { requestId: request.id },
-        });
-        return;
+        reply.status(201);
+        return sendData(clientInstallation(created.installation, options));
       } finally {
         bootstrapping = false;
       }
@@ -1749,8 +1738,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       const configurations = await controller.discoverConfigurations(context.actorId, {
         scope: "installation",
       });
-      reply.send({ data: { configurations }, meta: { requestId: request.id } });
-      return;
+      return sendData({ configurations });
     }
 
     const templateHandler = connectionTemplateHandlers[operation.operationId];
@@ -1802,23 +1790,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "getInstallation") {
-      reply.send({
-        data: clientInstallation(
-          await controller.getInstallation(context.actorId),
-          options.computeDriver,
-          options.nativeAdmin?.enabled === true,
-        ),
-        meta: { requestId: request.id },
-      });
-      return;
+      const installation = await controller.getInstallation(context.actorId);
+      return sendData(clientInstallation(installation, options));
     }
 
     if (operation.operationId === "getInstallationDeploymentInventory") {
-      reply.send({
-        data: await controller.getInstallationDeploymentInventory(context.actorId),
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(await controller.getInstallationDeploymentInventory(context.actorId));
     }
 
     if (operation.operationId === "listBackends") {
@@ -1827,20 +1804,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       if (backends === undefined) {
         throw dependencyUnavailable();
       }
-      reply.send({
-        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(backends.map((backend) => ({ id: backend.id, type: backend.type })));
     }
 
     if (operation.operationId === "getObservability") {
       await requireInstallationAdmin(request, operation, context);
-      reply.send({
-        data: { url: options.observabilityUrl ?? null },
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData({ url: options.observabilityUrl ?? null });
     }
 
     if (operation.operationId === "createNamespace") {
@@ -1859,16 +1828,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         await unit.audit.append(event(operation, request, target, "mutation", context));
         return created;
       });
-      reply.status(201).send({ data: namespace, meta: { requestId: request.id } });
-      return;
+      reply.status(201);
+      return sendData(namespace);
     }
 
     if (operation.operationId === "listNamespaces") {
-      reply.send({
-        data: await controller.listNamespaces(context.actorId),
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(await controller.listNamespaces(context.actorId));
     }
 
     const namespaceId = params.namespaceId;
@@ -1882,24 +1847,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      reply.send({
-        data: namespace,
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(namespace);
     }
 
     if (operation.operationId === "getNamespaceAgentCapabilities") {
-      reply.send({
-        data: {
-          capabilities: {
-            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
-            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
-          },
+      return sendData({
+        capabilities: {
+          ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+          ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
         },
-        meta: { requestId: request.id },
       });
-      return;
     }
 
     if (
@@ -1913,8 +1870,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         installationId,
         callerMay,
       });
-      reply.send({ data, meta: { requestId: request.id } });
-      return;
+      return sendData(data);
     }
 
     if (operation.operationId === "deleteNamespace") {
@@ -1935,8 +1891,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         );
         return deleting;
       });
-      reply.status(202).send({ data: namespace, meta: { requestId: request.id } });
-      return;
+      reply.status(202);
+      return sendData(namespace);
     }
 
     if (operation.operationId === "discoverAgentModels") {
@@ -1946,8 +1902,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         apiKey: body?.apiKey as string,
       });
       reply.header("cache-control", "no-store");
-      reply.send({ data: models, meta: { requestId: request.id } });
-      return;
+      return sendData(models);
     }
 
     if (
@@ -1991,8 +1946,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               readManagedMcpToolNames,
             );
       reply.header("cache-control", "no-store");
-      reply.send({ data: result, meta: { requestId: request.id } });
-      return;
+      return sendData(result);
     }
 
     if (operation.operationId === "getSavedAgentPluginPolicyCapabilities") {
@@ -2002,8 +1956,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
       );
       reply.header("cache-control", "no-store");
-      reply.send({ data: capabilities, meta: { requestId: request.id } });
-      return;
+      return sendData(capabilities);
     }
 
     if (operation.operationId === "discoverSavedAgentPlugins") {
@@ -2021,8 +1974,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
-      reply.send({ data: catalog, meta: { requestId: request.id } });
-      return;
+      return sendData(catalog);
     }
 
     if (operation.operationId === "discoverSavedAgentPluginDetails") {
@@ -2035,8 +1987,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         readManagedMcpToolNames,
       );
       reply.header("cache-control", "no-store");
-      reply.send({ data: plugin, meta: { requestId: request.id } });
-      return;
+      return sendData(plugin);
     }
 
     if (operation.operationId === "lookupChannelDirectory") {
@@ -2052,8 +2003,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           : { configurationId: body.configurationId as string }),
       });
       reply.header("cache-control", "no-store");
-      reply.send({ data: directory, meta: { requestId: request.id } });
-      return;
+      return sendData(directory);
     }
 
     const resourceHandler = handlers[operation.operationId];
@@ -2177,8 +2127,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         callerDecision,
         callerMay,
       });
-      reply.send({ data, meta: { requestId: request.id } });
-      return;
+      return sendData(data);
     }
 
     if (
@@ -2219,8 +2168,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             disconnected.signal,
             admitRead,
           );
-          reply.send({ data: description, meta: { requestId: request.id } });
-          return;
+          return sendData(description);
         }
         const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
         const query = request.query as AgentRuntimeLogsQuery;
@@ -2275,8 +2223,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
-        reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
-        return;
+        return sendData(runtimeLogPageBody(page));
       } finally {
         reply.raw.off("close", onClose);
       }
@@ -2306,10 +2253,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
-          const context = contexts.get(request);
-          if (!context) {
-            throw dependencyUnavailable();
-          }
+          const context = requireRequestContext(request);
           if (!controller) {
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
           }
@@ -2794,10 +2738,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...accountAdmission(accountReadOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const actor = await humanAccountActor(request, accountReadOperation, context);
         if (!options.auth.readAccount) {
           throw accountControlsUnsupported();
@@ -2863,10 +2804,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...accountAdmission(operation),
         },
         async (request, reply) => {
-          const context = contexts.get(request);
-          if (!context) {
-            throw dependencyUnavailable();
-          }
+          const context = requireRequestContext(request);
           const { userId } = request.params as { userId: string };
           const actor = await humanAccountActor(request, operation, context, userId);
           if (!options.auth.readAccount || !options.auth.changeAccount) {
@@ -2914,10 +2852,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preValidation: async (request) => resolveIdentity(request, recoveryReadOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const actor = await humanAccountActor(request, recoveryReadOperation, context);
         if (!options.auth.readRecovery) {
           throw accountControlsUnsupported();
@@ -2943,10 +2878,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...accountAdmission(recoveryReplaceOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const { userId, expectedCurrentUserId, expectedVersion } = request.body as {
           userId: string;
           expectedCurrentUserId: string;
@@ -3021,10 +2953,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...accountAdmission(enrolOperation),
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         const actor = await humanAccountActor(request, enrolOperation, context);
         if (!options.auth.enrolAccount) {
           throw accountControlsUnsupported();
@@ -3149,10 +3078,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
       },
       async (request, reply) => {
-        const context = contexts.get(request);
-        if (!context) {
-          throw dependencyUnavailable();
-        }
+        const context = requireRequestContext(request);
         if (options.provisionAuthAccount === undefined) {
           throw dependencyUnavailable();
         }

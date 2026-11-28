@@ -19,7 +19,7 @@ import {
   createNamespace,
   enrollStaticSource,
   grantAgentSourceOperate,
-  injectedRequest,
+  requestForFixture,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -45,23 +45,14 @@ export async function prepareFixture({
     assert.fail("Guarded admission must never contact Slack");
   });
   const secretDriver = createTestSecretDriver();
-  const fixture = await createInjectedControllerFixture(
-    {
-      recordOperations: true,
-      channelDriver,
-      secretDriver,
-      gatewayStartupSourceDelivery: (compute, owner) =>
-        compute.id === "compute-integration" && owner instanceof OCCTokenServiceDriver,
-    },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        return factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
-      },
-    },
-  );
-  const request: FixtureRequest = (method, pathname, options) =>
-    injectedRequest(fixture.app, method, pathname, options);
+  const fixture = await createInjectedControllerFixture({
+    recordOperations: true,
+    channelDriver,
+    secretDriver,
+    gatewayStartupSourceDelivery: (compute, owner) =>
+      compute.id === "compute-integration" && owner instanceof OCCTokenServiceDriver,
+  });
+  const request = requestForFixture(fixture);
   const controller = { fixture, request };
   await bootstrapInstallation(controller);
   const namespace = await createNamespace(controller, "first-deployment");

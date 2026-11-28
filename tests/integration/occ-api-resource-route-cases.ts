@@ -13,7 +13,6 @@ import {
   NamespaceListResponse,
   NamespaceResponse,
   ErrorResponse,
-  type InstallationWire,
   type NamespaceWire,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
@@ -24,13 +23,16 @@ import { AGENT_NAME_CONFLICT, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   type createInjectedControllerFixture,
+  type FixtureRequest,
   bindHarnessKey,
   bootstrapInstallation,
   createConfiguration,
   checkedInjectedBody,
-  createAgent as createFixtureAgent,
-  createNamespace as createFixtureNamespace,
+  checkedInjectedError,
+  createAgent,
+  createNamespace,
   createServiceAccount,
+  defaultNamespace,
   identifier,
   injectedRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -39,38 +41,19 @@ type Fixture = Awaited<ReturnType<typeof createInjectedControllerFixture>>;
 
 interface Controller {
   fixture: Fixture;
-  request(
-    method: string,
-    pathname: string,
-    options?: Parameters<typeof injectedRequest>[3],
-  ): ReturnType<typeof injectedRequest>;
+  request: FixtureRequest;
 }
 
 interface ControllerSetup {
   configuredController(): Promise<Controller>;
-  bootstrap(controller: Controller, name?: string): Promise<InstallationWire>;
-  createNamespace(controller: Controller, name: string): Promise<NamespaceWire>;
-  createAgent(controller: Controller, namespaceId: string, name: string): Promise<AgentWire>;
   missingRevisionId: string;
-}
-
-function resourceId(data: unknown): string {
-  assert(data !== null && typeof data === "object" && "id" in data && typeof data.id === "string");
-  return data.id;
 }
 
 export async function runResourceRoutes({
   configuredController,
-  bootstrap,
-  defaultNamespace,
-  createNamespace,
-  createAgent,
   missingRevisionId,
   missingAgentId,
-}: ControllerSetup & {
-  defaultNamespace(controller: Controller): Promise<NamespaceWire>;
-  missingAgentId: string;
-}) {
+}: ControllerSetup & { missingAgentId: string }) {
   const controller = await configuredController();
   // Before bootstrap a Preset write, whose grant check runs before its body is read, answers
   // the same not-found as the handler would.
@@ -81,7 +64,8 @@ export async function runResourceRoutes({
     const early = await controller.request(method, path, { body: { name: "early", template: {} } });
     assertApiError(early, 404, "NOT_FOUND", method);
   }
-  const installation = await bootstrap(controller);
+  const installation = await bootstrapInstallation(controller);
+  assert.equal(Object.hasOwn(installation, "capabilities"), false);
 
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
@@ -93,7 +77,6 @@ export async function runResourceRoutes({
   const bootstrappedDefault = await defaultNamespace(controller);
 
   const namespace = await createNamespace(controller, "research");
-  assert.equal(Object.hasOwn(namespace, "installationId"), false);
 
   const namespaces = await controller.request("GET", "/namespaces");
   assert.equal(namespaces.status, 200);
@@ -104,7 +87,6 @@ export async function runResourceRoutes({
   assert.deepEqual(namespaceDetail.data, namespace);
 
   const agent = await createAgent(controller, namespace.id, "research-agent");
-  assert.equal(Object.hasOwn(agent, "installationId"), false);
 
   const account = await createServiceAccount(controller.request, namespace.id, "research-account");
   const serviceAccounts = await controller.request(
@@ -129,11 +111,9 @@ export async function runResourceRoutes({
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
   );
-  assert.equal(stopped.status, 202);
-  assert(stopped.data !== null && typeof stopped.data === "object");
-  assert("desiredRuntimeState" in stopped.data);
-  assert.equal(stopped.data.desiredRuntimeState, "stopped");
-  assert.equal(resourceId(stopped.data), agent.id);
+  const stoppedAgent = checkedInjectedBody(stopped, 202, AgentResponse, "Agent stop").data;
+  assert.equal(stoppedAgent.desiredRuntimeState, "stopped");
+  assert.equal(stoppedAgent.id, agent.id);
   const { auditSink } = controller.fixture;
   assert(auditSink instanceof InMemoryAuditSink);
   const stopAudit = auditSink.events
@@ -188,17 +168,10 @@ export async function runResourceRoutes({
 
   // Reads keep returning a deleting Agent, so an operator can observe teardown
   // in progress instead of seeing it vanish before its resources are gone.
-  const deletingDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletingDetail.status, 200);
-  assert(
-    deletingDetail.data !== null &&
-      typeof deletingDetail.data === "object" &&
-      "status" in deletingDetail.data,
-  );
-  assert.equal(deletingDetail.data.status, "deleting");
+  const detail = await controller.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const deletingAgent = checkedInjectedBody(detail, 200, AgentReadResponse, "Agent read").data;
+  assert.equal(deletingAgent.status, "deleting");
+  assert.equal(deletingAgent.id, agent.id);
 
   // A repeated request converges on the in-flight teardown rather than
   // conflicting, so a client retry after a lost response is safe.
@@ -267,7 +240,7 @@ export async function checkResourceCreationSchemas(controller: Controller) {
     assert.equal(result.status, 400);
   }
 
-  const namespace = await createFixtureNamespace(controller, "validated");
+  const namespace = await createNamespace(controller, "validated");
   const duplicateNamespace = await controller.request("POST", "/namespaces", {
     body: { name: "validated" },
   });
@@ -278,7 +251,7 @@ export async function checkResourceCreationSchemas(controller: Controller) {
   });
   assert.equal(invalidAgent.status, 400);
 
-  const agent = await createFixtureAgent(controller, namespace.id, "valid-agent");
+  const agent = await createAgent(controller, namespace.id, "valid-agent");
   const duplicateAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "valid-agent", configurationId: agent.configurationId },
   });
@@ -395,14 +368,11 @@ export async function withValidationBeforeIam(
 
 export async function runBodylessRoutes({
   configuredController,
-  bootstrap,
-  createNamespace,
-  createAgent,
   missingRevisionId,
 }: ControllerSetup) {
   const controller = await configuredController();
   const { fixture } = controller;
-  await bootstrap(controller, "Bodyless-route installation");
+  await bootstrapInstallation(controller, "Bodyless-route installation");
   const { id: namespaceId } = await createNamespace(controller, "bodyless-route-namespace");
   const { id: agentId } = await createAgent(controller, namespaceId, "bodyless-route-agent");
 
@@ -437,11 +407,12 @@ export async function runBodylessRoutes({
           payload: JSON.stringify({ unexpected: "request body" }),
           remoteAddress: "127.0.0.1",
         });
-        const body = response.json<ErrorResponse>();
-
         assert.equal(response.statusCode, 400, url);
+        const body = response.json<unknown>();
+        assert.ok(Check(ErrorResponse, body), `${url} must return an error envelope`);
         assert.equal(body.error.code, "INVALID_REQUEST", url);
-        assert.match(body.meta.requestId, identifier("req"));
+        assert.match(body.meta.requestId, identifier("req"), url);
+        assert.equal(body.meta.requestId, response.headers["x-request-id"], url);
         assertUnchanged(url);
       }
     });
@@ -450,28 +421,12 @@ export async function runBodylessRoutes({
   }
 }
 
-function assertReadError(
-  response: Awaited<ReturnType<typeof injectedRequest>>,
-  status: number,
-  code: ErrorResponse["error"]["code"],
-  label: string,
-): ErrorResponse {
-  assert.equal(response.status, status, label);
-  assert.ok(Check(ErrorResponse, response.body), `${label} must return an error envelope`);
-  assert.equal(response.body.error.code, code, label);
-  assert.equal(response.body.meta.requestId, response.headers.get("x-request-id"), label);
-  return response.body;
-}
-
 export async function runNamespaceIsolation({
   configuredController,
-  bootstrap,
-  createNamespace,
-  createAgent,
   missingRevisionId,
 }: ControllerSetup) {
   const controller = await configuredController();
-  await bootstrap(controller);
+  await bootstrapInstallation(controller);
 
   const namespaceA = await createNamespace(controller, "namespace-a");
   const namespaceB = await createNamespace(controller, "namespace-b");
@@ -514,7 +469,7 @@ export async function runNamespaceIsolation({
 
   const scopedController = await configuredController();
   const { fixture } = scopedController;
-  await bootstrap(scopedController, "IAM-scoped installation");
+  await bootstrapInstallation(scopedController, "IAM-scoped installation");
   const initialNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
   assert.equal(initialNamespaces.status, 200);
   assert(Array.isArray(initialNamespaces.data));
@@ -563,7 +518,7 @@ export async function runNamespaceIsolation({
       assert.equal(authorizedNamespaceIds.length, 1, failureMode);
       assert.equal(failedNamespaceIds.length, 1, failureMode);
       assert.notEqual(failedNamespaceIds[0], authorizedNamespaceIds[0], failureMode);
-      const body = assertReadError(unavailable, 503, "DEPENDENCY_UNAVAILABLE", failureMode);
+      const body = checkedInjectedError(unavailable, 503, "DEPENDENCY_UNAVAILABLE", failureMode);
       assert.deepEqual(body.error, {
         code: "DEPENDENCY_UNAVAILABLE",
         message: "A required platform dependency is unavailable.",
@@ -602,13 +557,20 @@ export async function runNamespaceIsolation({
   });
   const readerApp = fixture.createApp(reader);
 
-  const visibleNamespaces = await injectedRequest(readerApp, "GET", "/namespaces");
-  assert.equal(visibleNamespaces.status, 200);
-  assert(Array.isArray(visibleNamespaces.data));
-  assert.deepEqual(visibleNamespaces.data.map(resourceId), [tenantBId]);
+  const list = await injectedRequest(readerApp, "GET", "/namespaces");
+  const namespaces = checkedInjectedBody(list, 200, NamespaceListResponse, "Namespace list").data;
+  assert.deepEqual(
+    namespaces.map(({ id }) => id),
+    [tenantBId],
+  );
 
   const installationDenied = await injectedRequest(readerApp, "GET", "/installation");
-  assertReadError(installationDenied, 403, "FORBIDDEN", "Namespace reader's Installation read");
+  checkedInjectedError(
+    installationDenied,
+    403,
+    "FORBIDDEN",
+    "Namespace reader's Installation read",
+  );
 
   const visibleAgent = await injectedRequest(
     readerApp,
@@ -652,7 +614,7 @@ export async function runNamespaceIsolation({
     async (agentId) => {
       const path = `/namespaces/${tenantBId}/agents/${agentId}`;
       const denied = await injectedRequest(revisionReaderApp, "GET", path);
-      assertReadError(denied, 403, "FORBIDDEN", path);
+      checkedInjectedError(denied, 403, "FORBIDDEN", path);
       return denied;
     },
     [ownAgentId, `agt_${randomUUID()}`],
@@ -660,7 +622,7 @@ export async function runNamespaceIsolation({
   );
 
   const exactRevision = await injectedRequest(revisionReaderApp, "GET", ownRevisionPath);
-  assertReadError(exactRevision, 404, "NOT_FOUND", "authorized missing revision");
+  checkedInjectedError(exactRevision, 404, "NOT_FOUND", "authorized missing revision");
 
   // The reader holds no grant in tenant A, so the misplaced parent is refused before any
   // lookup, as getAgent does; a 404 here would confirm which Agents tenant A lacks.
@@ -669,12 +631,12 @@ export async function runNamespaceIsolation({
     "GET",
     `/namespaces/${tenantAId}/agents/${ownAgentId}/revisions/${missingRevisionId}`,
   );
-  assertReadError(wrongParent, 403, "FORBIDDEN", "revision under another Namespace");
+  checkedInjectedError(wrongParent, 403, "FORBIDDEN", "revision under another Namespace");
 
   revisionReaderPermissions.length = 0;
   const deniedRevisionApp = fixture.createApp(revisionReader);
   const deniedRevision = await injectedRequest(deniedRevisionApp, "GET", ownRevisionPath);
-  assertReadError(deniedRevision, 403, "FORBIDDEN", "revision read after revocation");
+  checkedInjectedError(deniedRevision, 403, "FORBIDDEN", "revision read after revocation");
   const { auditSink } = fixture;
   assert(auditSink instanceof InMemoryAuditSink);
   const denialEvent = auditSink.events.at(-1);
@@ -700,7 +662,7 @@ export async function runNamespaceIsolation({
     async (namespaceId) => {
       const path = `/namespaces/${namespaceId}`;
       const denied = await injectedRequest(refreshedReaderApp, "GET", path);
-      assertReadError(denied, 403, "FORBIDDEN", path);
+      checkedInjectedError(denied, 403, "FORBIDDEN", path);
       return denied;
     },
     [tenantAId, absentNamespaceId],
@@ -716,7 +678,7 @@ export async function runNamespaceIsolation({
     ],
   ] as const) {
     const denied = await injectedRequest(refreshedReaderApp, method, pathname, options);
-    assertReadError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
+    checkedInjectedError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
   }
   // The administrator can authorize that same absent ID and reach the real lookup.
   const authorizedAbsent = await injectedRequest(
@@ -724,7 +686,7 @@ export async function runNamespaceIsolation({
     "GET",
     `/namespaces/${absentNamespaceId}`,
   );
-  assertReadError(authorizedAbsent, 404, "NOT_FOUND", "authorized missing Namespace");
+  checkedInjectedError(authorizedAbsent, 404, "NOT_FOUND", "authorized missing Namespace");
 }
 
 type ConfigureLifecycleController = (
@@ -743,8 +705,8 @@ export async function runAgentDeletionMutationBoundary({
   const controller = await configuredController({ recordOperations: true });
   const { fixture, request } = controller;
   await bootstrapInstallation(controller);
-  const namespace = await createFixtureNamespace(controller, "deletion-race");
-  const agent = await createFixtureAgent(controller, namespace.id, "deletion-race-agent");
+  const namespace = await createNamespace(controller, "deletion-race");
+  const agent = await createAgent(controller, namespace.id, "deletion-race-agent");
   const occ = fixture.controller;
   assert(occ, "bootstrap must create the controller");
   const principalId = fixture.principal.id;
@@ -813,8 +775,8 @@ export async function prepareNamespaceLifecycle(
   const controller = await configuredController();
   const { fixture, request } = controller;
   await bootstrapInstallation(controller, "Lifecycle installation");
-  const namespaceA = await createFixtureNamespace(controller, "lifecycle-a");
-  const namespaceB = await createFixtureNamespace(controller, "lifecycle-b");
+  const namespaceA = await createNamespace(controller, "lifecycle-a");
+  const namespaceB = await createNamespace(controller, "lifecycle-b");
   const originalConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "original",
   });

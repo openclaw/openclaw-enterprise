@@ -15,8 +15,10 @@ import {
   AgentResponse,
   ConfigurationResponse,
   CredentialSourceResponse,
+  ErrorResponse,
   InstallationResponse,
   JsonValue,
+  NamespaceListResponse,
   NamespaceResponse,
   PluginApproversSchema,
   PluginDesiredSelectionSchema,
@@ -31,12 +33,17 @@ import {
   type AgentWire,
   type ChatGPTBackendDefinition,
   type ComputeAgentBinding,
+  type ErrorCode,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
   type CredentialSourceReference,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  InMemoryPlatformState,
+  OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
@@ -101,6 +108,18 @@ interface FixtureAdapters {
   ): App;
 }
 
+const invokeWithOptionalBackendSummaries: FixtureAdapters["invokeApplication"] = (
+  factory,
+  { backendSummaries, ...options },
+) => factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
+
+export const withoutBackendSummaries: Pick<FixtureAdapters, "invokeApplication"> = {
+  invokeApplication(factory, { backendSummaries, ...options }) {
+    assert.equal(backendSummaries, undefined);
+    return factory(options);
+  },
+};
+
 interface InjectedRequestOptions {
   readonly identity?: boolean | undefined;
   readonly session?: Pick<FixtureSession, "cookie" | "origin"> | string | null | undefined;
@@ -114,7 +133,10 @@ export const identifier = (prefix: string) => new RegExp(`^${prefix}_${uuidV4}$`
 
 export async function createInjectedControllerFixture(
   options: InjectedFixtureOptions,
-  adapters: FixtureAdapters,
+  {
+    invokeApplication = invokeWithOptionalBackendSummaries,
+    wrapPlatformState,
+  }: Partial<FixtureAdapters> = {},
 ) {
   const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
   const authFixture = await createTestAuthPrincipal({
@@ -204,7 +226,7 @@ export async function createInjectedControllerFixture(
     identity: IdentityWithId = principal,
     createApplication: ApplicationFactory<object> = createControllerApp,
   ) {
-    const created = adapters.invokeApplication(createApplication, {
+    const created = invokeApplication(createApplication, {
       ...(controller
         ? { controller }
         : {
@@ -214,7 +236,7 @@ export async function createInjectedControllerFixture(
                 resolveIAMIdentity: (identityId) =>
                   state.identities.find((identity) => identity.id === identityId),
               });
-              platformState = adapters.wrapPlatformState(baseState);
+              platformState = wrapPlatformState ? wrapPlatformState(baseState) : baseState;
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,
@@ -385,7 +407,11 @@ export async function injectedRequest(
     return { status: response.status, headers: response.headers };
   }
   const body: unknown = await response.json();
-  assert(Check(InjectedResponseEnvelope, body), JSON.stringify(body));
+  assert(Check(InjectedResponseEnvelope, body), "Invalid injected response envelope");
+  assert(
+    body.meta.requestId === response.headers.get("x-request-id"),
+    "Injected response request ID differs from its header",
+  );
   return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
@@ -399,6 +425,10 @@ type InjectedController = {
   readonly fixture: Awaited<ReturnType<typeof createInjectedControllerFixture>>;
   readonly request: FixtureRequest;
 };
+
+export function requestForFixture(fixture: InjectedController["fixture"]): FixtureRequest {
+  return (method, pathname, options) => injectedRequest(fixture.app, method, pathname, options);
+}
 
 const responseSchemas = {
   SafeJsonValue: JsonValue,
@@ -414,11 +444,27 @@ export function checkedInjectedBody<Schema extends TSchema>(
   response: Awaited<ReturnType<FixtureRequest>>,
   status: number,
   schema: Schema,
+  label?: string,
 ): Static<Schema, typeof responseSchemas> {
-  const message = JSON.stringify(response.body);
-  assert.equal(response.status, status, message);
-  assert(Check(responseSchemas, schema, response.body), message);
+  const context = label ?? "Injected response";
+  assert.equal(response.status, status, `${context} has an unexpected status`);
+  assert(Check(responseSchemas, schema, response.body), `${context} does not match the schema`);
   return response.body;
+}
+
+export function checkedInjectedError(
+  response: Awaited<ReturnType<FixtureRequest>>,
+  status: number,
+  code: ErrorCode,
+  label?: string,
+): ErrorResponse {
+  const body = checkedInjectedBody(response, status, ErrorResponse, label);
+  assert.equal(
+    body.error.code,
+    code,
+    `${label ?? "Injected response"} has an unexpected error code`,
+  );
+  return body;
 }
 
 export async function createConfiguration(
@@ -625,13 +671,20 @@ export async function bootstrapInstallation(
   name = "Enterprise development",
 ) {
   const response = await request("POST", "/installation/bootstrap", { body: { name } });
-  const message = JSON.stringify(response.body);
-  assert.equal(response.status, 201, message);
-  assert(Check(InstallationResponse, response.body), message);
-  const { data } = response.body;
+  const { data } = checkedInjectedBody(response, 201, InstallationResponse);
   assert.equal(data.name, name);
+  assert.match(data.id, identifier("ins"));
   assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
   return data;
+}
+
+export async function defaultNamespace({ request }: Pick<InjectedController, "request">) {
+  const response = await request("GET", "/namespaces");
+  const { data } = checkedInjectedBody(response, 200, NamespaceListResponse);
+  const found = data.find((namespace) => namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME);
+  assert.ok(found, "fresh bootstrap must create the default Namespace");
+  assert.equal(found.status, "provisioning");
+  return found;
 }
 
 export async function createNamespace(
@@ -639,11 +692,9 @@ export async function createNamespace(
   name: string,
 ) {
   const response = await request("POST", "/namespaces", { body: { name } });
-  const message = JSON.stringify(response.body);
-  assert.equal(response.status, 201, message);
-  assert(Check(NamespaceResponse, response.body), message);
-  const { data } = response.body;
+  const { data } = checkedInjectedBody(response, 201, NamespaceResponse);
   assert.equal(data.name, name);
+  assert.match(data.id, identifier("ns"));
   assert.equal(data.status, "provisioning");
   assert.equal(Object.hasOwn(data, "installationId"), false);
   return data;
@@ -673,9 +724,7 @@ export async function createServiceAccount(
   const response = await request("POST", `/namespaces/${namespaceId}/service-accounts`, {
     body: { name },
   });
-  assert.equal(response.status, 201, JSON.stringify(response.body));
-  assert(Check(ServiceAccountResponse, response.body), JSON.stringify(response.body));
-  const { data } = response.body;
+  const { data } = checkedInjectedBody(response, 201, ServiceAccountResponse);
   assert.match(data.id, identifier("sa"));
   assert.deepEqual(data, { id: data.id, namespaceId, name });
   return data;

@@ -13,12 +13,12 @@ import {
   AccountResponse,
   assertApiError,
   configuredController,
-  defaultNamespace,
   type JsonValue,
 } from "./occ-api-auth-account-fixture.ts";
 import {
   bootstrapInstallation as bootstrap,
   checkedInjectedBody,
+  defaultNamespace,
   injectedRequest,
 } from "./occ-api-injected-fixture.ts";
 

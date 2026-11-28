@@ -1,105 +1,40 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import type { Static, TSchema } from "typebox";
-import { Check } from "typebox/value";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
-  ConfigurationResponse,
-  ErrorResponse,
-  InstallationResponse,
-  NamespaceResponse,
   ServiceAccountForceDeletionResponse,
   ServiceAccountListResponse,
   ServiceAccountResponse,
-  type ErrorCode,
   type ServiceAccountCredential,
 } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { callerDenied, SERVICE_ACCOUNT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import {
+  bootstrapInstallation,
+  checkedInjectedBody,
+  checkedInjectedError,
+  createConfiguration,
   createInjectedControllerFixture,
+  createNamespace,
   createServiceAccount,
-  identifier,
   injectedRequest,
-  type FixtureRequest,
+  requestForFixture,
+  withoutBackendSummaries,
 } from "./occ-api-injected-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof createInjectedControllerFixture>>;
-type Reply = Awaited<ReturnType<typeof injectedRequest>>;
-
-function checkedBody<Schema extends TSchema>(
-  reply: Reply,
-  status: number,
-  schema: Schema,
-): Static<Schema> {
-  assert.equal(reply.status, status, JSON.stringify(reply.body));
-  assert(Check(schema, reply.body), JSON.stringify(reply.body));
-  return reply.body;
-}
-
-function checkRefusal(reply: Reply, status: number, code: ErrorCode) {
-  const { error } = checkedBody(reply, status, ErrorResponse);
-  assert.equal(error.code, code, JSON.stringify(error));
-  return error;
-}
 
 async function setupServiceAccounts({ recordOperations = false } = {}) {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createInjectedControllerFixture(
     { auditSink, recordOperations },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        assert.equal(backendSummaries, undefined);
-        return factory(options);
-      },
-    },
+    withoutBackendSummaries,
   );
-  const request: FixtureRequest = (method, path, requestOptions) =>
-    injectedRequest(fixture.app, method, path, requestOptions);
-  const name = "Enterprise development";
-  const { data } = checkedBody(
-    await request("POST", "/installation/bootstrap", {
-      body: { name },
-    }),
-    201,
-    InstallationResponse,
-  );
-  assert.equal(data.name, name);
-  assert.match(data.id, identifier("ins"));
-  assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
+  const request = requestForFixture(fixture);
+  await bootstrapInstallation({ request });
   return { fixture, request, auditSink };
-}
-
-async function createNamespace(request: FixtureRequest, name: string) {
-  const { data } = checkedBody(
-    await request("POST", "/namespaces", {
-      body: { name },
-    }),
-    201,
-    NamespaceResponse,
-  );
-  assert.equal(data.name, name);
-  assert.match(data.id, identifier("ns"));
-  assert.equal(data.status, "provisioning");
-  assert.equal(Object.hasOwn(data, "installationId"), false);
-  return data;
-}
-
-async function createConfiguration(request: FixtureRequest, namespaceId: string) {
-  const { data } = checkedBody(
-    await request("POST", `/namespaces/${namespaceId}/configurations`, {
-      body: { kind: "agent", values: {} },
-    }),
-    201,
-    ConfigurationResponse,
-  );
-  assert.match(data.id, identifier("cfg"));
-  assert.equal(data.namespaceId, namespaceId);
-  assert.deepEqual(data.values, {});
-  return data;
 }
 
 async function assertBodylessDelete(fixture: Fixture, path: string) {
@@ -115,7 +50,7 @@ async function assertBodylessDelete(fixture: Fixture, path: string) {
 
 test("a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts();
-  const namespace = await createNamespace(request, "service-account-force-delete");
+  const namespace = await createNamespace({ request }, "service-account-force-delete");
   const account = await createServiceAccount(request, namespace.id, "orphaned-token");
   const accountsPath = `/namespaces/${namespace.id}/service-accounts`;
   const accountPath = `${accountsPath}/${account.id}`;
@@ -151,11 +86,11 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
   for (const path of [accountPath, `${accountPath}?force=false`]) {
     const refused = await request("DELETE", path);
-    const error = checkRefusal(refused, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+    const { error } = checkedInjectedError(refused, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
     assert.match(error.message, /force the delete and revoke the token at the provider/);
   }
   const malformed = await request("DELETE", `${accountPath}?force=yes`);
-  checkRefusal(malformed, 400, "INVALID_REQUEST");
+  checkedInjectedError(malformed, 400, "INVALID_REQUEST");
 
   // Force adds no oracle: a caller without delete gets the same 403 for a real and an unknown
   // account, and the grant holder the usual 404 for an unknown one.
@@ -167,7 +102,8 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
       const reply = await request("DELETE", `${accountsPath}/${id}?force=true`, {
         session: outsider.session,
       });
-      return { status: reply.status, error: checkRefusal(reply, 403, "FORBIDDEN") };
+      const { error } = checkedInjectedError(reply, 403, "FORBIDDEN");
+      return { status: reply.status, error };
     },
     [account.id, missingId],
   );
@@ -177,7 +113,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
 
   const forced = await request("DELETE", `${accountPath}?force=true`);
-  const { data: deleted } = checkedBody(forced, 200, ServiceAccountForceDeletionResponse);
+  const { data: deleted } = checkedInjectedBody(forced, 200, ServiceAccountForceDeletionResponse);
   // The in-memory state keeps no Backend binding, so no binding identity is reported.
   assert.deepEqual(deleted, {
     id: account.id,
@@ -216,7 +152,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
 
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts({ recordOperations: true });
-  const namespace = await createNamespace(request, "service-account-lifecycle");
+  const namespace = await createNamespace({ request }, "service-account-lifecycle");
   const namespacePath = `/namespaces/${namespace.id}`;
   const accountsPath = `${namespacePath}/service-accounts`;
   const agentsPath = `${namespacePath}/agents`;
@@ -225,9 +161,9 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const credentialPath = `${accountPath}/credential`;
 
   const detail = await request("GET", accountPath);
-  assert.deepEqual(checkedBody(detail, 200, ServiceAccountResponse).data, account);
+  assert.deepEqual(checkedInjectedBody(detail, 200, ServiceAccountResponse).data, account);
 
-  const configuration = await createConfiguration(request, namespace.id);
+  const configuration = await createConfiguration({ request }, namespace.id);
   const agentResult = await request("POST", agentsPath, {
     body: {
       name: "service-account-agent",
@@ -238,7 +174,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
       },
     },
   });
-  const refusal = checkRefusal(agentResult, 409, "RESOURCE_CONFLICT");
+  const { error: refusal } = checkedInjectedError(agentResult, 409, "RESOURCE_CONFLICT");
   assert.equal(refusal.message, "Bind the issued ServiceAccount's Credential Source instead.");
 
   const { controller } = fixture;
@@ -247,7 +183,11 @@ test("native ServiceAccounts keep private credential references and cannot admit
   // This Installation has no ChatGPT Backend: issuance is a conflict naming the fix, not an
   // outage, and only after the caller's grant and the account lookup.
   const issuance = await request("POST", `${accountPath}/credentials`, { body: {} });
-  const issuanceError = checkRefusal(issuance, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+  const { error: issuanceError } = checkedInjectedError(
+    issuance,
+    409,
+    "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+  );
   assert.equal(
     issuanceError.message,
     "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
@@ -274,7 +214,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const assigned = await request("PATCH", credentialPath, {
     body: initialCredential,
   });
-  assert.deepEqual(checkedBody(assigned, 200, ServiceAccountResponse).data.credential, {
+  assert.deepEqual(checkedInjectedBody(assigned, 200, ServiceAccountResponse).data.credential, {
     kind: initialCredential.kind,
   });
   assert.deepEqual(
@@ -298,7 +238,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const replaced = await request("PATCH", credentialPath, {
     body: replacementCredential,
   });
-  assert.deepEqual(checkedBody(replaced, 200, ServiceAccountResponse).data.credential, {
+  assert.deepEqual(checkedInjectedBody(replaced, 200, ServiceAccountResponse).data.credential, {
     kind: replacementCredential.kind,
   });
   assert.deepEqual(
@@ -309,7 +249,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   fixture.state.identities.push(outsider.principal);
   assert(outsider.session);
   const forbidden = await request("DELETE", accountPath, { session: outsider.session });
-  checkRefusal(forbidden, 403, "FORBIDDEN");
+  checkedInjectedError(forbidden, 403, "FORBIDDEN");
 
   await assertBodylessDelete(fixture, accountPath);
 
@@ -349,8 +289,8 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
 test("native ServiceAccounts reject invalid references and enforce exact Namespace-scoped access", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts();
-  const namespaceA = await createNamespace(request, "service-account-namespace-a");
-  const namespaceB = await createNamespace(request, "service-account-namespace-b");
+  const namespaceA = await createNamespace({ request }, "service-account-namespace-a");
+  const namespaceB = await createNamespace({ request }, "service-account-namespace-b");
   const accountA = await createServiceAccount(request, namespaceA.id, "account-a");
   const accountB = await createServiceAccount(request, namespaceA.id, "account-b");
   const namespaceAPath = `/namespaces/${namespaceA.id}`;
@@ -362,13 +302,13 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const duplicate = await request("POST", accountsPath, {
     body: { name: "account-a" },
   });
-  const duplicateError = checkRefusal(duplicate, 409, "RESOURCE_CONFLICT");
+  const { error: duplicateError } = checkedInjectedError(duplicate, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
   assert.equal(duplicateError.message, SERVICE_ACCOUNT_NAME_CONFLICT);
 
   // Account ownership participates in Namespace emptiness even before any Agent is created.
   const occupiedNamespace = await request("DELETE", namespaceAPath);
-  checkRefusal(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
+  checkedInjectedError(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
 
   for (const invalid of [
     { name: "unrecognized-field", implementation: "native" },
@@ -386,7 +326,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     const rejected = await request("PATCH", credentialPath, {
       body: invalid,
     });
-    checkRefusal(rejected, 400, "INVALID_REQUEST");
+    checkedInjectedError(rejected, 400, "INVALID_REQUEST");
   }
 
   const credential: ServiceAccountCredential = {
@@ -396,7 +336,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const assigned = await request("PATCH", credentialPath, {
     body: credential,
   });
-  const { data: updatedAccount } = checkedBody(assigned, 200, ServiceAccountResponse);
+  const { data: updatedAccount } = checkedInjectedBody(assigned, 200, ServiceAccountResponse);
 
   // A real account ID never becomes accessible by substituting a sibling Namespace in the URL.
   for (const { method, suffix, options } of [
@@ -455,7 +395,11 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(authorizedAccount.status, 200);
 
   const accountList = await injectedRequest(readerApp, "GET", accountsPath);
-  const { data: visibleAccounts } = checkedBody(accountList, 200, ServiceAccountListResponse);
+  const { data: visibleAccounts } = checkedInjectedBody(
+    accountList,
+    200,
+    ServiceAccountListResponse,
+  );
   assert.deepEqual(visibleAccounts, [updatedAccount]);
   assert.equal(JSON.stringify(visibleAccounts).includes(accountB.id), false);
   const [visibleAccount] = visibleAccounts;
@@ -463,7 +407,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(Object.hasOwn(visibleAccount, "backendId"), false);
 
   const denied = await injectedRequest(readerApp, "GET", `${accountsPath}/${accountB.id}`);
-  checkRefusal(denied, 403, "FORBIDDEN");
+  checkedInjectedError(denied, 403, "FORBIDDEN");
   const denial = auditSink.events.at(-1);
   assert(denial?.kind === "authorization_denial");
   assert.deepEqual(denial.resource, {

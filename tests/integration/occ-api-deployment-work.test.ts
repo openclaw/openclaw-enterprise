@@ -6,10 +6,8 @@ import {
   AgentDeploymentStatusResponse,
   AgentResponse,
   AgentRevisionResponse,
-  ErrorResponse,
   InstallationDeploymentInventoryResponse,
   type ComputeDriver,
-  type ErrorCode,
   type Restriction,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -24,22 +22,13 @@ import {
   bindHarnessKey,
   bootstrapInstallation as bootstrap,
   checkedInjectedBody,
+  checkedInjectedError,
   createAgent,
   createInjectedControllerFixture,
   createNamespace,
   injectedRequest,
-  type FixtureRequest,
+  requestForFixture,
 } from "./occ-api-injected-fixture.ts";
-
-type InjectedReply = Awaited<ReturnType<FixtureRequest>>;
-
-function assertApiError(reply: InjectedReply, status: number, code: ErrorCode, label?: string) {
-  const message =
-    label === undefined ? JSON.stringify(reply.body) : `${label}: ${JSON.stringify(reply.body)}`;
-  assert.equal(reply.status, status, message);
-  const { error } = checkedInjectedBody(reply, status, ErrorResponse);
-  assert.equal(error.code, code, message);
-}
 
 function runtimeFailureOf(status: AgentDeploymentStatusResponse["data"]) {
   const data = status.error?.data;
@@ -81,14 +70,9 @@ async function configuredController({
           ? state
           : stateWithDeploymentWork(state, deploymentWorks);
       },
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        return factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
-      },
     },
   );
-  const request: FixtureRequest = (method, pathname, options) =>
-    injectedRequest(fixture.app, method, pathname, options);
-  return { fixture, request };
+  return { fixture, request: requestForFixture(fixture) };
 }
 
 type DeploymentWorkOverrides = Map<string, Readonly<ControllerWork> | undefined>;
@@ -201,7 +185,7 @@ test("OCC Fastify rejects unsafe guarded Agent stop requests", async () => {
   const queued = await operations();
   assert.equal(before.activeRevisionId, admitted.data.id);
   assert.equal(before.desiredRuntimeState, "running");
-  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "queued deployment");
+  checkedInjectedError(await stop(expected), 409, "RESOURCE_CONFLICT", "queued deployment");
 
   // A persisted terminal work result can report completion without activation.
   deploymentWorks.set(
@@ -216,7 +200,12 @@ test("OCC Fastify rejects unsafe guarded Agent stop requests", async () => {
     checkedInjectedBody(deployment, 200, AgentDeploymentStatusResponse).data.status,
     "failed",
   );
-  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "completed without activation");
+  checkedInjectedError(
+    await stop(expected),
+    409,
+    "RESOURCE_CONFLICT",
+    "completed without activation",
+  );
 
   for (const query of [
     "expectedActiveRevisionId=",
@@ -224,7 +213,7 @@ test("OCC Fastify rejects unsafe guarded Agent stop requests", async () => {
     "unexpectedRevisionId=invalid",
     `${expected}&${expected}`,
   ]) {
-    assertApiError(await stop(query), 400, "INVALID_REQUEST", query);
+    checkedInjectedError(await stop(query), 400, "INVALID_REQUEST", query);
   }
 
   assert.deepEqual(
@@ -309,7 +298,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${missingRevisionId}`,
   );
-  assertApiError(missing, 404, "NOT_FOUND");
+  checkedInjectedError(missing, 404, "NOT_FOUND");
 
   const { principal: revisionReader } = await fixture.createAuthPrincipal(
     "deployment-status-reader",
@@ -543,8 +532,7 @@ test("a deletion retry by another delete holder names the initiator condition an
     "DELETE",
     `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
-  assertApiError(refused, 403, "FORBIDDEN");
-  const refusedError = checkedInjectedBody(refused, 403, ErrorResponse).error;
+  const { error: refusedError } = checkedInjectedError(refused, 403, "FORBIDDEN");
   assert.match(refusedError.message, /Only the actor that started this deletion/);
   assert.match(refusedError.message, /remove its delete permission first/);
   assert.equal(JSON.stringify(refused.body).includes(fixture.principal.id), false);
@@ -634,9 +622,9 @@ test("Installation deployment inventory fails closed on incomplete authorization
       }
       resume.resolve();
       const changed = await pending;
-      assert.equal(changed.status, change === "new-agent" ? 503 : 403);
-      assert.equal(
-        checkedInjectedBody(changed, change === "new-agent" ? 503 : 403, ErrorResponse).error.code,
+      checkedInjectedError(
+        changed,
+        change === "new-agent" ? 503 : 403,
         change === "new-agent" ? "DEPENDENCY_UNAVAILABLE" : "FORBIDDEN",
       );
     } finally {
@@ -730,16 +718,18 @@ test("Installation deployment inventory fails closed on incomplete authorization
   assert.ok(otherNamespace);
   deploymentWorks.set(work.key, { ...completedWork, namespaceId: otherNamespace.id });
   const wrongOwner = await controller.request("GET", inventoryPath);
-  assertApiError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
+  checkedInjectedError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
 
   // Missing durable work makes completeness unknowable and must fail the whole operation.
   deploymentWorks.set(work.key, undefined);
   const incomplete = await controller.request("GET", inventoryPath);
-  assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
-  assert.deepEqual(Object.keys(checkedInjectedBody(incomplete, 503, ErrorResponse)).sort(), [
-    "error",
-    "meta",
-  ]);
+  const incompleteBody = checkedInjectedError(
+    incomplete,
+    503,
+    "DEPENDENCY_UNAVAILABLE",
+    "missing deployment work",
+  );
+  assert.deepEqual(Object.keys(incompleteBody).sort(), ["error", "meta"]);
 });
 
 test("Installation deployment inventory refuses a revision owned by a different Namespace tuple", async () => {
@@ -772,5 +762,5 @@ test("Installation deployment inventory refuses a revision owned by a different 
   });
 
   const inventory = await controller.request("GET", "/installation/deployment-inventory");
-  assertApiError(inventory, 503, "DEPENDENCY_UNAVAILABLE", "orphan deployment operation");
+  checkedInjectedError(inventory, 503, "DEPENDENCY_UNAVAILABLE", "orphan deployment operation");
 });
