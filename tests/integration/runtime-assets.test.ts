@@ -321,6 +321,18 @@ packages:
     "runtime-ready",
   );
   const inventory = parseInventory(contents.toString("utf8"));
+  // Preserve inventory order because the serialized bytes determine the provenance digest.
+  const orderedPaths = [
+    "LICENSE",
+    "additional-launcher.mjs",
+    "dist/extensions/codex/package.json",
+    "dist/index.js",
+    "docs/help.md",
+  ];
+  assert.deepEqual(
+    [...inventory.keys()].filter((path) => orderedPaths.includes(path)),
+    orderedPaths,
+  );
   for (const name of [
     "node_modules/.pnpm/dep@1.0.0/node_modules/dep/package.json",
     "node_modules/.pnpm/dep@2.0.0/node_modules/dep/package.json",
