@@ -112,14 +112,16 @@ milliseconds. The Pod timestamps have whole-second precision and can come from
 different clocks. The test reads the selected Pod after deployment and omits
 intervals it cannot measure. A failed deployment can have no sample. The
 intervals exclude work before Pod creation and can extend past the deployment
-wait if readiness changed again. To estimate how much time passed before that
-Pod was created, search for a separate `revisionToPodCreationMs` line with the
-same deployment label. It compares the Agent revision creation time in
-PostgreSQL with the Kubernetes API server's creation time for the sampled Ready
-Gateway Pod. The Pod time has whole-second precision and the clocks can differ.
-The sampled Pod can also be a replacement. The interval includes any work
-before Pod creation, so it cannot isolate queue time or tell you how long an
-Agent was unavailable. The test omits missing or invalid samples.
+wait if readiness changed again.
+
+Search for `revisionToPodCreationMs` under the
+same deployment label. It estimates the time from creation of the Agent revision
+in PostgreSQL to creation of the sampled Gateway Pod. This excludes request
+processing before the revision was recorded. The Pod can be a replacement, and
+its timestamp has whole-second precision. The two clocks can also differ.
+You cannot use this interval alone to measure queue time or downtime.
+The test omits the line if either timestamp is missing or invalid, or if the
+difference is negative or longer than 60 minutes.
 
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.
