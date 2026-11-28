@@ -32,6 +32,8 @@ type ProvisioningJob = Pick<AgentProvisioningStatusWire, "workId" | "status" | "
 
 type CreateScenario = {
   provisioningCancelledByStop?: boolean;
+  // The job fails before it hands off a revision, so its failure stays retryable.
+  provisioningFailsBeforeDeployment?: boolean;
   provisionedDeploymentStopped?: boolean;
   provisionedDeploymentStatus?: AgentDeploymentStatusWire["status"];
   provisionedDeploymentAttempt?: Omit<
@@ -40,8 +42,14 @@ type CreateScenario = {
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
   provisioningStatus?: AgentProvisioningStatusWire["status"];
+  // The completed phase each status read reports, in order (the last one repeats). Defaults to
+  // configuration on the first read and handoff after it, as before.
+  provisioningPhases?: readonly AgentProvisioningStatusWire["phase"][];
   malformedProvisioningReply?: "revision-id" | "error-message";
   provisioningNamesDeploymentWait?: boolean;
+  // The first deployment's read is refused for this caller (404): Create completes on the
+  // form and offers the Agent's page instead of opening it.
+  provisionedDeploymentRefused?: boolean;
 };
 
 type CreateDependencies = {
@@ -216,45 +224,51 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
         files.set(`${saved.id}/${filename}`, content);
       }
       // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
-      const revision = scenario.provisioningCancelledByStop
-        ? null
-        : snapshot(saved, nextId("rev"), 1);
+      // A failure before handoff keeps the job retryable: no revision exists to recover.
+      const revision =
+        scenario.provisioningCancelledByStop || scenario.provisioningFailsBeforeDeployment
+          ? null
+          : snapshot(saved, nextId("rev"), 1);
       if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
         saved.desiredRuntimeState = "stopped";
       }
       if (revision) {
         saveRevision(revision);
-        deployments.set(revision.id, {
-          deploymentId: revision.id,
-          namespaceId,
-          agentId: saved.id,
-          status: scenario.provisionedDeploymentStatus ?? "queued",
-          cleanup: null,
-          progress:
-            scenario.provisionedDeploymentAttempt === undefined
-              ? initialDeploymentProgress(
-                  scenario.provisionedDeploymentStatus ?? "queued",
-                  createdAt,
-                )
-              : {
-                  lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
-                  nextAttemptAt: createdAt,
-                },
-          reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
-          error:
-            scenario.provisionedDeploymentStatus !== "failed"
-              ? null
-              : scenario.provisionedDeploymentStopped
-                ? {
-                    code: "REVISION_STOPPED",
-                    message: deploymentFailureMessages.stopped,
-                  }
-                : (scenario.provisionedDeploymentError ?? {
-                    code: "DEPENDENCY_UNAVAILABLE",
-                    message: deploymentFailureMessages.dependencyUnavailable,
-                  }),
-          warnings: [],
-        });
+        // A refused scenario stores no deployment, so the read answers 404 and the completed
+        // form offers the Agent's page instead of opening a deployment this caller may not read.
+        if (!scenario.provisionedDeploymentRefused) {
+          deployments.set(revision.id, {
+            deploymentId: revision.id,
+            namespaceId,
+            agentId: saved.id,
+            status: scenario.provisionedDeploymentStatus ?? "queued",
+            cleanup: null,
+            progress:
+              scenario.provisionedDeploymentAttempt === undefined
+                ? initialDeploymentProgress(
+                    scenario.provisionedDeploymentStatus ?? "queued",
+                    createdAt,
+                  )
+                : {
+                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
+                    nextAttemptAt: createdAt,
+                  },
+            reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
+            error:
+              scenario.provisionedDeploymentStatus !== "failed"
+                ? null
+                : scenario.provisionedDeploymentStopped
+                  ? {
+                      code: "REVISION_STOPPED",
+                      message: deploymentFailureMessages.stopped,
+                    }
+                  : (scenario.provisionedDeploymentError ?? {
+                      code: "DEPENDENCY_UNAVAILABLE",
+                      message: deploymentFailureMessages.dependencyUnavailable,
+                    }),
+            warnings: [],
+          });
+        }
       }
       const job: ProvisioningJob = {
         requestId,
@@ -311,22 +325,35 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
       if (retrySuffix === undefined && method === "GET") {
         current.reads += 1;
         if (current.status !== "failed") {
+          // A refused deployment read needs one running handoff read before the job succeeds,
+          // so the form has asked and been refused before its completion shows the offer.
+          const succeedsAt = scenario.provisionedDeploymentRefused ? 3 : 1;
           current.status =
             scenario.provisionedDeploymentStatus === "running"
               ? "running"
-              : current.reads > 1
+              : current.reads > succeedsAt
                 ? scenario.provisionedDeploymentStatus === "failed" ||
                   scenario.provisioningCancelledByStop
                   ? "failed"
                   : "succeeded"
                 : "running";
         }
+        // Production records the Configuration and Agent during the configuration phase and
+        // the revision only at handoff; the fixture follows the same lifecycle so the status
+        // line names each checkpoint instead of jumping to the deployment on an early revision.
+        const phase = scenario.provisioningPhases
+          ? (scenario.provisioningPhases[
+              Math.min(current.reads - 1, scenario.provisioningPhases.length - 1)
+            ] ?? "handoff")
+          : current.reads > 1
+            ? "handoff"
+            : "configuration";
         return response({
           provisioning: {
             requestId: current.requestId,
             workId: current.workId,
             status: current.status,
-            phase: current.reads > 1 ? "handoff" : "configuration",
+            phase,
             attemptCount: 1,
             updatedAt: createdAt,
             url: current.url,
@@ -337,28 +364,35 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
                         code: "PROVISIONING_CANCELLED",
                         message: "Provisioning was cancelled because the Agent was stopped.",
                       }
-                    : scenario.provisionedDeploymentStopped
+                    : scenario.provisioningFailsBeforeDeployment
                       ? {
-                          code: "REVISION_STOPPED",
-                          message: "The Agent was stopped before its first deployment finished.",
+                          code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+                          message: "Agent provisioning could not complete.",
                         }
-                      : (scenario.provisionedDeploymentError ?? {
-                          code:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                              : "PROVISIONING_FAILED",
-                          message:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? deploymentFailureMessages.bootstrap
-                              : "The worker could not finish provisioning.",
-                        }),
+                      : scenario.provisionedDeploymentStopped
+                        ? {
+                            code: "REVISION_STOPPED",
+                            message: "The Agent was stopped before its first deployment finished.",
+                          }
+                        : (scenario.provisionedDeploymentError ?? {
+                            code:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
+                                : "PROVISIONING_FAILED",
+                            message:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? deploymentFailureMessages.bootstrap
+                                : "The worker could not finish provisioning.",
+                          }),
                 }
               : {}),
             ...(current.status === "succeeded" || current.reads > 1
               ? {
                   configurationId: current.configurationId,
                   agentId: current.agentId,
-                  revisionId: current.revisionId,
+                  ...(phase === "handoff" || current.status === "succeeded"
+                    ? { revisionId: current.revisionId }
+                    : {}),
                 }
               : {}),
             // Corrupt only the outgoing terminal reply; stored deployment details stay valid.

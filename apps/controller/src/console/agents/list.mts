@@ -98,6 +98,9 @@ export const NAMESPACE_MISSING = Object.freeze({
 // instead of showing them.
 export { GENERIC_DENIAL };
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
+// The provisioning API's replay refusal: the request ID is admitted with a different plan.
+export const PROVISIONING_DIFFERENT_PLAN =
+  "The Agent provisioning request ID has a different plan.";
 
 // Granting an Agent a credential writes Namespace IAM policy, which only Installation
 // administration may do (UX plan A2); credentials.mts words its grant steps with this.

@@ -79,6 +79,10 @@ import {
   refusedPresetVariables,
 } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
+import {
+  createProvisioningProgress,
+  type ProvisioningProgressView,
+} from "./provisioning-progress.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import {
   pluginConnectionControl,
@@ -108,6 +112,7 @@ import {
   namespacePath,
   neutralDeploymentOutcome,
   preAdmissionRefusal,
+  PROVISIONING_DIFFERENT_PLAN,
   rejectionMessage,
 } from "./list.mjs";
 
@@ -227,7 +232,7 @@ interface ProvisioningAttempt {
 }
 
 type ProvisioningContext = Pick<CreateAgentContext, "request" | "namespaceId" | "isCurrent"> & {
-  status: HTMLElement;
+  progress: ProvisioningProgressView;
 };
 type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // The API's duplicate-name sentence. Other Agent conflicts reach the client as generic text,
@@ -540,6 +545,9 @@ async function cancelledAgentState(request: CreateRequest, namespaceId: string, 
 
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
+// The provisioning API's refusal for a deleted resource names its kind and ID.
+const DELETED_PROVISIONING_RESOURCE =
+  /^(Secret|Credential source|ServiceAccount) ([^,]+), which this provisioning request uses, was deleted\./;
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
 // Without native worker support the Installation does not say why (finding 1612), unless it
@@ -596,7 +604,7 @@ function jobDeploymentWait(job: ProvisioningJob) {
 
 async function waitForProvisioning({
   request,
-  status,
+  progress,
   first,
   namespaceId,
   observeJob,
@@ -628,18 +636,18 @@ async function waitForProvisioning({
         throw new DOMException("View closed", "AbortError");
       }
       if (readable) {
-        status.textContent = "Agent created. Opening its first deployment…";
         return { agentId, revisionId, tab: "deployment" as const };
       }
       deploymentRefused = readable === false;
     }
     started ||= current.status === "running";
-    // A refusal also clears detail from the earlier job read, which may predate an access change.
-    setText(
-      status,
-      (deploymentRefused ? null : jobDeploymentWait(current)) ??
-        provisioningStatusText(started ? "running" : current.status),
+    // A refusal also clears detail from the earlier job read, which may predate an access
+    // change. The line explains the missing detail and keeps following the job (ask 3): the
+    // job's own wait text is dropped, not the job.
+    progress.note(
+      deploymentRefused ? "Deployment details are unavailable." : jobDeploymentWait(current),
     );
+    progress.report(current);
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -660,14 +668,20 @@ async function waitForProvisioning({
           status: current.status,
           error: current.error?.code === undefined ? null : { code: current.error.code },
         });
+  // The status line names where the job ended; the error line below owns the reason and the
+  // action.
+  progress.finish(
+    current,
+    current?.status === "succeeded"
+      ? "succeeded"
+      : neutralOutcome === "stopped"
+        ? "stopped"
+        : neutralOutcome === "superseded"
+          ? "superseded"
+          : "failed",
+  );
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
-  status.textContent =
-    neutralOutcome === "stopped"
-      ? "Provisioning stopped."
-      : current?.status === "failed"
-        ? ""
-        : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     throw new ProvisioningFailure(current, neutralOutcome, cancelledAgent === "unknown");
   }
@@ -680,7 +694,10 @@ async function waitForProvisioning({
   return {
     agentId: current.agentId,
     revisionId: current.revisionId,
-    tab: "configuration" as const,
+    // A refused deployment read keeps the reader on the form: the deployment tab belongs to a
+    // caller who may read it, so the completed line offers the Agent's page instead of the
+    // form forcing it open.
+    tab: deploymentRefused ? undefined : ("configuration" as const),
   };
 }
 
@@ -707,13 +724,13 @@ class ProvisioningFailure extends Error {
 
 async function finishProvisioningAttempt({
   request,
-  status,
+  progress,
   namespaceId,
   attempt,
   retryUrl,
   isCurrent,
 }: ProvisioningContext & { attempt: ProvisioningAttempt; retryUrl?: string | undefined }) {
-  status.textContent = "Submitting provisioning request…";
+  progress.begin();
   const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
     retryUrl === undefined
@@ -737,10 +754,10 @@ async function finishProvisioningAttempt({
     return job;
   }
   const accepted = observeJob(provisioned);
-  status.textContent = "Provisioning request accepted.";
+  progress.report(accepted);
   return waitForProvisioning({
     request,
-    status,
+    progress,
     first: accepted,
     namespaceId,
     observeJob,
@@ -2246,6 +2263,10 @@ function renderAgentForm(
   // must then resend the same plan: the API answers an edited one with 409 "different plan".
   let requestAdmitted = false;
   let provisioningAttempt: ProvisioningAttempt | null = null;
+  // A job that succeeded while its deployment read was refused completes on the form: the
+  // completed line offers Open Agent, and the form stays terminal so a resubmit cannot replay
+  // the finished request under the same ID.
+  let completedOnForm = false;
   // Create can resend an admitted plan after the retry endpoint refuses a finished job.
   let admittedAttempt: ProvisioningAttempt | undefined;
   const capabilityStatus = element(
@@ -2313,6 +2334,9 @@ function renderAgentForm(
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
+  // The live status line for a provisioning request in flight. It reads only the polled job's
+  // own status and phase; the lines below keep their sentences (findings 1424, 2423).
+  const provisioningMeter = createProvisioningProgress();
   // Create's refusals show in the danger status block (UX plan C1). The line above keeps its
   // markup so open changes to the lines around it still merge.
   setStatusTone(feedback, "danger");
@@ -2374,6 +2398,10 @@ function renderAgentForm(
     if (!provisioningAttempt || pending) {
       return;
     }
+    // A retried request is in flight like the first one: mark it busy so Retry hides for its
+    // run too, not only for the initial submission. submitProvisioningAttempt's finally
+    // clears it through endCreate.
+    createPending = true;
     void submitProvisioningAttempt(provisioningAttempt, provisioningAttempt.statusUrl);
   });
   // A refused Installation read stays refused: its access block offers a permission reread instead.
@@ -2460,6 +2488,10 @@ function renderAgentForm(
     "div",
     { className: "form-actions" },
     repositoryDeploymentWarning,
+    // The status line shares the sticky action bar (finding 2098 keeps Create Agent in view
+    // there), so the reader who just selected it sees provisioning without scrolling: it pins
+    // above the buttons while the request runs and leaves the bar when it ends or is refused.
+    provisioningMeter.section,
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
       const configurationToKeep = savedAgent ? undefined : savedConfiguration;
@@ -3188,11 +3220,14 @@ function renderAgentForm(
   }
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
-    const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
+    const saved = Boolean(
+      savedConfiguration || savedAgent || provisioningAttempt || completedOnForm,
+    );
     const planLocked =
       pending ||
       Boolean(savedAgent) ||
       Boolean(provisioningAttempt) ||
+      completedOnForm ||
       outcomeUnknown ||
       requestAdmitted;
     for (const node of form.querySelectorAll<
@@ -3594,7 +3629,8 @@ function renderAgentForm(
       credentialGrantRefused ||
       selectedModeUnavailable() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
-      Boolean(provisioningAttempt);
+      Boolean(provisioningAttempt) ||
+      completedOnForm;
     setHidden(
       repositoryDeploymentWarning,
       submitUnavailable ||
@@ -3631,7 +3667,7 @@ function renderAgentForm(
     if (submitUnavailable && submitReason === null) {
       submit.disabled = true;
     }
-    retryProvisioning.hidden = !provisioningAttempt;
+    retryProvisioning.hidden = createPending || !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
     retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
     retryCapabilityDiscovery.disabled = pending;
@@ -3667,7 +3703,8 @@ function renderAgentForm(
         active === document.body ||
         ("disabled" in active && active.disabled) ||
         active === savedStatus ||
-        active === feedback)
+        active === feedback ||
+        active === provisioningMeter.statusLine)
     ) {
       line.tabIndex = -1;
       line.focus({ preventScroll: true });
@@ -3959,19 +3996,29 @@ function renderAgentForm(
       mutationStarted = true;
       const finishing = finishProvisioningAttempt({
         request,
-        status: savedStatus,
+        progress: provisioningMeter,
         namespaceId,
         attempt,
         retryUrl,
         isCurrent: context.isCurrent,
       });
-      focusFeedbackLine(savedStatus);
+      focusFeedbackLine(provisioningMeter.statusLine);
       const { agentId, revisionId, tab } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
+      if (tab === undefined) {
+        // The deployment read was refused, so Create does not force the Agent's page open: the
+        // completed line offers it, and the reader chooses. The form stays terminal: the Agent
+        // exists, so a resubmit would only replay the finished request under the same ID.
+        completedOnForm = true;
+        provisioningMeter.offer(
+          link("Open Agent", `agents/${agentId}?revision=${revisionId}&tab=configuration`, context),
+        );
+        return;
+      }
       context.navigate(`agents/${agentId}?revision=${revisionId}&tab=${tab}`);
     } catch (cause) {
       const error = {
@@ -4005,6 +4052,13 @@ function renderAgentForm(
         error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT
           ? error.serverMessage
           : "The provisioning job can no longer be retried.";
+      // A deleted Secret, Credential source or ServiceAccount makes the request unrecoverable:
+      // the API's refusal says to submit a new one, so the form unlocks for a fresh request
+      // with a replacement. Every other refused retry keeps the admitted identity, because
+      // the job may have finished.
+      const unrecoverableRequest =
+        error.status === 409 &&
+        error.serverMessage?.endsWith("Submit a new Agent provisioning request.") === true;
       let detail;
       if (outcomeUnknown && attempt.statusUrl) {
         detail =
@@ -4027,8 +4081,14 @@ function renderAgentForm(
         detail = `${error.message} Open this Agent to see the failed version and its recovery actions.`;
       } else if (terminal?.failed) {
         detail = `${error.message} Select Create Agent to submit a new request.`;
+      } else if (unrecoverableRequest) {
+        // The API's refusal names the deleted resource and says to submit a new request; the
+        // unlocked form lets the operator replace it and submit a fresh one.
+        detail = `${retryRefusal} Replace the deleted resource, then select Create Agent to submit a new request.`;
       } else if (retryRefused) {
-        detail = `${retryRefusal} Select Create Agent to submit a new request.`;
+        // A refused retry keeps the admitted identity (the job may have finished), so the
+        // resend recovers it instead of admitting a duplicate.
+        detail = `${retryRefusal} Select Create Agent to resend the same request ID.`;
       } else if (error.status === undefined && error.message) {
         detail = error.message;
       } else if (recovering && error.status === 409) {
@@ -4043,11 +4103,7 @@ function renderAgentForm(
       // A job that ended keeps its final status (none once it failed: the error line says so);
       // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
-        if (savedSecret || savedConfiguration || savedAgent) {
-          showSavedStatus();
-        } else {
-          savedStatus.textContent = "";
-        }
+        provisioningMeter.reset();
       }
       // Admission's channel reference refusal names the Configuration JSON's setting.
       refusedInConfiguration = !terminal && !outcomeUnknown && showChannelBindingRefusal(cause);
@@ -4098,18 +4154,84 @@ function renderAgentForm(
         (requestAdmitted && error.status !== 400 && !admissionNameTaken);
       if (!outcomeUnknown && !terminal?.canRetry) {
         provisioningAttempt = null;
-        if (terminal?.failed || retryRefused) {
-          // The failed job keeps this request ID; an edited form needs a new one.
+        // A refused retry may hide a finished job, so recovery resends the admitted identity:
+        // the API returns that job instead of admitting a duplicate. A failed job keeps its
+        // request ID server-side, so an edited form needs a fresh one; so does a resend the
+        // API refuses as a different plan under the kept identity.
+        const differentPlan =
+          error.status === 409 && error.serverMessage === PROVISIONING_DIFFERENT_PLAN;
+        if (terminal?.failed || differentPlan || unrecoverableRequest) {
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
+          if (unrecoverableRequest) {
+            // The refusal names the deleted resource: drop the cached reference that matches
+            // it, so the unlocked form submits a replacement instead of the deleted ID again.
+            // The saved credential disables its inputs stickily, so they reset with it.
+            const deleted = DELETED_PROVISIONING_RESOURCE.exec(error.serverMessage ?? "");
+            if (deleted?.[1] === "Secret" && savedSecret && savedSecret.id === deleted[2]) {
+              // Restoring a password Preset makes its saved Secret the selected credential.
+              if (
+                modelCredentialSource?.kind === "secret" &&
+                modelCredentialSource.namespaceId === savedSecret.ref.namespaceId &&
+                modelCredentialSource.id === savedSecret.id
+              ) {
+                modelCredentialSource = null;
+                modelCredentialSecret = undefined;
+                modelCredentialPicker.refresh();
+              }
+              savedSecret = undefined;
+              authMethod.disabled = false;
+              apiKey.disabled = false;
+            }
+            // Channel settings bind their own credentials into the Configuration the request
+            // resubmits, so a deleted one is dropped the same way: the filtered record
+            // leaves the unlocked form no missing ID to send again, and the re-rendered
+            // editor shows the binding gone for the operator to replace. The pickers that
+            // read the bindings follow the filtered record. Channel bindings are Credential
+            // Sources since the credential cutover; a Secret match only covers a legacy draft.
+            if (
+              (deleted?.[1] === "Secret" || deleted?.[1] === "Credential source") &&
+              Object.values(configurationSecretBindings).some(
+                (channelBinding) => channelBinding.source.id === deleted[2],
+              )
+            ) {
+              configurationSecretBindings = Object.fromEntries(
+                Object.entries(configurationSecretBindings).filter(
+                  ([, channelBinding]) => channelBinding.source.id !== deleted[2],
+                ),
+              );
+              if (directoryUsesChannelSource) {
+                directorySource = slackBotSource();
+                const previous = directorySourcePicker;
+                previous.setActive(false);
+                directorySourcePicker = createDirectorySourcePicker();
+                previous.field.replaceWith(directorySourcePicker.field);
+                directorySourcePicker.setActive(
+                  directoryApproversAvailable && !directorySetup.hidden,
+                );
+              }
+              defaultApprovers.refreshDirectory();
+              renderChannelEditor();
+            }
+          }
         }
         admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
+      }
+      if (!terminal) {
+        if (savedSecret || savedCredentialSource || savedConfiguration || savedAgent) {
+          showSavedStatus();
+        } else {
+          savedStatus.textContent = "";
+        }
       }
       // A job that names its Agent created one, which a kept draft must not create again.
       if (!terminal?.job.agentId) {
         keepDraftAfterRefusal();
       }
     } finally {
+      // Every way an attempt ends clears the busy flag, the retry path included: its callback
+      // sets createPending directly, and only this shared finally runs for a retried attempt.
+      endCreate();
       if (context.isCurrent()) {
         pending = false;
         updateControls();
@@ -4180,6 +4302,7 @@ function renderAgentForm(
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||
+      completedOnForm ||
       credentialGrantRefused ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilitiesSettled() ||

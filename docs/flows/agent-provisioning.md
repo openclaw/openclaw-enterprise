@@ -63,7 +63,7 @@ The Slack editor selects a ready static Source or calls `POST /namespaces/:names
 
 For supported models, Console enrolls a TokenService Source. Codex PAT enrollment can precede Apps discovery. Retries reuse confirmed Sources; check Credentials after uncertain enrollment. Direct authentication runs preflight before writing a Namespace Secret.
 
-Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. Retry reuses the ID and inputs after uncertain admission.
+Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving credentials again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or one naming a deleted Secret or ServiceAccount takes a fresh ID and unlocks the form for a replacement. A deleted channel-editor Secret or Credential Source is dropped from the bindings the replacement resubmits.
 
 Draft creation saves the Configuration and Agent. At deployment, admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must authorize the Agent. Credential-access retry retains the Agent but cannot grant Slack Source access.
 
@@ -135,10 +135,24 @@ Stop gives `REVISION_STOPPED`. Stop or Delete before handoff gives
 Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) polls the job.
 When a pending job names its Agent and first revision, Create gives the deployment read one
 second to finish. If it succeeds, Create stops polling and opens that revision's Deployment tab
-for progress, Stop, and recovery. A 403 or 404 keeps Create on the job with generic status and
-ends deployment checks for this attempt. If the read is unavailable or times out, Create shows
-any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
-caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
+for progress, Stop, and recovery. A 403 or 404 keeps Create on the job: the line explains that
+deployment details are unavailable, drops the wait text and ends deployment checks for this
+attempt, and a job that then succeeds completes on the form: the completed line offers **Open
+Agent**, the form stays terminal so the finished request cannot be replayed, and the
+deployment tab belongs to a caller who can read it. If the read is unavailable or times out,
+Create shows any wait reported by the job and rechecks the deployment on the next poll; a job
+that succeeds then opens Configuration. A 401 sends the caller to sign in again.
+
+The status line beside Create Agent names the last checkpoint the job's reply confirms —
+after the `configuration` phase it says “Configuration and Agent created”, which does not
+confirm runtime-credential creation started. The sticky action bar keeps Create Agent beside
+the line (`apps/controller/src/console/agents/provisioning-progress.mts`), and focus moves to
+that line while the request runs: it is the view's one live provisioning status, and the
+saved-resource line below the form stays reserved for recovery. An unreadable poll
+keeps the last confirmed message; the line never infers the next checkpoint, and shows elapsed
+time silently. A wait the job names, or unavailable deployment details, shows as a silent note
+beside the checkpoint. On failure it names the last confirmed checkpoint and the job's safe
+reason, or just “Agent provisioning failed.” The form's error line gives the recovery action.
 
 The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
 details folded. A temporary read failure labels a retained wait as last recorded. A refused read
@@ -146,11 +160,10 @@ clears it.
 
 Admission, status, and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
-`meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If Create sees that a newer deployment took over, it explains what happened without a retry
-or a link. The job identifies only the deployment that ended. For a failure, follow the linked
-version's recovery guidance. After a Stop, deploy when ready.
-Reconciliation owns startup and activation; later versions use Deploy.
+Leaving stops polling, not provisioning. If a newer deployment took over, Create explains
+what happened without a retry or a link: the job identifies only the deployment that ended.
+For a failure, follow the linked version's recovery guidance. After a Stop, deploy when
+ready. Reconciliation owns startup and activation; later versions use Deploy.
 
 Console parses each reply in
 `apps/controller/src/console/agents/provisioning-job.mts:provisioningJob` before
@@ -229,54 +242,14 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-27 10:30: Adapt the deleted channel-binding drop to Credential Sources after the credential cutover; move older changelog entries to history. (feat/create-agent-progress - 8d190b865f)
 - 2026-11-26 23:36: Trace Slack enrollment failures. (authoring-run/3897c8a4-2327-47c6-a552-30b5e7ed61c2 - 0978257f991a04b699ce411820326119c09be20a)
 - 2026-11-26 15:03: Trace inline Slack Source enrollment. (authoring-run/b01217a9-df42-4b2b-9110-e266330732d6 - 95d045c383baa1eb4bac2677ff4f5067e361ee45)
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
+- 2026-11-24 23:10: Remove the deleted Credential Source recovery: the credential cutover routes TokenService enrollment through the draft path, so provisioning no longer references a Source. (feat/create-agent-progress - aaf1b6476d)
+- 2026-11-23 03:35: Follow the maintainer review: the completed form stays terminal after a refused deployment read, so the finished request cannot be replayed. (feat/create-agent-progress - 12cd0ba762)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
-
-- 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
-
-- 2026-11-12 14:06: Record provisioning cancellation. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
-
-- 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
-
-- 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
-
-- 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
-
-- 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
-
-- 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
-
-- 2026-10-30 07:41: Omit admission-only Gateway catalog lookup from source-backed provisioning status; retain ownership and grant checks. (authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7 - 429951edfc002c1c6ef98970696e655e03ba3ec7)
-
-- 2026-10-29 19:27: Use the resolved credential source type for Harness admission. (authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d - d19e41caf)
-
-- 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
-
-- 2026-10-27 01:52: Preserve current provisioning lifecycle while integrating required human scope headers. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
-- 2026-10-25 16:40: Require human ingress scope headers and preserve current provisioning checks while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
-
-- 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
-- 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)
-
-- 2026-10-21 13:21: Validate native identity grants before rollout and clarify external human ingress; accompanying local changes. (authoring-run/aba975bf-8e97-4c9d-9e34-dc2c9c79d591 - 4accde87c)
-
-- 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
-
-- 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
-- 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
-
-- 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
-
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
-- 2026-10-15 07:00: A later attempt retries a failed unrecorded-Configuration delete. (fix-1399)
-- 2026-10-15 06:30: Refused provisioning deletes its unrecorded Configuration. (fix-1395)
-- 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
-- 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
+- 2026-11-22 02:50: Follow the maintainer review: the sticky line is the one live provisioning status and takes focus; a refused deployment read completes on the form with an Open Agent offer. (feat/create-agent-progress - 12cd0ba762)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.

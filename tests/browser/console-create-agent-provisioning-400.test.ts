@@ -2324,9 +2324,10 @@ test("Agent Credentials saves its existing model source without replacing the bi
   assert.deepEqual(object(current.data).credentialSources, [{ sourceId }]);
 });
 
-// A refused submit kept "Submitting provisioning request…" beside the API's refusal, and focus
-// dropped to the page when Create Agent disabled, for the refusal and for the whole provisioning
-// wait (finding 1490). Focus now follows the progress line, then the refusal, which replaces it.
+// A refused submit used to keep its own line beside the API's refusal, and focus dropped to
+// the page when Create Agent disabled, for the refusal and for the whole provisioning wait
+// (finding 1490). Focus now follows the sticky status line, then the refusal, which replaces
+// it.
 test("A refused Create Agent submit clears its progress and focuses the refusal", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
@@ -2365,7 +2366,9 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
     });
   await page.getByRole("button", { name: "Create Agent" }).click();
   await provision.requested;
-  const progress = page.getByRole("status").filter({ hasText: "Submitting provisioning request…" });
+  const progress = page
+    .getByRole("status")
+    .filter({ hasText: "Waiting for the controller worker…" });
   await progress.waitFor();
   await page
     .waitForFunction(
@@ -2377,7 +2380,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   assert.deepEqual(await focused(), {
     tag: "P",
     role: "status",
-    text: "Submitting provisioning request…",
+    text: "Waiting for the controller worker…",
   });
 
   provision.release();

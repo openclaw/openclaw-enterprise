@@ -2373,6 +2373,46 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .agent-version-heading p {
   margin-bottom: 0;
 }
+/* Agent provisioning status line (Create Agent): one live message naming the last checkpoint
+   the polled provisioning job's own reply confirms. No percentage is shown, because the job
+   reports checkpoints, not fractions, and no next checkpoint is ever inferred. */
+.provisioning-progress {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
+  margin: var(--space-5) 0;
+}
+.provisioning-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.provisioning-phase {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+}
+.provisioning-elapsed {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+/* The job's own safe reason for a failure, beside the status line. A note a running job
+   names — an actionable wait, or unavailable deployment details — keeps the normal text
+   colour: it is guidance beside the checkpoint, not a failure. */
+.provisioning-reason {
+  margin: var(--space-3) 0 0;
+  color: var(--danger);
+}
+.provisioning-reason[data-note] {
+  color: inherit;
+}
+/* The completed Agent's page, offered when Create stays on the form because the deployment
+   read was refused. */
+.provisioning-offer {
+  margin: var(--space-3) 0 0;
+}
 .deployment-progress {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4766,6 +4806,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   padding-block: var(--space-3);
   border-top: 1px solid var(--color-border);
   background: var(--color-canvas);
+}
+/* The provisioning meter shares that sticky bar: while a request runs it pins above the
+   buttons, where the reader selected Create Agent, instead of two screens up the form. */
+.form-actions > .provisioning-progress {
+  flex: 1 1 100%;
+  margin: 0 0 var(--space-3);
+}
+/* Keyboard focus scrolls a control into view above the taller bar while the meter is in it.
+   The form ID keeps this rule ahead of the shorter base clearance on html:has(#create-agent-form)
+   whenever both match. */
+html:has(#create-agent-form ~ .form-actions > .provisioning-progress:not([hidden])) {
+  scroll-padding-bottom: calc(var(--create-actions-space) + 16rem);
 }
 /* Allow for two action rows or the measured bar plus room for the focus ring. */
 html:has(#create-agent-form) {

@@ -366,3 +366,33 @@ export async function watchForReload(page: Page) {
       };
     });
 }
+
+// Records each message the status line paints, with the elapsed line beside it, so one run can
+// assert the whole progression. runProvisioningPolls pauses the page clock, so each paint is
+// deterministic; the elapsed values only need to move forward. A message the line repaints
+// unchanged is not recorded twice.
+export async function recordMeterPaints(page: Page) {
+  await page.evaluate(() => {
+    globalThis.statusPaints = [];
+    const snapshot = () => {
+      const section = globalThis.document.querySelector(".provisioning-progress");
+      if (!(section instanceof HTMLElement) || section.hidden) {
+        return;
+      }
+      const phase = section.querySelector(".provisioning-phase")?.textContent ?? "";
+      const last = globalThis.statusPaints.at(-1);
+      if (last?.phase === phase) {
+        return;
+      }
+      globalThis.statusPaints.push({
+        phase,
+        elapsed: section.querySelector(".provisioning-elapsed")?.textContent ?? "",
+      });
+    };
+    new globalThis.MutationObserver(snapshot).observe(globalThis.document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+}
