@@ -2,16 +2,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  cp,
-  lstat,
-  mkdir,
-  readdir,
-  readFile,
-  readlink,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
+import { cp, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readOpenclawSource } from "./lib/openclaw-source.ts";
@@ -187,11 +187,18 @@ async function writeRuntimeInventory(
   { pruneSourceAssets = false } = {},
 ): Promise<string> {
   const inventory: RuntimeAsset[] = [];
-  async function walk(relative = "") {
-    for (const name of (await readdir(join(root, relative))).sort()) {
+  function walk(relative = ""): void {
+    const entries = readdirSync(join(root, relative), { withFileTypes: true });
+    entries.sort((left, right) => {
+      if (left.name === right.name) {
+        return 0;
+      }
+      return left.name < right.name ? -1 : 1;
+    });
+    for (const entry of entries) {
+      const { name } = entry;
       const path = join(relative, name);
       const absolute = join(root, path);
-      const info = await lstat(absolute);
       const sourceAsset = path.startsWith("extensions/") || path.startsWith("docs/");
       if (
         pruneSourceAssets &&
@@ -200,24 +207,37 @@ async function writeRuntimeInventory(
           name === "__tests__" ||
           (path.startsWith("docs/") && /\.(?:png|jpe?g|webp)$/i.test(name)))
       ) {
-        await rm(absolute, { recursive: true });
-      } else if (info.isSymbolicLink()) {
-        inventory.push({ path, link: await readlink(absolute) });
-      } else if (info.isDirectory()) {
-        await walk(path);
-      } else if (info.isFile()) {
-        inventory.push({
-          path,
-          size: info.size,
-          mode: info.mode & 0o777,
-          sha256: hash(await readFile(absolute)),
-        });
+        rmSync(absolute, { recursive: true });
+      } else if (entry.isSymbolicLink()) {
+        inventory.push({ path, link: readlinkSync(absolute) });
+      } else if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.isFile()) {
+        // Refuse final-component symlinks and avoid blocking if a FIFO replaced the file.
+        const fd = openSync(
+          absolute,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        );
+        try {
+          const info = fstatSync(fd);
+          if (!info.isFile()) {
+            throw new Error(`Unsupported runtime asset: ${path}`);
+          }
+          inventory.push({
+            path,
+            size: info.size,
+            mode: info.mode & 0o777,
+            sha256: hash(readFileSync(fd)),
+          });
+        } finally {
+          closeSync(fd);
+        }
       } else {
         throw new Error(`Unsupported runtime asset: ${path}`);
       }
     }
   }
-  await walk();
+  walk();
   await mkdir(output, { recursive: true });
   const contents = `${JSON.stringify(inventory)}\n`;
   await writeFile(join(output, "contents.json"), contents);
