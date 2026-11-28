@@ -51,6 +51,7 @@ export type PluginFieldCatalog = (
   pageNumber?: number;
   hasPrevious?: boolean;
   canLoad?: boolean;
+  checkingCapabilities?: boolean;
   reloadRequired?: boolean;
   access?: "denied" | "checking" | "deleting";
   canRecheck?: boolean;
@@ -900,7 +901,7 @@ export function createPluginFields({
         ?.querySelector<HTMLButtonElement>(focusedSelector)
         ?.focus({ preventScroll: true });
     }
-    if (!visible.length && !catalogLoading) {
+    if (!visible.length && !catalogLoading && (configuredOnly || !catalog?.checkingCapabilities)) {
       list.append(
         element(
           "p",
@@ -1149,7 +1150,7 @@ export function createPluginFields({
     // does not make screen readers announce the same words again (finding 1890).
     setText(
       policyStatus,
-      capabilities || capabilitiesUnread
+      capabilities || capabilitiesUnread || catalog?.checkingCapabilities
         ? ""
         : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
     );

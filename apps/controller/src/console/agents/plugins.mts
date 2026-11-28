@@ -432,6 +432,7 @@ export function renderAgentPlugins(
     context,
     input,
     savedAgent: true,
+    isCheckingCapabilities: () => !updateDenied && !catalogCapabilityChecked,
     catalogPath: `${path}/plugins`,
     requestBody: (body) => body,
     renderAccountConnection: (slot, stage) =>

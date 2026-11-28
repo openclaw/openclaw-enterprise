@@ -72,6 +72,9 @@ catalog responses; it does not establish plugin installation or runtime access.
 
 In **Pages / Agent detail / Plugins Search While Loading**, select **Plugins**.
 Open **Configure plugins** and type `Workspace` while the catalog check is pending.
+While **Checking plugin catalog availability…** is visible, **Load plugins** is
+disabled, and neither an unsupported-policy warning nor directions to edit
+**Plugin selections JSON** appear. Actual access failures remain visible.
 Choose **Done**, stay on the Plugins tab, and reopen the picker after the check
 finishes. The search should still say `Workspace` and show Google Workspace without
 Slack. Reset the story and repeat with the picker open. Both paths should show

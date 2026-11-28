@@ -215,6 +215,9 @@ async function defaultCatalogAgent(t: TestContext) {
 }
 
 const workspaceQuery = "Workspace";
+const installationPolicyWarning =
+  "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.";
+const pluginJsonFallback = "To add a plugin by ID, choose Done and edit Plugin selections JSON.";
 
 test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
   const { fixture, namespace, agent, catalogPath, catalogUrl } = await defaultCatalogAgent(t);
@@ -367,14 +370,49 @@ test("A closed plugin picker defers its pending search until reopened", async (t
 test("The plugin picker searches after switching back to Available while capabilities are pending", async (t) => {
   const { dialog, search, releaseCapabilities, catalogQueries } =
     await openPendingDefaultCatalog(t);
+  assert.equal(
+    await dialog.getByText(installationPolicyWarning, { exact: true }).count(),
+    0,
+    "checking availability does not establish that the installation lacks policy support",
+  );
+  assert.equal(
+    await dialog.getByText(pluginJsonFallback, { exact: true }).count(),
+    0,
+    "the first pending render does not send the user to JSON",
+  );
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isEnabled(), false);
+
   const configured = dialog.getByRole("button", { name: "Configured plugins", exact: true });
   const available = dialog.getByRole("button", { name: "Available plugins", exact: true });
   await configured.click();
   assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  await dialog
+    .getByText("No plugins configured. Choose Available plugins to add one.", { exact: true })
+    .waitFor();
   await available.click();
   assert.equal(await available.getAttribute("aria-pressed"), "true");
   await search.fill(workspaceQuery);
+  assert.equal(await dialog.getByText(pluginJsonFallback, { exact: true }).count(), 0);
+  assert.deepEqual(catalogQueries(), [], "a pending check does not request the catalog");
+
+  // Inspect additions to catch guidance inserted and removed in the same response callback.
+  const fallbackWrites = await dialog.locator(".plugin-list").evaluateHandle((list, fallback) => {
+    let fallbackAdded = false;
+    const observer = new globalThis.MutationObserver((records) => {
+      fallbackAdded ||= records.some(({ addedNodes }) =>
+        Array.from(addedNodes).some((node) => node.textContent === fallback),
+      );
+    });
+    observer.observe(list, { childList: true });
+    return () => {
+      observer.disconnect();
+      return fallbackAdded;
+    };
+  }, pluginJsonFallback);
   await releaseCapabilities();
+  const fallbackAdded = await fallbackWrites.evaluate((finish) => finish());
+  await fallbackWrites.dispose();
+  assert.equal(fallbackAdded, false, "settling the healthy read never offers the JSON fallback");
   assert.deepEqual(catalogQueries(), [workspaceQuery], "the Available tab searches automatically");
   await expectWorkspaceCatalog(dialog, search);
 });
@@ -481,6 +519,8 @@ test("A saved OpenAI API-key Source cannot browse Codex hosted Apps", async (t) 
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
+  await dialog.getByText(pluginJsonFallback, { exact: true }).waitFor();
+  assert.equal(await dialog.getByText(installationPolicyWarning, { exact: true }).count(), 0);
   assert.equal(
     await dialog.getByRole("button", { name: "Load plugins", exact: true }).isEnabled(),
     false,
@@ -3491,11 +3531,27 @@ test("A saved Agent can clear its selections and default approvers after its cat
   });
   controller(fixture).selectDriver("plugin", "occ-plugin");
   const { page } = await newPage(t, fixture, { browser });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const capabilities = responseTo(
+    page,
+    "GET",
+    new URL(`${path}/plugins/capabilities`, fixture.origin).href,
+  );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  assert.equal((await capabilities).status(), 501, "removed plugin capabilities");
+  await page.getByText(/Plugin selections JSON remains editable\./).waitFor();
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  await dialog.getByText(/The selected Plugin Driver does not offer a catalog/).waitFor();
+  await dialog.getByText(pluginJsonFallback, { exact: true }).waitFor();
+  assert.equal(await dialog.getByText(installationPolicyWarning, { exact: true }).count(), 0);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+
   await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
   await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   await page.getByLabel("Plugin selections JSON", { exact: true }).fill("{}");
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const saved = page.waitForResponse(
     (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
   );
