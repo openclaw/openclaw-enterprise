@@ -3358,7 +3358,19 @@ for (const c of [
             await page.goForward();
             assert.equal((await forward.requested)?.status(), 200);
             const resumed = await holdRequests(t, page, sessionUrl, sessionRead);
-            await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+            // Chrome can report focus on the holding heading on either side of visibilitychange.
+            // Exercise both event orders across the two existing viewport cases.
+            await page.evaluate((focusFirst) => {
+              const refocus = () =>
+                document.activeElement?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+              if (focusFirst) {
+                refocus();
+              }
+              document.dispatchEvent(new Event("visibilitychange"));
+              if (!focusFirst) {
+                refocus();
+              }
+            }, viewport.width === 390);
             assert.equal((await resumed.requested)?.status(), 200);
             if (timing === "focus moved") {
               await account.focus();

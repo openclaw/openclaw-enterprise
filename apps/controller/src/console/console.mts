@@ -2158,6 +2158,11 @@ async function loadPage({
     !(trackSecretReturn || returningToDraft) ||
     (!returnFocusMoved && document.hasFocus() && (!returningToDraft || !document.hidden));
   const onFocus = (event: FocusEvent) => {
+    // Chrome can refocus the same holding heading before or after visibilitychange.
+    // A move to any other control still cancels the return, even if focus comes back here.
+    if (returningToDraft && event.target === heldHeading) {
+      return;
+    }
     if (event.target !== expectedHeading && event.target !== document.body) {
       returnFocusMoved = true;
       // Both snapshots can return focus to Search if the new control later blurs.
@@ -2757,7 +2762,9 @@ async function loadPage({
       const keptNamespaceFocus =
         (switchingVersion || (fromNavigation && listRoute !== null)) &&
         restoredShell.scopeSelector?.contains(document.activeElement);
-      const keptTopbarFocus = document.activeElement?.matches(".mobile-toggle, .topbar-avatar");
+      // The shell may already have kept the control, or the refocus check will restore it below.
+      const topbarControl = restoreFocus ? focused : document.activeElement;
+      const keptTopbarFocus = topbarControl?.matches(".mobile-toggle, .topbar-avatar");
       if (!headerFocus && !keptNamespaceFocus && !keptTopbarFocus) {
         window.scrollTo({ top: retainedView.scrollY, left: 0 });
       }
