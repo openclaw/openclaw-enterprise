@@ -24,7 +24,8 @@ Rootful describes the virtual machine; run `podman` as your normal host user. Ro
 start after switching rebuilds the images.
 
 On Linux without root, use a rootful machine, which needs `/dev/kvm`,
-`gvproxy`, and `virtiofsd`. List a helper directory outside
+`gvproxy`, and `virtiofsd`, or the
+[system Podman socket](local-kubernetes-podman.md). List a helper directory outside
 Podman's defaults, plus those defaults, in `[engine] helper_binaries_dir` of a
 `CONTAINERS_CONF_OVERRIDE` file exported for startup and cleanup:
 

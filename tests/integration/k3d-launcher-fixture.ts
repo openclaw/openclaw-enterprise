@@ -77,6 +77,8 @@ interface ClipboardResult {
 interface LauncherInvocation {
   args: string[];
   dockerHost: string;
+  dockerSock: string;
+  containerHost: string;
   containerBin: string;
   composeProvider: string;
   demoState: string;
@@ -169,6 +171,7 @@ export async function runLauncher(
   await writeCommand(bin, clipboardCommand, `/usr/bin/tee '${clipboard}' >/dev/null\n`);
 
   let expectedDockerHost = "";
+  let expectedDockerSock = "";
   if (engine === "podman") {
     // After hooks run in registration order: close the server before its directory goes.
     const server = createServer();
@@ -181,11 +184,13 @@ export async function runLauncher(
       server.listen(socket, resolvePromise);
     });
     expectedDockerHost = `unix://${socket}`;
+    expectedDockerSock = socket;
     await writeCommand(
       bin,
       "podman",
       `if [ "$1" = machine ] && [ "$2" = inspect ]; then printf '%s\\n' '${socket}'; exit 0; fi
 if [ "$1" = info ] && [ "$2" = --format ]; then printf '%s\\n' '${socket}'; exit 0; fi
+if [ "$1" = info ]; then exit 0; fi
 if [ "$1" = image ] && [ "$2" = inspect ]; then [ '${missingBaseImages}' = true ] && exit 1; exit 0; fi
 if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
 if [ "$1" = ps ]; then
@@ -283,7 +288,7 @@ fi
 if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.ts'; then touch '${resetCalled}'; exit 0; fi
 if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; exit 0; fi
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' \
-  DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" \
+  DOCKER_HOST="\${DOCKER_HOST:-}" DOCKER_SOCK="\${DOCKER_SOCK:-}" CONTAINER_HOST="\${CONTAINER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" \
   PODMAN_COMPOSE_PROVIDER="\${PODMAN_COMPOSE_PROVIDER:-}" OCC_K3D_DEMO_STATE="\${OCC_K3D_DEMO_STATE:-}" \
   OCC_K3D_HARNESS="\${OCC_K3D_HARNESS:-}" OPENSHELL_HARNESS="\${OCC_TEST_OPENSHELL_HARNESS:-}" \
   MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}:-}" \
@@ -294,6 +299,8 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     writeFileSync(env.INVOCATION, JSON.stringify({
       args: process.argv.slice(1),
       dockerHost: env.DOCKER_HOST,
+      dockerSock: env.DOCKER_SOCK,
+      containerHost: env.CONTAINER_HOST,
       containerBin: env.OCC_DOCKER_BIN,
       composeProvider: env.PODMAN_COMPOSE_PROVIDER,
       demoState: env.OCC_K3D_DEMO_STATE,
@@ -491,6 +498,16 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     assert.equal(recorded.harness, selectedHarness);
   }
   assert.equal(recorded.dockerHost, expectedDockerHost);
+  // The socket exports exist only for a Linux Podman engine selection; the
+  // Docker engine and macOS podman-machine must stay unchanged.
+  assert.equal(
+    recorded.dockerSock,
+    engine === "podman" && platform === "Linux" ? expectedDockerSock : "",
+  );
+  assert.equal(
+    recorded.containerHost,
+    engine === "podman" && platform === "Linux" ? expectedDockerHost : "",
+  );
   assert.equal(recorded.containerBin, join(bin, engine));
   assert.equal(recorded.composeProvider, engine === "podman" ? join(bin, "podman-compose") : "");
   assert.match(stdout, new RegExp(`\\[k3d:${engine}\\]`));
@@ -520,6 +537,8 @@ async function readInvocation(path: string): Promise<LauncherInvocation> {
   const args: unknown[] = captured.args;
   assert.ok(args.every((arg) => typeof arg === "string"));
   assert.ok("dockerHost" in captured && typeof captured.dockerHost === "string");
+  assert.ok("dockerSock" in captured && typeof captured.dockerSock === "string");
+  assert.ok("containerHost" in captured && typeof captured.containerHost === "string");
   assert.ok("containerBin" in captured && typeof captured.containerBin === "string");
   assert.ok("composeProvider" in captured && typeof captured.composeProvider === "string");
   assert.ok("demoState" in captured && typeof captured.demoState === "string");
@@ -532,6 +551,8 @@ async function readInvocation(path: string): Promise<LauncherInvocation> {
   return {
     args,
     dockerHost: captured.dockerHost,
+    dockerSock: captured.dockerSock,
+    containerHost: captured.containerHost,
     containerBin: captured.containerBin,
     composeProvider: captured.composeProvider,
     demoState: captured.demoState,
