@@ -18,7 +18,12 @@ import {
   strandsBoxService,
   STRANDS_STATUS_PORT,
 } from "./strands-box-resources.ts";
-import { KubernetesObjectApi, PatchStrategy, type KubernetesObject } from "@kubernetes/client-node";
+import {
+  ApiException,
+  KubernetesObjectApi,
+  PatchStrategy,
+  type KubernetesObject,
+} from "@kubernetes/client-node";
 import { isIP } from "node:net";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
@@ -204,6 +209,36 @@ function missing(error: unknown): boolean {
   const value = asRecord(error);
   return [value?.code, value?.statusCode, asRecord(value?.response)?.statusCode].includes(404);
 }
+
+async function namespaceIsAbsent(context: SandboxNamespaceContext): Promise<boolean> {
+  const name = context.namespace.name;
+  try {
+    await api(context).read({ apiVersion: "v1", kind: "Namespace", metadata: { name } });
+    return false;
+  } catch (error) {
+    if (!(error instanceof ApiException) || error.code !== 404) {
+      throw error;
+    }
+    let status;
+    try {
+      status = asRecord(typeof error.body === "string" ? JSON.parse(error.body) : error.body);
+    } catch {
+      return false;
+    }
+    const details = asRecord(status?.details);
+    return (
+      status?.apiVersion === "v1" &&
+      status.kind === "Status" &&
+      status.status === "Failure" &&
+      status.code === 404 &&
+      status.reason === "NotFound" &&
+      details?.kind === "namespaces" &&
+      (details.group === undefined || details.group === "") &&
+      details.name === name
+    );
+  }
+}
+
 async function read(
   context: SandboxNamespaceContext,
   ref: KubernetesObject,
@@ -1059,6 +1094,28 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       context.revision === undefined
         ? undefined
         : this.harnessResource({ namespace: context.namespace, revision: context.revision });
+    try {
+      await this.cleanupResources(context, exact);
+    } catch (error) {
+      // Compute may have deleted the namespace and its RoleBindings between passes.
+      // All Strands resources for this hook disappear with it. Revision cleanup
+      // must still report its own errors to the caller.
+      if (
+        !exact &&
+        error instanceof ApiException &&
+        (error.code === 403 || error.code === 404) &&
+        (await namespaceIsAbsent(context))
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async cleanupResources(
+    context: SandboxNamespaceContext,
+    exact: SandboxResourceRef | undefined,
+  ): Promise<void> {
     // Stop the workload before deleting its immutable inputs or exposure. A
     // retry resumes at the same ownership-fenced objects; PVCs are never listed.
     for (const [apiVersion, kind, suffix = ""] of [

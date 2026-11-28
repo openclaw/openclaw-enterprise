@@ -20,3 +20,10 @@ launcher can install a selected plugin on first boot. A model turn also requires
 the workspace to permit the Harness permission profile, `:danger-full-access`.
 End-to-end qualification with managed plugins is pending.
 Box records denied destinations in its network policy audit.
+
+During [Namespace deletion](namespace-lifecycle.md), Kubernetes can remove the
+tenant namespace and its RoleBindings between cleanup attempts. If Strands can
+no longer access its resources, it checks the backing namespace. Only a
+`NotFound` response for that namespace lets Strands treat its cleanup as complete
+after an access denial. The remaining Drivers and Compute still run their
+deletion steps.
