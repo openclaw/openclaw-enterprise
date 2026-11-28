@@ -66,6 +66,7 @@ Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
 and `configurationReadError` on decode failure. Operational reads/queries stay strict. Unreadable drafts block editing/deployment without defaults.
+Malformed or noncanonical saved Network Proxy settings set `configurationReadError.field` to `networkProxy`. Healthy Agents remain readable.
 **Selected for service** uses `activeRevisionId`.
 **Viewing version** switches `revision=draft`/`revision=<id>` without activation.
 With Configuration `read`, **Draft credentials** and **Draft repositories** open drafts without copying snapshots.

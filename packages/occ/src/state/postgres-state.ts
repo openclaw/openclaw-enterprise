@@ -1,6 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  AgentNetworkProxyValidationError,
   isCanonicalRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
@@ -394,7 +395,11 @@ function configurationRead<T>(field: ConfigurationReadError["field"], read: () =
   try {
     return read();
   } catch (error) {
-    if (error instanceof DependencyUnavailableError || error instanceof SyntaxError) {
+    if (
+      error instanceof DependencyUnavailableError ||
+      error instanceof SyntaxError ||
+      (field === "networkProxy" && error instanceof AgentNetworkProxyValidationError)
+    ) {
       throw new SavedConfigurationReadError(field, "Persisted saved configuration is invalid.");
     }
     throw error;
@@ -574,7 +579,7 @@ function networkProxyFromRow(row: PostgresRow): Agent["networkProxy"] {
     ...(credentialSecretId === undefined ? {} : { credentialSecretId }),
   });
   if (selection.url !== url) {
-    throw new Error("Invalid persisted Network proxy selection.");
+    throw new AgentNetworkProxyValidationError("Invalid persisted Network proxy selection.");
   }
   return selection;
 }
