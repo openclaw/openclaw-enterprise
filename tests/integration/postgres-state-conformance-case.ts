@@ -494,51 +494,23 @@ export async function verifyPostgresStateConformance(context: TestContext) {
   );
 
   const iam = new NativeIAMDriver(reopened);
-  assert.equal(
-    (
-      await iam.authorize({
-        principalId,
-        action: "create",
-        resource: {
-          kind: "service_account",
-          id: fixture.serviceAccountNamespace.id,
-          namespaceId: fixture.serviceAccountNamespace.id,
-        },
-      })
-    ).allowed,
-    true,
-    "An exact persisted collection binding authorizes ServiceAccount creation.",
-  );
-  assert.equal(
-    (
-      await iam.authorize({
-        principalId,
-        action: "read",
-        resource: {
-          kind: "service_account",
-          id: fixture.serviceAccount.id,
-          namespaceId: fixture.serviceAccountNamespace.id,
-        },
-      })
-    ).allowed,
-    true,
-    "An exact persisted account binding grants only the named account.",
-  );
-  assert.equal(
-    (
-      await iam.authorize({
-        principalId,
-        action: "update",
-        resource: {
-          kind: "service_account",
-          id: fixture.serviceAccount.id,
-          namespaceId: fixture.serviceAccountNamespace.id,
-        },
-      })
-    ).allowed,
-    false,
-    "An exact persisted account Restriction overrides its granted update.",
-  );
+  const accountNamespaceId = fixture.serviceAccountNamespace.id;
+  // IAM matches the requested ID against bindings without looking up the target account.
+  const unboundAccountId = `sa_${randomUUID()}`;
+  assert.notEqual(unboundAccountId, fixture.serviceAccount.id);
+  for (const [action, id, allowed, message] of [
+    ["create", accountNamespaceId, true, "Collection binding allows account creation."],
+    ["read", fixture.serviceAccount.id, true, "Account binding allows the named read."],
+    ["update", fixture.serviceAccount.id, false, "Restriction overrides the granted update."],
+    ["read", unboundAccountId, false, "Account binding must not grant an unbound read."],
+  ] as const) {
+    const decision = await iam.authorize({
+      principalId,
+      action,
+      resource: { kind: "service_account", id, namespaceId: accountNamespaceId },
+    });
+    assert.equal(decision.allowed, allowed, message);
+  }
   for (const identityId of [principalId, fixture.agent.servicePrincipalId]) {
     for (const action of platformActions) {
       const ownAgentDecision = await iam.authorize({
