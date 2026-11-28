@@ -321,7 +321,7 @@ packages:
     "runtime-ready",
   );
   const inventory = parseInventory(contents.toString("utf8"));
-  // Preserve inventory order because the serialized bytes determine the provenance digest.
+  // Preserve inventory order because the serialized bytes determine runtimeContentsSha256 in provenance.
   const orderedPaths = [
     "LICENSE",
     "additional-launcher.mjs",
