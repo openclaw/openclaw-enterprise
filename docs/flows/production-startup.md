@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-24"
-last_updated_session: "authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c"
+updated: "2026-11-25"
+last_updated_session: "authoring-run/0ad789eb-4f86-4c27-93c3-08f6e51106f7"
 ---
 
 # Production Startup Flow
@@ -173,11 +173,13 @@ awaits completion. Cleanup ignores repeated signals.
 
 Under the advisory lock, the migrator verifies [history](../reference/settings/operations.md#migration-history),
 roles, catalogs and grants against native or reviewed restore digests before
-DDL or bootstrap. On 0085, check and apply refuse unfinished managed TokenService
-registrations with `MIGRATION_REGISTRATION_PENDING`.
-The SQL constraint guards later changes. After option checks, completed apply
-skips Drizzle only when `transaction_read_only` is off. Drizzle handles pending migrations
-and read-only refusals. Cleanup releases the lock and client.
+DDL or bootstrap. Unfinished managed TokenService registrations block check
+and apply on 0085 (`MIGRATION_REGISTRATION_PENDING`). SQL enforces this constraint.
+Unexpired, unfinished Codex device logins block [credential cutover](../../migrations/0095_credential_cutover.sql)
+during [upgrade preflight](coordinated-production-upgrade.md), before writer
+shutdown (`MIGRATION_DEVICE_LOGIN_PENDING`). The transaction rechecks for new logins.
+Apply skips Drizzle only for completed history with `transaction_read_only` off.
+Cleanup releases the lock and client.
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
 Console origin before database access, including during `--verify-existing`.
@@ -370,6 +372,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 06:34: Trace device login refusal. (authoring-run/0ad789eb-4f86-4c27-93c3-08f6e51106f7 - 738d973508be39f8c8f426d7e4688d209d094404)
 
 - 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
 

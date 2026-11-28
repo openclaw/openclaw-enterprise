@@ -1664,12 +1664,24 @@ run_preflight_jobs() {
             draft_refusals=$(node scripts/upgrade-startup-preflight.ts refusals \
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
-          if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
-            if [[ "$phase" == Failed && "$logs_status" == 0 ]] && jq -Rse '
+          local migration_failure=''
+          if [[ "$component" == migration && "$phase" == Failed && "$logs_status" == 0 ]]; then
+            migration_failure=$(jq -Rsr '
               [split("\n")[] | fromjson? | objects |
-                select(.event | strings | startswith("migration.")) | [.event, .code]]
-                == [["migration.failed", "MIGRATION_HISTORY_UNSUPPORTED"]]
-            ' "$evidence_dir/preflight-migration.log" >/dev/null 2>&1; then
+                select(.event | strings | startswith("migration.")) | [.event, .code]] |
+              if . == [["migration.failed", "MIGRATION_HISTORY_UNSUPPORTED"]] then "unsupported"
+              elif . == [["migration.failed", "MIGRATION_DEVICE_LOGIN_PENDING"]] then "login"
+              else empty end
+            ' "$evidence_dir/preflight-migration.log" 2>/dev/null) || migration_failure=''
+          fi
+          # A failed child can be observed before the Job reaches a terminal condition.
+          if [[ "$migration_failure" == login ]] && jq -e '
+            [.status.conditions[]? | select(.status == "True") | .type] |
+            any(. == "Failed") and all(. != "Complete" and . != "SuccessCriteriaMet")
+          ' "$evidence_dir/preflight-migration-job-status.json" >/dev/null 2>&1; then
+            message="outstanding Codex device logins block the upgrade (MIGRATION_DEVICE_LOGIN_PENDING). No ${writer_qualifier}OCC writer was stopped. Cancel the logins if the old controller is available or wait for them to expire. Keep any stopped writers stopped."
+          elif [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+            if [[ "$migration_failure" == unsupported ]]; then
               message="the selected controller image does not support the installed database history (MIGRATION_HISTORY_UNSUPPORTED). No ${writer_qualifier}OCC writer was stopped. Preserve the database and select an image verified against this history. See preflight-migration.log and preflight-migration-status.json in $evidence_dir."
             else
               message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."

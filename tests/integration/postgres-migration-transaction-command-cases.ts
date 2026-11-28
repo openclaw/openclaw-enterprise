@@ -18,6 +18,7 @@ export type MigrationCommandResult =
       ok: false;
       code:
         | "MIGRATION_HISTORY_PENDING"
+        | "MIGRATION_DEVICE_LOGIN_PENDING"
         | "MIGRATION_HISTORY_UNSUPPORTED"
         | "MIGRATION_HISTORY_NOT_EMPTY"
         | "MIGRATION_REGISTRATION_PENDING"
