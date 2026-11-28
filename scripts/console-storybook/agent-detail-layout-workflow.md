@@ -96,32 +96,33 @@ output and retry message. Wait past five seconds, while the Gateway read is stil
 pending, and confirm the message stays gone. After about ten seconds from the
 switch, **gateway listening** appears. Reload to repeat.
 
-**Runtime Logs Refresh Rate Limited** (`RuntimeLogsRefreshRateLimited`)
-covers staying on the same source. Both stories use simulated responses. The
-controller-backed browser regression in `tests/browser/console-agent-logs.test.ts`
-checks the source switch through the Console API.
+**Runtime Logs Refresh Rate Limited** (`RuntimeLogsRefreshRateLimited`) tests
+one source. Both stories simulate responses.
+`tests/browser/console-agent-logs.test.ts` checks switching sources through
+the Controller’s Console API.
 
 Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
-in its own tab. Select **Deploy new version**. Its accessible description names
+in a new tab. Select **Deploy new version**. Its accessible description names
 the Secret. Switch tabs and return. The simulated grant clears the refusal and
-enables Deploy on the same draft without a Deploy request.
+enables Deploy on that draft without a Deploy request.
 In **Deployment needs Secret operate**, access stays denied.
 
-In **Current version's Sandbox lost**, revisit that version. Check the warning.
+In **Current version's Sandbox lost**, revisit the version. Check the warning.
 
-In **Bootstrap failure with cleanup pending**, point at **Deployment** (scroll
-sideways on phones). When v7 fails, click without moving. Check v7’s failed
-record, pending cleanup and v6 selection. **Sandbox running** becomes **Sandbox
-lost**, offering **Deploy a new version**. Refocus **View deployment**. After
-cleanup, polling stops and Enter opens v7.
+In **Bootstrap failure with cleanup pending**, hover over **Deployment** (scroll
+sideways on phones). When v7 fails, the tab stays put. Click without moving.
+Check v7’s failed record, pending cleanup and v6 selection. One check changes
+**Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
+Cleanup triggers no more checks. Refocus **View deployment**. After cleanup,
+Enter opens v7.
 
-In v1’s scrolled **Configuration**, hover near the top of **Deployment**. When
-simulated activation selects v2 for service, click without moving. v1’s
+On a disposable Controller, scroll v1’s **Configuration**. Hover near **Deployment**’s
+top edge until simulated activation selects v2. Click without moving. v1’s
 **Deployment** opens. Repeat over **Draft credentials**.
 
-Open a copied **Draft credentials** link while signed out. Sign in, reselect v1
-and press Enter on the link. During slow reads, v1 and “Still checking…” remain
-visible until **Credentials** opens. Repeat signed in.
+Copy v1’s **Draft credentials** link. Open it signed out, sign in, reselect v1
+and press Enter on the link. On slow reads, v1 and “Still checking…” stay visible
+until **Credentials** opens. Repeat signed in.
 
 1. Open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, `pages-agent-detail--deployment-succeeded`).
