@@ -2937,6 +2937,18 @@ if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
 $retained_revision_blockers
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
 fi
+# Inspect the effective candidate after any staged Installation has been adopted.
+if [[ -n "$runtime_image" ]] && yaml_json "$candidate_installation" 2>/dev/null &&
+  jq -e '
+    .drivers.compute |
+    .id == "compute-kubernetes" and
+    (.configuration |
+      (.runtime | type == "object") and
+      (.gatewayRouting | type == "object") and
+      (.network.pluginStatusProxySourceCidrs | . == null or . == []))
+  ' >/dev/null 2>&1 <<<"$yaml_text"; then
+  progress "No API server proxy sources are configured for private status (network.pluginStatusProxySourceCidrs). A dedicated Codex Gateway may start twice on first deploy. To check access, see docs/guides/operate/network-isolation.md#check-the-status-port."
+fi
 if ((preflight_only)); then
   printf 'Preflight passed; no OCC writer was stopped. Deploy during the maintenance window with the same reviewed inputs and fresh evidence.\n'
   exit 0

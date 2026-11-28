@@ -171,18 +171,17 @@ installation: it still names the bring-up images and lacks the upgraded values,
 such as the selected images and checksum, so Helm would roll the controller back. Gateway and Harness resources apply when
 an Agent is next deployed.
 
-It also never adds fields that `scripts/dev-up` writes only at bring-up. An installation created by `dev-up`
-before `network.pluginStatusProxySourceCidrs` existed still lacks it after an
-upgrade: plugin status and diagnostics stay unavailable, and each dedicated Codex
-first deploy starts its Gateway twice. Check the live Installation:
+Image upgrades preserve proxy settings. If runtime preflight reports no
+proxy sources, the controller may lack private status access and the dedicated
+Codex Gateway may start twice on first deploy. Check the saved Installation.
 
 ```bash
-yq -er '.drivers.compute.configuration.network.pluginStatusProxySourceCidrs' "$INSTALLATION"
+yq -er '.drivers.compute.configuration.network.pluginStatusProxySourceCidrs // []' "$INSTALLATION"
 ```
 
-If it is missing, find the address the API server proxies from: the k3d server
-node's `cni0` bridge. Use the node's Pod CIDR plus 2 (`10.42.0.2` for
-`10.42.0.0/24`), and `podman exec` for a Podman-backed cluster:
+For an empty list, find the API server’s source address on `cni0`. Query a Pod
+address (node Pod CIDR plus 2, e.g. `10.42.0.2` for `10.42.0.0/24`). For
+Podman, substitute `podman exec`.
 
 ```bash
 export K3D_SERVER='<existing-k3d-server-0-container>'
@@ -194,9 +193,8 @@ docker exec "$K3D_SERVER" ip route get 10.42.0.2
 The route must name `dev cni0`; another device means no Pod runs on the node
 yet. Add its `src` address as a single `/32` entry, for example `10.42.0.1/32`,
 under `drivers.compute.configuration.network.pluginStatusProxySourceCidrs` in
-`INSTALLATION` and apply it as above. That leaves `INSTALLATION` and `VALUES`
-equal to the live state, so the script accepts them. Agents deployed afterward
-get the API-proxy rule. Recreating with `occ dev down` and `scripts/dev-up` also adds the
+`INSTALLATION` and apply it as above. Keep `INSTALLATION` and `VALUES` consistent
+with the live release. Subsequent deployments get the API-proxy rule. Recreating with `occ dev down` and `scripts/dev-up` also adds the
 field, but discards the database, Agents, and volumes.
 
 ## Select and make the published images available
